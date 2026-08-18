@@ -1,0 +1,15 @@
+node_modules/
+src/**/*.log
+.env
+.env.local
+contracts/
+backups/
+web-dashboard/node_modules/
+web-dashboard/dist/
+mobile/build/
+mobile/.dart_tool/
+mobile/.flutter-plugins*
+mobile/android/.gradle/
+mobile/ios/Pods/
+*.log
+.DS_Store

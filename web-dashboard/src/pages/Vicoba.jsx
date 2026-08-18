@@ -1,0 +1,273 @@
+import React, { useEffect, useState } from 'react';
+import api from '../api/client.js';
+import { formatMoney, StatusBadge } from '../components/ui.jsx';
+import ServiceLock from '../components/ServiceLock.jsx';
+
+export default function Vicoba() {
+  const user = JSON.parse(localStorage.getItem('afrikoba_user') || '{}');
+  const [groups, setGroups] = useState([]);
+  const [selected, setSelected] = useState(null);
+  const [loans, setLoans] = useState([]);
+  const [msg, setMsg] = useState({ type: '', text: '' });
+
+  const [gName, setGName] = useState('');
+  const [gCycle, setGCycle] = useState('MONTHLY');
+  const [gShare, setGShare] = useState('');
+  const [gFee, setGFee] = useState('');
+
+  const [contributeAmt, setContributeAmt] = useState('');
+  const [contributeShares, setContributeShares] = useState('1');
+  const [newMemberId, setNewMemberId] = useState('');
+
+  const [loanApplicant, setLoanApplicant] = useState('');
+  const [loanAmount, setLoanAmount] = useState('');
+  const [loanInterest, setLoanInterest] = useState('10');
+  const [loanMonths, setLoanMonths] = useState('3');
+  const [approveAmount, setApproveAmount] = useState('');
+  const [joinCode, setJoinCode] = useState('');
+  const [invitePhones, setInvitePhones] = useState('');
+
+  const show = (type, text) => {
+    setMsg({ type, text });
+    setTimeout(() => setMsg({ type: '', text: '' }), 5000);
+  };
+
+  const loadGroups = () => {
+    api.get('/vicoba/groups').then((r) => setGroups(r.data.groups)).catch(() => {});
+  };
+
+  useEffect(() => {
+    loadGroups();
+  }, []);
+
+  const selectGroup = (g) => {
+    setSelected(g);
+    api.get(`/vicoba/groups/${g.id}`).then((r) => setSelected(r.data.group)).catch(() => {});
+    api.get(`/vicoba/groups/${g.id}/loans`).then((r) => setLoans(r.data.loans)).catch(() => {});
+  };
+
+  const createGroup = async (e) => {
+    e.preventDefault();
+    try {
+      await api.post('/vicoba/groups', {
+        groupName: gName, cycleType: gCycle, shareValue: gShare, monthlyMaintenanceFee: gFee || undefined,
+      });
+      show('ok', 'Kikundi kimeundwa.');
+      setGName(''); setGShare(''); setGFee('');
+      loadGroups();
+    } catch (err) { show('err', err.response?.data?.message || 'Hitilafu.'); }
+  };
+
+  const contribute = async (e) => {
+    e.preventDefault();
+    try {
+      const res = await api.post(`/vicoba/groups/${selected.id}/contribute`, {
+        amount: contributeAmt, sharesCount: contributeShares,
+      });
+      show('ok', res.data.message);
+      setContributeAmt('');
+      selectGroup(selected);
+    } catch (err) { show('err', err.response?.data?.message || 'Hitilafu.'); }
+  };
+
+  const addMember = async (e) => {
+    e.preventDefault();
+    try {
+      await api.post(`/vicoba/groups/${selected.id}/members`, { userId: newMemberId });
+      show('ok', 'Mwanachama ameongezwa.');
+      setNewMemberId('');
+      selectGroup(selected);
+    } catch (err) { show('err', err.response?.data?.message || 'Hitilafu.'); }
+  };
+
+  const joinByCode = async (e) => {
+    e.preventDefault();
+    try {
+      const res = await api.post('/vicoba/groups/join', { joinCode });
+      show('ok', res.data.message);
+      setJoinCode('');
+      loadGroups();
+    } catch (err) { show('err', err.response?.data?.message || 'Hitilafu.'); }
+  };
+
+  const invite = async (e) => {
+    e.preventDefault();
+    try {
+      const phones = invitePhones.split(',').map((p) => p.trim()).filter(Boolean);
+      const res = await api.post(`/vicoba/groups/${selected.id}/invite`, { phoneNumbers: phones });
+      show('ok', `Mialiko ${res.data.invited} imetumwa kwa SMS. Msimbo wa kikundi: ${res.data.joinCode}`);
+      setInvitePhones('');
+    } catch (err) { show('err', err.response?.data?.message || 'Hitilafu.'); }
+  };
+
+  const addLoan = async (e) => {
+    e.preventDefault();
+    try {
+      await api.post(`/vicoba/groups/${selected.id}/loans`, {
+        applicantUserId: loanApplicant, requestedAmount: loanAmount,
+        interestRate: loanInterest, repaymentMonths: loanMonths,
+      });
+      show('ok', 'Ombi la mkopo limeongezwa (linasubiri idhini ya Mwekahazina).');
+      setLoanApplicant(''); setLoanAmount('');
+      api.get(`/vicoba/groups/${selected.id}/loans`).then((r) => setLoans(r.data.loans)).catch(() => {});
+    } catch (err) { show('err', err.response?.data?.message || 'Hitilafu.'); }
+  };
+
+  const approve = async (loanId) => {
+    try {
+      const res = await api.post(`/vicoba/loans/${loanId}/approve`, {
+        approvedAmount: approveAmount || undefined,
+      });
+      show('ok', res.data.message);
+      selectGroup(selected);
+    } catch (err) { show('err', err.response?.data?.message || 'Hitilafu.'); }
+  };
+
+  const myRole = selected?.role_in_group || '';
+  const canApprove = myRole === 'MWEKAHAZINA' || myRole === 'KATIBU';
+  const canAddLoan = ['MWENYEKITI', 'MWEKAHAZINA', 'KATIBU'].includes(myRole);
+  const isLeader = canAddLoan;
+
+  return (
+    <ServiceLock serviceKey="VICOBA">
+      <div className="page-head">
+        <h2>VICOBA</h2>
+        <p>Usimamizi wa vikundi, hisa na mikopo (Multi-Signature)</p>
+      </div>
+
+      {msg.text && <div className={`msg ${msg.type}`}>{msg.text}</div>}
+
+      <div className="grid grid-2">
+        <div className="card">
+          <h3>Vikundi Vyako</h3>
+          {groups.length === 0 && <p className="roles-tag">Hujajiunga na kikundi chochote bado.</p>}
+          {groups.map((g) => (
+            <div key={g.id} className="inline-actions" style={{ justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--border)' }}>
+              <div>
+                <strong>{g.group_name}</strong>
+                <div className="roles-tag">{g.cycle_type} · Hisa {formatMoney(g.share_value)} · Wewe: {g.role_in_group}</div>
+              </div>
+              <button className="btn ghost" onClick={() => selectGroup(g)}>Fungua</button>
+            </div>
+          ))}
+        </div>
+
+        <div className="card">
+          <h3>Unda Kikundi Kipya</h3>
+          <form className="form-row" onSubmit={createGroup}>
+            <div className="field"><label>Jina</label><input value={gName} onChange={(e) => setGName(e.target.value)} required /></div>
+            <div className="field"><label>Mzunguko</label>
+              <select value={gCycle} onChange={(e) => setGCycle(e.target.value)}>
+                <option value="WEEKLY">Wiki</option><option value="MONTHLY">Mwezi</option>
+              </select>
+            </div>
+            <div className="field"><label>Bei ya Hisa</label><input type="number" value={gShare} onChange={(e) => setGShare(e.target.value)} required /></div>
+            <div className="field"><label>Ada ya Mwezi</label><input type="number" value={gFee} onChange={(e) => setGFee(e.target.value)} /></div>
+            <button className="btn" type="submit">Unda</button>
+          </form>
+
+          <h3 style={{ marginTop: 18 }}>Jiunge kwa Msimbo wa Kikundi</h3>
+          <form className="form-row" onSubmit={joinByCode}>
+            <div className="field">
+              <label>Msimbo wa Kujiunga (unatuma Mwenyekiti)</label>
+              <input value={joinCode} onChange={(e) => setJoinCode(e.target.value)} placeholder="e.g. C9C9BDE7" required />
+            </div>
+            <button className="btn ghost" type="submit">Jiunge</button>
+          </form>
+        </div>
+      </div>
+
+      {selected && (
+        <div className="card section">
+          <h3>{selected.group_name}
+            <span className="roles-tag" style={{ marginLeft: 12 }}>Wallet ya Kikundi: <strong>{formatMoney(selected.group_wallet_balance)}</strong></span>
+            {selected.join_code && (
+              <span className="roles-tag" style={{ marginLeft: 12 }}>Msimbo: <strong>{selected.join_code}</strong></span>
+            )}
+          </h3>
+
+          <div className="grid grid-2" style={{ marginBottom: 16 }}>
+            <form className="form-row" onSubmit={contribute}>
+              <div className="field"><label>Weka Hisa (Kiasi)</label><input type="number" value={contributeAmt} onChange={(e) => setContributeAmt(e.target.value)} required /></div>
+              <div className="field"><label>Idadi ya Hisa</label><input type="number" value={contributeShares} onChange={(e) => setContributeShares(e.target.value)} /></div>
+              <button className="btn" type="submit">Weka Hisa</button>
+            </form>
+            <form className="form-row" onSubmit={addMember}>
+              <div className="field"><label>Ongeza Mwanachama (User ID)</label><input type="number" value={newMemberId} onChange={(e) => setNewMemberId(e.target.value)} required /></div>
+              <button className="btn ghost" type="submit">Ongeza</button>
+            </form>
+          </div>
+
+          {isLeader && (
+            <form className="form-row" onSubmit={invite} style={{ marginBottom: 16 }}>
+              <div className="field" style={{ flex: 1 }}>
+                <label>Tuma Mialiko ya SMS (namba zikitenganishwa kwa koma)</label>
+                <input value={invitePhones} onChange={(e) => setInvitePhones(e.target.value)} placeholder="0712000001, 0713000002" />
+              </div>
+              <button className="btn warn" type="submit">Tuma Mialiko</button>
+            </form>
+          )}
+
+          <h3 style={{ marginTop: 18 }}>Wanachama</h3>
+          <table>
+            <thead><tr><th>Jina</th><th>Namba</th><th>Wajibu</th><th>Hisa</th><th>Michango</th></tr></thead>
+            <tbody>
+              {selected.members.map((m) => (
+                <tr key={m.user_id}>
+                  <td>{m.full_name}</td>
+                  <td>{m.phone_number}</td>
+                  <td>{m.role_in_group}</td>
+                  <td>{m.total_shares}</td>
+                  <td>{formatMoney(m.contribution_balance)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          <h3 style={{ marginTop: 22 }}>Mikopo (Multi-Signature)</h3>
+          {canAddLoan && (
+            <form className="form-row" onSubmit={addLoan}>
+              <div className="field"><label>Mwanachama (User ID)</label><input type="number" value={loanApplicant} onChange={(e) => setLoanApplicant(e.target.value)} required /></div>
+              <div className="field"><label>Kiasi</label><input type="number" value={loanAmount} onChange={(e) => setLoanAmount(e.target.value)} required /></div>
+              <div className="field"><label>Riba %</label><input type="number" value={loanInterest} onChange={(e) => setLoanInterest(e.target.value)} /></div>
+              <div className="field"><label>Miezi</label><input type="number" value={loanMonths} onChange={(e) => setLoanMonths(e.target.value)} /></div>
+              <button className="btn" type="submit">Ongeza Ombi</button>
+            </form>
+          )}
+
+          <table>
+            <thead><tr><th>Ombi</th><th>Mwombaji</th><th>Kiasi</th><th>Idhini</th><th>Hali</th><th>Vitendo</th></tr></thead>
+            <tbody>
+              {loans.map((l) => (
+                <tr key={l.id}>
+                  <td>#{l.id}</td>
+                  <td>{l.full_name}<div className="roles-tag">{l.phone_number}</div></td>
+                  <td>{formatMoney(l.requested_amount)}</td>
+                  <td>
+                    <span className="roles-tag">
+                      Mwenyekiti: {l.chairman_approval ? '✓' : '✗'} · Mwekahazina: {l.treasurer_approval ? '✓' : '✗'}
+                    </span>
+                  </td>
+                  <td><StatusBadge status={l.status} /></td>
+                  <td>
+                    {canApprove && l.status === 'APPROVED' && (
+                      <div className="inline-actions">
+                        <input type="number" placeholder="Kiasi" style={{ minWidth: 80 }} value={approveAmount}
+                          onChange={(e) => setApproveAmount(e.target.value)} />
+                        <button className="btn" onClick={() => approve(l.id)}>Toa Mkopo</button>
+                      </div>
+                    )}
+                    {l.status === 'PENDING' && l.treasurer_approval === false && canApprove && (
+                      <button className="btn warn" onClick={() => approve(l.id)}>Idhinisha</button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+              {loans.length === 0 && <tr><td colSpan="6" className="roles-tag">Hakuna mikopo.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </ServiceLock>
+  );
+}

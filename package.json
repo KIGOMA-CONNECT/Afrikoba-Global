@@ -1,0 +1,37 @@
+{
+  "name": "afrikoba-global",
+  "version": "1.0.0",
+  "description": "Afrikoba Global - Integrated Core Digital Banking, VICOBA Automation, ROSCA Engine & P2P Investment Ecosystem",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "cron": "node src/jobs/runAll.js",
+    "db:setup": "node scripts/initDb.js",
+    "seed": "node scripts/seedDb.js"
+  },
+  "keywords": [
+    "wallet",
+    "vicoba",
+    "rosca",
+    "p2p",
+    "fintech",
+    "azampay",
+    "beem"
+  ],
+  "author": "Afrikoba Group",
+  "license": "UNLICENSED",
+  "dependencies": {
+    "axios": "^1.7.9",
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "express-rate-limit": "^8.6.2",
+    "helmet": "^8.0.0",
+    "jsonwebtoken": "^9.0.2",
+    "node-cron": "^4.6.0",
+    "pdfkit": "^0.15.2",
+    "pg": "^8.13.1"
+  }
+}

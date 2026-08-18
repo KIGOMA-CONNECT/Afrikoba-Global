@@ -1,0 +1,146 @@
+# ============================================================
+# AFRIKOBA GLOBAL - CI/CD
+# Triggers: push kwenye main + PRs
+# Jobs:
+#   1. backend   - lint + full integration test suite (78 checks)
+#   2. dashboard - Vite build
+#   3. mobile    - flutter analyze/test + build web + debug APK
+# ============================================================
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  backend:
+    name: Backend tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: afrikoba_global
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d afrikoba_global"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DB_HOST: localhost
+      DB_PORT: 5432
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      DB_NAME: afrikoba_global
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      - run: npm run db:setup
+      - run: npm run db:seed
+
+      - name: Start server (rate limiting off)
+        run: |
+          RATE_LIMIT_DISABLED=true DISABLE_CRON=true node src/server.js > server.log 2>&1 &
+          echo $! > server.pid
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:3000/health > /dev/null; then echo "server up"; break; fi
+            sleep 1
+          done
+          curl -sf http://localhost:3000/health
+
+      - name: Run integration suite
+        run: node scripts/test-all.js
+
+      - name: Run regression scripts
+        run: |
+          node scripts/test-services.js
+          node scripts/test-vicoba.js
+          node scripts/test-rosca.js
+          node scripts/test-p2p.js
+
+      - name: Upload server log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-log
+          path: server.log
+
+  dashboard:
+    name: Web dashboard build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web-dashboard/package-lock.json
+      - run: npm ci
+        working-directory: web-dashboard
+      - run: npm run build
+        working-directory: web-dashboard
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-dashboard-dist
+          path: web-dashboard/dist
+
+  mobile:
+    name: Flutter analyze + test + build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.9
+          cache: true
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Flutter pub get
+        working-directory: mobile
+        run: flutter pub get
+
+      - name: Flutter analyze
+        working-directory: mobile
+        run: flutter analyze
+
+      - name: Flutter test
+        working-directory: mobile
+        run: flutter test
+
+      - name: Build web
+        working-directory: mobile
+        run: flutter build web
+
+      - name: Build debug APK
+        working-directory: mobile
+        run: flutter build apk --debug
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: afrikoba-web
+          path: mobile/build/web
+      - uses: actions/upload-artifact@v4
+        with:
+          name: afrikoba-apk-debug
+          path: mobile/build/app/outputs/flutter-apk/app-debug.apk

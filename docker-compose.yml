@@ -1,0 +1,81 @@
+# ============================================================
+# AFRIKOBA GLOBAL - Docker Compose (Production stack)
+# - PostgreSQL 16 (managed volume + backups)
+# - API + web dashboard
+#
+# Matumizi:
+#   cp .env.example .env   (kisha jaza maadili halisi)
+#   docker compose up -d --build
+# ============================================================
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: afrikoba_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER:-afrikoba}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env}
+      POSTGRES_DB: ${DB_NAME:-afrikoba_global}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+      # Schema + seed huletwa kwenye uanzishaji wa kwanza (fresh DB pekee)
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ./db/seed.sql:/docker-entrypoint-initdb.d/02-seed.sql:ro
+      # Backup ya kila usiku (host directory)
+      - ./backups:/backups
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-afrikoba} -d ${DB_NAME:-afrikoba_global}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - afrikoba
+
+  app:
+    build: .
+    container_name: afrikoba_app
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_USER: ${DB_USER:-afrikoba}
+      DB_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env}
+      DB_NAME: ${DB_NAME:-afrikoba_global}
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+      JWT_TTL: ${JWT_TTL:-7d}
+      CORS_ORIGINS: ${CORS_ORIGINS:?set CORS_ORIGINS in .env}
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:?set WEBHOOK_SECRET in .env}
+      ALLOWED_WEBHOOK_IPS: ${ALLOWED_WEBHOOK_IPS}
+      BEEM_API_KEY: ${BEEM_API_KEY:?set BEEM_API_KEY in .env}
+      BEEM_SECRET_KEY: ${BEEM_SECRET_KEY:?set BEEM_SECRET_KEY in .env}
+      BEEM_SENDER_ID: ${BEEM_SENDER_ID:-AFRIKOBA}
+      AZAMPAY_APP_NAME: ${AZAMPAY_APP_NAME:?set AZAMPAY_APP_NAME in .env}
+      AZAMPAY_CLIENT_ID: ${AZAMPAY_CLIENT_ID:?set AZAMPAY_CLIENT_ID in .env}
+      AZAMPAY_CLIENT_SECRET: ${AZAMPAY_CLIENT_SECRET:?set AZAMPAY_CLIENT_SECRET in .env}
+      AZAMPAY_ENV: ${AZAMPAY_ENV:-production}
+      CONTRACT_DIR: contracts
+      CONTRACT_BASE_URL: ${CONTRACT_BASE_URL:-https://app.afrikoba.com/contracts}
+      TRUST_PROXY: "true"
+    ports:
+      - "3000:3000"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+    networks:
+      - afrikoba
+
+volumes:
+  db_data:
+
+networks:
+  afrikoba:
+    driver: bridge
