@@ -22,6 +22,7 @@ const adminRoutes = require('./routes/adminRoutes');
 const callbackRoutes = require('./routes/callbackRoutes');
 const serviceRoutes = require('./routes/serviceRoutes');
 const marketingRoutes = require('./routes/marketingRoutes');
+const ussdRoutes = require('./routes/ussdRoutes');
 
 // Fail-fast: usiendelee na mazingira ya production yenye maadili hatari.
 config.validateConfig();
@@ -109,6 +110,7 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/payments', callbackRoutes);
 app.use('/api/services', serviceRoutes);
 app.use('/api/marketing', marketingRoutes);
+app.use('/api/ussd', ussdRoutes);
 
 // SPA fallback: non-API routes -> index.html (React Router)
 app.get(/^\/(?!api|contracts|health).*/, (req, res, next) => {
