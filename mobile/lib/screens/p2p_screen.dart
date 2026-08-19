@@ -29,7 +29,9 @@ class _P2pBody extends StatefulWidget {
 
 class _P2pBodyState extends State<_P2pBody> {
   List<Map<String, dynamic>> _projects = [];
+  Map<String, dynamic>? _portfolio;
   bool _loading = true;
+  bool _showPortfolio = false;
 
   @override
   void initState() {
@@ -40,9 +42,11 @@ class _P2pBodyState extends State<_P2pBody> {
   Future<void> _load() async {
     try {
       final res = await AppState.instance.api.get('/p2p/projects');
+      final pf = await AppState.instance.api.get('/p2p/portfolio');
       if (mounted) {
         setState(() {
           _projects = (res['projects'] as List).cast<Map<String, dynamic>>();
+          _portfolio = pf['portfolio'] as Map<String, dynamic>;
           _loading = false;
         });
       }
@@ -54,6 +58,41 @@ class _P2pBodyState extends State<_P2pBody> {
   @override
   Widget build(BuildContext context) {
     if (_loading) return const Center(child: CircularProgressIndicator());
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: Row(
+            children: [
+              Expanded(
+                child: TextButton(
+                  onPressed: () => setState(() => _showPortfolio = false),
+                  style: TextButton.styleFrom(
+                    foregroundColor: !_showPortfolio ? const Color(0xFF0B7A41) : Colors.grey,
+                  ),
+                  child: const Text('Miradi', style: TextStyle(fontWeight: FontWeight.bold)),
+                ),
+              ),
+              Expanded(
+                child: TextButton(
+                  onPressed: () => setState(() => _showPortfolio = true),
+                  style: TextButton.styleFrom(
+                    foregroundColor: _showPortfolio ? const Color(0xFF0B7A41) : Colors.grey,
+                  ),
+                  child: const Text('Portfolio', style: TextStyle(fontWeight: FontWeight.bold)),
+                ),
+              ),
+            ],
+          ),
+        ),
+        Expanded(
+          child: _showPortfolio ? _portfolioView() : _projectsList(),
+        ),
+      ],
+    );
+  }
+
+  Widget _projectsList() {
     return RefreshIndicator(
       onRefresh: _load,
       child: ListView(
@@ -72,6 +111,51 @@ class _P2pBodyState extends State<_P2pBody> {
             ),
           for (final p in _projects) _projectCard(p),
         ],
+      ),
+    );
+  }
+
+  Widget _portfolioView() {
+    final pf = _portfolio;
+    if (pf == null) {
+      return const Center(child: Text('Hakuna data ya portfolio.'));
+    }
+    final investments = (pf['investments'] as List?)?.cast<Map<String, dynamic>>() ?? [];
+    final sectors = (pf['sectors'] as List?)?.cast<dynamic>() ?? [];
+    return RefreshIndicator(
+      onRefresh: _load,
+      child: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          const Text('Portfolio Yako',
+              style: TextStyle(fontWeight: FontWeight.w700, fontSize: 18)),
+          const SizedBox(height: 4),
+          Text('Jumla: TZS ${formatMoney(pf['totalInvested'] ?? 0)} · Miradi: ${pf['projectsCount'] ?? 0} · Hisa: ${pf['totalShares'] ?? 0}',
+              style: const TextStyle(color: Colors.grey)),
+          const SizedBox(height: 12),
+          Text('Sekta: ${sectors.isEmpty ? "Badhi" : sectors.join(", ")}',
+              style: const TextStyle(fontSize: 12)),
+          Text('Haijulikani: ${pf['activeInvestments'] ?? 0} · Imelipwa: ${pf['repaidInvestments'] ?? 0}',
+              style: const TextStyle(fontSize: 12)),
+          const SizedBox(height: 12),
+          if (investments.isEmpty)
+            const Padding(
+              padding: EdgeInsets.all(24),
+              child: Text('Badoshani hakuna uwekezaji bado.'),
+            ),
+          for (final i in investments) _investmentTile(i),
+        ],
+      ),
+    );
+  }
+
+  Widget _investmentTile(Map<String, dynamic> i) {
+    return Card(
+      child: ListTile(
+        dense: true,
+        title: Text('${i['title']}', style: const TextStyle(fontWeight: FontWeight.w600)),
+        subtitle: Text('${i['sector']} · Hisa ${i['shares_bought']} · ${formatMoney(i['total_amount'])}'),
+        trailing: StatusBadge('${i['status']}'),
       ),
     );
   }
@@ -179,10 +263,11 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
     try {
       final res = await AppState.instance.api
           .post('/p2p/projects/${widget.projectId}/invest', {'shares': shares});
-      final txRef = res['transaction']?['reference_id'] ?? res['transactionRef'];
+      final txRef = res['referenceId'] ?? res['reference_id'];
+      final contractUrl = res['contractPdfUrl'];
       messenger.showSnackBar(
         SnackBar(
-          content: Text('Umeinvest TZS ${formatMoney(total)}. Ref: $txRef. Mkataba utatumwa kwa SMS.'),
+          content: Text('Umeinvest TZS ${formatMoney(total)}. Ref: $txRef. ${contractUrl != null ? "Mkataba: $contractUrl" : ""}'),
           backgroundColor: Colors.green,
         ),
       );
@@ -276,6 +361,12 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
             const SizedBox(height: 8),
             Text('Inahitajika: Subscription ya P2P + KYC Level 2',
                 style: TextStyle(fontSize: 11, color: Colors.grey.shade600)),
+            if (_project?['min_investment_amount'] != null)
+              Text('Chini ya kiasi: TZS ${formatMoney(_project!['min_investment_amount'])}',
+                  style: TextStyle(fontSize: 11, color: Colors.grey.shade600)),
+            if (_project?['max_investment_per_investor'] != null)
+              Text('Juuli kwa mwekezaji: TZS ${formatMoney(_project!['max_investment_per_investor'])}',
+                  style: TextStyle(fontSize: 11, color: Colors.grey.shade600)),
           ],
         ),
       ),

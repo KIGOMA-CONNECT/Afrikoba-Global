@@ -8,9 +8,9 @@ class StatusBadge extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final s = status.toUpperCase();
-    final ok = {'SUCCESS', 'VERIFIED_ACTIVE', 'ACTIVE', 'DISBURSED', 'PASSED', 'RELEASED', 'PAID'};
-    final pending = {'PENDING', 'WAITING_MEMBERS', 'PENDING_AUDIT', 'LOCKED', 'PENDING_APPROVAL'};
-    final bad = {'FAILED', 'REJECTED', 'SKIPPED', 'DEFAULTED', 'SUSPENDED', 'EXPIRED'};
+    final ok = {'SUCCESS', 'VERIFIED_ACTIVE', 'ACTIVE', 'DISBURSED', 'PASSED', 'RELEASED', 'PAID', 'FUNDED', 'COMPLETED'};
+    final pending = {'PENDING', 'WAITING_MEMBERS', 'PENDING_AUDIT', 'LOCKED', 'SUBMITTED', 'UNDER_REVIEW'};
+    final bad = {'FAILED', 'REJECTED', 'SKIPPED', 'DEFAULTED', 'SUSPENDED', 'EXPIRED', 'CLOSED'};
 
     Color bg;
     Color fg;

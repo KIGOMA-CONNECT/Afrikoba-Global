@@ -419,6 +419,41 @@ async function section(title) { console.log(`\n== ${title} ==`); }
   const rel = await api('POST', `/api/admin/milestones/${firstMilestone.id}/release`, adminToken, {});
   await expect(rel.status === 200, 'Escrow milestone inatolewa kwa mjasiriamali', `${rel.status}`);
 
+  const pfRes = await fetch(`${BASE}/api/p2p/portfolio`, { method: 'GET', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${roscaTokens[1].data.token}` } });
+  const pfText = await pfRes.text();
+  const pfData = JSON.parse(pfText);
+  await expect(pfRes.status === 200 && pfData.success === true && pfData.portfolio !== undefined, 'Investor portfolio inaina data', `${pfRes.status} ${pfText.substring(0, 200)}`);
+
+  // ------------------------------------------------------------
+  await section('7. USSD — menu, salio, portfolio');
+  // ------------------------------------------------------------
+
+  async function ussd(sessionId, phoneNumber, text) {
+    const headers = { 'Content-Type': 'application/json' };
+    const res = await fetch(BASE + '/api/ussd', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ sessionId, phoneNumber, text }),
+    });
+    const data = await res.text();
+    return { status: res.status, data };
+  }
+
+  const ussdPhone = '255713100001';
+  const ussdSession = 'USSD-TEST-' + nowSuffix();
+
+  const ussdMenu = await ussd(ussdSession, ussdPhone, '');
+  await expect(ussdMenu.status === 200 && /CON/.test(ussdMenu.data), 'USSD main menu (CON)', `${ussdMenu.status}`);
+
+  const ussdBalance = await ussd(ussdSession, ussdPhone, '1');
+  await expect(ussdBalance.data.includes('Salio la Pochi'), 'USSD balance check', ussdBalance.data);
+
+  const ussdP2P = await ussd('USSD-P2P-' + nowSuffix(), ussdPhone, '5');
+  await expect(ussdP2P.data.includes('Uwekezaji') || ussdP2P.data.includes('Miradi'), 'USSD P2P list', ussdP2P.data);
+
+  const ussdTransferBad = await ussd('USSD-TRF-' + nowSuffix(), ussdPhone, '2');
+  await expect(ussdTransferBad.status === 200, 'USSD transfer flow starts (enter phone)', `${ussdTransferBad.status}`);
+
   // ------------------------------------------------------------
   console.log('\n==============================');
   console.log(`RESULT: ${passed} PASSED, ${failed} FAILED`);
