@@ -60,10 +60,6 @@ async function addMember(actorUserId, groupId, userId, roleInGroup = 'MJUMBE') {
   return member.rows[0];
 }
 
-/**
- * Kuweka hisa/akiba (Share Contribution) - fedha inatoka wallet ya mwanachama
- * kwenda Group Wallet ya VICOBA
- */
 async function contributeShares(groupId, userId, amount, sharesCount) {
   const amountNum = parseFloat(amount);
   const client = await pool.connect();
@@ -121,12 +117,6 @@ async function contributeShares(groupId, userId, amount, sharesCount) {
   }
 }
 
-/**
- * Multi-Sig Loan Workflow:
- * 1) MWENYEKITI anapendekeza/ana-add ombi la mkopo kwa mwanachama
- * 2) KATIBU/MWEKAHAZINA anathibitisha kiasi (2nd Approver)
- * 3) Mfumo unapatia fedha moja kwa moja kwenye Wallet au MNO ya mwombaji
- */
 async function requestLoan(chairmanUserId, { groupId, applicantUserId, requestedAmount, interestRate, repaymentMonths }) {
   const roleRes = await pool.query(
     'SELECT role_in_group FROM vicoba_members WHERE group_id = $1 AND user_id = $2',
@@ -217,6 +207,9 @@ async function approveLoan(approverUserId, loanId, approvedAmount) {
 
     await client.query('COMMIT');
 
+    // Generate repayment schedule after commit
+    await generateLoanSchedule(loanId, loan.group_id, finalAmount, loan.interest_rate, loan.repayment_months);
+
     const msg = `Habari ${ctx.full_name}, mkopo wako wa ${formatMoney(finalAmount)} umetolewa kwenye wallet yako. Asante ${ctx.group_name}.`;
     await sendSMS(ctx.phone_number, msg);
     return { success: true, referenceId, amount: finalAmount, message: 'Mkopo umetolewa kwenye wallet ya mwombaji.' };
@@ -228,9 +221,6 @@ async function approveLoan(approverUserId, loanId, approvedAmount) {
   }
 }
 
-/**
- * Monthly Maintenance Fee (SaaS) inakatwa kutoka Group Wallet kwenda company_revenue
- */
 async function chargeMaintenanceFee(groupId) {
   const client = await pool.connect();
   try {
@@ -265,9 +255,6 @@ async function chargeMaintenanceFee(groupId) {
   }
 }
 
-/**
- * Jiunge na kikundi kwa msimbo wa kikundi (join code)
- */
 async function joinByCode(userId, joinCode) {
   const code = String(joinCode).trim().toUpperCase();
   const groupRes = await pool.query('SELECT * FROM vicoba_groups WHERE join_code = $1', [code]);
@@ -316,9 +303,6 @@ async function joinByCode(userId, joinCode) {
   return { success: true, group, member: member.rows[0], message: `Umejiunga na ${group.group_name}.` };
 }
 
-/**
- * Mwenyekiti/Katibu anatuma mialiko ya SMS kwa wanachama (wanaokubali kwa msimbo)
- */
 async function inviteMembers(inviterUserId, groupId, phoneNumbers) {
   const roleRes = await pool.query(
     'SELECT role_in_group FROM vicoba_members WHERE group_id = $1 AND user_id = $2',
@@ -397,6 +381,687 @@ async function listGroupLoans(groupId) {
   return result.rows;
 }
 
+// ==========================================
+// CONTRIBUTION SCHEDULES & PENALTIES
+// ==========================================
+
+async function createContributionSchedule(groupId, cycleNumber, dueDate) {
+  const result = await pool.query(
+    `INSERT INTO vicoba_contribution_schedules (group_id, cycle_number, due_date)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (group_id, cycle_number) DO NOTHING
+     RETURNING *`,
+    [groupId, cycleNumber, dueDate]
+  );
+  return result.rows[0] || null;
+}
+
+async function payContribution(groupId, userId, cycleNumber, amount, sharesCount) {
+  const amountNum = parseFloat(amount);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const scheduleRes = await client.query(
+      'SELECT * FROM vicoba_contribution_schedules WHERE group_id = $1 AND cycle_number = $2 FOR UPDATE',
+      [groupId, cycleNumber]
+    );
+    if (scheduleRes.rows.length === 0) {
+      throw Object.assign(new Error('Mzunguko huu haupo.'), { statusCode: 404 });
+    }
+    const schedule = scheduleRes.rows[0];
+
+    const alreadyPaid = await client.query(
+      'SELECT 1 FROM vicoba_member_contributions WHERE schedule_id = $1 AND user_id = $2',
+      [schedule.id, userId]
+    );
+    if (alreadyPaid.rows.length > 0) {
+      throw Object.assign(new Error('Umeshalipa mzunguku huu.'), { statusCode: 400 });
+    }
+
+    const today = new Date();
+    const dueDate = new Date(schedule.due_date);
+    const isLate = today > dueDate;
+
+    let penaltyAmount = 0;
+    let daysLate = 0;
+    if (isLate) {
+      const groupRes = await client.query(
+        'SELECT penalty_rate, max_penalty_percent, share_value FROM vicoba_groups WHERE id = $1',
+        [groupId]
+      );
+      const group = groupRes.rows[0];
+      daysLate = Math.floor((today - dueDate) / (1000 * 60 * 60 * 24));
+      const maxPenalty = (group.max_penalty_percent / 100) * group.share_value;
+      penaltyAmount = Math.min((group.penalty_rate / 100) * group.share_value * daysLate, maxPenalty);
+      penaltyAmount = Math.round(penaltyAmount * 100) / 100;
+    }
+
+    const userRes = await client.query(
+      'SELECT wallet_balance, phone_number, full_name FROM users WHERE id = $1 FOR UPDATE',
+      [userId]
+    );
+    const user = userRes.rows[0];
+    const totalDeduct = amountNum + penaltyAmount;
+    if (Number(user.wallet_balance) < totalDeduct) {
+      throw Object.assign(new Error(`Salio la wallet halitoshi. Unahitaji TSh ${formatMoney(totalDeduct)} (hisa + faini)`), { statusCode: 400 });
+    }
+
+    await client.query('UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2', [totalDeduct, userId]);
+    await client.query('UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance + $1 WHERE id = $2', [amountNum, groupId]);
+
+    const referenceId = generateReference('VC');
+    const tx = await client.query(
+      `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
+       VALUES ($1, $2, $3, 0, $3, 'SUCCESS', 'VICOBA_SHARE', $4)
+       RETURNING id`,
+      [referenceId, userId, totalDeduct, JSON.stringify({ group_id: groupId, cycle: cycleNumber, penalty: penaltyAmount })]
+    );
+
+    await client.query(
+      `INSERT INTO vicoba_member_contributions (schedule_id, group_id, user_id, amount, shares_count, is_late, penalty_paid)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [schedule.id, groupId, userId, amountNum, sharesCount || 1, isLate, penaltyAmount]
+    );
+
+    await client.query(
+      `UPDATE vicoba_members SET total_shares = total_shares + $1, contribution_balance = contribution_balance + $2
+       WHERE group_id = $3 AND user_id = $4`,
+      [sharesCount || 1, amountNum, groupId, userId]
+    );
+
+    if (penaltyAmount > 0) {
+      await client.query(
+        `INSERT INTO vicoba_penalties (group_id, user_id, penalty_type, amount, reason, related_schedule_id, status)
+         VALUES ($1, $2, 'LATE_CONTRIBUTION', $3, $4, $5, 'UNPAID')`,
+        [groupId, userId, penaltyAmount, `Late payment for cycle ${cycleNumber} (${daysLate} days late)`, schedule.id]
+      );
+      await client.query(
+        `UPDATE company_revenue SET updated_at = NOW() WHERE id = 1`
+      );
+    }
+
+    await client.query(
+      `INSERT INTO wallet_ledger (transaction_id, reference_id, from_user_id, to_user_id, amount, description)
+       VALUES ($1, $2, $3, NULL, $4, 'VICOBA Contribution')`,
+      [tx.rows[0].id, referenceId, userId, amountNum]
+    );
+
+    await client.query('COMMIT');
+
+    const msg = isLate
+      ? `Habari ${user.full_name}, umelipa mchango wa TSh ${formatMoney(amountNum)} + faini ya TSh ${formatMoney(penaltyAmount)} kwa kuchelewa siku ${daysLate}.`
+      : `Habari ${user.full_name}, umelipa mchango wa TSh ${formatMoney(amountNum)} kwa mzunguko ${cycleNumber}.`;
+    await sendSMS(user.phone_number, msg);
+
+    return { success: true, referenceId, isLate, penaltyAmount, message: isLate ? 'Mchango umelipwa na faini.' : 'Mchango umefanikiwa.' };
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function checkOverdueContributions(groupId) {
+  const today = new Date().toISOString().split('T')[0];
+  const result = await pool.query(
+    `UPDATE vicoba_contribution_schedules SET status = 'OVERDUE'
+     WHERE group_id = $1 AND status = 'PENDING' AND due_date < $2
+     RETURNING *`,
+    [groupId, today]
+  );
+  return result.rows;
+}
+
+async function getContributionSchedules(groupId) {
+  const result = await pool.query(
+    `SELECT cs.*,
+            (SELECT COUNT(*) FROM vicoba_member_contributions mc WHERE mc.schedule_id = cs.id) as paid_count,
+            (SELECT COALESCE(SUM(mc.amount), 0) FROM vicoba_member_contributions mc WHERE mc.schedule_id = cs.id) as total_collected
+     FROM vicoba_contribution_schedules cs
+     WHERE cs.group_id = $1
+     ORDER BY cs.cycle_number DESC`,
+    [groupId]
+  );
+  return result.rows;
+}
+
+// ==========================================
+// PENALTIES
+// ==========================================
+
+async function listPenalties(groupId, status = 'UNPAID') {
+  const result = await pool.query(
+    `SELECT p.*, u.full_name, u.phone_number
+     FROM vicoba_penalties p
+     JOIN users u ON u.id = p.user_id
+     WHERE p.group_id = $1 AND p.status = $2
+     ORDER BY p.created_at DESC`,
+    [groupId, status]
+  );
+  return result.rows;
+}
+
+async function payPenalty(userId, penaltyId) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const penaltyRes = await client.query(
+      'SELECT * FROM vicoba_penalties WHERE id = $1 AND user_id = $2 FOR UPDATE',
+      [penaltyId, userId]
+    );
+    if (penaltyRes.rows.length === 0) {
+      throw Object.assign(new Error('Faini haipo au si yako.'), { statusCode: 404 });
+    }
+    const penalty = penaltyRes.rows[0];
+    if (penalty.status === 'PAID') {
+      throw Object.assign(new Error('Faini tayari imelipwa.'), { statusCode: 400 });
+    }
+
+    const userRes = await client.query('SELECT wallet_balance, phone_number, full_name FROM users WHERE id = $1 FOR UPDATE', [userId]);
+    const user = userRes.rows[0];
+    if (Number(user.wallet_balance) < penalty.amount) {
+      throw Object.assign(new Error('Salio la wallet halitoshi kulipa faini.'), { statusCode: 400 });
+    }
+
+    await client.query('UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2', [penalty.amount, userId]);
+    await client.query("UPDATE vicoba_penalties SET status = 'PAID', paid_at = NOW() WHERE id = $1", [penaltyId]);
+
+    const referenceId = generateReference('VP');
+    await client.query(
+      `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
+       VALUES ($1, $2, $3, 0, $3, 'SUCCESS', 'VICOBA_PENALTY', $4)`,
+      [referenceId, userId, penalty.amount, JSON.stringify({ group_id: penalty.group_id, penalty_id: penaltyId })]
+    );
+
+    await client.query('COMMIT');
+
+    await sendSMS(user.phone_number, `Habari ${user.full_name}, umelipa faini ya TSh ${formatMoney(penalty.amount)}.`);
+    return { success: true, referenceId, message: 'Faini imelipwa.' };
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function waivePenalty(actorUserId, penaltyId) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const roleRes = await client.query(
+      `SELECT vm.role_in_group FROM vicoba_penalties p
+       JOIN vicoba_members vm ON vm.group_id = p.group_id AND vm.user_id = $1
+       WHERE p.id = $2`,
+      [actorUserId, penaltyId]
+    );
+    if (roleRes.rows.length === 0 || !['MWENYEKITI', 'MWEKAHAZINA'].includes(roleRes.rows[0].role_in_group)) {
+      throw Object.assign(new Error('Mwenyekiti au Mwekahazina pekee anaweza kuondoa faini.'), { statusCode: 403 });
+    }
+
+    const penaltyRes = await client.query('SELECT * FROM vicoba_penalties WHERE id = $1', [penaltyId]);
+    if (penaltyRes.rows.length === 0) throw Object.assign(new Error('Faini haipo.'), { statusCode: 404 });
+    if (penaltyRes.rows[0].status === 'PAID') {
+      throw Object.assign(new Error('Faini tayari imelipwa, haiwezi kuondolewa.'), { statusCode: 400 });
+    }
+
+    await client.query(
+      "UPDATE vicoba_penalties SET status = 'WAIVED', waived_by = $1 WHERE id = $2",
+      [actorUserId, penaltyId]
+    );
+
+    await client.query('COMMIT');
+    return { success: true, message: 'Faini imeondolewa.' };
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+// ==========================================
+// SOCIAL FUND (Msiba / Family Events)
+// ==========================================
+
+async function initSocialFund(groupId, monthlyContribution) {
+  const amount = parseFloat(monthlyContribution);
+  if (amount <= 0) throw Object.assign(new Error('Kiasi lazima iwe zaidi ya 0.'), { statusCode: 400 });
+
+  const existing = await pool.query('SELECT 1 FROM vicoba_social_fund WHERE group_id = $1', [groupId]);
+  if (existing.rows.length > 0) {
+    throw Object.assign(new Error('Familia ya kijamii tayari imeanzishwa kwenye kikundi hiki.'), { statusCode: 400 });
+  }
+
+  const result = await pool.query(
+    `INSERT INTO vicoba_social_fund (group_id, monthly_contribution)
+     VALUES ($1, $2) RETURNING *`,
+    [groupId, amount]
+  );
+  return result.rows[0];
+}
+
+async function contributeSocialFund(groupId, userId, month) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const fundRes = await client.query(
+      'SELECT * FROM vicoba_social_fund WHERE group_id = $1 FOR UPDATE',
+      [groupId]
+    );
+    if (fundRes.rows.length === 0) {
+      throw Object.assign(new Error('Familia ya kijamii haipo kwenye kikundi hiki.'), { statusCode: 404 });
+    }
+    const fund = fundRes.rows[0];
+
+    const existing = await client.query(
+      'SELECT 1 FROM vicoba_social_fund_contributions WHERE fund_id = $1 AND user_id = $2 AND month = $3',
+      [fund.id, userId, month]
+    );
+    if (existing.rows.length > 0) {
+      throw Object.assign(new Error('Umeshachanga kwa mwezi huu.'), { statusCode: 400 });
+    }
+
+    const userRes = await client.query('SELECT wallet_balance, phone_number, full_name FROM users WHERE id = $1 FOR UPDATE', [userId]);
+    const user = userRes.rows[0];
+    if (Number(user.wallet_balance) < fund.monthly_contribution) {
+      throw Object.assign(new Error('Salio la wallet halitoshi.'), { statusCode: 400 });
+    }
+
+    await client.query('UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2', [fund.monthly_contribution, userId]);
+    await client.query('UPDATE vicoba_social_fund SET total_balance = total_balance + $1, total_collected = total_collected + $1 WHERE id = $2', [fund.monthly_contribution, fund.id]);
+    await client.query(
+      `UPDATE vicoba_members SET social_fund_balance = social_fund_balance + $1 WHERE group_id = $2 AND user_id = $3`,
+      [fund.monthly_contribution, groupId, userId]
+    );
+
+    const referenceId = generateReference('SF');
+    await client.query(
+      `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
+       VALUES ($1, $2, $3, 0, $3, 'SUCCESS', 'VICOBA_SOCIAL_FUND', $4)`,
+      [referenceId, userId, fund.monthly_contribution, JSON.stringify({ group_id: groupId, month })]
+    );
+
+    await client.query(
+      `INSERT INTO vicoba_social_fund_contributions (group_id, fund_id, user_id, amount, month)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [groupId, fund.id, userId, fund.monthly_contribution, month]
+    );
+
+    await client.query('COMMIT');
+
+    await sendSMS(user.phone_number, `Habari ${user.full_name}, umechanga TSh ${formatMoney(fund.monthly_contribution)} kwenye mfuko wa kijamii kwa mwezi ${month}.`);
+    return { success: true, referenceId, message: 'Mchango wa kijamii umefanikiwa.' };
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function requestSocialFundDisbursement(groupId, userId, { reasonType, reasonDetail, requestedAmount }) {
+  const amount = parseFloat(requestedAmount);
+  const fundRes = await pool.query('SELECT * FROM vicoba_social_fund WHERE group_id = $1', [groupId]);
+  if (fundRes.rows.length === 0) {
+    throw Object.assign(new Error('Familia ya kijamii haipo.'), { statusCode: 404 });
+  }
+  const fund = fundRes.rows[0];
+  if (amount > fund.total_balance) {
+    throw Object.assign(new Error(`Salio la mfuko ni TSh ${formatMoney(fund.total_balance)} - haileti TSh ${formatMoney(amount)}.`), { statusCode: 400 });
+  }
+
+  const result = await pool.query(
+    `INSERT INTO vicoba_social_fund_requests (group_id, fund_id, requester_id, reason_type, reason_detail, requested_amount)
+     VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+    [groupId, fund.id, userId, reasonType, reasonDetail, amount]
+  );
+  return result.rows[0];
+}
+
+async function approveSocialFundDisbursement(actorUserId, requestId, approvedAmount) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const requestRes = await client.query(
+      `SELECT sfr.*, sf.total_balance
+       FROM vicoba_social_fund_requests sfr
+       JOIN vicoba_social_fund sf ON sf.id = sfr.fund_id
+       WHERE sfr.id = $1 FOR UPDATE`,
+      [requestId]
+    );
+    if (requestRes.rows.length === 0) throw Object.assign(new Error('Ombi halipo.'), { statusCode: 404 });
+    const request = requestRes.rows[0];
+    if (request.status !== 'PENDING') {
+      throw Object.assign(new Error('Ombi tayari limechakatwa.'), { statusCode: 400 });
+    }
+
+    const roleRes = await client.query(
+      'SELECT role_in_group FROM vicoba_members WHERE group_id = $1 AND user_id = $2',
+      [request.group_id, actorUserId]
+    );
+    if (roleRes.rows.length === 0 || !['MWENYEKITI', 'MWEKAHAZINA'].includes(roleRes.rows[0].role_in_group)) {
+      throw Object.assign(new Error('Mwenyekiti au Mwekahazina pekee anaweza kuthibitisha.'), { statusCode: 403 });
+    }
+
+    const finalAmount = approvedAmount || request.requested_amount;
+    if (finalAmount > request.requested_amount) {
+      throw Object.assign(new Error('Kiasi kilichoidhinishwa hakizidi kilichoombwa.'), { statusCode: 400 });
+    }
+    if (finalAmount > request.total_balance) {
+      throw Object.assign(new Error('Salio la mfuko halitoshi.'), { statusCode: 400 });
+    }
+
+    const requesterRes = await client.query('SELECT phone_number, full_name FROM users WHERE id = $1', [request.requester_id]);
+
+    await client.query(
+      `UPDATE vicoba_social_fund_requests SET approved_amount = $1, approved_by = $2, status = 'APPROVED', updated_at = NOW() WHERE id = $3`,
+      [finalAmount, actorUserId, requestId]
+    );
+    await client.query(
+      `UPDATE vicoba_social_fund SET total_balance = total_balance - $1, total_disbursed = total_disbursed + $1 WHERE id = $2`,
+      [finalAmount, request.fund_id]
+    );
+
+    await client.query('UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2', [finalAmount, request.requester_id]);
+
+    const referenceId = generateReference('SD');
+    await client.query(
+      `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
+       VALUES ($1, $2, $3, 0, $3, 'SUCCESS', 'VICOBA_SOCIAL_FUND_DISBURSEMENT', $4)`,
+      [referenceId, request.requester_id, finalAmount, JSON.stringify({ group_id: request.group_id, request_id: requestId, reason_type: request.reason_type })]
+    );
+
+    await client.query("UPDATE vicoba_social_fund_requests SET status = 'DISBURSED', disbursement_reference = $1 WHERE id = $2", [referenceId, requestId]);
+
+    await client.query('COMMIT');
+
+    if (requesterRes.rows.length > 0) {
+      const reasonMsg = request.reason_type === 'DEATH' ? 'msiba' : request.reason_type === 'WEDDING' ? 'harusi' : 'tukio la kifamilia';
+      await sendSMS(
+        requesterRes.rows[0].phone_number,
+        `Habari ${requesterRes.rows[0].full_name}, ombi lako la TSh ${formatMoney(finalAmount)} kwa ajili ya ${reasonMsg} limekubalika. Fedha zimewekwa kwenye wallet yako.`
+      );
+    }
+
+    return { success: true, referenceId, amount: finalAmount, message: 'Ombi limekubalika na fedha zimetolewa.' };
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function rejectSocialFundDisbursement(actorUserId, requestId) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const requestRes = await client.query(
+      'SELECT * FROM vicoba_social_fund_requests WHERE id = $1 FOR UPDATE',
+      [requestId]
+    );
+    if (requestRes.rows.length === 0) throw Object.assign(new Error('Ombi halipo.'), { statusCode: 404 });
+    const request = requestRes.rows[0];
+    if (request.status !== 'PENDING') {
+      throw Object.assign(new Error('Ombi tayari limechakatwa.'), { statusCode: 400 });
+    }
+
+    const roleRes = await client.query(
+      'SELECT role_in_group FROM vicoba_members WHERE group_id = $1 AND user_id = $2',
+      [request.group_id, actorUserId]
+    );
+    if (roleRes.rows.length === 0 || !['MWENYEKITI', 'MWEKAHAZINA'].includes(roleRes.rows[0].role_in_group)) {
+      throw Object.assign(new Error('Mwenyekiti au Mwekahazina pekee anaweza kukataa.'), { statusCode: 403 });
+    }
+
+    await client.query(
+      "UPDATE vicoba_social_fund_requests SET status = 'REJECTED', approved_by = $1, updated_at = NOW() WHERE id = $2",
+      [actorUserId, requestId]
+    );
+
+    await client.query('COMMIT');
+    return { success: true, message: 'Ombi limekataliwa.' };
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function getSocialFundDetails(groupId) {
+  const fund = await pool.query('SELECT * FROM vicoba_social_fund WHERE group_id = $1', [groupId]);
+  if (fund.rows.length === 0) return null;
+
+  const contributions = await pool.query(
+    `SELECT sfc.*, u.full_name
+     FROM vicoba_social_fund_contributions sfc
+     JOIN users u ON u.id = sfc.user_id
+     WHERE sfc.group_id = $1
+     ORDER BY sfc.paid_at DESC`,
+    [groupId]
+  );
+
+  const requests = await pool.query(
+    `SELECT sfr.*, u.full_name as requester_name
+     FROM vicoba_social_fund_requests sfr
+     JOIN users u ON u.id = sfr.requester_id
+     WHERE sfr.group_id = $1
+     ORDER BY sfr.created_at DESC`,
+    [groupId]
+  );
+
+  return {
+    fund: fund.rows[0],
+    contributions: contributions.rows,
+    requests: requests.rows,
+  };
+}
+
+// ==========================================
+// LOAN REPAYMENT
+// ==========================================
+
+async function generateLoanSchedule(loanId, groupId, amount, interestRate, repaymentMonths) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const totalWithInterest = amount * (1 + (interestRate / 100));
+    const monthlyPrincipal = amount / repaymentMonths;
+    const monthlyInterest = (amount * interestRate / 100) / repaymentMonths;
+    const monthlyTotal = monthlyPrincipal + monthlyInterest;
+
+    const today = new Date();
+    for (let i = 1; i <= repaymentMonths; i++) {
+      const dueDate = new Date(today);
+      dueDate.setMonth(dueDate.getMonth() + i);
+
+      await client.query(
+        `INSERT INTO vicoba_loan_schedules (loan_id, group_id, installment_number, due_date, principal_amount, interest_amount, total_amount)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [loanId, groupId, i, dueDate.toISOString().split('T')[0], monthlyPrincipal.toFixed(2), monthlyInterest.toFixed(2), monthlyTotal.toFixed(2)]
+      );
+    }
+
+    const firstDue = new Date(today);
+    firstDue.setMonth(firstDue.getMonth() + 1);
+    await client.query(
+      `UPDATE vicoba_loan_requests SET outstanding_balance = $1, next_due_date = $2 WHERE id = $3`,
+      [totalWithInterest.toFixed(2), firstDue.toISOString().split('T')[0], loanId]
+    );
+
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function repayLoan(userId, loanId, amount, note) {
+  const amountNum = parseFloat(amount);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const loanRes = await client.query(
+      'SELECT * FROM vicoba_loan_requests WHERE id = $1 AND applicant_user_id = $2 FOR UPDATE',
+      [loanId, userId]
+    );
+    if (loanRes.rows.length === 0) {
+      throw Object.assign(new Error('Mkopo haupo au si wako.'), { statusCode: 404 });
+    }
+    const loan = loanRes.rows[0];
+    if (loan.status !== 'DISBURSED') {
+      throw Object.assign(new Error('Mkopo haujaondolewa au tayari umelipwa.'), { statusCode: 400 });
+    }
+
+    const userRes = await client.query('SELECT wallet_balance, phone_number, full_name FROM users WHERE id = $1 FOR UPDATE', [userId]);
+    const user = userRes.rows[0];
+    if (Number(user.wallet_balance) < amountNum) {
+      throw Object.assign(new Error('Salio la wallet halitoshi.'), { statusCode: 400 });
+    }
+
+    // Find next pending installment
+    const scheduleRes = await client.query(
+      "SELECT * FROM vicoba_loan_schedules WHERE loan_id = $1 AND status IN ('PENDING', 'LATE', 'OVERDUE') ORDER BY installment_number ASC LIMIT 1 FOR UPDATE",
+      [loanId]
+    );
+    if (scheduleRes.rows.length === 0) {
+      throw Object.assign(new Error('Hakuna deni la kulipa.'), { statusCode: 400 });
+    }
+    const schedule = scheduleRes.rows[0];
+
+    // Check for late repayment penalty
+    const today = new Date();
+    const dueDate = new Date(schedule.due_date);
+    let penaltyAmount = 0;
+    let isLate = today > dueDate;
+    if (isLate) {
+      const groupRes = await client.query(
+        'SELECT penalty_rate, max_penalty_percent, share_value FROM vicoba_groups WHERE id = $1',
+        [loan.group_id]
+      );
+      const group = groupRes.rows[0];
+      const daysLate = Math.floor((today - dueDate) / (1000 * 60 * 60 * 24));
+      const maxPenalty = (group.max_penalty_percent / 100) * schedule.total_amount;
+      penaltyAmount = Math.min((group.penalty_rate / 100) * schedule.total_amount * daysLate, maxPenalty);
+      penaltyAmount = Math.round(penaltyAmount * 100) / 100;
+    }
+
+    const totalDeduct = amountNum + penaltyAmount;
+    if (Number(user.wallet_balance) < totalDeduct) {
+      throw Object.assign(new Error(`Salio la wallet halitoshi. Unahitaji TSh ${formatMoney(totalDeduct)} (deni + faini)`), { statusCode: 400 });
+    }
+
+    await client.query('UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2', [totalDeduct, userId]);
+    await client.query('UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance + $1 WHERE id = $2', [amountNum, loan.group_id]);
+
+    // Update schedule
+    const newPaid = Number(schedule.paid_amount) + amountNum;
+    const scheduleStatus = newPaid >= Number(schedule.total_amount) ? 'PAID' : (isLate ? 'LATE' : 'PENDING');
+    if (scheduleStatus === 'PAID') {
+      await client.query(
+        'UPDATE vicoba_loan_schedules SET paid_amount = $1, status = $2, paid_at = NOW() WHERE id = $3',
+        [newPaid, scheduleStatus, schedule.id]
+      );
+    } else {
+      await client.query(
+        'UPDATE vicoba_loan_schedules SET paid_amount = $1, status = $2 WHERE id = $3',
+        [newPaid, scheduleStatus, schedule.id]
+      );
+    }
+
+    // Update loan totals
+    const newTotalRepaid = Number(loan.total_repaid) + amountNum;
+    const newOutstanding = Number(loan.outstanding_balance) - amountNum;
+    await client.query(
+      'UPDATE vicoba_loan_requests SET total_repaid = $1, outstanding_balance = $2 WHERE id = $3',
+      [newTotalRepaid, Math.max(0, newOutstanding), loanId]
+    );
+
+    // Check if loan is fully repaid
+    if (newOutstanding <= 0) {
+      await client.query("UPDATE vicoba_loan_requests SET status = 'REPAID' WHERE id = $1", [loanId]);
+    }
+
+    // Record penalty if late
+    if (penaltyAmount > 0) {
+      await client.query(
+        `INSERT INTO vicoba_penalties (group_id, user_id, penalty_type, amount, reason, related_loan_id, status)
+         VALUES ($1, $2, 'LATE_LOAN_REPAYMENT', $3, $4, $5, 'UNPAID')`,
+        [loan.group_id, userId, penaltyAmount, `Late repayment for installment ${schedule.installment_number}`, loanId]
+      );
+    }
+
+    const referenceId = generateReference('LR');
+    await client.query(
+      `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
+       VALUES ($1, $2, $3, 0, $3, 'SUCCESS', 'VICOBA_LOAN_REPAYMENT', $4)`,
+      [referenceId, userId, totalDeduct, JSON.stringify({ group_id: loan.group_id, loan_id: loanId, penalty: penaltyAmount })]
+    );
+
+    await client.query(
+      `INSERT INTO vicoba_loan_repayments (loan_id, schedule_id, user_id, amount, reference_id, note)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [loanId, schedule.id, userId, amountNum, referenceId, note || null]
+    );
+
+    await client.query('COMMIT');
+
+    const msg = isLate
+      ? `Habari ${user.full_name}, umelipa deni la TSh ${formatMoney(amountNum)} + faini ya TSh ${formatMoney(penaltyAmount)}. Salio inayobaki: TSh ${formatMoney(Math.max(0, newOutstanding))}.`
+      : `Habari ${user.full_name}, umelipa deni la TSh ${formatMoney(amountNum)}. Salio inayobaki: TSh ${formatMoney(Math.max(0, newOutstanding))}.`;
+    await sendSMS(user.phone_number, msg);
+
+    return {
+      success: true, referenceId, isLate, penaltyAmount,
+      remainingBalance: Math.max(0, newOutstanding),
+      fullyRepaid: newOutstanding <= 0,
+      message: newOutstanding <= 0 ? 'Mkopo umelipwa kikamilifu!' : 'Malipo yamepokewa.',
+    };
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function getLoanSchedule(loanId) {
+  const result = await pool.query(
+    `SELECT ls.*, lr.applicant_user_id, u.full_name
+     FROM vicoba_loan_schedules ls
+     JOIN vicoba_loan_requests lr ON lr.id = ls.loan_id
+     JOIN users u ON u.id = lr.applicant_user_id
+     WHERE ls.loan_id = $1
+     ORDER BY ls.installment_number ASC`,
+    [loanId]
+  );
+  return result.rows;
+}
+
+async function getLoanRepayments(loanId) {
+  const result = await pool.query(
+    `SELECT lr.*, u.full_name
+     FROM vicoba_loan_repayments lr
+     JOIN users u ON u.id = lr.user_id
+     WHERE lr.loan_id = $1
+     ORDER BY lr.created_at DESC`,
+    [loanId]
+  );
+  return result.rows;
+}
+
 module.exports = {
   createGroup,
   addMember,
@@ -409,4 +1074,21 @@ module.exports = {
   getGroupDetails,
   listUserGroups,
   listGroupLoans,
+  createContributionSchedule,
+  payContribution,
+  checkOverdueContributions,
+  getContributionSchedules,
+  listPenalties,
+  payPenalty,
+  waivePenalty,
+  initSocialFund,
+  contributeSocialFund,
+  requestSocialFundDisbursement,
+  approveSocialFundDisbursement,
+  rejectSocialFundDisbursement,
+  getSocialFundDetails,
+  generateLoanSchedule,
+  repayLoan,
+  getLoanSchedule,
+  getLoanRepayments,
 };

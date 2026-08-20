@@ -298,8 +298,13 @@ async function section(title) { console.log(`\n== ${title} ==`); }
   const memberPhones = [];
   const roscaTokens = [];
   for (let i = 0; i < 3; i++) {
+    if (i > 0) await new Promise(r => setTimeout(r, 1500)); // OTP cooldown
     const p = '255728' + (i + 1) + nowSuffix();
     const reg = await register(p, `Rosca Member ${i + 1}`);
+    if (!reg.data || !reg.data.user) {
+      fail(`ROSCA member ${i + 1} registration failed`, JSON.stringify(reg.data));
+      continue;
+    }
     await upgradeKyc(reg.data.token, '1988' + nowSuffix() + i);
     await subscribe(reg.data.token, 'ROSCA');
     await subscribe(reg.data.token, 'P2P');
@@ -453,6 +458,159 @@ async function section(title) { console.log(`\n== ${title} ==`); }
 
   const ussdTransferBad = await ussd('USSD-TRF-' + nowSuffix(), ussdPhone, '2');
   await expect(ussdTransferBad.status === 200, 'USSD transfer flow starts (enter phone)', `${ussdTransferBad.status}`);
+
+  // ============================================================
+  // 8. VICOBA EXTENSIONS — Social Fund, Penalties, Loan Repayment
+  // ============================================================
+  console.log('\n== 8. VICOBA EXTENSIONS — social fund, penalties, loan repayment ==');
+
+  // regD = Neema (MWENYEKITI), regE = Baraka (MJUMBE)
+  // Promote Baraka (regE) to MWEKAHAZINA so they can approve loans
+  const promoteRes = await api('POST', `/api/vicoba/groups/${groupId}/members`, regD.data.token, {
+    userId: regE.data.user.id,
+    roleInGroup: 'MWEKAHAZINA',
+  });
+  // Already a member, so use addMember which does ON CONFLICT DO NOTHING
+  // Need to manually update role since addMember does nothing on conflict
+  const client = await pool.connect();
+  await client.query("UPDATE vicoba_members SET role_in_group = 'MWEKAHAZINA' WHERE group_id = $1 AND user_id = $2", [groupId, regE.data.user.id]);
+  client.release();
+
+  const gId = groupId;
+
+  // Fund wallets for testing
+  await fundWallet(regD.data.user.id, 500000); // Neema (chairman)
+  await fundWallet(regE.data.user.id, 500000); // Baraka (treasurer)
+
+  // --- Contribution Schedules ---
+  const sched = await api('POST', `/api/vicoba/groups/${gId}/schedules`, regD.data.token, {
+    cycleNumber: 1,
+    dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+  });
+  await expect(sched.status === 201 && sched.data.success, 'Contribution schedule created', JSON.stringify(sched.data));
+
+  const schedList = await api('GET', `/api/vicoba/groups/${gId}/schedules`, regD.data.token);
+  await expect(schedList.status === 200 && schedList.data.schedules.length >= 1, 'Contribution schedules listed');
+
+  // Pay contribution on time (future due date = not late)
+  const payContrib = await api('POST', `/api/vicoba/groups/${gId}/schedules/1/pay`, regE.data.token, {
+    amount: 50000,
+    sharesCount: 1,
+  });
+  await expect(payContrib.status === 200 && payContrib.data.success && payContrib.data.isLate === false, 'On-time contribution (no penalty)', JSON.stringify(payContrib.data));
+
+  // Duplicate payment blocked
+  const dupPay = await api('POST', `/api/vicoba/groups/${gId}/schedules/1/pay`, regE.data.token, {
+    amount: 50000,
+  });
+  await expect(dupPay.status === 400, 'Duplicate contribution blocked', JSON.stringify(dupPay.data));
+
+  // --- Late Contribution (with penalty) ---
+  const pastDate = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+  const lateSched = await api('POST', `/api/vicoba/groups/${gId}/schedules`, regD.data.token, {
+    cycleNumber: 2,
+    dueDate: pastDate,
+  });
+  await expect(lateSched.status === 201 || lateSched.status === 200, 'Late contribution schedule created');
+
+  const latePay = await api('POST', `/api/vicoba/groups/${gId}/schedules/2/pay`, regD.data.token, {
+    amount: 50000,
+    sharesCount: 1,
+  });
+  await expect(latePay.status === 200 && latePay.data.isLate === true && latePay.data.penaltyAmount > 0, 'Late contribution applies penalty', JSON.stringify({ isLate: latePay.data.isLate, penalty: latePay.data.penaltyAmount }));
+
+  // List penalties
+  const penalties = await api('GET', `/api/vicoba/groups/${gId}/penalties`, regD.data.token);
+  await expect(penalties.status === 200 && penalties.data.penalties.length >= 1, 'Penalties listed for group');
+  const penaltyId = penalties.data.penalties[0].id;
+
+  // Pay penalty
+  const payPenalty = await api('POST', `/api/vicoba/penalties/${penaltyId}/pay`, regD.data.token);
+  await expect(payPenalty.status === 200 && payPenalty.data.success, 'Penalty paid successfully', JSON.stringify(payPenalty.data));
+
+  // --- Social Fund ---
+  const initSF = await api('POST', `/api/vicoba/groups/${gId}/social-fund`, regD.data.token, {
+    monthlyContribution: 10000,
+  });
+  await expect(initSF.status === 201 && initSF.data.fund.monthly_contribution == 10000, 'Social fund initialized (TSh 10,000/month)', JSON.stringify(initSF.data));
+
+  // Duplicate init blocked
+  const dupSF = await api('POST', `/api/vicoba/groups/${gId}/social-fund`, regD.data.token, {
+    monthlyContribution: 10000,
+  });
+  await expect(dupSF.status === 400, 'Duplicate social fund init blocked');
+
+  // Contribute to social fund
+  const sfContrib = await api('POST', `/api/vicoba/groups/${gId}/social-fund/contribute`, regD.data.token, {
+    month: '2026-08',
+  });
+  await expect(sfContrib.status === 200 && sfContrib.data.success, 'Social fund contribution (Neema, Aug 2026)', JSON.stringify(sfContrib.data));
+
+  const sfContrib2 = await api('POST', `/api/vicoba/groups/${gId}/social-fund/contribute`, regE.data.token, {
+    month: '2026-08',
+  });
+  await expect(sfContrib2.status === 200 && sfContrib2.data.success, 'Social fund contribution (Baraka, Aug 2026)');
+
+  // Duplicate monthly contribution blocked
+  const dupSFContrib = await api('POST', `/api/vicoba/groups/${gId}/social-fund/contribute`, regD.data.token, {
+    month: '2026-08',
+  });
+  await expect(dupSFContrib.status === 400, 'Duplicate social fund monthly contribution blocked');
+
+  // Request social fund disbursement (family emergency - death)
+  const sfRequest = await api('POST', `/api/vicoba/groups/${gId}/social-fund/request`, regE.data.token, {
+    reasonType: 'DEATH',
+    reasonDetail: 'Mwanamke wetu alifariki juzi, tunahitaji msaada wa mazishi.',
+    requestedAmount: 15000,
+  });
+  await expect(sfRequest.status === 201 && sfRequest.data.request.status === 'PENDING', 'Social fund request submitted (DEATH)', JSON.stringify(sfRequest.data));
+
+  const reqId = sfRequest.data.request.id;
+
+  // Approve social fund disbursement (MWENYEKITI)
+  const sfApprove = await api('POST', `/api/vicoba/social-fund-requests/${reqId}/approve`, regD.data.token, {
+    approvedAmount: 15000,
+  });
+  await expect(sfApprove.status === 200 && sfApprove.data.success, 'Social fund disbursement approved', JSON.stringify(sfApprove.data));
+
+  // Get social fund details
+  const sfDetails = await api('GET', `/api/vicoba/groups/${gId}/social-fund`, regD.data.token);
+  await expect(sfDetails.status === 200 && sfDetails.data.socialFund !== null, 'Social fund details returned');
+  await expect(sfDetails.data.socialFund.contributions.length >= 2, 'Social fund has 2+ contributions');
+  await expect(sfDetails.data.socialFund.requests.length >= 1, 'Social fund has 1+ disbursement request');
+
+  // --- Loan Repayment ---
+  // Approve existing loan from section 4 (MWEKAHAZINA = regE)
+  const loans = await api('GET', `/api/vicoba/groups/${gId}/loans`, regD.data.token);
+  if (loans.data.loans && loans.data.loans.length > 0) {
+    const loan = loans.data.loans.find(l => l.status === 'PENDING');
+    if (loan) {
+      const approveLoan = await api('POST', `/api/vicoba/loans/${loan.id}/approve`, regE.data.token, {
+        approvedAmount: 30000,
+      });
+      await expect(approveLoan.status === 200 && approveLoan.data.success, 'Loan approved (multi-sig)', JSON.stringify(approveLoan.data));
+
+      // Check repayment schedule was generated
+      const schedule = await api('GET', `/api/vicoba/loans/${loan.id}/schedule`, regD.data.token);
+      await expect(schedule.status === 200 && schedule.data.schedule.length >= 1, 'Loan repayment schedule generated', `installments: ${schedule.data.schedule.length}`);
+
+      // Repay first installment (loan applicant = regE)
+      const firstInstallment = schedule.data.schedule[0];
+      const repay = await api('POST', `/api/vicoba/loans/${loan.id}/repay`, regE.data.token, {
+        amount: firstInstallment.total_amount,
+        note: 'Malipo ya kwanza',
+      });
+      await expect(repay.status === 200 && repay.data.success, 'Loan repayment recorded', JSON.stringify({ remaining: repay.data.remainingBalance, fullyRepaid: repay.data.fullyRepaid }));
+
+      // Repayment history
+      const repayHistory = await api('GET', `/api/vicoba/loans/${loan.id}/repayments`, regD.data.token);
+      await expect(repayHistory.status === 200 && repayHistory.data.repayments.length >= 1, 'Loan repayment history listed');
+    } else {
+      ok('No pending loan to approve (skipped)');
+    }
+  } else {
+    ok('No loans in group (skipped)');
+  }
 
   // ------------------------------------------------------------
   console.log('\n==============================');
