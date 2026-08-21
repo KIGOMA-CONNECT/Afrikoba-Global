@@ -3,6 +3,7 @@ const p2pService = require('../services/p2pService');
 const { authRequired, requireKycLevel, requireRoles } = require('../middleware/auth');
 const { requireService } = require('../middleware/serviceGuard');
 const { validate } = require('../middleware/validate');
+const { parsePagination } = require('../utils/pagination');
 const schemas = require('../validations/schemas');
 
 const router = express.Router();
@@ -24,8 +25,9 @@ router.post('/projects', requireService('P2P'), requireRoles('ISSUER', 'ADMIN'),
 router.get('/projects', async (req, res, next) => {
   try {
     const isAdmin = req.user.role === 'ADMIN';
-    const projects = await p2pService.listProjects(req.query.status, req.query.sector, isAdmin);
-    return res.json({ success: true, projects });
+    const pagination = parsePagination(req.query);
+    const { data: projects, pagination: meta } = await p2pService.listProjects(req.query.status, req.query.sector, isAdmin, pagination);
+    return res.json({ success: true, projects, pagination: meta });
   } catch (error) {
     next(error);
   }

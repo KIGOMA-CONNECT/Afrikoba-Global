@@ -1,4 +1,5 @@
 const pool = require('../config/db');
+const { parsePagination, paginationMeta } = require('../utils/pagination');
 const logger = require('../utils/logger');
 
 /**
@@ -63,7 +64,7 @@ async function logAudit(entry) {
 /**
  * Query audit trail with filters.
  */
-async function queryAudit({ userId, entityType, entityId, eventType, referenceId, limit = 100, offset = 0 }) {
+async function queryAudit({ userId, entityType, entityId, eventType, referenceId, page = 1, limit = 20 }) {
   const conditions = [];
   const params = [];
   let idx = 1;
@@ -75,13 +76,21 @@ async function queryAudit({ userId, entityType, entityId, eventType, referenceId
   if (referenceId) { conditions.push(`reference_id = $${idx++}`); params.push(referenceId); }
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-  params.push(limit, offset);
+
+  const countRes = await pool.query(
+    `SELECT COUNT(*)::int AS total FROM audit_log ${where}`,
+    params
+  );
+  const total = countRes.rows[0].total;
+
+  const { limit: lim, offset } = parsePagination({ page, limit });
+  params.push(lim, offset);
 
   const result = await pool.query(
     `SELECT * FROM audit_log ${where} ORDER BY created_at DESC LIMIT $${idx++} OFFSET $${idx++}`,
     params
   );
-  return result.rows;
+  return { data: result.rows, pagination: paginationMeta(total, Number(page), lim) };
 }
 
 module.exports = { logAudit, queryAudit };

@@ -4,6 +4,7 @@ const { generateReference, formatMoney } = require('../utils/helpers');
 const { sendSMS } = require('./smsService');
 const { generateInvestmentContract } = require('./contractService');
 const { logAudit } = require('./auditService');
+const { parsePagination, paginationMeta } = require('../utils/pagination');
 const logger = require('../utils/logger');
 
 async function createProject(ownerUserId, projectData) {
@@ -434,7 +435,7 @@ async function releaseMilestone(adminUserId, milestoneId) {
 /**
  * Orodha ya miradi inayofunguliwa kwa wawekezaji
  */
-async function listProjects(status, sector, forAdmin) {
+async function listProjects(status, sector, forAdmin, pagination) {
   let whereClause = '';
   const params = [status || null, sector || null];
 
@@ -446,15 +447,23 @@ async function listProjects(status, sector, forAdmin) {
                     AND ($1::varchar IS NULL OR p.sector = $2)`;
   }
 
+  const countRes = await pool.query(
+    `SELECT COUNT(*)::int AS total FROM investment_projects p ${whereClause}`,
+    params
+  );
+  const total = countRes.rows[0].total;
+
+  const { page, limit, offset } = pagination || { page: 1, limit: 100, offset: 0 };
   const result = await pool.query(
     `SELECT p.*,
             (SELECT COUNT(*) FROM investments i WHERE i.project_id = p.id)::int AS investor_count
      FROM investment_projects p
      ${whereClause}
-     ORDER BY p.created_at DESC`,
-    params
+     ORDER BY p.created_at DESC
+     LIMIT $3 OFFSET $4`,
+    [...params, limit, offset]
   );
-  return result.rows;
+  return { data: result.rows, pagination: paginationMeta(total, page, limit) };
 }
 
 async function getProjectDetails(projectId) {
