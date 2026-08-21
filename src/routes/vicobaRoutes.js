@@ -2,6 +2,8 @@ const express = require('express');
 const vicobaService = require('../services/vicobaService');
 const { authRequired } = require('../middleware/auth');
 const { requireService } = require('../middleware/serviceGuard');
+const { validate } = require('../middleware/validate');
+const schemas = require('../validations/schemas');
 
 const router = express.Router();
 
@@ -9,12 +11,9 @@ router.use(authRequired);
 router.use(requireService('VICOBA'));
 
 // Unda kikundi cha VICOBA
-router.post('/groups', async (req, res, next) => {
+router.post('/groups', validate(schemas.vicoba.createGroup), async (req, res, next) => {
   try {
     const { groupName, cycleType, shareValue, monthlyMaintenanceFee } = req.body;
-    if (!groupName || !cycleType || !shareValue) {
-      return res.status(400).json({ success: false, message: 'Jaza groupName, cycleType na shareValue.' });
-    }
     const group = await vicobaService.createGroup(req.user.id, {
       groupName,
       cycleType,
@@ -28,10 +27,9 @@ router.post('/groups', async (req, res, next) => {
 });
 
 // Jiunge na kikundi kwa msimbo wa kujiunga (join code)
-router.post('/groups/join', async (req, res, next) => {
+router.post('/groups/join', validate(schemas.vicoba.join), async (req, res, next) => {
   try {
     const { joinCode } = req.body;
-    if (!joinCode) return res.status(400).json({ success: false, message: 'Msimbo wa kujiunga unahitajika.' });
     const result = await vicobaService.joinByCode(req.user.id, joinCode);
     return res.json(result);
   } catch (error) {
@@ -40,12 +38,9 @@ router.post('/groups/join', async (req, res, next) => {
 });
 
 // Mwenyekiti/Katibu: tuma mialiko ya SMS kwa wanachama
-router.post('/groups/:groupId/invite', async (req, res, next) => {
+router.post('/groups/:groupId/invite', validate(schemas.vicoba.invite), async (req, res, next) => {
   try {
     const { phoneNumbers } = req.body;
-    if (!Array.isArray(phoneNumbers) || phoneNumbers.length === 0) {
-      return res.status(400).json({ success: false, message: 'Taja phoneNumbers (list ya namba za simu).' });
-    }
     const result = await vicobaService.inviteMembers(
       req.user.id,
       parseInt(req.params.groupId, 10),
@@ -147,12 +142,9 @@ router.get('/groups/:groupId', async (req, res, next) => {
 // ==========================================
 
 // Create contribution schedule (MWENYEKITI/MWEKAHAZINA/KATIBU)
-router.post('/groups/:groupId/schedules', async (req, res, next) => {
+router.post('/groups/:groupId/schedules', validate(schemas.vicoba.createSchedule), async (req, res, next) => {
   try {
     const { cycleNumber, dueDate } = req.body;
-    if (!cycleNumber || !dueDate) {
-      return res.status(400).json({ success: false, message: 'Jaza cycleNumber na dueDate.' });
-    }
     const schedule = await vicobaService.createContributionSchedule(
       parseInt(req.params.groupId, 10),
       cycleNumber,
@@ -165,12 +157,9 @@ router.post('/groups/:groupId/schedules', async (req, res, next) => {
 });
 
 // Pay contribution for a cycle (checks if late, applies penalty)
-router.post('/groups/:groupId/schedules/:cycleNumber/pay', async (req, res, next) => {
+router.post('/groups/:groupId/schedules/:cycleNumber/pay', validate(schemas.vicoba.payContribution), async (req, res, next) => {
   try {
     const { amount, sharesCount } = req.body;
-    if (!amount) {
-      return res.status(400).json({ success: false, message: 'Jaza amount.' });
-    }
     const result = await vicobaService.payContribution(
       parseInt(req.params.groupId, 10),
       req.user.id,
@@ -234,12 +223,9 @@ router.post('/penalties/:penaltyId/waive', async (req, res, next) => {
 // ==========================================
 
 // Initialize social fund for a group (MWENYEKITI)
-router.post('/groups/:groupId/social-fund', async (req, res, next) => {
+router.post('/groups/:groupId/social-fund', validate(schemas.vicoba.socialFund), async (req, res, next) => {
   try {
     const { monthlyContribution } = req.body;
-    if (!monthlyContribution) {
-      return res.status(400).json({ success: false, message: 'Jaza monthlyContribution.' });
-    }
     const fund = await vicobaService.initSocialFund(
       parseInt(req.params.groupId, 10),
       monthlyContribution
@@ -251,12 +237,9 @@ router.post('/groups/:groupId/social-fund', async (req, res, next) => {
 });
 
 // Contribute to social fund
-router.post('/groups/:groupId/social-fund/contribute', async (req, res, next) => {
+router.post('/groups/:groupId/social-fund/contribute', validate(schemas.vicoba.socialFundContribute), async (req, res, next) => {
   try {
     const { month } = req.body;
-    if (!month) {
-      return res.status(400).json({ success: false, message: 'Jaza month (YYYY-MM).' });
-    }
     const result = await vicobaService.contributeSocialFund(
       parseInt(req.params.groupId, 10),
       req.user.id,
@@ -269,12 +252,9 @@ router.post('/groups/:groupId/social-fund/contribute', async (req, res, next) =>
 });
 
 // Request disbursement from social fund
-router.post('/groups/:groupId/social-fund/request', async (req, res, next) => {
+router.post('/groups/:groupId/social-fund/request', validate(schemas.vicoba.socialFundRequest), async (req, res, next) => {
   try {
     const { reasonType, reasonDetail, requestedAmount } = req.body;
-    if (!reasonType || !reasonDetail || !requestedAmount) {
-      return res.status(400).json({ success: false, message: 'Jaza reasonType, reasonDetail na requestedAmount.' });
-    }
     const result = await vicobaService.requestSocialFundDisbursement(
       parseInt(req.params.groupId, 10),
       req.user.id,
@@ -329,12 +309,9 @@ router.get('/groups/:groupId/social-fund', async (req, res, next) => {
 // ==========================================
 
 // Repay loan installment
-router.post('/loans/:loanId/repay', async (req, res, next) => {
+router.post('/loans/:loanId/repay', validate(schemas.vicoba.repayLoan), async (req, res, next) => {
   try {
     const { amount, note } = req.body;
-    if (!amount) {
-      return res.status(400).json({ success: false, message: 'Jaza amount.' });
-    }
     const result = await vicobaService.repayLoan(req.user.id, parseInt(req.params.loanId, 10), amount, note);
     return res.json(result);
   } catch (error) {

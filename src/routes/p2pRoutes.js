@@ -2,6 +2,8 @@ const express = require('express');
 const p2pService = require('../services/p2pService');
 const { authRequired, requireKycLevel, requireRoles } = require('../middleware/auth');
 const { requireService } = require('../middleware/serviceGuard');
+const { validate } = require('../middleware/validate');
+const schemas = require('../validations/schemas');
 
 const router = express.Router();
 
@@ -9,7 +11,7 @@ router.use(authRequired);
 
 // ISSUER: unda mradi - inahitaji kujiunga na huduma ya P2P
 // TAINFUND: inahitaji business_plan + team_info, huanza kama SUBMITTED
-router.post('/projects', requireService('P2P'), requireRoles('ISSUER', 'ADMIN'), async (req, res, next) => {
+router.post('/projects', requireService('P2P'), requireRoles('ISSUER', 'ADMIN'), validate(schemas.p2p.createProject), async (req, res, next) => {
   try {
     const project = await p2pService.createProject(req.user.id, req.body);
     return res.status(201).json({ success: true, project, message: 'Mradi umewasilishwa kwa ukaguzi.' });
@@ -60,7 +62,7 @@ router.get('/portfolio', requireService('P2P'), async (req, res, next) => {
 
 // INVEST: wekeza kwenye mradi (KYC L2) - inahitaji kujiunga na huduma ya P2P
 // TAINFUND: min_investment + max_per_investor checks
-router.post('/projects/:projectId/invest', requireService('P2P'), requireKycLevel(2), async (req, res, next) => {
+router.post('/projects/:projectId/invest', requireService('P2P'), requireKycLevel(2), validate(schemas.p2p.invest), async (req, res, next) => {
   try {
     const { shares } = req.body;
     const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;

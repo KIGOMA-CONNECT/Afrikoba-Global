@@ -2,6 +2,8 @@ const express = require('express');
 const mkobaService = require('../services/mkobaService');
 const { authRequired } = require('../middleware/auth');
 const { requireService } = require('../middleware/serviceGuard');
+const { validate } = require('../middleware/validate');
+const schemas = require('../validations/schemas');
 
 const router = express.Router();
 
@@ -12,7 +14,7 @@ router.use(requireService('VICOBA'));
 // GROUP CONSTITUTION / RULES
 // ==========================================
 
-router.post('/groups/:groupId/constitution', async (req, res, next) => {
+router.post('/groups/:groupId/constitution', validate(schemas.mkoba.constitution), async (req, res, next) => {
   try {
     const constitution = await mkobaService.createConstitution(
       parseInt(req.params.groupId, 10),
@@ -33,7 +35,7 @@ router.get('/groups/:groupId/constitution', async (req, res, next) => {
 // SHARE PURCHASING
 // ==========================================
 
-router.post('/groups/:groupId/shares/buy', async (req, res, next) => {
+router.post('/groups/:groupId/shares/buy', validate(schemas.mkoba.buyShares), async (req, res, next) => {
   try {
     const { sharesCount } = req.body;
     if (!sharesCount) return res.status(400).json({ success: false, message: 'Jaza sharesCount.' });
@@ -67,7 +69,7 @@ router.get('/groups/:groupId/shares/summary', async (req, res, next) => {
 // PROFIT SHARING
 // ==========================================
 
-router.post('/groups/:groupId/profits/calculate', async (req, res, next) => {
+router.post('/groups/:groupId/profits/calculate', validate(schemas.mkoba.profit), async (req, res, next) => {
   try {
     const { cycleNumber, totalProfit } = req.body;
     if (!cycleNumber || !totalProfit) return res.status(400).json({ success: false, message: 'Jaza cycleNumber na totalProfit.' });

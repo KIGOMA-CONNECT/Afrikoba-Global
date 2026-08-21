@@ -299,7 +299,7 @@ async function section(title) { console.log(`\n== ${title} ==`); }
   const roscaTokens = [];
   for (let i = 0; i < 3; i++) {
     if (i > 0) await new Promise(r => setTimeout(r, 1500)); // OTP cooldown
-    const p = '255728' + (i + 1) + nowSuffix();
+    const p = '255728' + String(i + 1) + nowSuffix().slice(0, 5);
     const reg = await register(p, `Rosca Member ${i + 1}`);
     if (!reg.data || !reg.data.user) {
       fail(`ROSCA member ${i + 1} registration failed`, JSON.stringify(reg.data));
@@ -624,7 +624,7 @@ async function section(title) { console.log(`\n== ${title} ==`); }
   const mkMembers = [];
   for (let i = 0; i < 2; i++) {
     if (i > 0) await new Promise(r => setTimeout(r, 1500));
-    const p = '255730' + (i + 1) + nowSuffix();
+    const p = '255730' + String(i + 1) + nowSuffix().slice(0, 5);
     const reg = await register(p, 'M-Koba Mem ' + i);
     if (!reg.data || !reg.data.user) continue;
     await upgradeKyc(reg.data.token, '1985' + nowSuffix() + i);

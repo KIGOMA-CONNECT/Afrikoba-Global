@@ -1,13 +1,15 @@
 const express = require('express');
 const walletService = require('../services/walletService');
 const { authRequired, requireKycLevel } = require('../middleware/auth');
+const { validate } = require('../middleware/validate');
+const schemas = require('../validations/schemas');
 
 const router = express.Router();
 
 router.use(authRequired);
 
 // Deposit - AzamPay USSD Push (1% add-on fee)
-router.post('/deposit/initiate', requireKycLevel(1), async (req, res, next) => {
+router.post('/deposit/initiate', requireKycLevel(1), validate(schemas.wallet.deposit), async (req, res, next) => {
   try {
     const { amount, provider } = req.body;
     const result = await walletService.initiateDeposit(req.user.id, amount, provider);
@@ -18,12 +20,9 @@ router.post('/deposit/initiate', requireKycLevel(1), async (req, res, next) => {
 });
 
 // Transfer wallet-to-wallet
-router.post('/transfer', async (req, res, next) => {
+router.post('/transfer', validate(schemas.wallet.transfer), async (req, res, next) => {
   try {
     const { toPhoneNumber, amount, note } = req.body;
-    if (!toPhoneNumber || !amount) {
-      return res.status(400).json({ success: false, message: 'Jaza toPhoneNumber na amount.' });
-    }
     const result = await walletService.transferWallet(req.user.id, toPhoneNumber, amount, note);
     return res.json(result);
   } catch (error) {
@@ -32,7 +31,7 @@ router.post('/transfer', async (req, res, next) => {
 });
 
 // Withdrawal kwenda MNO
-router.post('/withdraw', requireKycLevel(1), async (req, res, next) => {
+router.post('/withdraw', requireKycLevel(1), validate(schemas.wallet.withdraw), async (req, res, next) => {
   try {
     const { amount, provider } = req.body;
     const result = await walletService.withdrawToMno(req.user.id, amount, provider);

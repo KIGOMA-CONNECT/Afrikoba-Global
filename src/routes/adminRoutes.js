@@ -2,6 +2,8 @@ const express = require('express');
 const pool = require('../config/db');
 const p2pService = require('../services/p2pService');
 const { requireRoles, authRequired } = require('../middleware/auth');
+const { validate } = require('../middleware/validate');
+const schemas = require('../validations/schemas');
 
 const router = express.Router();
 
@@ -64,7 +66,7 @@ router.post('/projects/:projectId/review/start', async (req, res, next) => {
 });
 
 // TAINFUND: Kagua mradi (APPROVED / REJECTED)
-router.post('/projects/:projectId/review', async (req, res, next) => {
+router.post('/projects/:projectId/review', validate(schemas.p2p.review), async (req, res, next) => {
   try {
     const { decision, reason } = req.body;
     const result = await p2pService.reviewProject(req.user.id, parseInt(req.params.projectId, 10), decision, reason);
@@ -75,7 +77,7 @@ router.post('/projects/:projectId/review', async (req, res, next) => {
 });
 
 // Uhakiki wa mradi - hatua moja ya Due Diligence
-router.post('/projects/:projectId/audit', async (req, res, next) => {
+router.post('/projects/:projectId/audit', validate(schemas.p2p.audit), async (req, res, next) => {
   try {
     const { stepName, passed, notes } = req.body;
     const result = await p2pService.verifyAuditStep(req.user.id, parseInt(req.params.projectId, 10), stepName, passed, notes);
@@ -86,7 +88,7 @@ router.post('/projects/:projectId/audit', async (req, res, next) => {
 });
 
 // Tengeneza Escrow Milestones za mradi
-router.post('/projects/:projectId/milestones', async (req, res, next) => {
+router.post('/projects/:projectId/milestones', validate(schemas.p2p.milestones), async (req, res, next) => {
   try {
     const { milestones } = req.body;
     const result = await p2pService.createEscrowMilestones(req.user.id, parseInt(req.params.projectId, 10), milestones);
@@ -107,7 +109,7 @@ router.post('/milestones/:milestoneId/release', async (req, res, next) => {
 });
 
 // Ingiza mapato ya mradi (Project Revenue)
-router.post('/projects/:projectId/revenue', async (req, res, next) => {
+router.post('/projects/:projectId/revenue', validate(schemas.p2p.revenue), async (req, res, next) => {
   try {
     const { amount, description } = req.body;
     const { recordProjectRevenue } = require('../services/splitPaymentService');

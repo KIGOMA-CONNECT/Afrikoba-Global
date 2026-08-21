@@ -4,15 +4,16 @@ const serviceService = require('../services/serviceService');
 const { signToken, authRequired } = require('../middleware/auth');
 const { otpLimiter, authLimiter } = require('../middleware/rateLimiter');
 const { toInternationalFormat } = require('../utils/helpers');
+const { validate } = require('../middleware/validate');
+const schemas = require('../validations/schemas');
 const logger = require('../utils/logger');
 
 const router = express.Router();
 
 // Tuma OTP (Login / Usajili) - rate-limited dhidi ya brute force
-router.post('/send-otp', otpLimiter, async (req, res, next) => {
+router.post('/send-otp', otpLimiter, validate(schemas.auth.sendOtp), async (req, res, next) => {
   try {
     const { phoneNumber } = req.body;
-    if (!phoneNumber) return res.status(400).json({ success: false, message: 'Namba ya simu inahitajika.' });
     const otp = await authService.sendOtp(phoneNumber, 'LOGIN');
     logger.info('AUTH', `OTP imetumwa kwenda ${toInternationalFormat(phoneNumber)}`);
     if (process.env.NODE_ENV !== 'production') {
@@ -25,10 +26,9 @@ router.post('/send-otp', otpLimiter, async (req, res, next) => {
 });
 
 // Login kwa OTP
-router.post('/login', authLimiter, async (req, res, next) => {
+router.post('/login', authLimiter, validate(schemas.auth.login), async (req, res, next) => {
   try {
     const { phoneNumber, otp } = req.body;
-    if (!phoneNumber || !otp) return res.status(400).json({ success: false, message: 'Jaza phoneNumber na OTP.' });
 
     const result = await authService.verifyOtp(phoneNumber, otp, 'LOGIN');
     if (!result.success) return res.status(400).json(result);
@@ -53,12 +53,9 @@ router.post('/login', authLimiter, async (req, res, next) => {
 });
 
 // Usajili mpya
-router.post('/register', authLimiter, async (req, res, next) => {
+router.post('/register', authLimiter, validate(schemas.auth.register), async (req, res, next) => {
   try {
     const { fullName, phoneNumber, email, password, otp, nidaNumber } = req.body;
-    if (!fullName || !phoneNumber || !otp) {
-      return res.status(400).json({ success: false, message: 'Jaza fullName, phoneNumber na OTP.' });
-    }
     const otpCheck = await authService.verifyOtp(phoneNumber, otp, 'LOGIN');
     if (!otpCheck.success) return res.status(400).json(otpCheck);
 
@@ -76,7 +73,7 @@ router.post('/register', authLimiter, async (req, res, next) => {
 });
 
 // Login kwa Email + Password
-router.post('/login/password', authLimiter, async (req, res, next) => {
+router.post('/login/password', authLimiter, validate(schemas.auth.loginPassword), async (req, res, next) => {
   try {
     const { emailOrPhone, password } = req.body;
     const result = await authService.loginWithPassword(emailOrPhone, password);
@@ -90,7 +87,7 @@ router.post('/login/password', authLimiter, async (req, res, next) => {
 });
 
 // Weka PIN (4 digits)
-router.post('/pin', authRequired, async (req, res, next) => {
+router.post('/pin', authRequired, validate(schemas.auth.pin), async (req, res, next) => {
   try {
     const { pin } = req.body;
     await authService.setupPin(req.user.id, pin);

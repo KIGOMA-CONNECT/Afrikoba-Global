@@ -2,18 +2,17 @@ const express = require('express');
 const roscaService = require('../services/roscaService');
 const { authRequired, requireKycLevel } = require('../middleware/auth');
 const { requireService } = require('../middleware/serviceGuard');
+const { validate } = require('../middleware/validate');
+const schemas = require('../validations/schemas');
 
 const router = express.Router();
 
 router.use(authRequired);
 
 // Unda Pool (Upatu/Kikoba) - inahitaji kujiunga na huduma ya ROSCA
-router.post('/pools', requireService('ROSCA'), async (req, res, next) => {
+router.post('/pools', requireService('ROSCA'), validate(schemas.rosca.createPool), async (req, res, next) => {
   try {
     const { poolName, contributionAmount, cycleFrequency, totalMembers, poolType } = req.body;
-    if (!poolName || !contributionAmount || !cycleFrequency || !totalMembers) {
-      return res.status(400).json({ success: false, message: 'Jaza poolName, contributionAmount, cycleFrequency, totalMembers.' });
-    }
     const pool = await roscaService.createPool(req.user.id, {
       poolName,
       contributionAmount,
