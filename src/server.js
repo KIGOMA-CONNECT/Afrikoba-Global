@@ -23,6 +23,7 @@ const callbackRoutes = require('./routes/callbackRoutes');
 const serviceRoutes = require('./routes/serviceRoutes');
 const marketingRoutes = require('./routes/marketingRoutes');
 const ussdRoutes = require('./routes/ussdRoutes');
+const mkobaRoutes = require('./routes/mkobaRoutes');
 
 // Fail-fast: usiendelee na mazingira ya production yenye maadili hatari.
 config.validateConfig();
@@ -104,6 +105,7 @@ app.use('/api', apiLimiter);
 app.use('/api/auth', authRoutes);
 app.use('/api/wallet', walletRoutes);
 app.use('/api/vicoba', vicobaRoutes);
+app.use('/api/vicoba', mkobaRoutes);
 app.use('/api/rosca', roscaRoutes);
 app.use('/api/p2p', p2pRoutes);
 app.use('/api/admin', adminRoutes);

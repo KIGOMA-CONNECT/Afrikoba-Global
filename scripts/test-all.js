@@ -612,6 +612,123 @@ async function section(title) { console.log(`\n== ${title} ==`); }
     ok('No loans in group (skipped)');
   }
 
+  // =============================================================
+  // 9. M-KOBA FEATURES
+  // =============================================================
+  await section('9. M-KOBA FEATURES — constitution, shares, profit, transfers, meetings, reporting');
+
+  const mkG = await api('POST', '/api/vicoba/groups', regD.data.token, { groupName: 'M-Koba Group', cycleType: 'MONTHLY', shareValue: 10000 });
+  await expect(mkG.status === 201 && !!mkG.data.group, 'M-Koba group created');
+  const mkGId = mkG.data.group.id;
+
+  const mkMembers = [];
+  for (let i = 0; i < 2; i++) {
+    if (i > 0) await new Promise(r => setTimeout(r, 1500));
+    const p = '255730' + (i + 1) + nowSuffix();
+    const reg = await register(p, 'M-Koba Mem ' + i);
+    if (!reg.data || !reg.data.user) continue;
+    await upgradeKyc(reg.data.token, '1985' + nowSuffix() + i);
+    await subscribe(reg.data.token, 'VICOBA');
+    await fundWallet(reg.data.user.id, 500000);
+    await api('POST', `/api/vicoba/groups/${mkGId}/members`, regD.data.token, { userId: reg.data.user.id, roleInGroup: i === 0 ? 'MWEKAHAZINA' : 'KATIBU' });
+    mkMembers.push(reg);
+  }
+  await fundWallet(regD.data.user.id, 500000);
+  const mkTreasurer = mkMembers[0];
+  const mkSecretary = mkMembers[1];
+
+  const constRes = await api('POST', `/api/vicoba/groups/${mkGId}/constitution`, regD.data.token, { sharePrice: 10000, maxSharesPerMember: 50, loanInterestRate: 12, finePerAbsence: 5000, finePerLateArrival: 2000, meetingDay: 'SATURDAY', require3TierApproval: true, shareRollover: true });
+  await expect(constRes.status === 201 && constRes.data.success, 'Constitution created');
+
+  const constGet = await api('GET', `/api/vicoba/groups/${mkGId}/constitution`, regD.data.token);
+  await expect(constGet.status === 200 && constGet.data.constitution.share_price == 10000, 'Constitution retrieved');
+
+  const buy1 = await api('POST', `/api/vicoba/groups/${mkGId}/shares/buy`, regD.data.token, { sharesCount: 5 });
+  await expect(buy1.status === 200 && buy1.data.totalShares === 5, 'Chairman buys 5 shares');
+
+  const buy2 = await api('POST', `/api/vicoba/groups/${mkGId}/shares/buy`, mkTreasurer.data.token, { sharesCount: 3 });
+  await expect(buy2.status === 200 && buy2.data.totalShares === 3, 'Treasurer buys 3 shares');
+
+  const buy3 = await api('POST', `/api/vicoba/groups/${mkGId}/shares/buy`, mkSecretary.data.token, { sharesCount: 2 });
+  await expect(buy3.status === 200, 'Secretary buys 2 shares');
+
+  const shareSummary = await api('GET', `/api/vicoba/groups/${mkGId}/shares/summary`, regD.data.token);
+  await expect(shareSummary.status === 200 && shareSummary.data.summary.length >= 3, 'Share summary 3+ members');
+
+  const overShares = await api('POST', `/api/vicoba/groups/${mkGId}/shares/buy`, regD.data.token, { sharesCount: 100 });
+  await expect(overShares.status === 400, 'Share over-limit blocked');
+
+  const initT = await api('POST', `/api/vicoba/groups/${mkGId}/transfers`, mkSecretary.data.token, { transferType: 'GROUP_WITHDRAWAL', recipientUserId: mkTreasurer.data.user.id, amount: 10000, note: 'Test' });
+  await expect(initT.status === 201 && initT.data.transfer && initT.data.transfer.status === 'INITIATED', 'Transfer initiated by KATIBU');
+
+  const ftId = initT.data.transfer ? initT.data.transfer.id : null;
+  if (ftId) {
+  const verT = await api('POST', `/api/vicoba/transfers/${ftId}/verify`, mkTreasurer.data.token, { approved: true, note: 'OK' });
+  await expect(verT.status === 200, 'Transfer verified by MWEKAHAZINA');
+
+  const appT = await api('POST', `/api/vicoba/transfers/${ftId}/approve`, regD.data.token, { approved: true, note: 'OK' });
+  await expect(appT.status === 200 && appT.data.success, 'Transfer approved by MWENYEKITI');
+
+  const badAppT = await api('POST', `/api/vicoba/transfers/${ftId}/approve`, mkSecretary.data.token, { approved: true });
+  await expect(badAppT.status === 400 || badAppT.status === 403, 'Non-chair cannot approve');
+
+  const ftList = await api('GET', `/api/vicoba/groups/${mkGId}/transfers`, regD.data.token);
+  await expect(ftList.status === 200 && ftList.data.transfers.length >= 1, 'Transfer history listed');
+  } else { ok('Transfer init failed (skipped verify/approve)'); }
+
+  const topUp = await api('POST', `/api/vicoba/groups/${mkGId}/topup/cross-network`, mkTreasurer.data.token, { amount: 20000, provider: 'AIRTEL', phone: '255787654321' });
+  await expect(topUp.status === 200 && topUp.data.success, 'Cross-network top-up AIRTEL');
+
+  const topUp2 = await api('POST', `/api/vicoba/groups/${mkGId}/topup/cross-network`, mkSecretary.data.token, { amount: 15000, provider: 'HALOPESA', phone: '255654321098' });
+  await expect(topUp2.status === 200, 'Cross-network top-up HALOPESA');
+
+  const badProv = await api('POST', `/api/vicoba/groups/${mkGId}/topup/cross-network`, regD.data.token, { amount: 5000, provider: 'BITCOIN', phone: '123' });
+  await expect(badProv.status === 400, 'Invalid provider rejected');
+
+  const meetDate = new Date().toISOString().split('T')[0];
+  const schedMeet = await api('POST', `/api/vicoba/groups/${mkGId}/meetings`, regD.data.token, { meetingDate: meetDate, notes: 'Mkutano wa kwanza' });
+  await expect(schedMeet.status === 201 && !!schedMeet.data.meeting, 'Meeting scheduled');
+  const meetId = schedMeet.data.meeting.id;
+
+  const att1 = await api('POST', `/api/vicoba/meetings/${meetId}/attendance`, regD.data.token, { userId: regD.data.user.id, status: 'PRESENT' });
+  await expect(att1.status === 200 && att1.data.success, 'Chairman: PRESENT');
+
+  const att2 = await api('POST', `/api/vicoba/meetings/${meetId}/attendance`, regD.data.token, { userId: mkTreasurer.data.user.id, status: 'LATE' });
+  await expect(att2.status === 200 && att2.data.fineApplied > 0, 'Treasurer: LATE + fine');
+
+  const att3 = await api('POST', `/api/vicoba/meetings/${meetId}/attendance`, regD.data.token, { userId: mkSecretary.data.user.id, status: 'ABSENT' });
+  await expect(att3.status === 200 && att3.data.fineApplied > 0, 'Secretary: ABSENT + fine');
+
+  const attList = await api('GET', `/api/vicoba/meetings/${meetId}/attendance`, regD.data.token);
+  await expect(attList.status === 200 && attList.data.attendance.length >= 3, 'Attendance list 3+ members');
+
+  const myAtt = await api('GET', `/api/vicoba/groups/${mkGId}/attendance/my`, regD.data.token);
+  await expect(myAtt.status === 200 && myAtt.data.summary, 'My attendance summary');
+
+  const attReport = await api('GET', `/api/vicoba/groups/${mkGId}/attendance/report`, regD.data.token);
+  await expect(attReport.status === 200 && attReport.data.report.length >= 3, 'Group attendance report');
+
+  const calcP = await api('POST', `/api/vicoba/groups/${mkGId}/profits/calculate`, regD.data.token, { cycleNumber: 1, totalProfit: 100000 });
+  await expect(calcP.status === 201 && calcP.data.success, 'Profit calculated (100k)', `per_share: ${calcP.data.perShareDividend}`);
+
+  const appP = await api('POST', `/api/vicoba/profits/${calcP.data.distribution.id}/approve`, regD.data.token);
+  await expect(appP.status === 200 && appP.data.success, 'Profit distribution approved');
+
+  const badP = await api('POST', `/api/vicoba/profits/${calcP.data.distribution.id}/approve`, mkTreasurer.data.token);
+  await expect(badP.status === 403, 'Non-chair cannot approve profit');
+
+  const profitList = await api('GET', `/api/vicoba/groups/${mkGId}/profits`, regD.data.token);
+  await expect(profitList.status === 200 && profitList.data.distributions.length >= 1, 'Profit distributions listed');
+
+  const finR = await api('GET', `/api/vicoba/groups/${mkGId}/reports/financial`, regD.data.token);
+  await expect(finR.status === 200 && finR.data.summary, 'Financial summary');
+
+  const memR = await api('GET', `/api/vicoba/groups/${mkGId}/reports/member`, regD.data.token);
+  await expect(memR.status === 200 && memR.data.summary, 'Member report');
+
+  const agingR = await api('GET', `/api/vicoba/groups/${mkGId}/reports/loan-aging`, regD.data.token);
+  await expect(agingR.status === 200, 'Loan aging report');
+
   // ------------------------------------------------------------
   console.log('\n==============================');
   console.log(`RESULT: ${passed} PASSED, ${failed} FAILED`);
