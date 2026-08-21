@@ -3,6 +3,7 @@ const config = require('../config');
 const { generateReference, formatMoney } = require('../utils/helpers');
 const { sendSMS } = require('./smsService');
 const { generateInvestmentContract } = require('./contractService');
+const { logAudit } = require('./auditService');
 const logger = require('../utils/logger');
 
 async function createProject(ownerUserId, projectData) {
@@ -115,6 +116,8 @@ async function reviewProject(adminUserId, projectId, decision, reason) {
     }
 
     await client.query('COMMIT');
+
+    await logAudit({ eventType: 'PROJECT_REVIEW', action: decision, entityType: 'PROJECT', userId: adminUserId, entityId: projectId, afterData: { status: decision, reason } });
 
     const owner = await pool.query(
       `SELECT u.phone_number, u.full_name, p.title FROM investment_projects p
@@ -322,6 +325,8 @@ async function invest(userId, projectId, sharesToBuy, signatureIp) {
 
     await client.query('COMMIT');
 
+    await logAudit({ eventType: 'INVESTMENT', action: 'CREATE', entityType: 'INVESTMENT', userId, entityId: investRow.id, referenceId, amount: totalAmount, afterData: { project_id: projectId, shares: sharesToBuy } });
+
     // PDF Contract (baada ya COMMIT ili tusifungwe kwenye transaction)
     const signature = { ip: signatureIp, timestamp: new Date() };
     let contractUrl = null;
@@ -412,6 +417,8 @@ async function releaseMilestone(adminUserId, milestoneId) {
     );
 
     await client.query('COMMIT');
+
+    await logAudit({ eventType: 'ESCROW_RELEASE', action: 'RELEASE', entityType: 'MILESTONE', userId: adminUserId, entityId: milestoneId, referenceId, amount: milestone.amount, afterData: { project_id: milestone.project_id, owner: milestone.owner_user_id } });
 
     const msg = `Habari ${milestone.full_name}, awamu ya escrow "${milestone.title}" imetolewa: ${formatMoney(milestone.amount)}. Ref: ${referenceId}`;
     await sendSMS(milestone.phone_number, msg).catch((smsErr) => logger.error('P2P', `SMS post-milestone imefunga: ${smsErr.message}`));

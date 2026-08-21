@@ -3,6 +3,7 @@ const config = require('../config');
 const { generateReference, formatMoney } = require('../utils/helpers');
 const { sendSMS } = require('./smsService');
 const { triggerPayout } = require('./azampayService');
+const { logAudit } = require('./auditService');
 const logger = require('../utils/logger');
 
 async function createPool(userId, { poolName, contributionAmount, cycleFrequency, totalMembers, poolType }) {
@@ -264,11 +265,12 @@ async function disburseDuePayouts() {
 
       const smsMsg = `Habari ${sched.full_name}, umepokea ${formatMoney(netPayout)} kutoka ${sched.pool_name} (Mzunguko #${sched.cycle_number}). Ref: ${referenceId}`;
       await sendSMS(sched.phone_number, smsMsg);
+      await logAudit({ eventType: 'ROSCA_PAYOUT', action: 'RELEASE', entityType: 'ROSCA_SCHEDULE', userId: sched.recipient_user_id, entityId: sched.id, referenceId, amount: netPayout, afterData: { pool_id: sched.pool_id, cycle: sched.cycle_number } });
       processed++;
     }
 
-    await client.query('COMMIT');
-  } catch (error) {
+      await client.query('COMMIT');
+    } catch (error) {
     await client.query('ROLLBACK').catch(() => {});
     logger.error('ROSCA PAYOUT', error.message);
     throw error;

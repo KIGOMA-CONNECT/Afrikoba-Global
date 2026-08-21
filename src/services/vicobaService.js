@@ -3,6 +3,7 @@ const config = require('../config');
 const crypto = require('crypto');
 const { generateReference, formatMoney, toInternationalFormat } = require('../utils/helpers');
 const { sendSMS } = require('./smsService');
+const { logAudit } = require('./auditService');
 const logger = require('../utils/logger');
 
 function generateJoinCode() {
@@ -106,6 +107,7 @@ async function contributeShares(groupId, userId, amount, sharesCount) {
     );
 
     await client.query('COMMIT');
+    await logAudit({ eventType: 'VICOBA_SHARE', action: 'CREATE', entityType: 'VICOBA_SHARE', userId, referenceId, amount: amountNum, afterData: { group_id: groupId, shares: sharesCount || 1 } });
     const msg = `Habari ${member.full_name}, umeweka hisa za ${formatMoney(amountNum)} kwenye VICOBA.`;
     await sendSMS(member.phone_number, msg);
     return { success: true, referenceId, message: 'Hisa zimewekwa.' };
@@ -206,6 +208,7 @@ async function approveLoan(approverUserId, loanId, approvedAmount) {
     );
 
     await client.query('COMMIT');
+    await logAudit({ eventType: 'VICOBA_LOAN', action: 'APPROVE', entityType: 'VICOBA_LOAN', userId: approverUserId, entityId: loanId, referenceId, amount: finalAmount, afterData: { group_id: loan.group_id, applicant: loan.applicant_user_id } });
 
     // Generate repayment schedule after commit
     await generateLoanSchedule(loanId, loan.group_id, finalAmount, loan.interest_rate, loan.repayment_months);
@@ -694,6 +697,7 @@ async function contributeSocialFund(groupId, userId, month) {
     );
 
     await client.query('COMMIT');
+    await logAudit({ eventType: 'VICOBA_SOCIAL_FUND', action: 'CREATE', entityType: 'VICOBA_SOCIAL_FUND', userId, referenceId, amount: fund.monthly_contribution, afterData: { group_id: groupId, month } });
 
     await sendSMS(user.phone_number, `Habari ${user.full_name}, umechanga TSh ${formatMoney(fund.monthly_contribution)} kwenye mfuko wa kijamii kwa mwezi ${month}.`);
     return { success: true, referenceId, message: 'Mchango wa kijamii umefanikiwa.' };
@@ -781,6 +785,7 @@ async function approveSocialFundDisbursement(actorUserId, requestId, approvedAmo
     await client.query("UPDATE vicoba_social_fund_requests SET status = 'DISBURSED', disbursement_reference = $1 WHERE id = $2", [referenceId, requestId]);
 
     await client.query('COMMIT');
+    await logAudit({ eventType: 'VICOBA_SOCIAL_FUND_DISBURSEMENT', action: 'RELEASE', entityType: 'VICOBA_SOCIAL_FUND_REQUEST', userId: actorUserId, entityId: requestId, referenceId, amount: finalAmount, afterData: { group_id: request.group_id, requester: request.requester_id, reason_type: request.reason_type } });
 
     if (requesterRes.rows.length > 0) {
       const reasonMsg = request.reason_type === 'DEATH' ? 'msiba' : request.reason_type === 'WEDDING' ? 'harusi' : 'tukio la kifamilia';
@@ -1017,6 +1022,7 @@ async function repayLoan(userId, loanId, amount, note) {
     );
 
     await client.query('COMMIT');
+    await logAudit({ eventType: 'VICOBA_LOAN_REPAYMENT', action: 'CREATE', entityType: 'VICOBA_LOAN_REPAYMENT', userId, entityId: loanId, referenceId, amount: amountNum, afterData: { group_id: loan.group_id, outstanding: Math.max(0, newOutstanding) } });
 
     const msg = isLate
       ? `Habari ${user.full_name}, umelipa deni la TSh ${formatMoney(amountNum)} + faini ya TSh ${formatMoney(penaltyAmount)}. Salio inayobaki: TSh ${formatMoney(Math.max(0, newOutstanding))}.`

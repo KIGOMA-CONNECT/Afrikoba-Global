@@ -3,6 +3,7 @@ const config = require('../config');
 const { triggerMnoCheckout } = require('./azampayService');
 const { sendSMS } = require('./smsService');
 const { computeDepositAmounts, generateReference, formatMoney } = require('../utils/helpers');
+const { logAudit } = require('./auditService');
 const logger = require('../utils/logger');
 
 /**
@@ -136,6 +137,8 @@ async function processDepositCallback({ utilityref, transactionstatus, reference
 
       await client.query('COMMIT');
 
+      await logAudit({ eventType: 'DEPOSIT', action: 'CREATE', entityType: 'TRANSACTION', userId: tx.user_id, referenceId, amount: tx.wallet_amount, afterData: { status: 'PENDING', provider } });
+
       const smsMsg = `Habari ${tx.full_name}, deposit yako ya ${formatMoney(tx.wallet_amount)} imefanikiwa! Salio jipya: ${formatMoney(newBalance)}. Ref: ${referenceId}`;
       await sendSMS(tx.phone_number, smsMsg).catch((smsErr) => logger.error('WALLET', `SMS post-deposit imefunga: ${smsErr.message}`));
 
@@ -223,6 +226,8 @@ async function transferWallet(fromUserId, toPhoneNumber, amount, note) {
 
     await client.query('COMMIT');
 
+    await logAudit({ eventType: 'TRANSFER', action: 'CREATE', entityType: 'TRANSACTION', userId: from.id, referenceId, amount: amountNum, afterData: { to_user_id: to.id, via: 'WALLET' } });
+
     const msg = `Habari ${to.full_name}, umepokea ${formatMoney(amountNum)} kutoka kwa ${from.full_name}. Salio jipya: ${formatMoney(to.wallet_balance + amountNum)}. Ref: ${referenceId}`;
     await sendSMS(to.phone_number, msg).catch((smsErr) => logger.error('WALLET', `SMS post-transfer imefunga: ${smsErr.message}`));
 
@@ -274,6 +279,8 @@ async function withdrawToMno(userId, amount, provider) {
       [amountNum, userId]
     );
     await client.query('COMMIT');
+
+    await logAudit({ eventType: 'WITHDRAWAL', action: 'CREATE', entityType: 'TRANSACTION', userId, referenceId, amount: amountNum, afterData: { status: 'PENDING', provider } });
 
     const msg = `AFRIKOBA: Ombi la kutoa ${formatMoney(amountNum)} limepokelewa. Ingiza PIN kwenye simu kuthibitisha.`;
     await sendSMS(user.phone_number, msg).catch((smsErr) => logger.error('WALLET', `SMS post-withdrawal imefunga: ${smsErr.message}`));

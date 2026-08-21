@@ -2,6 +2,7 @@ const pool = require('../config/db');
 const crypto = require('crypto');
 const { generateReference, formatMoney, toInternationalFormat } = require('../utils/helpers');
 const { sendSMS } = require('./smsService');
+const { logAudit } = require('./auditService');
 const logger = require('../utils/logger');
 
 // ==========================================
@@ -132,11 +133,11 @@ async function buyShares(userId, groupId, sharesCount) {
     await client.query(
       `INSERT INTO wallet_ledger (transaction_id, reference_id, from_user_id, to_user_id, amount, description)
        VALUES ($1, $2, $3, NULL, $4, 'VICOBA Share Purchase')`,
-      [txRes.rows[0].id, referenceId, userId, cost]
+       [txRes.rows[0].id, referenceId, userId, cost]
     );
 
     await client.query('COMMIT');
-
+    await logAudit({ eventType: 'VICOBA_SHARE', action: 'CREATE', entityType: 'VICOBA_SHARE', userId, referenceId, amount: cost, afterData: { group_id: groupId, shares: count } });
     await sendSMS(member.phone_number, `Habari ${member.full_name}, umenunua hisa ${count} kwa TSh ${formatMoney(cost)} kwenye VICOBA "${(await pool.query('SELECT group_name FROM vicoba_groups WHERE id=$1', [groupId])).rows[0].group_name}". Jumla ya hisa: ${member.total_shares + count}`);
 
     return {
@@ -254,6 +255,7 @@ async function calculateProfitDistribution(groupId, cycleNumber, totalProfit) {
     );
 
     await client.query('COMMIT');
+    await logAudit({ eventType: 'VICOBA_PROFIT_PAYOUT', action: 'CALCULATE', entityType: 'VICOBA_PROFIT_DISTRIBUTION', amount: totalProfit, afterData: { group_id: groupId, cycle: cycleNumber, members_paid: payouts.length } });
 
     logger.info('VICOBA', `Profit distribution: TSh ${formatMoney(totalProfit)} / ${totalShares} shares = TSh ${formatMoney(perShareDividend)} per share`);
 
@@ -513,6 +515,7 @@ async function approveTransfer(approverUserId, transferId, { approved, note }) {
     );
 
     await client.query('COMMIT');
+    await logAudit({ eventType: 'VICOBA_TRANSFER', action: 'APPROVE', entityType: 'VICOBA_FUND_TRANSFER', userId: approverUserId, entityId: transferId, referenceId: transfer.reference_id, amount: transfer.amount, afterData: { group_id: transfer.group_id, recipient: transfer.recipient_user_id } });
 
     return { success: true, referenceId: transfer.reference_id, message: 'Uhamisho umekamilika. Fedha zimetolewa.' };
   } catch (error) {
