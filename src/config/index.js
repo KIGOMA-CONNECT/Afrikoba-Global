@@ -53,6 +53,9 @@ const config = {
     tlsCert: process.env.TLS_CERT_PATH,
     tlsKey: process.env.TLS_KEY_PATH,
   },
+  ussd: {
+    secret: process.env.USSD_SECRET || '',
+  },
   trustProxy: process.env.TRUST_PROXY === 'true',
 };
 

@@ -137,7 +137,7 @@ async function processDepositCallback({ utilityref, transactionstatus, reference
       await client.query('COMMIT');
 
       const smsMsg = `Habari ${tx.full_name}, deposit yako ya ${formatMoney(tx.wallet_amount)} imefanikiwa! Salio jipya: ${formatMoney(newBalance)}. Ref: ${referenceId}`;
-      await sendSMS(tx.phone_number, smsMsg);
+      await sendSMS(tx.phone_number, smsMsg).catch((smsErr) => logger.error('WALLET', `SMS post-deposit imefunga: ${smsErr.message}`));
 
       return { success: true, message: 'Deposit Processed Successfully.' };
     }
@@ -224,7 +224,7 @@ async function transferWallet(fromUserId, toPhoneNumber, amount, note) {
     await client.query('COMMIT');
 
     const msg = `Habari ${to.full_name}, umepokea ${formatMoney(amountNum)} kutoka kwa ${from.full_name}. Salio jipya: ${formatMoney(to.wallet_balance + amountNum)}. Ref: ${referenceId}`;
-    await sendSMS(to.phone_number, msg);
+    await sendSMS(to.phone_number, msg).catch((smsErr) => logger.error('WALLET', `SMS post-transfer imefunga: ${smsErr.message}`));
 
     return {
       success: true,
@@ -276,7 +276,7 @@ async function withdrawToMno(userId, amount, provider) {
     await client.query('COMMIT');
 
     const msg = `AFRIKOBA: Ombi la kutoa ${formatMoney(amountNum)} limepokelewa. Ingiza PIN kwenye simu kuthibitisha.`;
-    await sendSMS(user.phone_number, msg);
+    await sendSMS(user.phone_number, msg).catch((smsErr) => logger.error('WALLET', `SMS post-withdrawal imefunga: ${smsErr.message}`));
 
     return { success: true, referenceId, message: 'Ombi la withdrawal limepokelewa.', status: 'PENDING' };
   } catch (error) {

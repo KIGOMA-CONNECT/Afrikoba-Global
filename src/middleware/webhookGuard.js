@@ -7,8 +7,17 @@ const logger = require('../utils/logger');
  * - IP Whitelisting (production only)
  */
 function verifyWebhookSecurity(req, res, next) {
+  if (!config.webhook.secret) {
+    if (config.nodeEnv === 'production') {
+      logger.error('WEBHOOK', 'WEBHOOK_SECRET haijawekwa! Callbacks zote zimezuiliwa kwenye production.');
+      return res.status(503).json({ success: false, message: 'Webhook verification not configured.' });
+    }
+    logger.warn('WEBHOOK', 'WEBHOOK_SECRET haipo — bypassing verification in development.');
+    return next();
+  }
+
   const headerSecret = req.headers['x-webhook-secret'] || req.headers['x-azampay-secret'];
-  if (config.webhook.secret && headerSecret !== config.webhook.secret) {
+  if (!headerSecret || headerSecret !== config.webhook.secret) {
     logger.warn('WEBHOOK', 'Secret header si sahihi (Fake Callback attempt)');
     return res.status(401).json({ success: false, message: 'Unauthorized Webhook Request' });
   }

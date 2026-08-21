@@ -33,6 +33,15 @@ router.get('/projects', async (req, res, next) => {
 router.get('/projects/:projectId', async (req, res, next) => {
   try {
     const details = await p2pService.getProjectDetails(parseInt(req.params.projectId, 10));
+    if (req.user.role !== 'ADMIN') {
+      details.investors = (details.investors || []).map((inv) => ({
+        ...inv,
+        full_name: inv.full_name ? inv.full_name.charAt(0) + '***' : '***',
+        phone_number: inv.phone_number ? '***' + inv.phone_number.slice(-4) : '***',
+      }));
+      delete details.businessWallet;
+      delete details.settlementRules;
+    }
     return res.json({ success: true, project: details });
   } catch (error) {
     next(error);

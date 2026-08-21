@@ -86,51 +86,54 @@ async function reviewProject(adminUserId, projectId, decision, reason) {
     throw Object.assign(new Error('Uamuzi lazima uwe APPROVED au REJECTED.'), { statusCode: 400 });
   }
 
-  const projectRes = await pool.query(
-    `SELECT * FROM investment_projects WHERE id = $1 FOR UPDATE`,
-    [projectId]
-  );
-  const project = projectRes.rows[0];
-  if (!project) throw Object.assign(new Error('Mradi haujapatikana.'), { statusCode: 404 });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
 
-  const allowedStatuses = ['SUBMITTED', 'UNDER_REVIEW'];
-  if (!allowedStatuses.includes(project.status)) {
-    throw Object.assign(new Error(`Mradi uko katika hali ya ${project.status} — haliwezi kukaguliwa.`), { statusCode: 400 });
-  }
-
-  if (decision === 'APPROVED') {
-    await pool.query(
-      `UPDATE investment_projects SET status = 'ACTIVE', approved_at = NOW(), approved_by = $1, rejection_reason = NULL WHERE id = $2`,
-      [adminUserId, projectId]
+    const projectRes = await client.query(
+      `SELECT * FROM investment_projects WHERE id = $1 FOR UPDATE`,
+      [projectId]
     );
+    const project = projectRes.rows[0];
+    if (!project) throw Object.assign(new Error('Mradi haujapatikana.'), { statusCode: 404 });
+
+    const allowedStatuses = ['SUBMITTED', 'UNDER_REVIEW'];
+    if (!allowedStatuses.includes(project.status)) {
+      throw Object.assign(new Error(`Mradi uko katika hali ya ${project.status} — haliwezi kukaguliwa.`), { statusCode: 400 });
+    }
+
+    if (decision === 'APPROVED') {
+      await client.query(
+        `UPDATE investment_projects SET status = 'ACTIVE', approved_at = NOW(), approved_by = $1, rejection_reason = NULL WHERE id = $2`,
+        [adminUserId, projectId]
+      );
+    } else {
+      await client.query(
+        `UPDATE investment_projects SET status = 'REJECTED', rejection_reason = $1 WHERE id = $2`,
+        [reason || 'Mradi haukufikia viwango vinavyohitajika.', projectId]
+      );
+    }
+
+    await client.query('COMMIT');
 
     const owner = await pool.query(
       `SELECT u.phone_number, u.full_name, p.title FROM investment_projects p
        JOIN users u ON u.id = p.owner_user_id WHERE p.id = $1`,
       [projectId]
     );
-    await sendSMS(
-      owner.rows[0].phone_number,
-      `Habari ${owner.rows[0].full_name}, mradi wako "${owner.rows[0].title}" umekaguliwa na KUTHIBITISHWA! Wawekezaji sasa wanaweza kuwekeza.`
-    );
-  } else {
-    await pool.query(
-      `UPDATE investment_projects SET status = 'REJECTED', rejection_reason = $1 WHERE id = $2`,
-      [reason || 'Mradi haukufikia viwango vinavyohitajika.', projectId]
-    );
 
-    const owner = await pool.query(
-      `SELECT u.phone_number, u.full_name, p.title FROM investment_projects p
-       JOIN users u ON u.id = p.owner_user_id WHERE p.id = $1`,
-      [projectId]
-    );
-    await sendSMS(
-      owner.rows[0].phone_number,
-      `Habari ${owner.rows[0].full_name}, mradi wako "${owner.rows[0].title}" umekataliwa. Sababu: ${reason || 'Haijafikia viwango.'}`
-    );
+    const smsMsg = decision === 'APPROVED'
+      ? `Habari ${owner.rows[0].full_name}, mradi wako "${owner.rows[0].title}" umekaguliwa na KUTHIBITISHWA! Wawekezaji sasa wanaweza kuwekeza.`
+      : `Habari ${owner.rows[0].full_name}, mradi wako "${owner.rows[0].title}" umekataliwa. Sababu: ${reason || 'Haijafikia viwango.'}`;
+    await sendSMS(owner.rows[0].phone_number, smsMsg).catch((smsErr) => logger.error('P2P', `SMS post-review imefunga: ${smsErr.message}`));
+
+    return { success: true, status: decision, projectId };
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
   }
-
-  return { success: true, status: decision, projectId };
 }
 
 /**
@@ -371,7 +374,7 @@ async function releaseMilestone(adminUserId, milestoneId) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const milestoneRes = await pool.query(
+    const milestoneRes = await client.query(
       `SELECT em.*, p.owner_user_id, u.phone_number, u.full_name
        FROM escrow_milestones em
        JOIN investment_projects p ON p.id = em.project_id
@@ -395,16 +398,23 @@ async function releaseMilestone(adminUserId, milestoneId) {
     );
 
     const referenceId = generateReference('EM');
-    await client.query(
+    const txRes = await client.query(
       `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
-       VALUES ($1, $2, $3, 0, $3, 'SUCCESS', 'INVESTMENT_PAYOUT', $4)`,
+       VALUES ($1, $2, $3, 0, $3, 'SUCCESS', 'INVESTMENT_PAYOUT', $4)
+       RETURNING id`,
       [referenceId, milestone.owner_user_id, milestone.amount, JSON.stringify({ project_id: milestone.project_id, milestone_id: milestone.id })]
+    );
+
+    await client.query(
+      `INSERT INTO wallet_ledger (transaction_id, reference_id, to_user_id, amount, description)
+       VALUES ($1, $2, $3, $4, 'Escrow milestone release')`,
+      [txRes.rows[0].id, referenceId, milestone.owner_user_id, milestone.amount]
     );
 
     await client.query('COMMIT');
 
     const msg = `Habari ${milestone.full_name}, awamu ya escrow "${milestone.title}" imetolewa: ${formatMoney(milestone.amount)}. Ref: ${referenceId}`;
-    await sendSMS(milestone.phone_number, msg);
+    await sendSMS(milestone.phone_number, msg).catch((smsErr) => logger.error('P2P', `SMS post-milestone imefunga: ${smsErr.message}`));
     return { success: true, referenceId };
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {});
