@@ -1,5 +1,6 @@
 require('dotenv').config();
 
+const Sentry = require('@sentry/node');
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
@@ -27,6 +28,15 @@ const mkobaRoutes = require('./routes/mkobaRoutes');
 
 // Fail-fast: usiendelee na mazingira ya production yenye maadili hatari.
 config.validateConfig();
+
+// Sentry error monitoring — only in production when DSN is set
+if (config.sentry.dsn) {
+  Sentry.init({
+    dsn: config.sentry.dsn,
+    environment: config.sentry.environment,
+    tracesSampleRate: config.sentry.tracesSampleRate,
+  });
+}
 
 const app = express();
 
@@ -65,6 +75,9 @@ const corsOptions =
 
 app.use(cors(corsOptions));
 app.use(express.json({ limit: '1mb' }));
+
+// Sentry request handler — must be before routes
+if (config.sentry.dsn) app.use(Sentry.Handlers.requestHandler());
 
 // Access logging + request-id
 app.use(requestLog);
@@ -123,6 +136,7 @@ app.get(/^\/(?!api|contracts|health).*/, (req, res, next) => {
 });
 
 app.use(notFound);
+if (config.sentry.dsn) app.use(Sentry.Handlers.errorHandler());
 app.use(errorHandler);
 
 // Start background jobs (reconciliation, ROSCA payout, split payment)

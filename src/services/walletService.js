@@ -267,11 +267,18 @@ async function withdrawToMno(userId, amount, provider) {
     }
 
     const referenceId = generateReference('WD');
-    await client.query(
+    const txRes = await client.query(
       `INSERT INTO transactions
         (reference_id, user_id, wallet_amount, commission, total_charged, status, type)
-       VALUES ($1, $2, $3, 0, $3, 'PENDING', 'WITHDRAWAL')`,
+       VALUES ($1, $2, $3, 0, $3, 'PENDING', 'WITHDRAWAL')
+       RETURNING id`,
       [referenceId, userId, amountNum]
+    );
+
+    await client.query(
+      `INSERT INTO wallet_ledger (transaction_id, reference_id, from_user_id, to_user_id, amount, description)
+       VALUES ($1, $2, $3, NULL, $4, 'Withdrawal to MNO')`,
+      [txRes.rows[0].id, referenceId, userId, amountNum]
     );
 
     await client.query(

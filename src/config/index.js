@@ -57,6 +57,11 @@ const config = {
     secret: process.env.USSD_SECRET || '',
   },
   trustProxy: process.env.TRUST_PROXY === 'true',
+  sentry: {
+    dsn: process.env.SENTRY_DSN || '',
+    environment: process.env.SENTRY_ENVIRONMENT || process.env.NODE_ENV || 'development',
+    tracesSampleRate: parseFloat(process.env.SENTRY_TRACES_SAMPLE_RATE || '0.1'),
+  },
 };
 
 const DEFAULT_JWT = 'afrikoba_dev_secret_change_me';
