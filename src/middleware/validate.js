@@ -15,6 +15,7 @@ function validate(schema, source = 'body') {
       }));
       return res.status(400).json({
         success: false,
+        code: 'VALIDATION_ERROR',
         message: 'Tafta si sahihi.',
         errors,
       });
