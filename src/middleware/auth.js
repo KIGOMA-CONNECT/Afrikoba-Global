@@ -5,11 +5,11 @@ const config = require('../config');
 const JWT_SECRET = config.security.jwtSecret || config.DEFAULT_JWT;
 const TOKEN_TTL = config.security.jwtTtl;
 
-function signToken(user) {
+function signToken(user, expiresIn) {
   return jwt.sign(
     { id: user.id, role: user.role, phone: user.phone_number },
     JWT_SECRET,
-    { expiresIn: TOKEN_TTL }
+    { expiresIn: expiresIn || TOKEN_TTL }
   );
 }
 

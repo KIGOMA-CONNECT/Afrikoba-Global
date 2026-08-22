@@ -79,8 +79,57 @@ router.post('/login/password', authLimiter, validate(schemas.auth.loginPassword)
     const result = await authService.loginWithPassword(emailOrPhone, password);
     if (!result.success) return res.status(401).json(result);
     const services = await serviceService.getUserServices(result.user.id);
+
+    // Check if TOTP 2FA is enabled
+    const pool = require('../config/db');
+    const totpRes = await pool.query('SELECT totp_enabled FROM users WHERE id = $1', [result.user.id]);
+    if (totpRes.rows[0]?.totp_enabled) {
+      const tempToken = signToken({ ...result.user, totp_pending: true }, '5m');
+      return res.json({ success: true, requires2FA: true, tempToken, message: 'Ingiza kodi ya TOTP.' });
+    }
+
     const token = signToken(result.user);
     return res.json({ success: true, token, user: { ...result.user, services } });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// TOTP 2FA login — verify tempToken + TOTP code, return full JWT
+router.post('/totp-login', authLimiter, async (req, res, next) => {
+  try {
+    const { tempToken, token: totpCode } = req.body;
+    if (!tempToken || !totpCode) {
+      return res.status(400).json({ success: false, code: 'VALIDATION_ERROR', message: 'tempToken na totpCode zinahitajika.' });
+    }
+
+    const jwt = require('jsonwebtoken');
+    let decoded;
+    try {
+      decoded = jwt.verify(tempToken, require('../config').security.jwtSecret);
+    } catch (e) {
+      return res.status(401).json({ success: false, code: 'AUTH_EXPIRED_TOKEN', message: 'TempToken imeisha. Tafadhali ingia tena.' });
+    }
+
+    if (!decoded.totp_pending) {
+      return res.status(400).json({ success: false, message: 'Token si ya TOTP login.' });
+    }
+
+    const pool = require('../config/db');
+    const userRes = await pool.query('SELECT id, role, phone_number, totp_secret FROM users WHERE id = $1', [decoded.id]);
+    const user = userRes.rows[0];
+    if (!user || !user.totp_secret) {
+      return res.status(400).json({ success: false, message: 'TOTP haijaanzishwa kwa mtumiaji huyu.' });
+    }
+
+    const { verifyToken } = require('../services/totpService');
+    if (!verifyToken(user.totp_secret, totpCode)) {
+      return res.status(403).json({ success: false, code: 'AUTH_INVALID_OTP', message: 'Kodi ya TOTP si sahihi.' });
+    }
+
+    const services = await serviceService.getUserServices(user.id);
+    const fullToken = signToken(user);
+    return res.json({ success: true, token: fullToken, user: { id: user.id, role: user.role, phone_number: user.phone_number, services } });
   } catch (error) {
     next(error);
   }

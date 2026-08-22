@@ -25,6 +25,7 @@ const serviceRoutes = require('./routes/serviceRoutes');
 const marketingRoutes = require('./routes/marketingRoutes');
 const ussdRoutes = require('./routes/ussdRoutes');
 const mkobaRoutes = require('./routes/mkobaRoutes');
+const totpRoutes = require('./routes/totpRoutes');
 const swaggerUi = require('swagger-ui-express');
 const { swaggerSpec } = require('./config/swagger');
 
@@ -132,6 +133,7 @@ for (const prefix of versionPrefixes) {
   app.use(`${prefix}/services`, serviceRoutes);
   app.use(`${prefix}/marketing`, marketingRoutes);
   app.use(`${prefix}/ussd`, ussdRoutes);
+  app.use(`${prefix}/totp`, totpRoutes);
 }
 
 // API version info
