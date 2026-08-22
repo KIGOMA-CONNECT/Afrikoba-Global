@@ -25,6 +25,8 @@ const serviceRoutes = require('./routes/serviceRoutes');
 const marketingRoutes = require('./routes/marketingRoutes');
 const ussdRoutes = require('./routes/ussdRoutes');
 const mkobaRoutes = require('./routes/mkobaRoutes');
+const swaggerUi = require('swagger-ui-express');
+const { swaggerSpec } = require('./config/swagger');
 
 // Fail-fast: usiendelee na mazingira ya production yenye maadili hatari.
 config.validateConfig();
@@ -135,6 +137,16 @@ for (const prefix of versionPrefixes) {
 // API version info
 app.get('/api/v1', (req, res) => {
   res.json({ success: true, version: '1.0.0', docs: '/api/v1/docs' });
+});
+
+// Swagger UI - API documentation
+app.use('/api/v1/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
+  customSiteTitle: 'Afrikoba Global API',
+  customCss: '.swagger-ui .topbar { display: none }',
+}));
+app.get('/api/v1/docs.json', (req, res) => {
+  res.setHeader('Content-Type', 'application/json');
+  res.send(swaggerSpec);
 });
 
 // Deprecation header for non-versioned /api routes
