@@ -339,4 +339,49 @@ router.get('/loans/:loanId/repayments', async (req, res, next) => {
   }
 });
 
+// PATCH /groups/:groupId — Update group settings (chairman only)
+router.patch('/groups/:groupId', async (req, res, next) => {
+  try {
+    const pool = require('../config/db');
+    const groupId = parseInt(req.params.groupId, 10);
+    const member = await pool.query('SELECT role_in_group FROM vicoba_members WHERE group_id = $1 AND user_id = $2', [groupId, req.user.id]);
+    if (member.rows.length === 0 || member.rows[0].role_in_group !== 'MWENYEKITI') {
+      return res.status(403).json({ success: false, code: 'AUTH_INSUFFICIENT_SCOPE', message: 'Mwenyekiti pekee anaweza kubadilisha mipangilio.' });
+    }
+    const { name, contributionAmount, cycleType } = req.body;
+    const updates = [];
+    const params = [];
+    let idx = 1;
+    if (name) { updates.push(`group_name = $${idx++}`); params.push(name); }
+    if (contributionAmount) { updates.push(`contribution_amount = $${idx++}`); params.push(contributionAmount); }
+    if (cycleType) { updates.push(`cycle_type = $${idx++}`); params.push(cycleType); }
+    if (updates.length === 0) return res.status(400).json({ success: false, message: 'Hakuna kitu cha kubadilisha.' });
+    params.push(groupId);
+    await pool.query(`UPDATE vicoba_groups SET ${updates.join(', ')} WHERE id = $${idx}`, params);
+    return res.json({ success: true, message: 'Mipangilio imesasishwa.' });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// DELETE /groups/:groupId/members/:userId — Remove member (chairman only)
+router.delete('/groups/:groupId/members/:userId', async (req, res, next) => {
+  try {
+    const pool = require('../config/db');
+    const groupId = parseInt(req.params.groupId, 10);
+    const targetUserId = parseInt(req.params.userId, 10);
+    const member = await pool.query('SELECT role_in_group FROM vicoba_members WHERE group_id = $1 AND user_id = $2', [groupId, req.user.id]);
+    if (member.rows.length === 0 || member.rows[0].role_in_group !== 'MWENYEKITI') {
+      return res.status(403).json({ success: false, code: 'AUTH_INSUFFICIENT_SCOPE', message: 'Mwenyekiti pekee anaweza kuondoa wanachama.' });
+    }
+    if (req.user.id === targetUserId) {
+      return res.status(400).json({ success: false, message: 'Huwezi kuondoa mwenyewe.' });
+    }
+    await pool.query('DELETE FROM vicoba_members WHERE group_id = $1 AND user_id = $2', [groupId, targetUserId]);
+    return res.json({ success: true, message: 'Mwanachama ameondolewa.' });
+  } catch (error) {
+    next(error);
+  }
+});
+
 module.exports = router;

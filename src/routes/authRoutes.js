@@ -177,4 +177,23 @@ router.get('/me', authRequired, async (req, res, next) => {
   }
 });
 
+// PATCH /profile — Sasisha profaili
+router.patch('/profile', authRequired, async (req, res, next) => {
+  try {
+    const { fullName, email } = req.body;
+    const pool = require('../config/db');
+    const updates = [];
+    const params = [];
+    let idx = 1;
+    if (fullName) { updates.push(`full_name = $${idx++}`); params.push(fullName); }
+    if (email) { updates.push(`email = $${idx++}`); params.push(email); }
+    if (updates.length === 0) return res.status(400).json({ success: false, message: 'Hakuna kitu cha kubadilisha.' });
+    params.push(req.user.id);
+    await pool.query(`UPDATE users SET ${updates.join(', ')} WHERE id = $${idx}`, params);
+    return res.json({ success: true, message: 'Profaili imesasishwa.' });
+  } catch (error) {
+    next(error);
+  }
+});
+
 module.exports = router;
