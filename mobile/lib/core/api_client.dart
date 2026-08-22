@@ -38,6 +38,16 @@ class ApiClient {
             .post(uri, headers: headers, body: body == null ? null : jsonEncode(body))
             .timeout(const Duration(seconds: 20));
         break;
+      case 'PUT':
+        res = await http
+            .put(uri, headers: headers, body: body == null ? null : jsonEncode(body))
+            .timeout(const Duration(seconds: 20));
+        break;
+      case 'PATCH':
+        res = await http
+            .patch(uri, headers: headers, body: body == null ? null : jsonEncode(body))
+            .timeout(const Duration(seconds: 20));
+        break;
       default:
         throw Exception('Method haitambuliki: $method');
     }
@@ -69,6 +79,14 @@ class ApiClient {
   Future<Map<String, dynamic>> post(String path, Map<String, dynamic>? body,
           {bool withAuth = true}) =>
       _send('POST', path, body: body, withAuth: withAuth);
+
+  Future<Map<String, dynamic>> put(String path, Map<String, dynamic>? body,
+          {bool withAuth = true}) =>
+      _send('PUT', path, body: body, withAuth: withAuth);
+
+  Future<Map<String, dynamic>> patch(String path, Map<String, dynamic>? body,
+          {bool withAuth = true}) =>
+      _send('PATCH', path, body: body, withAuth: withAuth);
 }
 
 class ApiException implements Exception {

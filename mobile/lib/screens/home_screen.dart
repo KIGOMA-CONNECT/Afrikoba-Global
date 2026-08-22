@@ -9,6 +9,9 @@ import 'rosca_screen.dart';
 import 'p2p_screen.dart';
 import 'admin_screen.dart';
 import 'login_screen.dart';
+import 'notifications_screen.dart';
+import 'referrals_screen.dart';
+import 'settings_screen.dart';
 
 /// Nyumba ya programu (HomeShell) - drawer kama sidebar ya web.
 class HomeScreen extends StatefulWidget {
@@ -55,6 +58,9 @@ class _HomeScreenState extends State<HomeScreen> {
     RoscaScreen(),
     P2pScreen(),
     AdminScreen(),
+    NotificationsScreen(),
+    ReferralsScreen(),
+    SettingsScreen(),
   ];
 
   static const _titles = [
@@ -66,6 +72,9 @@ class _HomeScreenState extends State<HomeScreen> {
     'Upatu (ROSCA)',
     'Uwekezaji (P2P)',
     'Utawala',
+    'Arifa',
+    'Referrals',
+    'Mipangilio',
   ];
 
   static const _icons = [
@@ -77,6 +86,9 @@ class _HomeScreenState extends State<HomeScreen> {
     Icons.sync_alt,
     Icons.trending_up,
     Icons.admin_panel_settings_outlined,
+    Icons.notifications_outlined,
+    Icons.card_giftcard,
+    Icons.settings_outlined,
   ];
 
   @override

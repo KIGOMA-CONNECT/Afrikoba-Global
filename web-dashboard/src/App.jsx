@@ -10,6 +10,9 @@ import P2p from './pages/P2p.jsx';
 import Admin from './pages/Admin.jsx';
 import Services from './pages/Services.jsx';
 import Promotions from './pages/Promotions.jsx';
+import Notifications from './pages/Notifications.jsx';
+import Referrals from './pages/Referrals.jsx';
+import Settings from './pages/Settings.jsx';
 
 function RequireAuth({ children }) {
   const token = localStorage.getItem('afrikoba_token');
@@ -37,6 +40,9 @@ export default function App() {
         <Route path="rosca" element={<Rosca />} />
         <Route path="p2p" element={<P2p />} />
         <Route path="admin" element={<Admin />} />
+        <Route path="notifications" element={<Notifications />} />
+        <Route path="referrals" element={<Referrals />} />
+        <Route path="settings" element={<Settings />} />
       </Route>
     </Routes>
   );

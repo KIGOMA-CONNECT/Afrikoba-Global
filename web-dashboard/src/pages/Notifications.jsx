@@ -1,0 +1,110 @@
+import React, { useEffect, useState } from 'react';
+import api from '../api/client.js';
+
+export default function Notifications() {
+  const [notifications, setNotifications] = useState([]);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [page, setPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
+  const [unreadOnly, setUnreadOnly] = useState(false);
+  const [msg, setMsg] = useState({ type: '', text: '' });
+
+  const show = (type, text) => {
+    setMsg({ type, text });
+    setTimeout(() => setMsg({ type: '', text: '' }), 3000);
+  };
+
+  const load = () => {
+    api.get('/notifications', { params: { page, limit: 20, unreadOnly } })
+      .then((r) => {
+        setNotifications(r.data.notifications);
+        setTotalPages(r.data.totalPages);
+      })
+      .catch(() => {});
+    api.get('/notifications/unread-count')
+      .then((r) => setUnreadCount(r.data.count))
+      .catch(() => {});
+  };
+
+  useEffect(load, [page, unreadOnly]);
+
+  const markRead = async (id) => {
+    await api.put(`/notifications/${id}/read`);
+    load();
+  };
+
+  const markAllRead = async () => {
+    const res = await api.put('/notifications/read-all');
+    show('ok', `${res.data.count} zimesomwa.`);
+    load();
+  };
+
+  const typeColors = {
+    INFO: 'info',
+    TRANSACTION: 'success',
+    VICOBA: 'success',
+    ROSCA: 'info',
+    P2P: 'info',
+    SECURITY: 'failed',
+    PROMO: 'pending',
+  };
+
+  return (
+    <>
+      <div className="page-head">
+        <h2>Arifa (Notifications)</h2>
+        <p>Arifa zako za mfumo na miamala</p>
+      </div>
+
+      {msg.text && <div className={`msg ${msg.type}`}>{msg.text}</div>}
+
+      <div className="card" style={{ marginBottom: 16 }}>
+        <div className="inline-actions" style={{ justifyContent: 'space-between' }}>
+          <div className="inline-actions">
+            <button className={`btn ${!unreadOnly ? '' : 'ghost'}`} onClick={() => { setUnreadOnly(false); setPage(1); }}>Zote</button>
+            <button className={`btn ${unreadOnly ? '' : 'ghost'}`} onClick={() => { setUnreadOnly(true); setPage(1); }}>
+              Hazijasomwa ({unreadCount})
+            </button>
+          </div>
+          <button className="btn ghost" onClick={markAllRead}>Soma Zote</button>
+        </div>
+      </div>
+
+      <div className="card">
+        {notifications.length === 0 && <p className="roles-tag">Hakuna arifa.</p>}
+        {notifications.map((n) => (
+          <div key={n.id} style={{
+            padding: '12px 0',
+            borderBottom: '1px solid var(--border)',
+            opacity: n.read_at ? 0.6 : 1,
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'flex-start',
+          }}>
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <strong>{n.title}</strong>
+                <span className={`badge ${typeColors[n.type] || 'info'}`}>{n.type}</span>
+              </div>
+              <p style={{ fontSize: 13, color: 'var(--muted)', marginTop: 4 }}>{n.body}</p>
+              <span className="roles-tag">{new Date(n.created_at).toLocaleString('en-GB')}</span>
+            </div>
+            {!n.read_at && (
+              <button className="btn ghost" style={{ fontSize: 11, padding: '4px 8px' }} onClick={() => markRead(n.id)}>
+                Soma
+              </button>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {totalPages > 1 && (
+        <div className="inline-actions" style={{ justifyContent: 'center', marginTop: 16 }}>
+          <button className="btn ghost" disabled={page <= 1} onClick={() => setPage(page - 1)}>Nyuma</button>
+          <span className="roles-tag">Ukurasa {page} / {totalPages}</span>
+          <button className="btn ghost" disabled={page >= totalPages} onClick={() => setPage(page + 1)}>Mbele</button>
+        </div>
+      )}
+    </>
+  );
+}

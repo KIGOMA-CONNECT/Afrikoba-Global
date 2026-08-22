@@ -28,7 +28,10 @@ export default function Layout() {
           <NavLink to="/vicoba">VICOBA</NavLink>
           <NavLink to="/rosca">Upatu (ROSCA)</NavLink>
           <NavLink to="/p2p">Uwekezaji (P2P)</NavLink>
+          <NavLink to="/referrals">Referrals</NavLink>
+          <NavLink to="/notifications">Arifa</NavLink>
           {isAdmin && <NavLink to="/admin">Utawala</NavLink>}
+          <NavLink to="/settings">Mipangilio</NavLink>
         </nav>
         <div className="sidebar-user">
           <strong>{user.full_name}</strong>
