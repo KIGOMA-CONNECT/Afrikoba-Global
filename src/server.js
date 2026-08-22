@@ -115,17 +115,37 @@ app.get('/health/db', async (req, res) => {
 
 // API Routes - rate limited kwa jumla
 app.use('/api', apiLimiter);
-app.use('/api/auth', authRoutes);
-app.use('/api/wallet', walletRoutes);
-app.use('/api/vicoba', vicobaRoutes);
-app.use('/api/vicoba', mkobaRoutes);
-app.use('/api/rosca', roscaRoutes);
-app.use('/api/p2p', p2pRoutes);
-app.use('/api/admin', adminRoutes);
-app.use('/api/payments', callbackRoutes);
-app.use('/api/services', serviceRoutes);
-app.use('/api/marketing', marketingRoutes);
-app.use('/api/ussd', ussdRoutes);
+
+// v1 canonical prefix + backward-compatible /api prefix
+const versionPrefixes = ['/api/v1', '/api'];
+for (const prefix of versionPrefixes) {
+  app.use(`${prefix}/auth`, authRoutes);
+  app.use(`${prefix}/wallet`, walletRoutes);
+  app.use(`${prefix}/vicoba`, vicobaRoutes);
+  app.use(`${prefix}/vicoba`, mkobaRoutes);
+  app.use(`${prefix}/rosca`, roscaRoutes);
+  app.use(`${prefix}/p2p`, p2pRoutes);
+  app.use(`${prefix}/admin`, adminRoutes);
+  app.use(`${prefix}/payments`, callbackRoutes);
+  app.use(`${prefix}/services`, serviceRoutes);
+  app.use(`${prefix}/marketing`, marketingRoutes);
+  app.use(`${prefix}/ussd`, ussdRoutes);
+}
+
+// API version info
+app.get('/api/v1', (req, res) => {
+  res.json({ success: true, version: '1.0.0', docs: '/api/v1/docs' });
+});
+
+// Deprecation header for non-versioned /api routes
+app.use('/api', (req, res, next) => {
+  if (!req.path.startsWith('/v1')) {
+    res.setHeader('Deprecation', 'true');
+    res.setHeader('Sunset', new Date(Date.now() + 180 * 24 * 60 * 60 * 1000).toUTCString());
+    res.setHeader('Link', '</api/v1' + req.path + '>; rel="successor-version"');
+  }
+  next();
+});
 
 // SPA fallback: non-API routes -> index.html (React Router)
 app.get(/^\/(?!api|contracts|health).*/, (req, res, next) => {
