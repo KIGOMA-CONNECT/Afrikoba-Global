@@ -9,6 +9,21 @@
 # ============================================================
 
 services:
+  redis:
+    image: redis:7-alpine
+    container_name: afrikoba_redis
+    restart: unless-stopped
+    command: redis-server --maxmemory 128mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - afrikoba
+
   db:
     image: postgres:16-alpine
     container_name: afrikoba_db
@@ -39,9 +54,12 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       NODE_ENV: production
       PORT: 3000
+      REDIS_URL: redis://redis:6379
       DB_HOST: db
       DB_PORT: 5432
       DB_USER: ${DB_USER:-afrikoba}
@@ -81,6 +99,7 @@ services:
 
 volumes:
   db_data:
+  redis_data:
 
 networks:
   afrikoba:

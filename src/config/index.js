@@ -57,6 +57,9 @@ const config = {
     secret: process.env.USSD_SECRET || '',
   },
   trustProxy: process.env.TRUST_PROXY === 'true',
+  redis: {
+    url: process.env.REDIS_URL || '',
+  },
   sentry: {
     dsn: process.env.SENTRY_DSN || '',
     environment: process.env.SENTRY_ENVIRONMENT || process.env.NODE_ENV || 'development',

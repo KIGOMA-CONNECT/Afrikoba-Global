@@ -1,5 +1,7 @@
 const rateLimit = require('express-rate-limit');
+const RedisStore = require('rate-limit-redis');
 const config = require('../config');
+const { getRedis } = require('../config/redis');
 
 const opts = (max, label) => ({
   windowMs: config.security.rateWindowMs,
@@ -15,7 +17,18 @@ const opts = (max, label) => ({
 const skip = () => config.security.rateLimitDisabled;
 
 function makeLimiter(max, label) {
-  return rateLimit({ ...opts(max, label), skip });
+  const options = { ...opts(max, label), skip };
+
+  // Use Redis store when available (shared across replicas)
+  const redis = getRedis();
+  if (redis) {
+    options.store = new RedisStore({
+      sendCommand: (...args) => redis.call(...args),
+      prefix: `rl:${label.toLowerCase()}:`,
+    });
+  }
+
+  return rateLimit(options);
 }
 
 /** Limiter maalum kwa send-otp (brute force kwa OTP). */

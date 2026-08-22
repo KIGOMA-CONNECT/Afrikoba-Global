@@ -5,16 +5,18 @@
  * First request: processed normally, result cached.
  * Duplicate request: returns cached response (no re-execution).
  *
+ * Uses Redis when available, falls back to in-memory + DB.
  * Keys expire after 24 hours.
- * Uses an in-memory store; swap for Redis in production with P2-1.
  */
 
 const pool = require('../config/db');
+const { getRedis } = require('../config/redis');
 const logger = require('../utils/logger');
 
 const TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const TTL_SECONDS = 86400;
 
-// In-memory fallback (swap to Redis in P2-1)
+// In-memory fallback
 const cache = new Map();
 
 function cleanup() {
@@ -23,27 +25,40 @@ function cleanup() {
     if (now - entry.timestamp > TTL_MS) cache.delete(key);
   }
 }
-setInterval(cleanup, 10 * 60 * 1000); // cleanup every 10 min
+setInterval(cleanup, 10 * 60 * 1000);
 
 /**
  * Express middleware. Place BEFORE the route handler.
- * Reads `Idempotency-Key` header.
- * On first request: calls next() and captures response.
- * On duplicate: returns cached response.
  */
 function idempotent(handler) {
   return async (req, res, next) => {
     const key = req.headers['idempotency-key'];
     if (!key) return handler(req, res, next);
 
-    // Check memory cache first
-    const cached = cache.get(key);
-    if (cached && (Date.now() - cached.timestamp < TTL_MS)) {
-      res.status(cached.status).json(cached.body);
+    const redis = getRedis();
+
+    // 1. Check Redis (multi-replica safe)
+    if (redis) {
+      try {
+        const cached = await redis.get(`idem:${key}`);
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          res.status(parsed.status).json(parsed.body);
+          return;
+        }
+      } catch (err) {
+        logger.warn('IDEMPOTENCY', `Redis lookup failed: ${err.message}`);
+      }
+    }
+
+    // 2. Check in-memory fallback
+    const memCached = cache.get(key);
+    if (memCached && (Date.now() - memCached.timestamp < TTL_MS)) {
+      res.status(memCached.status).json(memCached.body);
       return;
     }
 
-    // Check DB (survives restarts)
+    // 3. Check DB (survives restarts)
     try {
       const dbCheck = await pool.query(
         'SELECT status_code, response_body FROM idempotency_keys WHERE key_value = $1 AND expires_at > NOW()',
@@ -59,7 +74,7 @@ function idempotent(handler) {
       logger.warn('IDEMPOTENCY', `DB lookup failed: ${err.message}`);
     }
 
-    // Capture response
+    // 4. Capture response
     const originalJson = res.json.bind(res);
     let capturedStatus = 200;
     let capturedBody = null;
@@ -71,15 +86,26 @@ function idempotent(handler) {
       return res;
     };
 
-    // Let handler run, then store
     const done = () => {
       if (capturedBody) {
+        const payload = JSON.stringify({ status: capturedStatus, body: capturedBody });
+
+        // Store in Redis (multi-replica)
+        if (redis) {
+          redis.setex(`idem:${key}`, TTL_SECONDS, payload).catch((err) => {
+            logger.warn('IDEMPOTENCY', `Redis store failed: ${err.message}`);
+          });
+        }
+
+        // Store in memory (single-replica)
         cache.set(key, { status: capturedStatus, body: capturedBody, timestamp: Date.now() });
+
+        // Store in DB (survives restarts)
         pool.query(
           `INSERT INTO idempotency_keys (key_value, user_id, status_code, response_body, expires_at)
            VALUES ($1, $2, $3, $4, NOW() + INTERVAL '24 hours')
            ON CONFLICT (key_value) DO NOTHING`,
-          [key, req.user?.id || null, capturedStatus, JSON.stringify(capturedBody)]
+          [key, req.user?.id || null, capturedStatus, capturedBody]
         ).catch((err) => logger.warn('IDEMPOTENCY', `DB store failed: ${err.message}`));
       }
     };
