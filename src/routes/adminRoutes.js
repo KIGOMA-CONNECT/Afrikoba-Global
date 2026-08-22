@@ -166,4 +166,25 @@ router.post('/projects/:projectId/split', async (req, res, next) => {
   }
 });
 
+// Database maintenance
+router.post('/maintenance/run', async (req, res, next) => {
+  try {
+    const { runMaintenance } = require('../services/dbMaintenanceService');
+    const result = await runMaintenance();
+    res.json({ success: true, ...result });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/maintenance/stats', async (req, res, next) => {
+  try {
+    const { getTableStats, getHealthMetrics } = require('../services/dbMaintenanceService');
+    const [stats, metrics] = await Promise.all([getTableStats(), getHealthMetrics()]);
+    res.json({ success: true, metrics, tables: stats });
+  } catch (error) {
+    next(error);
+  }
+});
+
 module.exports = router;
