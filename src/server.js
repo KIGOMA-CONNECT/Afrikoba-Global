@@ -184,6 +184,29 @@ function startServer(server) {
     const proto = server instanceof https.Server ? 'https' : 'http';
     logger.info('SERVER', `Afrikoba Global inaendeshwa kwenye ${proto}://localhost:${config.port} (${config.nodeEnv})`);
   });
+
+  // Graceful shutdown — essential for zero-downtime deploys & load balancers
+  let shuttingDown = false;
+  function shutdown(signal) {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    logger.info('SERVER', `Received ${signal}. Shutting down gracefully...`);
+    server.close(() => {
+      logger.info('SERVER', 'HTTP server closed.');
+      const pool = require('./config/db');
+      pool.end().then(() => {
+        logger.info('SERVER', 'Database pool closed. Exiting.');
+        process.exit(0);
+      }).catch(() => process.exit(1));
+    });
+    // Force exit after 30s
+    setTimeout(() => {
+      logger.error('SERVER', 'Forced shutdown after timeout.');
+      process.exit(1);
+    }, 30000).unref();
+  }
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
 // Optional TLS: kama TLS_CERT_PATH na TLS_KEY_PATH zimewekwa, tumia HTTPS.
