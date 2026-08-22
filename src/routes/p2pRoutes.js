@@ -3,6 +3,7 @@ const p2pService = require('../services/p2pService');
 const { authRequired, requireKycLevel, requireRoles } = require('../middleware/auth');
 const { requireService } = require('../middleware/serviceGuard');
 const { validate } = require('../middleware/validate');
+const { idempotent } = require('../middleware/idempotent');
 const { parsePagination } = require('../utils/pagination');
 const schemas = require('../validations/schemas');
 
@@ -64,7 +65,7 @@ router.get('/portfolio', requireService('P2P'), async (req, res, next) => {
 
 // INVEST: wekeza kwenye mradi (KYC L2) - inahitaji kujiunga na huduma ya P2P
 // TAINFUND: min_investment + max_per_investor checks
-router.post('/projects/:projectId/invest', requireService('P2P'), requireKycLevel(2), validate(schemas.p2p.invest), async (req, res, next) => {
+router.post('/projects/:projectId/invest', requireService('P2P'), requireKycLevel(2), validate(schemas.p2p.invest), idempotent(async (req, res, next) => {
   try {
     const { shares } = req.body;
     const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
@@ -73,6 +74,6 @@ router.post('/projects/:projectId/invest', requireService('P2P'), requireKycLeve
   } catch (error) {
     next(error);
   }
-});
+}));
 
 module.exports = router;

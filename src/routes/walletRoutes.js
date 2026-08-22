@@ -2,6 +2,7 @@ const express = require('express');
 const walletService = require('../services/walletService');
 const { authRequired, requireKycLevel } = require('../middleware/auth');
 const { validate } = require('../middleware/validate');
+const { idempotent } = require('../middleware/idempotent');
 const schemas = require('../validations/schemas');
 
 const router = express.Router();
@@ -20,7 +21,7 @@ router.post('/deposit/initiate', requireKycLevel(1), validate(schemas.wallet.dep
 });
 
 // Transfer wallet-to-wallet
-router.post('/transfer', validate(schemas.wallet.transfer), async (req, res, next) => {
+router.post('/transfer', validate(schemas.wallet.transfer), idempotent(async (req, res, next) => {
   try {
     const { toPhoneNumber, amount, note } = req.body;
     const result = await walletService.transferWallet(req.user.id, toPhoneNumber, amount, note);
@@ -28,10 +29,10 @@ router.post('/transfer', validate(schemas.wallet.transfer), async (req, res, nex
   } catch (error) {
     next(error);
   }
-});
+}));
 
 // Withdrawal kwenda MNO
-router.post('/withdraw', requireKycLevel(1), validate(schemas.wallet.withdraw), async (req, res, next) => {
+router.post('/withdraw', requireKycLevel(1), validate(schemas.wallet.withdraw), idempotent(async (req, res, next) => {
   try {
     const { amount, provider } = req.body;
     const result = await walletService.withdrawToMno(req.user.id, amount, provider);
@@ -39,7 +40,7 @@ router.post('/withdraw', requireKycLevel(1), validate(schemas.wallet.withdraw), 
   } catch (error) {
     next(error);
   }
-});
+}));
 
 // Salio
 router.get('/balance', async (req, res, next) => {
