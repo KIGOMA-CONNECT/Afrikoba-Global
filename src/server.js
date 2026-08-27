@@ -12,6 +12,10 @@ const config = require('./config');
 const { notFound, errorHandler } = require('./middleware/errorHandler');
 const { requestLog } = require('./middleware/requestLog');
 const { apiLimiter } = require('./middleware/rateLimiter');
+const { securityHeaders, requestValidation, trackSuspiciousActivity, strictCors, secureErrorHandler } = require('./middleware/securityHardening');
+const { validateSession } = require('./middleware/sessionManager');
+const { initDbSecurity } = require('./middleware/dbSecurity');
+const { authLimiter, otpLimiter, walletLimiter, financialLimiter, adminLimiter, webhookLimiter } = require('./middleware/granularRateLimit');
 const logger = require('./utils/logger');
 
 const authRoutes = require('./routes/authRoutes');
@@ -47,10 +51,25 @@ if (config.sentry.dsn) {
 
 const app = express();
 
+// H5: Initialize database security settings
+initDbSecurity().catch(() => {});
+
 // Trust proxy (reverse proxy / load balancer) - lazima kwa rate limiting na req.ip
 if (config.trustProxy) {
   app.set('trust proxy', 1);
 }
+
+// H1: Enhanced security headers
+app.use(securityHeaders);
+
+// H4: Request validation (content-type, suspicious user agents)
+app.use(requestValidation);
+
+// H6: Suspicious activity detection
+app.use(trackSuspiciousActivity);
+
+// H3: Session validation (check token blacklist)
+app.use(validateSession);
 
 // Security headers. CSP imesanifiwa kwa SPA (React dashboard) - inline styles,
 // blob workers (Flutter web) na connect kwa same-origin/HTTPS.
@@ -126,18 +145,18 @@ app.use('/api', apiLimiter);
 // v1 canonical prefix + backward-compatible /api prefix
 const versionPrefixes = ['/api/v1', '/api'];
 for (const prefix of versionPrefixes) {
-  app.use(`${prefix}/auth`, authRoutes);
-  app.use(`${prefix}/wallet`, walletRoutes);
-  app.use(`${prefix}/vicoba`, vicobaRoutes);
-  app.use(`${prefix}/vicoba`, mkobaRoutes);
-  app.use(`${prefix}/rosca`, roscaRoutes);
-  app.use(`${prefix}/p2p`, p2pRoutes);
-  app.use(`${prefix}/admin`, adminRoutes);
-  app.use(`${prefix}/payments`, callbackRoutes);
+  app.use(`${prefix}/auth`, authLimiter, authRoutes);
+  app.use(`${prefix}/wallet`, walletLimiter, walletRoutes);
+  app.use(`${prefix}/vicoba`, walletLimiter, vicobaRoutes);
+  app.use(`${prefix}/vicoba`, walletLimiter, mkobaRoutes);
+  app.use(`${prefix}/rosca`, walletLimiter, roscaRoutes);
+  app.use(`${prefix}/p2p`, financialLimiter, p2pRoutes);
+  app.use(`${prefix}/admin`, adminLimiter, adminRoutes);
+  app.use(`${prefix}/payments`, webhookLimiter, callbackRoutes);
   app.use(`${prefix}/services`, serviceRoutes);
   app.use(`${prefix}/marketing`, marketingRoutes);
-  app.use(`${prefix}/ussd`, ussdRoutes);
-  app.use(`${prefix}/totp`, totpRoutes);
+  app.use(`${prefix}/ussd`, webhookLimiter, ussdRoutes);
+  app.use(`${prefix}/totp`, authLimiter, totpRoutes);
   app.use(`${prefix}/currency`, currencyRoutes);
   app.use(`${prefix}/notifications`, notificationRoutes);
   app.use(`${prefix}/referrals`, referralRoutes);
@@ -179,7 +198,7 @@ app.get(/^\/(?!api|contracts|health).*/, (req, res, next) => {
 
 app.use(notFound);
 if (config.sentry.dsn) app.use(Sentry.Handlers.errorHandler());
-app.use(errorHandler);
+app.use(secureErrorHandler);
 
 // Start background jobs (reconciliation, ROSCA payout, split payment)
 if (process.env.DISABLE_CRON !== 'true') {

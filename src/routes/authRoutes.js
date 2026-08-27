@@ -196,4 +196,34 @@ router.patch('/profile', authRequired, async (req, res, next) => {
   }
 });
 
+// Refresh access token
+router.post('/refresh', async (req, res, next) => {
+  try {
+    const { refreshToken } = req.body;
+    if (!refreshToken) return res.status(400).json({ success: false, message: 'Refresh token inahitajika.' });
+
+    const { refreshAccessToken } = require('../middleware/sessionManager');
+    const result = await refreshAccessToken(refreshToken);
+    return res.json({ success: true, ...result });
+  } catch (error) {
+    if (error.statusCode) return res.status(error.statusCode).json({ success: false, message: error.message });
+    next(error);
+  }
+});
+
+// Logout (revoke token)
+router.post('/logout', authRequired, async (req, res, next) => {
+  try {
+    const { revokeToken } = require('../middleware/sessionManager');
+    const authHeader = req.headers.authorization;
+    if (authHeader) {
+      const token = authHeader.split(' ')[1];
+      await revokeToken(token);
+    }
+    return res.json({ success: true, message: 'Umeondoka.' });
+  } catch (error) {
+    next(error);
+  }
+});
+
 module.exports = router;
