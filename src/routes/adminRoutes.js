@@ -187,4 +187,72 @@ router.get('/maintenance/stats', async (req, res, next) => {
   }
 });
 
+// H18: Database backup management
+router.post('/backup/create', async (req, res, next) => {
+  try {
+    const { createBackup } = require('../services/backupService');
+    const result = createBackup();
+    res.json({ success: result.success, ...result });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/backup/status', async (req, res, next) => {
+  try {
+    const { getBackupStatus } = require('../services/backupService');
+    const status = getBackupStatus();
+    res.json({ success: true, ...status });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/backup/cleanup', async (req, res, next) => {
+  try {
+    const { cleanupOldBackups } = require('../services/backupService');
+    const result = cleanupOldBackups();
+    res.json({ success: true, ...result });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// H15: API key management
+router.get('/api-keys', async (req, res, next) => {
+  try {
+    const result = await pool.query(
+      `SELECT id, name, permissions, rate_limit, is_active, created_at
+       FROM api_keys ORDER BY created_at DESC`
+    );
+    res.json({ success: true, apiKeys: result.rows });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/api-keys', async (req, res, next) => {
+  try {
+    const { name, permissions, rate_limit } = req.body;
+    if (!name) {
+      return res.status(400).json({ success: false, message: 'Jina la API key linahitajika.' });
+    }
+    const { generateApiKey } = require('../middleware/apiKeyAuth');
+    const { plainKey, hash } = generateApiKey();
+    const result = await pool.query(
+      `INSERT INTO api_keys (name, key_hash, permissions, rate_limit)
+       VALUES ($1, $2, $3, $4) RETURNING id, name, permissions, rate_limit, created_at`,
+      [name, hash, permissions || ['read'], rate_limit || 1000]
+    );
+    res.json({
+      success: true,
+      apiKey: result.rows[0],
+      plainKey,
+      message: 'Muhtasari: Kwenye API key hii mara moja tu. Hiiwezi tena kuonekana.',
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 module.exports = router;

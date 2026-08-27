@@ -16,6 +16,11 @@ const { securityHeaders, requestValidation, trackSuspiciousActivity, strictCors,
 const { validateSession } = require('./middleware/sessionManager');
 const { initDbSecurity } = require('./middleware/dbSecurity');
 const { authLimiter, otpLimiter, walletLimiter, financialLimiter, adminLimiter, webhookLimiter } = require('./middleware/granularRateLimit');
+const { requestId, requestTimeout, sanitizeHeaders } = require('./middleware/requestHardening');
+const { validateTokenPayload } = require('./middleware/jwtHardening');
+const { validateApiKey } = require('./middleware/apiKeyAuth');
+const { sqlInjectionGuard } = require('./middleware/sqlInjectionGuard');
+const { webhookReplayProtection, verifyWebhookHmac } = require('./middleware/webhookSecurity');
 const logger = require('./utils/logger');
 
 const authRoutes = require('./routes/authRoutes');
@@ -106,6 +111,8 @@ app.use(express.json({ limit: '1mb' }));
 if (config.sentry.dsn) app.use(Sentry.Handlers.requestHandler());
 
 // Access logging + request-id
+app.use(requestId);
+app.use(requestTimeout(30000));
 app.use(requestLog);
 
 // Serve contracts (PDF)
@@ -141,6 +148,9 @@ app.get('/health/db', async (req, res) => {
 
 // API Routes - rate limited kwa jumla
 app.use('/api', apiLimiter);
+app.use('/api', sqlInjectionGuard);
+app.use('/api', validateApiKey);
+app.use('/api', validateTokenPayload);
 
 // v1 canonical prefix + backward-compatible /api prefix
 const versionPrefixes = ['/api/v1', '/api'];
@@ -152,7 +162,7 @@ for (const prefix of versionPrefixes) {
   app.use(`${prefix}/rosca`, walletLimiter, roscaRoutes);
   app.use(`${prefix}/p2p`, financialLimiter, p2pRoutes);
   app.use(`${prefix}/admin`, adminLimiter, adminRoutes);
-  app.use(`${prefix}/payments`, webhookLimiter, callbackRoutes);
+  app.use(`${prefix}/payments`, webhookLimiter, webhookReplayProtection, verifyWebhookHmac, callbackRoutes);
   app.use(`${prefix}/services`, serviceRoutes);
   app.use(`${prefix}/marketing`, marketingRoutes);
   app.use(`${prefix}/ussd`, webhookLimiter, ussdRoutes);
@@ -198,12 +208,16 @@ app.get(/^\/(?!api|contracts|health).*/, (req, res, next) => {
 
 app.use(notFound);
 if (config.sentry.dsn) app.use(Sentry.Handlers.errorHandler());
+app.use(sanitizeHeaders);
 app.use(secureErrorHandler);
 
 // Start background jobs (reconciliation, ROSCA payout, split payment)
 if (process.env.DISABLE_CRON !== 'true') {
   const { startAllJobs } = require('./jobs/runAll');
   startAllJobs();
+  // H18: Start backup scheduler
+  const { startBackupScheduler } = require('./services/backupService');
+  startBackupScheduler();
 }
 
 function startServer(server) {
