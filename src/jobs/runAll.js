@@ -3,6 +3,7 @@ const pool = require('../config/db');
 const { disburseDuePayouts } = require('../services/roscaService');
 const { reconcilePendingDeposits } = require('./reconciliationCron');
 const { runDueSplitPayments } = require('../services/splitPaymentService');
+const { processDueScheduledPayments } = require('../services/networkService');
 const { runMaintenance } = require('../services/dbMaintenanceService');
 const logger = require('../utils/logger');
 
@@ -47,7 +48,16 @@ function startAllJobs() {
     }
   });
 
-  logger.info('CRON', 'Cron Jobs zimeanzishwa (reconciliation, ROSCA payout, DB maintenance, split payment)');
+  cron.schedule('*/1 * * * *', async () => {
+    try {
+      const r = await processDueScheduledPayments();
+      if (r.processed > 0) logger.info('CRON-SCHEDULED', `Malipo yaliyopangwa yamechakatwa: ${r.processed}`);
+    } catch (e) {
+      logger.error('CRON-SCHEDULED', e.message);
+    }
+  });
+
+  logger.info('CRON', 'Cron Jobs zimeanzishwa (reconciliation, ROSCA payout, DB maintenance, split payment, scheduled payments)');
 }
 
 module.exports = { startAllJobs };

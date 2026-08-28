@@ -2,7 +2,7 @@
  * AFRIKOBA GLOBAL - COMPREHENSIVE TEST SUITE (kila hatua)
  * Huendesha mtihani wa mfumo mzima na kukusanya matokeo.
  * ============================================================ */
-const BASE = 'http://localhost:3000';
+const BASE = 'http://127.0.0.1:3000';
 const pool = require('../src/config/db');
 const config = require('../src/config');
 const { disburseDuePayouts } = require('../src/services/roscaService');
@@ -728,6 +728,112 @@ async function section(title) { console.log(`\n== ${title} ==`); }
 
   const agingR = await api('GET', `/api/vicoba/groups/${mkGId}/reports/loan-aging`, regD.data.token);
   await expect(agingR.status === 200, 'Loan aging report');
+
+  // ------------------------------------------------------------
+  await section('10. NETWORK FEATURES — Agents, Bulk, Scheduled, Remittance, Webhooks, Loyalty, Insights, Referrals');
+  // ------------------------------------------------------------
+
+  // --- F1: AGENT NETWORK ---
+  const agentPhone = '255732' + nowSuffix();
+  const areg = await register(agentPhone, 'Agent Test');
+  const agentUserId = areg.data.user.id;
+  const applyAgent = await api('POST', '/api/network/agents/apply', areg.data.token, {
+    business_name: 'Duka La Agent', owner_name: 'Agent Owner', phone: agentPhone,
+    region: 'Dar', district: 'Kinondoni', latitude: -6.7924, longitude: 39.2083
+  });
+  await expect(applyAgent.status === 201 || applyAgent.status === 200, 'Agent application submitted', `${applyAgent.status}: ${JSON.stringify(applyAgent.data)}`);
+
+  const agentList = await api('GET', '/api/network/agents', adminToken, null);
+  await expect(agentList.status === 200 && agentList.data.agents.length >= 1, 'Admin lists agents');
+
+  const agId = applyAgent.data.agent ? applyAgent.data.agent.id : (agentList.data.agents[0] && agentList.data.agents[0].id);
+  const verifyAgent = await api('POST', `/api/network/agents/${agId}/verify`, adminToken, {});
+  await expect(verifyAgent.status === 200, 'Admin verifies agent');
+
+  const nearby = await api('GET', `/api/network/agents/nearby?lat=-6.7924&lng=39.2083&radius=50`, areg.data.token, null);
+  await expect(nearby.status === 200 && nearby.data.agents.length >= 1, 'Nearby agent found');
+
+  const settle = await api('POST', '/api/network/agents/settlement', areg.data.token, { amount: 100000, type: 'DEPOSIT' });
+  await expect(settle.status === 200 && settle.data.success, 'Agent settlement deposit (float)');
+
+  const custPhone = '255733' + nowSuffix();
+  const creg = await register(custPhone, 'Customer Test');
+  const custId = creg.data.user.id;
+
+  const cashIn = await api('POST', '/api/network/agents/cash-in', areg.data.token, { phone: custPhone, amount: 10000 });
+  await expect(cashIn.status === 200 && cashIn.data.success, 'Agent cash-in credits customer', `${cashIn.status}: ${JSON.stringify(cashIn.data)}`);
+
+  const cashOut = await api('POST', '/api/network/agents/cash-out', areg.data.token, { phone: custPhone, amount: 3000 });
+  await expect(cashOut.status === 200 && cashOut.data.success, 'Agent cash-out debits customer');
+
+  const agentDash = await api('GET', '/api/network/agents/dashboard', areg.data.token, null);
+  await expect(agentDash.status === 200 && agentDash.data.dashboard, 'Agent dashboard');
+
+  // --- F2: BULK PAYMENTS ---
+  const bulkRecipPhone = '255734' + nowSuffix();
+  await register(bulkRecipPhone, 'Mfanyakazi');
+  const bulk = await api('POST', '/api/network/bulk', creg.data.token, {
+    batch_name: 'Payroll', recipients: [{ phone: bulkRecipPhone, amount: 2000, name: 'Mfanyakazi' }]
+  });
+  await expect(bulk.status === 201 || bulk.status === 200, 'Bulk batch created', `${bulk.status}: ${JSON.stringify(bulk.data)}`);
+  const procBulk = await api('POST', `/api/network/bulk/${bulk.data.batch.id}/process`, creg.data.token, {});
+  await expect(procBulk.status === 200 && procBulk.data.result.success >= 1, 'Bulk batch processed', `${procBulk.status}: ${JSON.stringify(procBulk.data)}`);
+
+  // --- F3: SCHEDULED PAYMENTS ---
+  const schedPay = await api('POST', '/api/network/scheduled', creg.data.token, {
+    recipient_phone: agentPhone, amount: 1000, type: 'TRANSFER', description: 'Kodi', scheduled_for: new Date(Date.now() - 1000).toISOString(), recurrence: 'ONCE'
+  });
+  await expect(schedPay.status === 201 || schedPay.status === 200, 'Scheduled payment created', `${schedPay.status}: ${JSON.stringify(schedPay.data)}`);
+  const schedPayList = await api('GET', '/api/network/scheduled', creg.data.token, null);
+  await expect(schedPayList.status === 200 && schedPayList.data.scheduled.length >= 1, 'Scheduled payments listed');
+  const procSched = await api('POST', '/api/network/scheduled/process', adminToken, {});
+  await expect(procSched.status === 200, 'Scheduled payments processed by admin');
+
+  // --- F4: CROSS-BORDER REMITTANCES ---
+  const corridors = await api('GET', '/api/network/remittance/corridors', creg.data.token, null);
+  await expect(corridors.status === 200 && corridors.data.corridors.length >= 1, 'Remittance corridors listed');
+  const remit = await api('POST', '/api/network/remittance/send', creg.data.token, {
+    recipient_phone: '254712345678', recipient_name: 'John Kenya', recipient_country: 'KE', from_amount: 1000
+  });
+  await expect(remit.status === 200 && remit.data.success && remit.data.result.pickup_code, 'Remittance sent to KE', `${remit.status}: ${JSON.stringify(remit.data)}`);
+  const pickup = await api('POST', '/api/network/remittance/pickup', null, {
+    pickup_code: remit.data.result.pickup_code, recipient_phone: '254712345678', recipient_name: 'John Kenya'
+  });
+  await expect(pickup.status === 200 && pickup.data.success, 'Remittance picked up');
+
+  // --- F5: WEBHOOKS ---
+  const wh = await api('POST', '/api/network/webhooks', creg.data.token, { url: 'https://example.com/webhook', events: ['transaction.completed', 'test.ping'] });
+  await expect(wh.status === 201 || wh.status === 200, 'Webhook subscription created', `${wh.status}: ${JSON.stringify(wh.data)}`);
+  const whList = await api('GET', '/api/network/webhooks', creg.data.token, null);
+  await expect(whList.status === 200 && whList.data.webhooks.length >= 1, 'Webhooks listed');
+  const whTest = await api('POST', `/api/network/webhooks/${wh.data.webhook.id}/test`, creg.data.token, {});
+  await expect(whTest.status === 200, 'Webhook test triggered');
+
+  // --- F6: MERCHANT LOYALTY ---
+  const mres = await pool.query("INSERT INTO merchants (user_id, name, business_type, phone, email) VALUES ($1,'Loyalty Biz','RETAIL',$2,'biz@test.com') RETURNING id", [custId, custPhone]);
+  const merchantId = mres.rows[0].id;
+  const prog = await api('POST', `/api/network/merchants/${merchantId}/loyalty`, creg.data.token, { name: 'Biz Rewards', points_per_currency: 1, redemption_rate: 100 });
+  await expect(prog.status === 201 || prog.status === 200, 'Loyalty program created', `${prog.status}: ${JSON.stringify(prog.data)}`);
+  const joinP = await api('POST', `/api/network/loyalty/${prog.data.program.id}/join`, creg.data.token, {});
+  await expect(joinP.status === 200, 'User joins loyalty program');
+  const earnP = await api('POST', `/api/network/loyalty/${prog.data.program.id}/earn`, creg.data.token, { amount: 5000 });
+  await expect(earnP.status === 200 && earnP.data.result.points_earned > 0, 'Loyalty points earned');
+  const balP = await api('GET', `/api/network/loyalty/${prog.data.program.id}/balance`, creg.data.token, null);
+  await expect(balP.status === 200 && balP.data.balance.points > 0, 'Loyalty balance shows points');
+
+  // --- F7: AI INSIGHTS ---
+  const insights = await api('GET', '/api/network/insights', creg.data.token, null);
+  await expect(insights.status === 200 && insights.data.insights && insights.data.insights.predictions, 'AI insights returned', `${insights.status}: ${JSON.stringify(insights.data)}`);
+
+  // --- F8: ENHANCED REFERRALS ---
+  const tiers = await api('GET', '/api/network/referrals/tiers', creg.data.token, null);
+  await expect(tiers.status === 200 && tiers.data.tiers.length >= 1, 'Referral tiers listed');
+  const refCode = await api('GET', '/api/network/referrals/code', creg.data.token, null);
+  await expect(refCode.status === 200 && refCode.data.code.referral_code, 'Referral code generated');
+  const refStats = await api('GET', '/api/network/referrals/stats', creg.data.token, null);
+  await expect(refStats.status === 200, 'Referral stats returned');
+  const refAward = await api('POST', '/api/network/referrals/award', creg.data.token, { referred_id: agentUserId });
+  await expect(refAward.status === 200 && refAward.data.success, 'Referral award paid to wallet', `${refAward.status}: ${JSON.stringify(refAward.data)}`);
 
   // ------------------------------------------------------------
   console.log('\n==============================');

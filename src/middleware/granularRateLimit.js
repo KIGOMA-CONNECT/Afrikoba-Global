@@ -10,6 +10,11 @@ const { getRedis } = require('../config/redis');
  * Create a rate limiter with Redis or in-memory store.
  */
 function createLimiter(options) {
+  // Test-mode bypass: integration tests simulate many users from one IP.
+  // Production never sets this — rate limits stay active.
+  if (process.env.DISABLE_RATE_LIMIT === 'true') {
+    return (req, res, next) => next();
+  }
   const storeOptions = {
     windowMs: options.windowMs || 15 * 60 * 1000,
     max: options.max || 100,
