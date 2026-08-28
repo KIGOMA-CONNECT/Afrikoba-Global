@@ -1023,6 +1023,102 @@ async function section(title) { console.log(`\n== ${title} ==`); }
   await expect(bizFinal.status === 200 && Number(finalBalance) === expectedBalance, `Business balance reconciled (${expectedBalance})`, `balance=${finalBalance}`);
 
   // ------------------------------------------------------------
+  await section('13. SAVINGS & CREDIT — Goals, Auto-save, Fixed deposits, Credit score, Micro-loans, Guarantors');
+  // ------------------------------------------------------------
+
+  // --- Saver user + funding ---
+  const isPhone = '255761' + nowSuffix();
+  const isUser = await register(isPhone, 'Iva Saver');
+  const isId = isUser.data.user.id;
+  await fundWallet(isId, 200000);
+
+  // --- I1: SAVINGS GOALS ---
+  const isGoal = await api('POST', '/api/savings/goals', isUser.data.token, { name: 'Nyumba', target_amount: 100000, icon: 'home' });
+  await expect(isGoal.status === 200 && isGoal.data.goal.id && Number(isGoal.data.goal.current_amount) === 0, 'Savings goal created');
+  const isGoalId = isGoal.data.goal.id;
+  const isList = await api('GET', '/api/savings/goals', isUser.data.token, null);
+  await expect(isList.status === 200 && isList.data.goals.length >= 1, 'Savings goals listed');
+  const isC1 = await api('POST', `/api/savings/goals/${isGoalId}/contribute`, isUser.data.token, { amount: 30000 });
+  await expect(isC1.status === 200 && Number(isC1.data.result.current_amount) === 30000, 'Goal contribution recorded (30000)');
+  const isBal1 = await balanceOf(isId);
+  await expect(isBal1.wallet === 170000, 'Wallet debited for goal contribution', `wallet=${isBal1.wallet}`);
+
+  // --- I2: AUTO-SAVE RULES ---
+  const isRule = await api('POST', `/api/savings/goals/${isGoalId}/auto-save`, isUser.data.token, { frequency: 'WEEKLY', amount: 5000 });
+  await expect(isRule.status === 200 && isRule.data.rule.id, 'Auto-save rule created');
+  const isRun = await api('POST', '/api/savings/auto-save/run', isUser.data.token, null);
+  await expect(isRun.status === 200 && Number(isRun.data.result.total) === 5000, 'Auto-save executed (5000)');
+  const isBal2 = await balanceOf(isId);
+  await expect(isBal2.wallet === 165000, 'Wallet debited by auto-save', `wallet=${isBal2.wallet}`);
+
+  // --- I3: FIXED DEPOSITS (matured + early) ---
+  const isFd = await api('POST', '/api/savings/deposits', isUser.data.token, { amount: 30000, term_months: 2 });
+  await expect(isFd.status === 200 && isFd.data.deposit.id, 'Fixed deposit created (2 months)');
+  const isFdId = isFd.data.deposit.id;
+  await pool.query('UPDATE fixed_deposits SET maturity_date = CURRENT_DATE - 1 WHERE id = $1', [isFdId]);
+  const isWd = await api('POST', `/api/savings/deposits/${isFdId}/withdraw`, isUser.data.token, {});
+  await expect(isWd.status === 200 && Number(isWd.data.result.payout) === 30500, 'Matured deposit pays 30500 (interest 500)');
+  const isBal3 = await balanceOf(isId);
+  await expect(isBal3.wallet === 165500, 'Maturity credited to wallet', `wallet=${isBal3.wallet}`);
+  const isFd2 = await api('POST', '/api/savings/deposits', isUser.data.token, { amount: 30000, term_months: 2 });
+  const isFd2Id = isFd2.data.deposit.id;
+  const isWd2 = await api('POST', `/api/savings/deposits/${isFd2Id}/withdraw`, isUser.data.token, { allow_early: true });
+  await expect(isWd2.status === 200 && Number(isWd2.data.result.payout) === 29400, 'Early withdrawal penalized 2% (29400)');
+  const isBal4 = await balanceOf(isId);
+  await expect(isBal4.wallet === 164900, 'Early withdrawal credited to wallet', `wallet=${isBal4.wallet}`);
+  const isSum = await api('GET', '/api/savings/summary', isUser.data.token, null);
+  await expect(isSum.status === 200 && Number(isSum.data.summary.goalBalance) === 35000 && Number(isSum.data.summary.activeDeposits) === 0, 'Savings summary correct (goal balance 35000)');
+
+  // --- I6: CREDIT SCORE ---
+  const isCs = await api('POST', '/api/credit/score/recompute', isUser.data.token, null);
+  const isLimit = Math.round((50000 + isCs.data.result.score * 250) / 1000) * 1000;
+  await expect(isCs.status === 200 && isCs.data.result.score >= 300 && Number(isCs.data.result.credit_limit) === isLimit, 'Credit score recomputed with matching limit', `score=${isCs.data.result.score}`);
+
+  // --- I4: MICRO-LOAN APPLICATION ---
+  const isLoan = await api('POST', '/api/credit/loans', isUser.data.token, { amount: 100000, term_months: 3, interest_rate: 5 });
+  await expect(isLoan.status === 200 && isLoan.data.loan.status === 'PENDING', 'Micro-loan application submitted');
+  const isLoanId = isLoan.data.loan.id;
+
+  // --- I9: GUARANTOR ---
+  const isGPhone = '255762' + nowSuffix();
+  const isGuarantor = await register(isGPhone, 'Dhamini');
+  const isGuarId = isGuarantor.data.user.id;
+  await fundWallet(isGuarId, 100000);
+  const isGAdd = await api('POST', `/api/credit/loans/${isLoanId}/guarantors`, isUser.data.token, { phone: isGPhone });
+  await expect(isGAdd.status === 200 && isGAdd.data.guarantor.id, 'Guarantor invited');
+  const isGAccept = await api('POST', `/api/credit/loans/${isLoanId}/guarantors/respond`, isGuarantor.data.token, { accept: true });
+  await expect(isGAccept.status === 200 && Number(isGAccept.data.result.blocked_amount) === 20000, 'Guarantor accepted, 20000 reserved');
+  const isGBal = await balanceOf(isGuarId);
+  await expect(isGBal.wallet === 80000 && isGBal.locked === 20000, 'Guarantee funds reserved in locked balance');
+
+  // --- ADMIN APPROVE + DISBURSE ---
+  const isApr = await api('POST', `/api/credit/admin/loans/${isLoanId}/approve`, adminToken, null);
+  await expect(isApr.status === 200 && isApr.data.loan.status === 'APPROVED', 'Admin approves micro-loan');
+  const isDis = await api('POST', `/api/credit/admin/loans/${isLoanId}/disburse`, adminToken, null);
+  await expect(isDis.status === 200 && Number(isDis.data.result.due_amount) === 105000, 'Admin disburses loan (due 105000)');
+  const isGBal2 = await balanceOf(isGuarId);
+  await expect(isGBal2.wallet === 100000 && isGBal2.locked === 0, 'Guarantee released after disbursement');
+  const isBal5 = await balanceOf(isId);
+  await expect(isBal5.wallet === 264900, 'Loan credited to wallet', `wallet=${isBal5.wallet}`);
+
+  // --- I5/I7: INSTALLMENTS + EARLY PAYOFF ---
+  const isSch = await api('GET', `/api/credit/loans/${isLoanId}/schedule`, isUser.data.token, null);
+  await expect(isSch.status === 200 && isSch.data.schedule.length === 3, '3 installments generated');
+  const isI1 = isSch.data.schedule[0];
+  const isPay1 = await api('POST', `/api/credit/loans/${isLoanId}/installments/${isI1.id}/pay`, isUser.data.token, {});
+  await expect(isPay1.status === 200 && Number(isPay1.data.result.paid) === 35000, 'Installment 1 paid (35000)');
+  const isBal6 = await balanceOf(isId);
+  await expect(isBal6.wallet === 229900, 'Installment debited from wallet', `wallet=${isBal6.wallet}`);
+  const isPo = await api('POST', `/api/credit/loans/${isLoanId}/payoff`, isUser.data.token, {});
+  await expect(isPo.status === 200 && Number(isPo.data.result.paid) === 70000 && isPo.data.result.status === 'REPAID', 'Loan paid off early (70000, remaining installments waived)');
+  const isBal7 = await balanceOf(isId);
+  await expect(isBal7.wallet === 159900, 'Final wallet reconciled (159900)', `wallet=${isBal7.wallet}`);
+
+  // --- I10: CREDIT REPORT ---
+  const isRep = await api('GET', '/api/credit/report', isUser.data.token, null);
+  await expect(isRep.status === 200 && isRep.data.report.totalLoanCount === 1 && isRep.data.report.activeLoans === 0, 'Credit report correct (1 loan repaid)');
+
+  // ------------------------------------------------------------
   console.log('\n==============================');
   console.log(`RESULT: ${passed} PASSED, ${failed} FAILED`);
   if (failures.length) {
