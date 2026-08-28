@@ -302,4 +302,34 @@ router.get('/analytics/averages', authRequired, async (req, res, next) => {
   }
 });
 
+// ===== B11: ACCOUNT STATEMENTS =====
+
+const statementService = require('../services/statementService');
+
+router.get('/statements', authRequired, async (req, res, next) => {
+  try {
+    const { startDate, endDate, type, minAmount, maxAmount, limit, offset } = req.query;
+    const statement = await statementService.getStatement(req.user.id, {
+      startDate, endDate, type,
+      minAmount: minAmount ? parseFloat(minAmount) : undefined,
+      maxAmount: maxAmount ? parseFloat(maxAmount) : undefined,
+      limit: limit ? parseInt(limit) : 100,
+      offset: offset ? parseInt(offset) : 0,
+    });
+    res.json({ success: true, ...statement });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/statements/generate', authRequired, async (req, res, next) => {
+  try {
+    const { startDate, endDate, type } = req.query;
+    const data = await statementService.generateStatementData(req.user.id, { startDate, endDate, type });
+    res.json({ success: true, statement: data });
+  } catch (error) {
+    next(error);
+  }
+});
+
 module.exports = router;
