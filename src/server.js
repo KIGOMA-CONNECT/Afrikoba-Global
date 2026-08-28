@@ -45,6 +45,7 @@ const smartRoutes = require('./routes/smartRoutes');
 const ecosystemRoutes = require('./routes/ecosystemRoutes');
 const networkRoutes = require('./routes/networkRoutes');
 const familyRoutes = require('./routes/familyRoutes');
+const businessRoutes = require('./routes/businessRoutes');
 const swaggerUi = require('swagger-ui-express');
 const { swaggerSpec } = require('./config/swagger');
 
@@ -183,6 +184,7 @@ for (const prefix of versionPrefixes) {
   app.use(`${prefix}/eco`, walletLimiter, ecosystemRoutes);
   app.use(`${prefix}/network`, walletLimiter, networkRoutes);
   app.use(`${prefix}/family`, walletLimiter, familyRoutes);
+  app.use(`${prefix}/business`, walletLimiter, businessRoutes);
 }
 
 // API version info

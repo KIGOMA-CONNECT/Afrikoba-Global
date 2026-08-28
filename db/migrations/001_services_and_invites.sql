@@ -27,7 +27,12 @@ CREATE TABLE IF NOT EXISTS vicoba_invites (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_vicoba_invites_phone ON vicoba_invites(phone_number, status);
-ALTER TABLE vicoba_invites ADD CONSTRAINT uq_vicoba_invites_group_phone UNIQUE (group_id, phone_number);
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'uq_vicoba_invites_group_phone') THEN
+    ALTER TABLE vicoba_invites ADD CONSTRAINT uq_vicoba_invites_group_phone UNIQUE (group_id, phone_number);
+  END IF;
+END $$;
 
 -- Backfill: every existing user already has the WALLET service
 INSERT INTO user_service_subscriptions (user_id, service_key)

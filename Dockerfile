@@ -40,8 +40,9 @@ USER afrikoba
 
 EXPOSE 3000
 
-# Healthcheck kwa orchestrator
-HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-  CMD wget -q -O - http://localhost:3000/health || exit 1
+# Healthcheck kwa orchestrator pamoja na DB readiness
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD wget -q -O - http://localhost:3000/health/db || exit 1
 
-CMD ["node", "src/server.js"]
+# Auto-migrate DB kisha anzisha API (runMigrations ni idempotent)
+CMD ["sh", "-c", "node scripts/runMigrations.js && node src/server.js"]

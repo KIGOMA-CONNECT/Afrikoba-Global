@@ -913,6 +913,116 @@ async function section(title) { console.log(`\n== ${title} ==`); }
   await expect(roundSum.status === 200 && roundSum.data.summary, 'Round-up summary returned');
 
   // ------------------------------------------------------------
+  await section('12. BUSINESS & COMMERCE OS — Accounts, Links, Invoices, Inventory, Payroll, Suppliers, Analytics, Loans, Tax, Staff/POS');
+  // ------------------------------------------------------------
+
+  // --- H1: BUSINESS ACCOUNTS ---
+  const bizPhone = '255751' + nowSuffix();
+  const bizOwner = await register(bizPhone, 'Biz Owner');
+  const bizOwnerId = bizOwner.data.user.id;
+  await fundWallet(bizOwnerId, 300000);
+
+  const bizReg = await api('POST', '/api/business/accounts', bizOwner.data.token, { business_name: 'Mkulima Fresh Ltd', business_type: 'AGRICULTURE', tin_number: '142-231-889' });
+  await expect(bizReg.status === 200 && bizReg.data.business.id, 'Business account created', `${bizReg.status}: ${JSON.stringify(bizReg.data)}`);
+  const bizId = bizReg.data.business.id;
+
+  const bizList = await api('GET', '/api/business/accounts', bizOwner.data.token, null);
+  await expect(bizList.status === 200 && bizList.data.businesses.length >= 1, 'Businesses listed');
+
+  const fundBiz = await api('POST', `/api/business/accounts/${bizId}/fund`, bizOwner.data.token, { amount: 100000 });
+  await expect(fundBiz.status === 200 && fundBiz.data.result.success, 'Business funded from wallet');
+
+  const bizWd = await api('POST', `/api/business/accounts/${bizId}/withdraw`, bizOwner.data.token, { amount: 20000 });
+  await expect(bizWd.status === 200 && bizWd.data.result.success, 'Business withdraw to wallet');
+
+  // --- H2: PAYMENT LINKS ---
+  const link = await api('POST', `/api/business/accounts/${bizId}/payment-links`, bizOwner.data.token, { title: 'Mchuzi Kamba', amount: 5000 });
+  await expect(link.status === 200 && link.data.link.reference, 'Payment link created');
+  const linkPayerPhone = '255752' + nowSuffix();
+  const linkPayer = await register(linkPayerPhone, 'Link Payer');
+  await fundWallet(linkPayer.data.user.id, 20000);
+  const linkPay = await api('POST', `/api/business/payment-links/${link.data.link.reference}/pay`, linkPayer.data.token, {});
+  await expect(linkPay.status === 200 && linkPay.data.result.success, 'Payment link paid');
+
+  const linkList = await api('GET', `/api/business/accounts/${bizId}/payment-links`, bizOwner.data.token, null);
+  await expect(linkList.status === 200 && linkList.data.links.length >= 1, 'Payment links listed');
+
+  // --- H3: INVOICES ---
+  const bizInv = await api('POST', `/api/business/accounts/${bizId}/invoices`, bizOwner.data.token, { customer_name: 'Mama Nguo', customer_phone: '255753' + nowSuffix(), amount: 10000, tax_percent: 5 });
+  await expect(bizInv.status === 200 && bizInv.data.invoice.invoice_number, 'Invoice created with number');
+  await expect(Number(bizInv.data.invoice.total_amount) === 10500 && Number(bizInv.data.invoice.tax_amount) === 500, 'Invoice tax computed (5% = 500)');
+
+  const custPhoneI = '255753' + nowSuffix();
+  const custI = await register(custPhoneI, 'Invoice Customer');
+  await fundWallet(custI.data.user.id, 20000);
+  const invPay = await api('POST', `/api/business/invoices/${bizInv.data.invoice.id}/pay`, custI.data.token, {});
+  await expect(invPay.status === 200 && invPay.data.result.success, 'Invoice paid by customer');
+
+  // --- H4: INVENTORY ---
+  const p1 = await api('POST', `/api/business/accounts/${bizId}/products`, bizOwner.data.token, { name: 'Mahindi', sku: 'MAH-01', unit_price: 2000, stock_quantity: 50, low_stock_threshold: 10 });
+  const p2 = await api('POST', `/api/business/accounts/${bizId}/products`, bizOwner.data.token, { name: 'Sukari', sku: 'SUK-01', unit_price: 1000, stock_quantity: 3 });
+  await expect(p1.status === 200 && p2.status === 200, 'Products added to inventory');
+  const stockUpd = await api('PATCH', `/api/business/products/${p1.data.product.id}/stock`, bizOwner.data.token, { delta: 20 });
+  await expect(stockUpd.status === 200 && Number(stockUpd.data.product.stock_quantity) === 70, 'Stock restocked');
+  const lowStock = await api('GET', `/api/business/accounts/${bizId}/products/low-stock`, bizOwner.data.token, null);
+  await expect(lowStock.status === 200 && lowStock.data.products.length >= 1, 'Low-stock alert raised');
+
+  // --- H5: PAYROLL ---
+  const emp1 = await register('255754' + nowSuffix(), 'Emp One');
+  const emp2 = await register('255755' + nowSuffix(), 'Emp Two');
+  const payroll = await api('POST', `/api/business/accounts/${bizId}/payroll`, bizOwner.data.token, {
+    period: '2026-08', employees: [{ phone: emp1.data.user.phone_number, name: 'Emp One', amount: 20000 }, { phone: emp2.data.user.phone_number, name: 'Emp Two', amount: 15000 }]
+  });
+  await expect(payroll.status === 200 && payroll.data.result.success && Number(payroll.data.result.payroll_run.total_amount) === 35000, 'Payroll run processed', `${payroll.status}: ${JSON.stringify(payroll.data)}`);
+  const empBal = await pool.query('SELECT wallet_balance FROM users WHERE id = $1', [emp1.data.user.id]);
+  await expect(Number(empBal.rows[0].wallet_balance) === 20000, 'Employee wallet credited 20000');
+
+  // --- H6: SUPPLIERS ---
+  const sup = await api('POST', `/api/business/accounts/${bizId}/suppliers`, bizOwner.data.token, { name: 'Bega Kwa Bega Supplies', phone: '255756' + nowSuffix() });
+  await expect(sup.status === 200 && sup.data.supplier.id, 'Supplier added');
+  const supPay = await api('POST', `/api/business/accounts/${bizId}/suppliers/${sup.data.supplier.id}/pay`, bizOwner.data.token, { amount: 10000 });
+  await expect(supPay.status === 200 && supPay.data.result.success, 'Supplier payment made');
+  const supList = await api('GET', `/api/business/accounts/${bizId}/suppliers`, bizOwner.data.token, null);
+  await expect(supList.status === 200 && Number(supList.data.suppliers[0].total_paid) === 10000, 'Supplier total paid tracked');
+
+  // --- H7: SALES ANALYTICS ---
+  const analytics = await api('GET', `/api/business/accounts/${bizId}/analytics`, bizOwner.data.token, null);
+  await expect(analytics.status === 200 && Number(analytics.data.analytics.revenue.total) === 15500, 'Sales analytics revenue = 15500', `revenue=${JSON.stringify(analytics.data?.analytics?.revenue)}`);
+
+  // --- H8: BUSINESS LOANS ---
+  const loan = await api('POST', `/api/business/accounts/${bizId}/loans`, bizOwner.data.token, { amount: 100000, interest_rate: 10, term_months: 12 });
+  await expect(loan.status === 200 && loan.data.loan.status === 'PENDING', 'Business loan application submitted');
+  const loanList = await api('GET', '/api/business/loans', bizOwner.data.token, null);
+  await expect(loanList.status === 200 && loanList.data.loans.length >= 1, 'Business loans listed for owner');
+  const loanApprove = await api('POST', `/api/business/admin/loans/${loan.data.loan.id}/approve`, adminToken, { note: 'Inakubaliwa' });
+  await expect(loanApprove.status === 200 && loanApprove.data.loan.status === 'APPROVED', 'Admin approves loan');
+  const loanDisburse = await api('POST', `/api/business/admin/loans/${loan.data.loan.id}/disburse`, adminToken, {});
+  await expect(loanDisburse.status === 200 && loanDisburse.data.result.success && Number(loanDisburse.data.result.due_amount) === 110000, 'Admin disburses loan (due 110000)', `${loanDisburse.status}: ${JSON.stringify(loanDisburse.data)}`);
+  const repay = await api('POST', `/api/business/loans/${loan.data.loan.id}/repay`, bizOwner.data.token, { amount: 110000 });
+  await expect(repay.status === 200 && repay.data.result.status === 'REPAID', 'Loan fully repaid');
+
+  // --- H9: TAX & COMPLIANCE ---
+  const tax = await api('GET', `/api/business/accounts/${bizId}/tax`, bizOwner.data.token, null);
+  await expect(tax.status === 200 && Number(tax.data.summary.collected_tax) === 500, 'Tax summary collected 500', `tax=${JSON.stringify(tax.data?.summary)}`);
+
+  // --- H10: STAFF + POS ---
+  const staff = await api('POST', `/api/business/accounts/${bizId}/staff`, bizOwner.data.token, { user_phone: emp1.data.user.phone_number, role: 'CASHIER' });
+  await expect(staff.status === 200 && staff.data.staff.id, 'Staff member added (cashier)');
+  const staffList = await api('GET', `/api/business/accounts/${bizId}/staff`, bizOwner.data.token, null);
+  await expect(staffList.status === 200 && staffList.data.staff.length >= 1, 'Staff list returned');
+
+  const posOpen = await api('POST', `/api/business/accounts/${bizId}/pos/open`, bizOwner.data.token, { opening_cash: 20000 });
+  await expect(posOpen.status === 200 && posOpen.data.session.id, 'POS session opened');
+  const posClose = await api('POST', `/api/business/pos/${posOpen.data.session.id}/close`, bizOwner.data.token, { closing_cash: 25000, sales_total: 5000 });
+  await expect(posClose.status === 200 && Number(posClose.data.result.deposited) === 5000, 'POS session closed, sales deposited');
+
+  // --- Final balance check ---
+  const bizFinal = await api('GET', `/api/business/accounts/${bizId}`, bizOwner.data.token, null);
+  const finalBalance = bizFinal.data?.business?.balance;
+  const expectedBalance = 100000 - 20000 + 5000 + 10500 - 35000 - 10000 + 100000 - 110000 + 5000;
+  await expect(bizFinal.status === 200 && Number(finalBalance) === expectedBalance, `Business balance reconciled (${expectedBalance})`, `balance=${finalBalance}`);
+
+  // ------------------------------------------------------------
   console.log('\n==============================');
   console.log(`RESULT: ${passed} PASSED, ${failed} FAILED`);
   if (failures.length) {

@@ -43,7 +43,10 @@ docker compose up -d --build
 - `db`: PostgreSQL 16, schema + seed ndani ya initdb (fresh DB pekee), backup
   ya nightly kwenye `./backups`, volume `db_data`.
 - `app`: image ya multi-stage (dashboard imejengwa ndani), non-root user,
-  healthcheck, auto-restart.
+  healthcheck, auto-restart. Kwenye startup, app **inatumia migrations**
+  (`scripts/runMigrations.js`: `db/migrations/*.sql` — idempotent) kabla ya
+  kuanza API. Hivyo fresh DB inapata schema nzima (001–NNN), sio `schema.sql`
+  pekee. Sawa kutumia: `docker compose exec app node scripts/runMigrations.js`.
 - Backup ya DB: `scripts/backup-db.sh` (pg_dump custom-format, retention 14d).
   Add kwenye cron: `0 2 * * * bash /opt/afrikoba/scripts/backup-db.sh`.
 
