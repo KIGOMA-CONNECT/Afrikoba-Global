@@ -117,7 +117,7 @@ async function section(title) { console.log(`\n== ${title} ==`); }
   await expect(r6.status === 400 && /mara nyingi|mpya/.test(r6.data.message), 'OTP inazuiwa baada ya majaribio 5', r6.data.message);
 
   const cooldown = await api('POST', '/api/auth/send-otp', null, { phoneNumber: phoneA });
-  await expect(cooldown.status === 429, 'Send-OTP ina cooldown (anti SMS-bombing)', `${cooldown.status}`);
+  await expect(cooldown.status === 429 && /Subiri/.test(cooldown.data.message || '') && cooldown.data.code !== 'INTERNAL_ERROR', 'Send-OTP ina cooldown (anti SMS-bombing)', `${cooldown.status} ${cooldown.data.message}`);
 
   const localPhone = '0' + String(Date.now()).slice(-9);
   const localOtp = await api('POST', '/api/auth/send-otp', null, { phoneNumber: localPhone });

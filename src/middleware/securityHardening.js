@@ -180,12 +180,13 @@ function secureErrorHandler(err, req, res, next) {
   // Log the full error internally
   logger.error('ERROR', `${err.message} - ${req.method} ${req.path} - ${req.ip}`);
 
-  // Send sanitized error to client
+  // Send sanitized error to client (keep real messages for 4xx business errors)
   const statusCode = err.statusCode || err.status || 500;
+  const isServerError = statusCode >= 500;
   const response = {
     success: false,
-    message: isDev ? err.message : 'Hitilafu ya ndani ya server.',
-    code: err.code || 'INTERNAL_ERROR',
+    message: isServerError ? (isDev ? err.message : 'Hitilafu ya ndani ya server.') : err.message,
+    code: err.code || (isServerError ? 'INTERNAL_ERROR' : 'VALIDATION_ERROR'),
   };
 
   // Include request ID if available
