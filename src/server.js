@@ -39,6 +39,7 @@ const currencyRoutes = require('./routes/currencyRoutes');
 const notificationRoutes = require('./routes/notificationRoutes');
 const referralRoutes = require('./routes/referralRoutes');
 const analyticsRoutes = require('./routes/analyticsRoutes');
+const bankingRoutes = require('./routes/bankingRoutes');
 const swaggerUi = require('swagger-ui-express');
 const { swaggerSpec } = require('./config/swagger');
 
@@ -171,6 +172,7 @@ for (const prefix of versionPrefixes) {
   app.use(`${prefix}/notifications`, notificationRoutes);
   app.use(`${prefix}/referrals`, referralRoutes);
   app.use(`${prefix}/analytics`, analyticsRoutes);
+  app.use(`${prefix}/banking`, walletLimiter, bankingRoutes);
 }
 
 // API version info
