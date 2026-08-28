@@ -25,6 +25,7 @@ with bank-grade security and multi-currency support.
 | **G** | Family & Next-Gen G1–G5 | Family/shared wallets (invite, join, contribute, spend, transfer), multi-currency balances + FX, biometric/device binding with challenge, offline operation queue + sync, round-up savings |
 | **H** | Business & Commerce H1–H10 | Business accounts & withdrawals, payment links, tax-aware invoicing, inventory with low-stock alerts, batch payroll, supplier payments, sales analytics, business loans (apply → admin approve → disburse → repay), tax/compliance register, staff roles + POS sessions |
 | **I** | Savings & Credit I1–I10 | Savings goals with contributions, auto-save rules (daily/weekly/monthly), fixed deposits with maturity interest & early-withdrawal penalty, credit score & limit engine, personal micro-loans with installment schedules + early payoff (waives remaining installments), guarantors (20% reserved until disbursement), credit report |
+| **J** | Virtual Cards J1–J6 | On-demand virtual Visa/Mastercard-style cards (Luhn-valid PAN + single-view CVV, masked storage, hashed PAN/CVV), daily & per-transaction limits, freeze/unfreeze, block (reported lost), purchase authorization with wallet holds (AUTH_HOLD → locked_balance), merchant settlement releasing the hold, pre-settlement refunds, card statement & monthly spend summary |
 
 Additional modules: VICOBA & M-Koba automation (constitution, shares, meetings with fines,
 profit distribution, member/loan-ageing reports), ROSCA engine, P2P investment marketplace with
@@ -100,6 +101,7 @@ Key route families:
 | `/business` | Business & Commerce OS (H-series) |
 | `/savings` | Savings goals, auto-save rules, fixed deposits, savings summary (I-series) |
 | `/credit` | Credit score & limit, micro-loans, installments, guarantors, credit report (I-series) |
+| `/cards` | Virtual cards: issue, limits, freeze/block, purchase authorization, settle/refund (admin), statement, summary (J-series) |
 | `/payments` | Payment webhooks (AzamPay callbacks, HMAC protected) |
 | `/ussd` | USSD gateway |
 | `/currency` | FX rates |
@@ -152,8 +154,8 @@ of the bundled policies (`PRIVACY_POLICY.md`, `TERMS_OF_SERVICE.md`,
 
 ## Testing
 
-- `scripts/test-all.js` — full integration suite through the live API (248 checks across
-  layers A–I). Run against a server started with `RATE_LIMIT_DISABLED=true`.
+- `scripts/test-all.js` — full integration suite through the live API (268 checks across
+  layers A–J). Run against a server started with `RATE_LIMIT_DISABLED=true`.
 - `scripts/test-p2p.js`, `scripts/security-test.js` — focused suites (P2P escrow, security).
 
 CI (`.github/workflows/ci.yml`) runs the backend suite against a Postgres service

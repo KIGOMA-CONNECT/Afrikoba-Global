@@ -1119,6 +1119,80 @@ async function section(title) { console.log(`\n== ${title} ==`); }
   await expect(isRep.status === 200 && isRep.data.report.totalLoanCount === 1 && isRep.data.report.activeLoans === 0, 'Credit report correct (1 loan repaid)');
 
   // ------------------------------------------------------------
+  await section('14. VIRTUAL CARDS — Issue, Limits, Authorization Holds, Settlement, Refunds');
+  // ------------------------------------------------------------
+
+  const jcPhone = '255771' + nowSuffix();
+  const jcUser = await register(jcPhone, 'Card Holder');
+  const jcId = jcUser.data.user.id;
+  await fundWallet(jcId, 100000);
+
+  // --- J1: ISSUE ---
+  const jcIssue = await api('POST', '/api/cards', jcUser.data.token, { scheme: 'VISA', daily_limit: 60000, per_txn_limit: 40000 });
+  const jcPan = jcIssue.data.pan;
+  const jcCvv = jcIssue.data.cvv;
+  const luhnOk = (pan) => { let s = 0, alt = false; for (let i = pan.length - 1; i >= 0; i--) { let d = +pan[i]; if (alt) { d *= 2; if (d > 9) d -= 9; } s += d; alt = !alt; } return s % 10 === 0; };
+  await expect(jcIssue.status === 200 && jcIssue.data.card.id && jcPan.length === 16 && luhnOk(jcPan) && /^\*\*\*\* \*\*\*\* \*\*\*\* \d{4}$/.test(jcIssue.data.card.masked_number) && String(jcCvv).length === 3, 'Virtual card issued (valid Luhn PAN, masked, cvv)');
+  const jcCardId = jcIssue.data.card.id;
+
+  const jcList = await api('GET', '/api/cards', jcUser.data.token, null);
+  await expect(jcList.status === 200 && jcList.data.cards.length === 1, 'Cards listed');
+  const jcDetail = await api('GET', `/api/cards/${jcCardId}`, jcUser.data.token, null);
+  await expect(jcDetail.status === 200 && !jcDetail.data.card.card_number_hash && !jcDetail.data.card.pan, 'Card detail masked (no PAN returned)');
+
+  // --- J2: LIMITS ---
+  const jcLim = await api('POST', `/api/cards/${jcCardId}/limits`, jcUser.data.token, { daily_limit: 60000, per_txn_limit: 40000 });
+  await expect(jcLim.status === 200 && Number(jcLim.data.card.daily_limit) === 60000, 'Card limits updated');
+
+  // --- J3: AUTHORIZATION (hold) ---
+  const jcA = await api('POST', `/api/cards/${jcCardId}/authorize`, jcUser.data.token, { merchant_name: 'Karibu Store', amount: 30000, cvv: jcCvv });
+  await expect(jcA.status === 200 && jcA.data.result.status === 'AUTH_HOLD', 'Purchase authorized (hold 30000)');
+  const jcAref = jcA.data.result.auth_reference;
+  const jcBalA = await balanceOf(jcId);
+  await expect(jcBalA.wallet === 70000 && jcBalA.locked === 30000, 'Wallet debited, 30000 on hold', `w=${jcBalA.wallet} l=${jcBalA.locked}`);
+
+  const jcOverP = await api('POST', `/api/cards/${jcCardId}/authorize`, jcUser.data.token, { merchant_name: 'Expensive Ltd', amount: 45000, cvv: jcCvv });
+  await expect(jcOverP.status === 400, 'Over per-transaction limit blocked');
+  const jcOverD = await api('POST', `/api/cards/${jcCardId}/authorize`, jcUser.data.token, { merchant_name: 'Big Store', amount: 35000, cvv: jcCvv });
+  await expect(jcOverD.status === 400, 'Over daily remaining limit blocked');
+
+  // --- FREEZE / UNFREEZE ---
+  const jcFr = await api('POST', `/api/cards/${jcCardId}/freeze`, jcUser.data.token, { freeze: true });
+  await expect(jcFr.status === 200 && jcFr.data.result.status === 'FROZEN', 'Card frozen');
+  const jcFrAuth = await api('POST', `/api/cards/${jcCardId}/authorize`, jcUser.data.token, { merchant_name: 'Frozen Stop', amount: 5000, cvv: jcCvv });
+  await expect(jcFrAuth.status === 403, 'Frozen card rejects purchase');
+  const jcUn = await api('POST', `/api/cards/${jcCardId}/freeze`, jcUser.data.token, { freeze: false });
+  await expect(jcUn.status === 200 && jcUn.data.result.status === 'ACTIVE', 'Card unfrozen');
+
+  // --- J4: SETTLEMENT ---
+  const jcSettle = await api('POST', '/api/cards/admin/settle', adminToken, { auth_reference: jcAref });
+  await expect(jcSettle.status === 200 && jcSettle.data.result.status === 'SETTLED', 'Merchant settlement processed');
+  const jcBalS = await balanceOf(jcId);
+  await expect(jcBalS.wallet === 70000 && jcBalS.locked === 0, 'Hold released on settlement', `w=${jcBalS.wallet} l=${jcBalS.locked}`);
+
+  // --- J5: REFUND (pre-settlement) ---
+  const jcD = await api('POST', `/api/cards/${jcCardId}/authorize`, jcUser.data.token, { merchant_name: 'Duka Mkubwa', amount: 10000, cvv: jcCvv });
+  const jcDref = jcD.data.result.auth_reference;
+  const jcBalD = await balanceOf(jcId);
+  await expect(jcBalD.wallet === 60000 && jcBalD.locked === 10000, 'Second hold 10000', `w=${jcBalD.wallet} l=${jcBalD.locked}`);
+  const jcRefund = await api('POST', '/api/cards/admin/refund', adminToken, { auth_reference: jcDref });
+  await expect(jcRefund.status === 200 && jcRefund.data.result.status === 'REFUNDED', 'Refund processed');
+  const jcBalR = await balanceOf(jcId);
+  await expect(jcBalR.wallet === 70000 && jcBalR.locked === 0, 'Refund returns funds to wallet', `w=${jcBalR.wallet} l=${jcBalR.locked}`);
+
+  // --- J6: STATEMENT & SUMMARY ---
+  const jcStmt = await api('GET', `/api/cards/${jcCardId}/transactions`, jcUser.data.token, null);
+  await expect(jcStmt.status === 200 && jcStmt.data.result.transactions.length >= 5, 'Card statement returned (hold/settled/declined/refund rows)');
+  const jcSum = await api('GET', '/api/cards/summary', jcUser.data.token, null);
+  await expect(jcSum.status === 200 && jcSum.data.summary.totalCards === 1 && jcSum.data.summary.activeCards === 1 && Number(jcSum.data.summary.spendThisMonth) === 30000, 'Card summary correct (spend 30000)');
+
+  // --- BLOCK (reported lost) ---
+  const jcBlk = await api('POST', `/api/cards/${jcCardId}/block`, jcUser.data.token, {});
+  await expect(jcBlk.status === 200 && jcBlk.data.result.status === 'BLOCKED', 'Card blocked (reported lost)');
+  const jcBlkAuth = await api('POST', `/api/cards/${jcCardId}/authorize`, jcUser.data.token, { merchant_name: 'Last Try', amount: 1000, cvv: jcCvv });
+  await expect(jcBlkAuth.status === 403, 'Blocked card rejects purchase');
+
+  // ------------------------------------------------------------
   console.log('\n==============================');
   console.log(`RESULT: ${passed} PASSED, ${failed} FAILED`);
   if (failures.length) {
