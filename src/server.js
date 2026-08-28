@@ -49,6 +49,7 @@ const businessRoutes = require('./routes/businessRoutes');
 const savingsRoutes = require('./routes/savingsRoutes');
 const creditRoutes = require('./routes/creditRoutes');
 const cardRoutes = require('./routes/cardRoutes');
+const bapRoutes = require('./routes/bapRoutes');
 const swaggerUi = require('swagger-ui-express');
 const { swaggerSpec } = require('./config/swagger');
 
@@ -191,6 +192,7 @@ for (const prefix of versionPrefixes) {
   app.use(`${prefix}/savings`, walletLimiter, savingsRoutes);
   app.use(`${prefix}/credit`, walletLimiter, creditRoutes);
   app.use(`${prefix}/cards`, walletLimiter, cardRoutes);
+  app.use(`${prefix}/bap`, walletLimiter, bapRoutes);
 }
 
 // API version info

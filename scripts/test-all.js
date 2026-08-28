@@ -3,6 +3,8 @@
  * Huendesha mtihani wa mfumo mzima na kukusanya matokeo.
  * ============================================================ */
 const BASE = 'http://127.0.0.1:3000';
+const nodeCrypto = require('crypto');
+const http = require('http');
 const pool = require('../src/config/db');
 const config = require('../src/config');
 const { disburseDuePayouts } = require('../src/services/roscaService');
@@ -1191,6 +1193,100 @@ async function section(title) { console.log(`\n== ${title} ==`); }
   await expect(jcBlk.status === 200 && jcBlk.data.result.status === 'BLOCKED', 'Card blocked (reported lost)');
   const jcBlkAuth = await api('POST', `/api/cards/${jcCardId}/authorize`, jcUser.data.token, { merchant_name: 'Last Try', amount: 1000, cvv: jcCvv });
   await expect(jcBlkAuth.status === 403, 'Blocked card rejects purchase');
+
+  // ------------------------------------------------------------
+  await section('15. PARTNER BANKING (BaaS) — Apply, Approve, Signed Payouts, Webhooks');
+  // ------------------------------------------------------------
+
+  const webhookEvents = [];
+  const webSrv = http.createServer((req, res) => {
+    let b = '';
+    req.on('data', (c) => (b += c));
+    req.on('end', () => {
+      try { webhookEvents.push(JSON.parse(b)); } catch (e) { webhookEvents.push({ raw: b }); }
+      res.writeHead(200); res.end('OK');
+    });
+  });
+  await new Promise((r) => webSrv.listen(0, '127.0.0.1', r));
+  const webPort = webSrv.address().port;
+
+  const kPartner = await api('POST', '/api/bap/apply', null, {
+    name: 'NexPay Africa', contact_email: 'ops@nexpay.africa', phone: '255700000099', country: 'KENYA',
+    webhook_url: `http://127.0.0.1:${webPort}/hook`,
+  });
+  await expect(kPartner.status === 200 && kPartner.data.partner.status === 'PENDING' && kPartner.data.partner.id, 'Partner application submitted (PENDING)');
+  const kPartnerId = kPartner.data.partner.id;
+
+  const kApprove = await api('POST', '/api/bap/admin/approve', adminToken, { partner_id: kPartnerId });
+  await expect(kApprove.status === 200 && kApprove.data.result.api_key.startsWith('bap_') && kApprove.data.result.api_secret.startsWith('sk_') && kApprove.data.result.status === 'ACTIVE', 'Admin approves partner (API key + secret issued)');
+  const kKey = kApprove.data.result.api_key;
+  const kSecret = kApprove.data.result.api_secret;
+
+  const kList = await api('GET', '/api/bap/admin/partners', adminToken, null);
+  await expect(kList.status === 200 && kList.data.partners.find((p) => p.id === kPartnerId).api_secret === 'MASKED', 'Admin lists partners (secret masked)');
+
+  const kFund = await api('POST', `/api/bap/admin/partners/${kPartnerId}/fund`, adminToken, { amount: 200000 });
+  await expect(kFund.status === 200 && Number(kFund.data.result.balance) === 200000, 'Admin funds partner 200000');
+
+  const kPhone = '255772' + nowSuffix();
+  const kcust = await register(kPhone, 'Neema Client');
+
+  const bapReq = async (method, path, payloadObj) => {
+    const body = payloadObj ? JSON.stringify(payloadObj) : '';
+    const ts = String(Math.floor(Date.now() / 1000));
+    const sig = nodeCrypto.createHmac('sha256', kSecret).update(`${ts}\n${body}`).digest('hex');
+    const headers = { 'Content-Type': 'text/plain', 'X-API-Key': kKey, 'X-Timestamp': ts, 'X-Signature': sig };
+    const res = await fetch(BASE + path, { method, headers, body: payloadObj ? body : undefined });
+    let data = {}; try { data = await res.json(); } catch (e) {}
+    return { status: res.status, data };
+  };
+
+  const kP1 = await bapReq('POST', '/api/bap/payout', { phone: kPhone, amount: 50000, request_id: 'REQ-1' });
+  await expect(kP1.status === 200 && kP1.data.result.reference && kP1.data.result.partner_balance === 150000, 'Signed payout 50000 to customer (partner left 150000)');
+  const kRef1 = kP1.data.result.reference;
+  const kCustBal = await balanceOf(kcust.data.user.id);
+  await expect(kCustBal.wallet === 50000, `Customer wallet credited 50000 (got ${kCustBal.wallet})`);
+  await expect(kP1.data.result.webhook && kP1.data.result.webhook.delivered === 'DELIVERED', 'Payout response reports webhook delivered');
+
+  await new Promise((r) => setTimeout(r, 300));
+  const kw = webhookEvents.find((w) => w.event === 'PAYOUT_SETTLED' && w.reference === kRef1);
+  await expect(!!kw && kw.amount === 50000 && kw.phone === kPhone, 'Webhook payload captured by partner (PAYOUT_SETTLED)');
+
+  const kWebs = await api('GET', `/api/bap/admin/partners/${kPartnerId}/webhooks`, adminToken, null);
+  const kwRow = kWebs.data.webhooks[0];
+  const kExpectSig = nodeCrypto.createHmac('sha256', kSecret).update(`${kwRow.request_ts}\n${kwRow.request_body}`).digest('hex');
+  await expect(kWebs.status === 200 && kwRow.status === 'DELIVERED' && kwRow.request_signature === kExpectSig && kwRow.request_body.includes(kRef1), 'Webhook row signed; signature verifiable end-to-end');
+
+  const kP1b = await bapReq('POST', '/api/bap/payout', { phone: kPhone, amount: 50000, request_id: 'REQ-1' });
+  await expect(kP1b.status === 200 && kP1b.data.result.duplicate === true && kP1b.data.result.reference === kRef1 && kP1b.data.result.partner_balance === 150000, 'Idempotent replay returns same reference, no double charge');
+
+  const kStmt = await bapReq('GET', '/api/bap/statement', null);
+  await expect(kStmt.status === 200 && kStmt.data.statement.filter((t) => t.status === 'COMPLETED').length === 2, 'Partner statement (FUNDING + PAYOUT)');
+
+  const kSum = await bapReq('GET', '/api/bap/summary', null);
+  await expect(kSum.status === 200 && kSum.data.summary.balance === 150000 && Number(kSum.data.summary.payout_volume) === 50000, 'Partner summary (balance 150000, volume 50000)');
+
+  const kLow = await bapReq('POST', '/api/bap/payout', { phone: kPhone, amount: 200000, request_id: 'REQ-LOW' });
+  await expect(kLow.status === 400, 'Payout over partner balance rejected');
+  const kSumLo = await bapReq('GET', '/api/bap/summary', null);
+  await expect(kSumLo.data.summary.balance === 150000 && kSumLo.data.summary.failed_payouts === 1, 'Failed payout logged, partner balance unchanged');
+
+  const kForgeBody = JSON.stringify({ phone: kPhone, amount: 5000, request_id: 'REQ-F' });
+  const kForge = await fetch(BASE + '/api/bap/payout', { method: 'POST', headers: { 'Content-Type': 'text/plain', 'X-API-Key': kKey, 'X-Timestamp': String(Math.floor(Date.now() / 1000)), 'X-Signature': 'deadbeef' }, body: kForgeBody });
+  await expect(kForge.status === 403, 'Forged signature rejected');
+
+  const kSus = await api('POST', `/api/bap/admin/partners/${kPartnerId}/suspend`, adminToken, { suspended: true });
+  await expect(kSus.status === 200 && kSus.data.result.status === 'SUSPENDED', 'Partner suspended');
+  const kSusPay = await bapReq('POST', '/api/bap/payout', { phone: kPhone, amount: 5000, request_id: 'REQ-S' });
+  await expect(kSusPay.status === 403, 'Suspended partner cannot payout');
+  const kRe = await api('POST', `/api/bap/admin/partners/${kPartnerId}/suspend`, adminToken, { suspended: false });
+  await expect(kRe.status === 200 && kRe.data.result.status === 'ACTIVE', 'Partner reactivated');
+  const kP2 = await bapReq('POST', '/api/bap/payout', { phone: kPhone, amount: 10000, request_id: 'REQ-2' });
+  await expect(kP2.status === 200 && kP2.data.result.partner_balance === 140000, 'Reactivated partner payout works (balance 140000)');
+  const kCustBal2 = await balanceOf(kcust.data.user.id);
+  await expect(kCustBal2.wallet === 60000, `Customer wallet now 60000 (got ${kCustBal2.wallet})`);
+
+  await new Promise((r) => webSrv.close(r));
 
   // ------------------------------------------------------------
   console.log('\n==============================');

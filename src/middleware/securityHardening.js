@@ -54,8 +54,9 @@ function requestValidation(req, res, next) {
         code: 'VALIDATION_ERROR',
       });
     }
-    // Allow JSON, form-data, and x-www-form-urlencoded
-    const allowed = ['application/json', 'multipart/form-data', 'application/x-www-form-urlencoded'];
+    // Allow JSON, form-data, x-www-form-urlencoded, and text/plain
+    // (text/plain ni kwa partner-signed BaaS endpoints - secured via HMAC)
+    const allowed = ['application/json', 'multipart/form-data', 'application/x-www-form-urlencoded', 'text/plain'];
     const isAllowed = allowed.some(t => contentType.toLowerCase().includes(t));
     if (!isAllowed) {
       return res.status(415).json({

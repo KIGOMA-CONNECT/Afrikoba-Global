@@ -26,6 +26,7 @@ with bank-grade security and multi-currency support.
 | **H** | Business & Commerce H1–H10 | Business accounts & withdrawals, payment links, tax-aware invoicing, inventory with low-stock alerts, batch payroll, supplier payments, sales analytics, business loans (apply → admin approve → disburse → repay), tax/compliance register, staff roles + POS sessions |
 | **I** | Savings & Credit I1–I10 | Savings goals with contributions, auto-save rules (daily/weekly/monthly), fixed deposits with maturity interest & early-withdrawal penalty, credit score & limit engine, personal micro-loans with installment schedules + early payoff (waives remaining installments), guarantors (20% reserved until disbursement), credit report |
 | **J** | Virtual Cards J1–J6 | On-demand virtual Visa/Mastercard-style cards (Luhn-valid PAN + single-view CVV, masked storage, hashed PAN/CVV), daily & per-transaction limits, freeze/unfreeze, block (reported lost), purchase authorization with wallet holds (AUTH_HOLD → locked_balance), merchant settlement releasing the hold, pre-settlement refunds, card statement & monthly spend summary |
+| **K** | Partner Banking (BaaS) K1–K6 | Partner application → admin approval issuing API key/secret (secret masked in listings, returned once), admin funding, HMAC-SHA256-signed payout rails over raw text/plain payloads (`X-API-Key`/`X-Timestamp`/`X-Signature`, timestamp freshness + timing-safe compare), idempotent payouts via client `request_id`, signed webhook delivery (PAYOUT_SETTLED with verifiable signature), partner statement & summary |
 
 Additional modules: VICOBA & M-Koba automation (constitution, shares, meetings with fines,
 profit distribution, member/loan-ageing reports), ROSCA engine, P2P investment marketplace with
@@ -102,6 +103,7 @@ Key route families:
 | `/savings` | Savings goals, auto-save rules, fixed deposits, savings summary (I-series) |
 | `/credit` | Credit score & limit, micro-loans, installments, guarantors, credit report (I-series) |
 | `/cards` | Virtual cards: issue, limits, freeze/block, purchase authorization, settle/refund (admin), statement, summary (J-series) |
+| `/bap` | Partner Banking (BaaS): apply, admin approve/fund/suspend, HMAC-signed payout, statement, summary, webhooks (K-series) |
 | `/payments` | Payment webhooks (AzamPay callbacks, HMAC protected) |
 | `/ussd` | USSD gateway |
 | `/currency` | FX rates |
@@ -154,8 +156,8 @@ of the bundled policies (`PRIVACY_POLICY.md`, `TERMS_OF_SERVICE.md`,
 
 ## Testing
 
-- `scripts/test-all.js` — full integration suite through the live API (268 checks across
-  layers A–J). Run against a server started with `RATE_LIMIT_DISABLED=true`.
+- `scripts/test-all.js` — full integration suite through the live API (288 checks across
+  layers A–K). Run against a server started with `RATE_LIMIT_DISABLED=true`.
 - `scripts/test-p2p.js`, `scripts/security-test.js` — focused suites (P2P escrow, security).
 
 CI (`.github/workflows/ci.yml`) runs the backend suite against a Postgres service
