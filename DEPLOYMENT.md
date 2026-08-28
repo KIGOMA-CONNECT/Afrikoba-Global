@@ -66,7 +66,43 @@ Vinginevyo `validateConfig()` italalamika kwenye `NODE_ENV=production`.
 
 ---
 
-## 3. TLS & Reverse Proxy (inapendekezwa: Caddy/Nginx)
+## 3. Kuweka bila kusumbua domains nyingine (multi-domain / co-tenancy)
+
+Ikiwa `afrikoba.com` inaishi kwenye server ambayo tayari ina domains nyingine
+(e.g., WordPress, apps nyingine), fuata kanuni hizi ili **kila domain ifanye kazi
+vyake bila kuguswa**:
+
+**Kwa nini hatutagusa chochote:**
+- Kila stack ya `docker compose` ina **network yake**, **volumes zake** na
+  **container names** zenye prefix ya jina la project (`afrikoba_...`). Docker
+  projects nyingine zinaendelea kwa kamili.
+- API **inafunguka kwenye `127.0.0.1:${APP_PORT:-3000}` pekee** — haiwezi
+  kuangukia kwenye ports zilizotumika na apps nyingine, wala kufunguliwa kwa nje
+  moja kwa moja. Port inabadilishwa kwenye `.env` (`APP_PORT`) kama 3000 inatumiwa.
+- Reverse proxy hupata **vhost mpya tu** (site block moja) kwa `app.afrikoba.com`.
+  Vhosts za domains nyingine hazibadilishwi. Tumia faili zilizotengenezwa kwenye
+  `deploy/` (see §4): `Caddyfile.afrikoba` (add `import Caddyfile.afrikoba` kwenye
+  Caddyfile kuu) au `nginx-afrikoba.conf` (sites-available + symlink + reload).
+- DNS: ONGEZA **A-record moja mpya pekee** kwa subdomain yako, e.g.
+  `app  A  <IP ya server>`. Record zilizopo za domains nyingine haziguswi.
+- `deploy/deploy-afrikoba.sh` inaendesha stack ya `afrikoba` pekee (idempotent)
+  na kuthibitisha `/health/db`.
+
+**Hatua (mfuatano uliopendekezwa):**
+1. DNS (Bluehost Domain Center → domain ya `afrikoba.com` → Add A record):
+   `app.afrikoba.com → <IP ya VPS>` (mara tu ukipata IP). Subdomain hizo za DNS
+   hizi pekee ndizo zinazohusika na Afrikoba.
+2. Kwenye server: `cd /opt/afrikoba && cp .env.example .env && bash deploy/deploy-afrikoba.sh`
+3. Reverse proxy: `deploy/Caddyfile.afrikoba` au `deploy/nginx-afrikoba.conf`
+   (ONGEZA tu — usibadilishe vhosts zilizopo).
+4. Thibitisha:
+   - `docker ps --filter name=afrikoba` → containers za afrikoba pekee zimeorodheshwa
+   - `curl -I https://app.afrikoba.com/health` → `200`
+   - `curl -I https://domain-nyingine-yako` → bado iko sawa (haijaguswa)
+
+---
+
+## 4. TLS & Reverse Proxy (inapendekezwa: Caddy/Nginx)
 
 Caddy (SSL otomatiki):
 
@@ -92,9 +128,13 @@ server {
 Server tayari iko na: helmet CSP, CORS allowlist, rate limiting,
 `X-Request-Id`, `/health` + `/health/db`.
 
+> Kwa server iliyo na **domains nyingine**: tumia faili zilizotengenezwa
+> `deploy/Caddyfile.afrikoba` au `deploy/nginx-afrikoba.conf` (ONGEZA vhost peke
+> yako, usibadilisha zilizopo) — angalia §3.
+
 ---
 
-## 4. Monitoring & Maintenance
+## 5. Monitoring & Maintenance
 
 - Uptime: UptimeRobot / Better Stack kwenye `https://app.afrikoba.com/health`.
 - Server logs: stdout (JSON) — connect kwenye Grafana/CloudWatch/Loki.
@@ -105,7 +145,7 @@ Server tayari iko na: helmet CSP, CORS allowlist, rate limiting,
 
 ---
 
-## 5. Mobile App (Release)
+## 6. Mobile App (Release)
 
 - **Token sasa inahifadhiwa kwenye secure storage** (`flutter_secure_storage`:
   Android Keystore / iOS Keychain / Windows DPAPI).
@@ -119,7 +159,7 @@ Server tayari iko na: helmet CSP, CORS allowlist, rate limiting,
 
 ---
 
-## 6. Vigezo vya Kuenda LIVE (Go-Live Checklist)
+## 7. Vigezo vya Kuenda LIVE (Go-Live Checklist)
 
 Hii ni **muhimu kabla ya kuingia production**:
 
@@ -143,7 +183,7 @@ Hii ni **muhimu kabla ya kuingia production**:
 
 ---
 
-## 7. CI/CD
+## 8. CI/CD
 
 `.github/workflows/ci.yml` hutoa:
 
@@ -158,7 +198,7 @@ secrets (`KEYSTORE_BASE64`, `KEYSTORE_PASSWORD`, ...).
 
 ---
 
-## 8. Hatua za Kwanza (Sasa)
+## 9. Hatua za Kwanza (Sasa)
 
 1. `git init` + commit (angalia `.gitignore` — `.env` haipaswi kucommit).
 2. Push kwenye GitHub → CI inathibitisha tests.

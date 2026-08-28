@@ -3,15 +3,22 @@
 # - PostgreSQL 16 (managed volume + backups)
 # - API + web dashboard
 #
+# ISOLATION: this stack always creates its OWN project network,
+# volumes and container names (prefix = project name). It never
+# touches other Docker projects or hosts running on this server.
+# Set COMPOSE_PROJECT_NAME if you need a second Afrikoba stack
+# (staging/test) next to the production one.
+#
 # Matumizi:
 #   cp .env.example .env   (kisha jaza maadili halisi)
 #   docker compose up -d --build
 # ============================================================
 
+name: ${COMPOSE_PROJECT_NAME:-afrikoba}
+
 services:
   redis:
     image: redis:7-alpine
-    container_name: afrikoba_redis
     restart: unless-stopped
     command: redis-server --maxmemory 128mb --maxmemory-policy allkeys-lru
     volumes:
@@ -26,7 +33,6 @@ services:
 
   db:
     image: postgres:16-alpine
-    container_name: afrikoba_db
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${DB_USER:-afrikoba}
@@ -37,8 +43,8 @@ services:
       # Schema + seed huletwa kwenye uanzishaji wa kwanza (fresh DB pekee)
       - ./db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
       - ./db/seed.sql:/docker-entrypoint-initdb.d/02-seed.sql:ro
-      # Backup ya kila usiku (host directory)
-      - ./backups:/backups
+      # Backup ya kila usiku (host directory - badilisha PATH kwenye .env)
+      - ${BACKUP_DIR:-./backups}:/backups
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-afrikoba} -d ${DB_NAME:-afrikoba_global}"]
       interval: 10s
@@ -49,7 +55,6 @@ services:
 
   app:
     build: .
-    container_name: afrikoba_app
     restart: unless-stopped
     depends_on:
       db:
@@ -80,8 +85,11 @@ services:
       CONTRACT_DIR: contracts
       CONTRACT_BASE_URL: ${CONTRACT_BASE_URL:-https://app.afrikoba.com/contracts}
       TRUST_PROXY: "true"
+    # API inafungwa kwenye 127.0.0.1 TU (localhost) - inapatikana kupitia
+    # reverse proxy (Caddy/Nginx) pekee. Hivyo hakuna usumbufu kwa ports au
+    # apps nyingine za domains nyingine kwenye server.
     ports:
-      - "3000:3000"
+      - "127.0.0.1:${APP_PORT:-3000}:3000"
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:3000/health/db"]
       interval: 30s
@@ -93,10 +101,6 @@ services:
     # DB kumigrate (API ni stateless).
     deploy:
       replicas: 1
-      restart_policy:
-        condition: on-failure
-        delay: 5s
-        max_attempts: 3
     networks:
       - afrikoba
 

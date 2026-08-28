@@ -1,0 +1,33 @@
+# =========================================================
+# AFRIKOBA GLOBAL - Caddy vhost (app.afrikoba.com)
+# ---------------------------------------------------------
+# Hii ni faili MAHUSUSI ya afrikoba pekee. HAITAGUSA vhosts
+# au domains nyingine zilizopo kwenye server.
+#
+# NJIA SALAMA (usibadilishe vhosts za domains nyingine):
+#   Weka faili hii kwenye /etc/caddy/Caddyfile.afrikoba
+#   Kisha ONGEZA line moja kwenye Caddyfile kuu:
+#
+#       import Caddyfile.afrikoba
+#
+#   Ama caddy-load ilipokuwa imeweka: import conf.d/*
+#   (hamisha faili kwenye /etc/caddy/conf.d/).
+#
+# Kumbuka: ikiwa APP_PORT kubadilishwa kwenye .env, hii itajua
+# kiotomatiki kupitia {env.APP_PORT} (default 3000).
+#
+# Usawazishaji: caddy reload (curl -X POST localhost:2019/reload)
+# =========================================================
+
+app.afrikoba.com {
+	encode gzip
+
+	reverse_proxy 127.0.0.1:{env.APP_PORT:3000}
+
+	log {
+		output file /var/log/caddy/afrikoba-access.log
+	}
+}
+
+# Chaguo nyingine (ukitaka API tofauti badala ya same-origin):
+# api.afrikoba.com { reverse_proxy 127.0.0.1:{env.APP_PORT:3000} }
