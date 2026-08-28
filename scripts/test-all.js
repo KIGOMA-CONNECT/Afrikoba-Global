@@ -127,6 +127,19 @@ async function section(title) { console.log(`\n== ${title} ==`); }
   const regDup = await register(phoneB, 'Dup');
   await expect(regDup.status === 400, 'Usajili wa namba iliyopo unakataliwa', `${regDup.status}`);
 
+  const phonePw = '255724' + nowSuffix();
+  const emailPw = `pw${nowSuffix()}@afrikoba.test`;
+  const passPw = 'Str0ngPass12345';
+  const otpPw = await sendOtp(phonePw);
+  const regPw = await api('POST', '/api/auth/register', null, { fullName: 'Password User', phoneNumber: phonePw, email: emailPw, password: passPw, otp: otpPw });
+  await expect(regPw.status === 201, 'Usajili na password huepuka toInternationalFormat', `${regPw.status}: ${regPw.data.message || ''}`);
+  const pwLoginEmail = await api('POST', '/api/auth/login/password', null, { emailOrPhone: emailPw, password: passPw });
+  await expect(pwLoginEmail.status === 200 && pwLoginEmail.data.token, 'Login kwa Email + Password inafanya kazi', `${pwLoginEmail.status}`);
+  const pwLoginPhone = await api('POST', '/api/auth/login/password', null, { emailOrPhone: phonePw, password: passPw });
+  await expect(pwLoginPhone.status === 200 && pwLoginPhone.data.token, 'Login kwa Namba + Password inafanya kazi', `${pwLoginPhone.status}`);
+  const pwLoginBad = await api('POST', '/api/auth/login/password', null, { emailOrPhone: emailPw, password: 'Wrong-Pass-999' });
+  await expect(pwLoginBad.status === 401, 'Password mbaya inakataliwa', `${pwLoginBad.status}`);
+
   const pinB = await api('POST', '/api/auth/pin', regB.data.token, { pin: '1234' });
   await expect(pinB.status === 200, 'PIN inaweza kuwekwa', `${pinB.status}`);
 

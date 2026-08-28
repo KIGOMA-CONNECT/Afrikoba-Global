@@ -109,10 +109,12 @@ async function verifyPin(userId, pin) {
 }
 
 async function loginWithPassword(emailOrPhone, password) {
-  const query = emailOrPhone.includes('@')
+  const isEmail = String(emailOrPhone).includes('@');
+  const query = isEmail
     ? 'SELECT * FROM users WHERE email = $1'
     : 'SELECT * FROM users WHERE phone_number = $1';
-  const result = await pool.query(query, [toInternationalFormat(emailOrPhone)]);
+  const key = isEmail ? String(emailOrPhone).trim() : toInternationalFormat(emailOrPhone);
+  const result = await pool.query(query, [key]);
   if (result.rows.length === 0) return { success: false, message: 'Akaunti haijapatikana.' };
   const user = result.rows[0];
   if (!user.password_hash || !bcrypt.compareSync(String(password), user.password_hash)) {
