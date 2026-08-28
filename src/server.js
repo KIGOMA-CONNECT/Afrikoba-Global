@@ -195,19 +195,21 @@ for (const prefix of versionPrefixes) {
   app.use(`${prefix}/bap`, walletLimiter, bapRoutes);
 }
 
-// API version info
-app.get('/api/v1', (req, res) => {
-  res.json({ success: true, version: '1.0.0', docs: '/api/v1/docs' });
-});
+// Swagger UI - API documentation (production off - usitangaze API surface)
+if (config.nodeEnv !== 'production') {
+  app.use('/api/v1/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
+    customSiteTitle: 'Afrikoba Global API',
+    customCss: '.swagger-ui .topbar { display: none }',
+  }));
+  app.get('/api/v1/docs.json', (req, res) => {
+    res.setHeader('Content-Type', 'application/json');
+    res.send(swaggerSpec);
+  });
+}
 
-// Swagger UI - API documentation
-app.use('/api/v1/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
-  customSiteTitle: 'Afrikoba Global API',
-  customCss: '.swagger-ui .topbar { display: none }',
-}));
-app.get('/api/v1/docs.json', (req, res) => {
-  res.setHeader('Content-Type', 'application/json');
-  res.send(swaggerSpec);
+// API version info (production: jibu sahili bila link za docs)
+app.get('/api/v1', (req, res) => {
+  res.json({ success: true, version: '1.0.0', docs: config.nodeEnv === 'production' ? false : '/api/v1/docs' });
 });
 
 // Deprecation header for non-versioned /api routes
