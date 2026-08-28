@@ -119,6 +119,10 @@ async function section(title) { console.log(`\n== ${title} ==`); }
   const cooldown = await api('POST', '/api/auth/send-otp', null, { phoneNumber: phoneA });
   await expect(cooldown.status === 429, 'Send-OTP ina cooldown (anti SMS-bombing)', `${cooldown.status}`);
 
+  const localPhone = '0' + String(Date.now()).slice(-9);
+  const localOtp = await api('POST', '/api/auth/send-otp', null, { phoneNumber: localPhone });
+  await expect(localOtp.status === 200 && localOtp.data.devOtp, 'Send-OTP inakubali namba ya ndani 0xx → normalize 255', `${localOtp.status}`);
+
   const phoneB = '255723' + nowSuffix();
   const regB = await register(phoneB, 'Asha Mtihani');
   await expect(regB.status === 201, 'Usajili mpya unafungua WALLET', `${regB.status}`);

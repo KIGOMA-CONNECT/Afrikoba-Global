@@ -1,6 +1,16 @@
 const { z } = require('zod');
 
-const TZ_PHONE = /^255\d{9}$/;
+const toIntlPhone = (v, ctx) => {
+  let p = String(v).trim().replace(/\s+/g, '');
+  if (p.startsWith('+')) p = p.slice(1);
+  if (p.startsWith('0')) p = '255' + p.slice(1);
+  if (!/^255\d{9}$/.test(p)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Nambari ya simu si sahihi (mf: 071x xxx xxx)' });
+    return z.NEVER;
+  }
+  return p;
+};
+const PHONE = z.string().transform(toIntlPhone);
 const POSITIVE_INT = z.coerce.number().int().positive();
 const POSITIVE_NUM = z.coerce.number().positive();
 const DATE_STR = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'YYYY-MM-DD');
@@ -9,15 +19,15 @@ const PIN_4 = z.string().regex(/^\d{4}$/, 'PIN lazima iwe nambari 4');
 
 const auth = {
   sendOtp: z.object({
-    phoneNumber: z.string().regex(TZ_PHONE, 'Nambari ya simu si sahihi'),
+    phoneNumber: PHONE,
   }),
   login: z.object({
-    phoneNumber: z.string().regex(TZ_PHONE),
+    phoneNumber: PHONE,
     otp: z.string().min(4).max(6),
   }),
   register: z.object({
     fullName: z.string().min(2).max(100),
-    phoneNumber: z.string().regex(TZ_PHONE),
+    phoneNumber: PHONE,
     email: z.string().email().optional().nullable(),
     password: z.string().min(6).optional(),
     otp: z.string().min(4).max(6),
@@ -41,7 +51,7 @@ const wallet = {
     provider: z.enum(['Mpesa', 'Tigo', 'Airtel', 'Halopesa']),
   }),
   transfer: z.object({
-    toPhoneNumber: z.string().regex(TZ_PHONE),
+    toPhoneNumber: PHONE,
     amount: POSITIVE_NUM,
     note: z.string().max(255).optional().nullable(),
   }),
@@ -62,7 +72,7 @@ const vicoba = {
     joinCode: z.string().min(1).max(20),
   }),
   invite: z.object({
-    phoneNumbers: z.array(z.string().regex(TZ_PHONE)).min(1).max(50),
+    phoneNumbers: z.array(PHONE).min(1).max(50),
   }),
   addMember: z.object({
     userId: POSITIVE_INT,
@@ -197,7 +207,7 @@ const mkoba = {
   topup: z.object({
     amount: POSITIVE_NUM,
     provider: z.enum(['AIRTEL', 'HALOPESA', 'TIGO', 'MPESA']),
-    phone: z.string().regex(TZ_PHONE),
+    phone: PHONE,
   }),
   meeting: z.object({
     meetingDate: DATE_STR,
