@@ -44,7 +44,7 @@ const config = {
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean),
-    rateLimitDisabled: process.env.RATE_LIMIT_DISABLED === 'true',
+    rateLimitDisabled: process.env.RATE_LIMIT_DISABLED === 'true' || process.env.DISABLE_RATE_LIMIT === 'true',
     otpRateMax: parseInt(process.env.OTP_RATE_MAX || '20', 10),
     authRateMax: parseInt(process.env.AUTH_RATE_MAX || '40', 10),
     apiRateMax: parseInt(process.env.API_RATE_MAX || '1000', 10),

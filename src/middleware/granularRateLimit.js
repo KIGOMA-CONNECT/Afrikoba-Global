@@ -12,7 +12,7 @@ const { getRedis } = require('../config/redis');
 function createLimiter(options) {
   // Test-mode bypass: integration tests simulate many users from one IP.
   // Production never sets this — rate limits stay active.
-  if (process.env.DISABLE_RATE_LIMIT === 'true') {
+  if (process.env.DISABLE_RATE_LIMIT === 'true' || process.env.RATE_LIMIT_DISABLED === 'true') {
     return (req, res, next) => next();
   }
   const storeOptions = {

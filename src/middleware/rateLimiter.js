@@ -14,7 +14,7 @@ const opts = (max, label) => ({
   },
 });
 
-const skip = () => config.security.rateLimitDisabled;
+const skip = () => config.security.rateLimitDisabled || process.env.DISABLE_RATE_LIMIT === 'true';
 
 function makeLimiter(max, label) {
   const options = { ...opts(max, label), skip };

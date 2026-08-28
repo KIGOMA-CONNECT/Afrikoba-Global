@@ -92,6 +92,11 @@ function requestValidation(req, res, next) {
 const suspiciousActivityTracker = new Map();
 
 function trackSuspiciousActivity(req, res, next) {
+  // Test-mode bypass: integration tests simulate many users from one IP.
+  // Production never sets this — suspicious-activity blocking stays active.
+  if (process.env.DISABLE_RATE_LIMIT === 'true' || process.env.RATE_LIMIT_DISABLED === 'true') {
+    return next();
+  }
   const ip = req.ip;
   const now = Date.now();
   const windowMs = 15 * 60 * 1000; // 15 minutes

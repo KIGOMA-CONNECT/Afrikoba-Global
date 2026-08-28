@@ -836,6 +836,83 @@ async function section(title) { console.log(`\n== ${title} ==`); }
   await expect(refAward.status === 200 && refAward.data.success, 'Referral award paid to wallet', `${refAward.status}: ${JSON.stringify(refAward.data)}`);
 
   // ------------------------------------------------------------
+  await section('11. FAMILY & NEXT-GEN — Family wallets, Multi-currency, Biometric, Offline, Round-up');
+  // ------------------------------------------------------------
+
+  // --- G1: FAMILY WALLET ---
+  const famOwnerPhone = '255741' + nowSuffix();
+  const famOwner = await register(famOwnerPhone, 'Fam Owner');
+  const famOwnerId = famOwner.data.user.id;
+  await fundWallet(famOwnerId, 100000);
+  const famMemberPhone = '255742' + nowSuffix();
+  const famMember = await register(famMemberPhone, 'Fam Member');
+  const famMemberId = famMember.data.user.id;
+
+  const famWallet = await api('POST', '/api/family/family', famOwner.data.token, { name: 'Familia Yangu', currency: 'TZS' });
+  await expect(famWallet.status === 201 || famWallet.status === 200, 'Family wallet created', `${famWallet.status}: ${JSON.stringify(famWallet.data)}`);
+  const famId = famWallet.data.wallet.id;
+
+  const inv = await api('POST', `/api/family/family/${famId}/invite`, famOwner.data.token, { phone: famMemberPhone, role: 'MEMBER', can_spend: true });
+  await expect(inv.status === 200, 'Member invited to family');
+  const joinF = await api('POST', `/api/family/family/${famId}/join`, famMember.data.token, {});
+  await expect(joinF.status === 200, 'Member joins family');
+
+  const famList = await api('GET', '/api/family/family', famOwner.data.token, null);
+  await expect(famList.status === 200 && famList.data.wallets.length >= 1, 'Family wallets listed');
+
+  const famContrib = await api('POST', `/api/family/family/${famId}/contribute`, famOwner.data.token, { amount: 20000 });
+  await expect(famContrib.status === 200 && famContrib.data.success, 'Owner contributes to family', `${famContrib.status}: ${JSON.stringify(famContrib.data)}`);
+
+  const famSpend = await api('POST', `/api/family/family/${famId}/spend`, famOwner.data.token, { amount: 3000, description: 'Mazao' });
+  await expect(famSpend.status === 200 && famSpend.data.success, 'Family spend deducted');
+
+  const famTx = await api('GET', `/api/family/family/${famId}`, famOwner.data.token, null);
+  await expect(famTx.status === 200 && Number(famTx.data.details.wallet.balance) === 17000, 'Family balance = 17000', `balance=${famTx.data.details.wallet.balance}`);
+
+  const famTransfer = await api('POST', `/api/family/family/${famId}/transfer`, famOwner.data.token, { phone: famMemberPhone, amount: 5000 });
+  await expect(famTransfer.status === 200 && famTransfer.data.success, 'Family transfer to member', `${famTransfer.status}: ${JSON.stringify(famTransfer.data)}`);
+
+  // --- G2: MULTI-CURRENCY ---
+  const topup = await api('POST', '/api/family/currency/topup', famOwner.data.token, { currency: 'USD', amount: 10 });
+  await expect(topup.status === 200 && topup.data.success, 'Top-up USD from TZS', `${topup.status}: ${JSON.stringify(topup.data)}`);
+  const conv = await api('POST', '/api/family/currency/convert', famOwner.data.token, { from: 'USD', to: 'KES', amount: 5 });
+  await expect(conv.status === 200 && conv.data.success, 'Convert USD to KES', `${conv.status}: ${JSON.stringify(conv.data)}`);
+  const xferFx = await api('POST', '/api/family/currency/transfer', famOwner.data.token, { phone: famMemberPhone, currency: 'KES', amount: 50 });
+  await expect(xferFx.status === 200 && xferFx.data.success, 'Transfer KES to member');
+  const balances = await api('GET', '/api/family/balances', famOwner.data.token, null);
+  await expect(balances.status === 200 && balances.data.balances.currencies.length >= 1, 'Multi-currency balances shown');
+
+  // --- G3: BIOMETRIC / DEVICE ---
+  const dev = await api('POST', '/api/family/devices', famOwner.data.token, { device_id: 'dev-abc-123', device_name: 'Galaxy', biometric_token: 'bio-secret-1' });
+  await expect(dev.status === 200 && dev.data.device, 'Device registered (biometric)');
+  const devList = await api('GET', '/api/family/devices', famOwner.data.token, null);
+  await expect(devList.status === 200 && devList.data.devices.length >= 1, 'Devices listed');
+  const chal = await api('POST', '/api/family/devices/challenge', famOwner.data.token, { device_id: 'dev-abc-123' });
+  await expect(chal.status === 200 && chal.data.challenge, 'Biometric challenge generated');
+  const ver = await api('POST', '/api/family/devices/verify', famOwner.data.token, { device_id: 'dev-abc-123', response: chal.data.challenge.challenge });
+  await expect(ver.status === 200 && ver.data.result.verified, 'Challenge verified');
+  const bioLogin = await api('POST', '/api/family/biometric/login', null, { phone: famOwnerPhone, device_id: 'dev-abc-123', biometric_token: 'bio-secret-1' });
+  await expect(bioLogin.status === 200 && bioLogin.data.result.verified, 'Biometric login verified');
+  const rmDev = await api('DELETE', `/api/family/devices/dev-abc-123`, famOwner.data.token, null);
+  await expect(rmDev.status === 200, 'Device removed');
+
+  // --- G4: OFFLINE QUEUE ---
+  const q = await api('POST', '/api/family/offline/queue', famOwner.data.token, { op_type: 'TRANSFER', payload: { toPhone: famMemberPhone, amount: 1000, note: 'Offline' } });
+  await expect(q.status === 200 && q.data.op, 'Offline op queued');
+  const qlist = await api('GET', '/api/family/offline/ops?status=QUEUED', famOwner.data.token, null);
+  await expect(qlist.status === 200 && qlist.data.ops.length >= 1, 'Queued offline ops listed');
+  const sync = await api('POST', '/api/family/offline/sync', famOwner.data.token, {});
+  await expect(sync.status === 200 && sync.data.result.processed >= 1, 'Offline ops synced/processed', `${sync.status}: ${JSON.stringify(sync.data)}`);
+
+  // --- G5: ROUND-UP SAVINGS ---
+  const rule = await api('POST', '/api/family/roundup', famOwner.data.token, { round_to: 1000 });
+  await expect(rule.status === 200 && rule.data.rule, 'Round-up rule created');
+  const procRound = await api('POST', '/api/family/roundup/process', famOwner.data.token, {});
+  await expect(procRound.status === 200 && procRound.data.success, 'Round-up processed', `${procRound.status}: ${JSON.stringify(procRound.data)}`);
+  const roundSum = await api('GET', '/api/family/roundup', famOwner.data.token, null);
+  await expect(roundSum.status === 200 && roundSum.data.summary, 'Round-up summary returned');
+
+  // ------------------------------------------------------------
   console.log('\n==============================');
   console.log(`RESULT: ${passed} PASSED, ${failed} FAILED`);
   if (failures.length) {
