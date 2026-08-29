@@ -8,6 +8,7 @@ const crypto = require('crypto');
 const express = require('express');
 const pool = require('../config/db');
 const { authRequired, requireRoles } = require('../middleware/auth');
+const { bapSignedLimiter, bapApplyLimiter } = require('../middleware/rateLimiter');
 const bap = require('../services/bapService');
 
 const router = express.Router();
@@ -38,7 +39,7 @@ async function bapAuth(req, res, next) {
 }
 
 // ===== K1: PUBLIC APPLICATION =====
-router.post('/apply', async (req, res, next) => {
+router.post('/apply', bapApplyLimiter, async (req, res, next) => {
   try { res.json({ success: true, partner: await bap.applyPartner(req.body) }); }
   catch (e) { next(e); }
 });
@@ -70,7 +71,7 @@ router.get('/admin/partners/:id/webhooks', authRequired, requireRoles('ADMIN'), 
 });
 
 // ===== K3-K6: PARTNER-SIGNED =====
-router.post('/payout', express.text({ type: '*/*' }), bapAuth, async (req, res, next) => {
+router.post('/payout', bapSignedLimiter, express.text({ type: '*/*' }), bapAuth, async (req, res, next) => {
   try {
     let payload = {};
     try { payload = JSON.parse(req.body || '{}'); } catch (e) { throw Object.assign(new Error('Body lazima iwe JSON string.'), { statusCode: 400 }); }
@@ -78,12 +79,12 @@ router.post('/payout', express.text({ type: '*/*' }), bapAuth, async (req, res, 
   } catch (e) { next(e); }
 });
 
-router.get('/statement', express.text({ type: '*/*' }), bapAuth, async (req, res, next) => {
+router.get('/statement', bapSignedLimiter, express.text({ type: '*/*' }), bapAuth, async (req, res, next) => {
   try { res.json({ success: true, statement: await bap.partnerStatement(req.partner.id) }); }
   catch (e) { next(e); }
 });
 
-router.get('/summary', express.text({ type: '*/*' }), bapAuth, async (req, res, next) => {
+router.get('/summary', bapSignedLimiter, express.text({ type: '*/*' }), bapAuth, async (req, res, next) => {
   try { res.json({ success: true, summary: await bap.partnerSummary(req.partner.id) }); }
   catch (e) { next(e); }
 });

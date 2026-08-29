@@ -119,7 +119,7 @@ async function section(title) { console.log(`\n== ${title} ==`); }
   const cooldown = await api('POST', '/api/auth/send-otp', null, { phoneNumber: phoneA });
   await expect(cooldown.status === 429 && /Subiri/.test(cooldown.data.message || '') && cooldown.data.code !== 'INTERNAL_ERROR', 'Send-OTP ina cooldown (anti SMS-bombing)', `${cooldown.status} ${cooldown.data.message}`);
 
-  const localPhone = '0' + String(Date.now()).slice(-9);
+  const localPhone = '07' + String(Date.now()).slice(-8);
   const localOtp = await api('POST', '/api/auth/send-otp', null, { phoneNumber: localPhone });
   await expect(localOtp.status === 200 && localOtp.data.devOtp, 'Send-OTP inakubali namba ya ndani 0xx → normalize 255', `${localOtp.status}`);
 
@@ -1420,6 +1420,38 @@ async function section(title) { console.log(`\n== ${title} ==`); }
   await expect(chgWeak.status === 400, 'Password mpya dhaifu inakataliwa (policy min 10)', `${chgWeak.status}`);
   const meAfterWeak = await api('GET', '/api/auth/me', loginH2.data.token, null);
   await expect(meAfterWeak.status === 200, 'Password policy haifungi kikao (hakuna bump bila mabadiliko)', `${meAfterWeak.status}`);
+
+  // ------------------------------------------------------------
+  section('PIN RESET (forgot PIN hardening)');
+  const pinResetService = require('../src/services/pinResetService');
+  try {
+    const prReq = await api('POST', '/api/advanced/pin-reset/request', null, { phone: hPhone });
+    await expect(prReq.status === 200 && prReq.data.success, 'PIN reset request inafanya kazi (phone_number fix)', `${prReq.status}: ${prReq.data.message || ''}`);
+    const prReq2 = await api('POST', '/api/advanced/pin-reset/request', null, { phone: hPhone });
+    await expect(prReq2.status === 429, 'Cooldown ya request inazuia SMS-flood (429)', `${prReq2.status}: ${prReq2.data.message || ''}`);
+    const prWrong = await api('POST', '/api/advanced/pin-reset/verify', null, { phone: hPhone, token: '000000' });
+    await expect(prWrong.status === 400, 'verify OTP mbaya inarudisha 400 (si 500)', `${prWrong.status}: ${prWrong.data.message || ''}`);
+
+    const prUserId = regH.data.user.id;
+    await pool.query(`INSERT INTO pin_reset_tokens (user_id, token, expires_at) VALUES ($1, $2, NOW() + INTERVAL '10 minutes')`, [prUserId, '123456']);
+    const prV = await pinResetService.verifyPinReset(hPhone, '123456');
+    await expect(prV.success === true && prV.resetKey && prV.resetKey.length === 64, 'verify inarudisha resetKey (64 hex, VARCHAR fix)', `${prV.success} keylen=${prV.resetKey ? prV.resetKey.length : 0}`);
+    const prC = await pinResetService.completePinReset(prUserId, prV.resetKey, '4321');
+    await expect(prC.success === true, 'completePinReset inaweka PIN mpya', `${prC.success}`);
+    let prAgain = { used: false };
+    try { await pinResetService.completePinReset(prUserId, prV.resetKey, '1111'); prAgain = { used: true }; } catch (e) { prAgain = { used: false }; }
+    await expect(prAgain.used === false, 'ResetKey haiwezi kutumika tena (used)', JSON.stringify(prAgain));
+
+    await pool.query(`INSERT INTO pin_reset_tokens (user_id, token, expires_at) VALUES ($1, $2, NOW() + INTERVAL '10 minutes')`, [prUserId, '654321']);
+    let wrongCount = 0;
+    for (let i = 0; i < 5; i++) { try { await pinResetService.verifyPinReset(hPhone, String(100000 + i)); } catch (e) { if (e.statusCode === 400) wrongCount++; } }
+    await expect(wrongCount === 5, 'Attempts 5 zinahesabiwa kwa 400', `${wrongCount}`);
+    let prEnd = { threw: false, status: 0 };
+    try { await pinResetService.verifyPinReset(hPhone, '654321'); prEnd = { threw: false, status: 200 }; } catch (e) { prEnd = { threw: true, status: e.statusCode || 500 }; }
+    await expect(prEnd.threw === true && prEnd.status === 429, 'Token inafungwa baada ya attempts nyingi (429)', JSON.stringify(prEnd));
+  } catch (e) {
+    await expect(false, 'PIN RESET section inakamilika', `CRASH: ${e.message}`);
+  }
 
   // ------------------------------------------------------------
   console.log('\n==============================');

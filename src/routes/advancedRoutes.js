@@ -5,6 +5,7 @@
 
 const express = require('express');
 const { authRequired, requireRoles } = require('../middleware/auth');
+const { pinReqLimiter, pinVerifyLimiter } = require('../middleware/rateLimiter');
 const pinResetService = require('../services/pinResetService');
 const receiptService = require('../services/receiptService');
 const creditScoreService = require('../services/creditScoreService');
@@ -18,7 +19,7 @@ const router = express.Router();
 
 // ===== C1: PIN RESET =====
 
-router.post('/pin-reset/request', async (req, res, next) => {
+router.post('/pin-reset/request', pinReqLimiter, async (req, res, next) => {
   try {
     const { phone } = req.body;
     if (!phone) return res.status(400).json({ success: false, message: 'Simu inahitajika.' });
@@ -27,7 +28,7 @@ router.post('/pin-reset/request', async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
-router.post('/pin-reset/verify', async (req, res, next) => {
+router.post('/pin-reset/verify', pinVerifyLimiter, async (req, res, next) => {
   try {
     const { phone, token } = req.body;
     if (!phone || !token) return res.status(400).json({ success: false, message: 'Simu na OTP zinahitajika.' });
@@ -36,7 +37,7 @@ router.post('/pin-reset/verify', async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
-router.post('/pin-reset/complete', async (req, res, next) => {
+router.post('/pin-reset/complete', pinVerifyLimiter, async (req, res, next) => {
   try {
     const { userId, resetKey, newPin } = req.body;
     if (!userId || !resetKey || !newPin) return res.status(400).json({ success: false, message: 'Taarifa zote zinahitajika.' });

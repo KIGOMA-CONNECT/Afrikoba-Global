@@ -38,7 +38,17 @@ const otpLimiter = makeLimiter(config.security.otpRateMax, 'OTP');
 /** Limiter kwa login/register/password/pin. */
 const authLimiter = makeLimiter(config.security.authRateMax, 'AUTH');
 
+/** Limiter kwa forgot-PIN (request/verify/complete) — anti SMS-flood + brute-force. */
+const pinReqLimiter = makeLimiter(5, 'PINREQ');
+const pinVerifyLimiter = makeLimiter(20, 'PINVERIFY');
+
+/** Limiter kwa partner-signed BaaS endpoints (payout/statement/summary). */
+const bapSignedLimiter = makeLimiter(120, 'BAP');
+
+/** Limiter kwa partner application (public /apply). */
+const bapApplyLimiter = makeLimiter(10, 'BAPAPPLY');
+
 /** Limiter wa jumla kwa API nzima. */
 const apiLimiter = makeLimiter(config.security.apiRateMax, 'API');
 
-module.exports = { otpLimiter, authLimiter, apiLimiter };
+module.exports = { otpLimiter, authLimiter, pinReqLimiter, pinVerifyLimiter, bapSignedLimiter, bapApplyLimiter, apiLimiter };
