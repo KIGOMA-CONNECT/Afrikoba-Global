@@ -57,6 +57,8 @@ const messages = {
     AUTH_TOTP_BAD_LOGIN: 'Token si ya TOTP login.',
     AUTH_KYC_VERIFIED: 'KYC Level 2 imethibitishwa.',
     AUTH_NIDA_USED: 'NIDA tayari imetumika.',
+    AUTH_BAD_CURRENT_PASSWORD: 'Nenosiri la sasa si sahihi.',
+    AUTH_PASSWORD_CHANGED: 'Nenosiri limebadilishwa. Vikao vyote vya zamani vimefungwa.',
     AUTH_OTP_SMS: 'AFRIKOBA: Msimbo wako wa uthibitisho ni {{otp}}. Unamalizika ndani ya dakika {{minutes}}. Usimpe mtu yeyote!',
 
     // ---- Wallet ----
@@ -149,6 +151,8 @@ const messages = {
     AUTH_TOTP_BAD_LOGIN: 'Token is not a TOTP login token.',
     AUTH_KYC_VERIFIED: 'KYC Level 2 verified.',
     AUTH_NIDA_USED: 'NIDA number is already in use.',
+    AUTH_BAD_CURRENT_PASSWORD: 'Current password is incorrect.',
+    AUTH_PASSWORD_CHANGED: 'Password changed. All previous sessions have been closed.',
     AUTH_OTP_SMS: 'AFRIKOBA: Your verification code is {{otp}}. It expires in {{minutes}} minutes. Do not share it with anyone!',
 
     // ---- Wallet ----

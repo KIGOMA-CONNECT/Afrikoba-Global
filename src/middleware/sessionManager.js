@@ -18,13 +18,13 @@ const REFRESH_TOKEN_SECRET = config.security.jwtSecret + '_refresh';
  */
 function generateTokenPair(user) {
   const accessToken = jwt.sign(
-    { id: user.id, role: user.role, phone_number: user.phone_number },
+    { id: user.id, role: user.role, phone_number: user.phone_number, av: user.auth_version || 0, jti: crypto.randomUUID() },
     config.security.jwtSecret,
     { expiresIn: ACCESS_TOKEN_EXPIRY }
   );
 
   const refreshToken = jwt.sign(
-    { id: user.id, type: 'refresh', jti: crypto.randomUUID() },
+    { id: user.id, type: 'refresh', jti: crypto.randomUUID(), av: user.auth_version || 0 },
     REFRESH_TOKEN_SECRET,
     { expiresIn: REFRESH_TOKEN_EXPIRY }
   );
@@ -45,7 +45,7 @@ async function refreshAccessToken(refreshToken) {
 
     // Check if user still exists and is active
     const result = await pool.query(
-      'SELECT id, role, phone_number, is_active FROM users WHERE id = $1',
+      'SELECT id, role, phone_number, is_active, auth_version FROM users WHERE id = $1',
       [decoded.id]
     );
 
@@ -53,9 +53,14 @@ async function refreshAccessToken(refreshToken) {
       throw Object.assign(new Error('Mtumiaji hajapatikana au amezuiwa.'), { statusCode: 401 });
     }
 
+    // Password change → auth_version inabadilika → refresh token hii ni batili.
+    if (decoded.av !== (result.rows[0].auth_version || 0)) {
+      throw Object.assign(new Error('Kipindi kimeisha. Ingia tena.'), { statusCode: 401 });
+    }
+
     const user = result.rows[0];
     const newAccessToken = jwt.sign(
-      { id: user.id, role: user.role, phone_number: user.phone_number },
+      { id: user.id, role: user.role, phone_number: user.phone_number, av: user.auth_version || 0, jti: crypto.randomUUID() },
       config.security.jwtSecret,
       { expiresIn: ACCESS_TOKEN_EXPIRY }
     );

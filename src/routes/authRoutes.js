@@ -48,7 +48,7 @@ router.post('/login', authLimiter, validate(schemas.auth.login), async (req, res
     const pool = require('../config/db');
     const userRes = await pool.query(
       `SELECT id, full_name, phone_number, email, role, kyc_level, wallet_balance,
-              locked_balance, trust_score, nida_number, is_active, currency_code, country_code
+              locked_balance, trust_score, nida_number, is_active, currency_code, country_code, auth_version
        FROM users WHERE phone_number = $1`,
       [toInternationalFormat(phoneNumber)]
     );
@@ -128,7 +128,7 @@ router.post('/totp-login', authLimiter, async (req, res, next) => {
     }
 
     const pool = require('../config/db');
-    const userRes = await pool.query('SELECT id, role, phone_number, totp_secret FROM users WHERE id = $1', [decoded.id]);
+    const userRes = await pool.query('SELECT id, role, phone_number, totp_secret, auth_version FROM users WHERE id = $1', [decoded.id]);
     const user = userRes.rows[0];
     if (!user || !user.totp_secret) {
       return res.status(400).json({ success: false, message: res.t('AUTH_TOTP_NOT_SETUP') });
@@ -219,6 +219,20 @@ router.post('/refresh', async (req, res, next) => {
     return res.json({ success: true, ...result });
   } catch (error) {
     if (error.statusCode) return res.status(error.statusCode).json({ success: false, message: error.message });
+    next(error);
+  }
+});
+
+// Badilisha nenosiri — hufunga vikao vyote vya zamani (auth_version bump)
+router.post('/change-password', authRequired, validate(schemas.auth.changePassword), async (req, res, next) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+    await authService.changePassword(req.user.id, currentPassword, newPassword);
+    return res.json({ success: true, message: res.t('AUTH_PASSWORD_CHANGED') });
+  } catch (error) {
+    if (error.statusCode && error.code) {
+      return res.status(error.statusCode).json({ success: false, code: error.code, message: res.t(error.code) });
+    }
     next(error);
   }
 });

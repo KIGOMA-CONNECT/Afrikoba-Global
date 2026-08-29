@@ -130,4 +130,22 @@ async function loginWithPassword(emailOrPhone, password) {
   return { success: true, user };
 }
 
-module.exports = { sendOtp, verifyOtp, registerUser, setupPin, verifyPin, loginWithPassword };
+async function changePassword(userId, currentPassword, newPassword) {
+  const result = await pool.query('SELECT password_hash FROM users WHERE id = $1', [userId]);
+  if (result.rows.length === 0) {
+    throw Object.assign(createAppError('AUTH_ACCOUNT_NOT_FOUND'), { statusCode: 404 });
+  }
+  const { password_hash } = result.rows[0];
+  if (!password_hash || !bcrypt.compareSync(String(currentPassword), password_hash)) {
+    throw Object.assign(createAppError('AUTH_BAD_CURRENT_PASSWORD'), { statusCode: 401 });
+  }
+  const newHash = bcrypt.hashSync(String(newPassword), 10);
+  // auth_version +1 → tokens zote za zamani (jit vs auth_version) zinakataliwa.
+  await pool.query(
+    'UPDATE users SET password_hash = $1, auth_version = auth_version + 1 WHERE id = $2',
+    [newHash, userId]
+  );
+  return { success: true };
+}
+
+module.exports = { sendOtp, verifyOtp, registerUser, setupPin, verifyPin, loginWithPassword, changePassword };

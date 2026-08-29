@@ -1388,6 +1388,40 @@ async function section(title) { console.log(`\n== ${title} ==`); }
   await expect(smsDev.simulated === true || smsDev.success === true, 'sendSMS dev-mode haiondoei error');
 
   // ------------------------------------------------------------
+  section('AUTH HARDENING (auth_version + password policy)');
+  // ------------------------------------------------------------
+  const hPhone = '255725' + nowSuffix();
+  const hOld = 'Str0ngPass12345';
+  const hNew = 'NewStr0ngPass67890';
+  const hOtp = await sendOtp(hPhone);
+  const regH = await api('POST', '/api/auth/register', null, { fullName: 'Hardening User', phoneNumber: hPhone, email: `h${nowSuffix()}@afrikoba.test`, password: hOld, otp: hOtp });
+  await expect(regH.status === 201, 'Usajili na password imara hukubalika', `${regH.status}: ${regH.data.message || ''}`);
+  const weakReg = await api('POST', '/api/auth/register', null, { fullName: 'Weak User', phoneNumber: '255726' + nowSuffix(), password: 'short1', otp: await sendOtp('255726' + nowSuffix()) });
+  await expect(weakReg.status === 400, 'Password dhaifu (short1) inakataliwa kwenye usajili', `${weakReg.status}`);
+  const loginH = await api('POST', '/api/auth/login/password', null, { emailOrPhone: hPhone, password: hOld });
+  await expect(loginH.status === 200 && loginH.data.token, 'Login kwa password imara inafanya kazi', `${loginH.status}`);
+  const meBefore = await api('GET', '/api/auth/me', loginH.data.token, null);
+  await expect(meBefore.status === 200, 'Token ya zamani inafanya kazi kabla ya change-password', `${meBefore.status}`);
+
+  const chgOk = await api('POST', '/api/auth/change-password', loginH.data.token, { currentPassword: hOld, newPassword: hNew });
+  await expect(chgOk.status === 200 && chgOk.data.success, 'Change-password (current sahihi) inafanya kazi', `${chgOk.status}: ${chgOk.data.message || ''}`);
+  const meAfter = await api('GET', '/api/auth/me', loginH.data.token, null);
+  await expect(meAfter.status === 401 && meAfter.data.code === 'TOKEN_REVOKED', 'Token ya zamani imefungwa baada ya change-password', `${meAfter.status} ${meAfter.data.code}`);
+  const oldPwLogin = await api('POST', '/api/auth/login/password', null, { emailOrPhone: hPhone, password: hOld });
+  await expect(oldPwLogin.status === 401, 'Password ya zamani haiwezi ku-login tena', `${oldPwLogin.status}`);
+  const loginH2 = await api('POST', '/api/auth/login/password', null, { emailOrPhone: hPhone, password: hNew });
+  await expect(loginH2.status === 200 && loginH2.data.token, 'Login kwa password mpya inafanya kazi', `${loginH2.status}`);
+  const meNew = await api('GET', '/api/auth/me', loginH2.data.token, null);
+  await expect(meNew.status === 200, 'Token mpya (auth_version+1) inafanya kazi', `${meNew.status}`);
+
+  const chgWrong = await api('POST', '/api/auth/change-password', loginH2.data.token, { currentPassword: 'WrongCurrent-999', newPassword: 'AnotherNewPass123' });
+  await expect(chgWrong.status === 401 && chgWrong.data.code === 'AUTH_BAD_CURRENT_PASSWORD', 'Current password mbaya inakataliwa', `${chgWrong.status} ${chgWrong.data.code}`);
+  const chgWeak = await api('POST', '/api/auth/change-password', loginH2.data.token, { currentPassword: hNew, newPassword: 'short1' });
+  await expect(chgWeak.status === 400, 'Password mpya dhaifu inakataliwa (policy min 10)', `${chgWeak.status}`);
+  const meAfterWeak = await api('GET', '/api/auth/me', loginH2.data.token, null);
+  await expect(meAfterWeak.status === 200, 'Password policy haifungi kikao (hakuna bump bila mabadiliko)', `${meAfterWeak.status}`);
+
+  // ------------------------------------------------------------
   console.log('\n==============================');
   console.log(`RESULT: ${passed} PASSED, ${failed} FAILED`);
   if (failures.length) {

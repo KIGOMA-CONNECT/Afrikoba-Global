@@ -18,6 +18,10 @@ const DATE_STR = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'YYYY-MM-DD');
 const MONTH_STR = z.string().regex(/^\d{4}-\d{2}$/, 'YYYY-MM');
 const PIN_4 = z.string().regex(/^\d{4}$/, 'PIN lazima iwe nambari 4');
 
+// Password policy: angalau 10 chars, lazima iwe na herufi NA namba.
+const STRONG_PASSWORD = z.string().min(10).regex(/^(?=.*[A-Za-z])(?=.*\d).{10,}$/,
+  'Nenosiri lazima liwe na angalau herufi moja na namba moja, na urefu wa 10+.');
+
 const auth = {
   sendOtp: z.object({
     phoneNumber: PHONE,
@@ -30,9 +34,13 @@ const auth = {
     fullName: z.string().min(2).max(100),
     phoneNumber: PHONE,
     email: z.string().email().optional().nullable(),
-    password: z.string().min(6).optional(),
+    password: STRONG_PASSWORD.optional(),
     otp: z.string().min(4).max(6),
     nidaNumber: z.string().max(30).optional().nullable(),
+  }),
+  changePassword: z.object({
+    currentPassword: z.string().min(1),
+    newPassword: STRONG_PASSWORD,
   }),
   loginPassword: z.object({
     emailOrPhone: z.string().min(1),
