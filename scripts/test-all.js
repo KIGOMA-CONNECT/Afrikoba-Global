@@ -1346,6 +1346,8 @@ async function section(title) { console.log(`\n== ${title} ==`); }
   await expect(keUser.status === 201 && keUser.data.user.country_code === 'KE', `Register KE phone → country_code=KE (got ${keUser.data.user?.country_code})`);
 
   // FX resolution: direct → inverse → triangulated via TZS
+  // (ondoa direct row yoyote ya run iliyopita ili TRIANGULATED iwe deterministic)
+  try { await pool.query("DELETE FROM exchange_rates WHERE from_currency='EUR' AND to_currency='GBP'"); } catch (e) {}
   const fx = await api('GET', '/api/currency/rates/EUR/GBP', null, null);
   await expect(fx.status === 200 && fx.data.source === 'TRIANGULATED' && fx.data.rate > 0.8 && fx.data.rate < 0.95, `FX EUR→GBP triangulated (${fx.data?.rate})`);
   const ident = await api('GET', '/api/currency/rates/TZS/TZS', null, null);

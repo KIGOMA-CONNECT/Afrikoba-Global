@@ -5,7 +5,7 @@ const logger = require('../utils/logger');
 
 const router = express.Router();
 
-// AzamPay Payment Callback - INALINDWA na webhook guard
+// AzamPay Payment Callback - INALINDWA na webhook guard (server.js mount inaongeza limiter + replay + HMAC)
 router.post('/azampay-callback', verifyWebhookSecurity, async (req, res, next) => {
   try {
     const result = await walletService.processDepositCallback(req.body);
