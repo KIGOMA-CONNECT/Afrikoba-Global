@@ -103,6 +103,7 @@ services:
       - /tmp
     volumes:
       - contract_data:/app/contracts
+      - app_backups:/app/backups
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -171,6 +172,7 @@ volumes:
   db_data:
   redis_data:
   contract_data:
+  app_backups:
 
 networks:
   afrikoba:
