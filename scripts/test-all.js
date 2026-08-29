@@ -1374,6 +1374,20 @@ async function section(title) { console.log(`\n== ${title} ==`); }
   await expect(getCur.data.currency === 'EUR', 'my-currency returns EUR');
 
   // ------------------------------------------------------------
+  section('SMS PROVIDER ROUTING (kimataifa)');
+  // ------------------------------------------------------------
+  const { resolveProvider, sendSMS } = require('../src/services/smsService');
+  await expect(resolveProvider('255712000001') === 'beem', 'TZ (255) → Beem');
+  await expect(resolveProvider('254712345678') === 'at', 'KE (254) → Africa\u2018s Talking');
+  await expect(resolveProvider('256234567890') === 'at', 'UG (256) → Africa\u2019s Talking');
+  await expect(resolveProvider('250788123456') === 'at', 'RW (250) → Africa\u2019s Talking');
+  await expect(resolveProvider('271234567890') === 'at', 'ZA (27) → Africa\u2019s Talking');
+  await expect(resolveProvider('201234567890') === 'at', 'EG (20) → Africa\u2019s Talking');
+  await expect(resolveProvider('15551234567') === 'twilio', 'US (+1) → Twilio (default/dunia)');
+  const smsDev = await sendSMS('254712345678', 'Afrikoba: OTP test routing');
+  await expect(smsDev.simulated === true || smsDev.success === true, 'sendSMS dev-mode haiondoei error');
+
+  // ------------------------------------------------------------
   console.log('\n==============================');
   console.log(`RESULT: ${passed} PASSED, ${failed} FAILED`);
   if (failures.length) {

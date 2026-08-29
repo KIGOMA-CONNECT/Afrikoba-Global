@@ -10,10 +10,22 @@ const config = {
     password: process.env.DB_PASSWORD || 'secret',
     port: parseInt(process.env.DB_PORT || '5432', 10),
   },
-  beem: {
-    apiKey: process.env.BEEM_API_KEY,
-    secretKey: process.env.BEEM_SECRET_KEY,
-    senderId: process.env.BEEM_SENDER_ID || 'AFRIKOBA',
+  sms: {
+    beem: {
+      apiKey: process.env.BEEM_API_KEY,
+      secretKey: process.env.BEEM_SECRET_KEY,
+      senderId: process.env.BEEM_SENDER_ID || 'AFRIKOBA',
+    },
+    at: {
+      apiKey: process.env.AT_API_KEY,
+      username: process.env.AT_USERNAME,
+      senderId: process.env.AT_SENDER_ID || '',
+    },
+    twilio: {
+      accountSid: process.env.TWILIO_ACCOUNT_SID,
+      authToken: process.env.TWILIO_AUTH_TOKEN,
+      from: process.env.TWILIO_FROM,
+    },
   },
   azampay: {
     appName: process.env.AZAMPAY_APP_NAME,
@@ -88,8 +100,11 @@ function validateConfig() {
   if (!config.webhook.secret) {
     errors.push('WEBHOOK_SECRET lazima uwe imewekwa (uthibitisho wa callbacks)');
   }
-  if (!config.beem.apiKey || !config.beem.secretKey) {
-    errors.push('BEEM_API_KEY na BEEM_SECRET_KEY zinahitajika (SMS halisi)');
+  const smsBeemReady = !!(config.sms.beem.apiKey && config.sms.beem.secretKey);
+  const smsAtReady = !!(config.sms.at.apiKey && config.sms.at.username);
+  const smsTwilioReady = !!(config.sms.twilio.accountSid && config.sms.twilio.authToken && config.sms.twilio.from);
+  if (!smsBeemReady && !smsAtReady && !smsTwilioReady) {
+    errors.push('Angalau SMS provider MOJA inahitajika kwa OTP: BEEM_API_KEY+BEEM_SECRET_KEY, au Africa\'s Talking (AT_API_KEY+AT_USERNAME), au Twilio (TWILIO_ACCOUNT_SID+TWILIO_AUTH_TOKEN+TWILIO_FROM)');
   }
   if (!config.azampay.clientId || !config.azampay.clientSecret || config.azampay.env === 'sandbox') {
     errors.push('AZAMPAY_CLIENT_ID, AZAMPAY_CLIENT_SECRET na AZAMPAY_ENV=production zinahitajika');

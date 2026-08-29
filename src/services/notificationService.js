@@ -23,7 +23,8 @@ async function createNotification(userId, { title, body, type = 'INFO', channel 
       [userId]
     );
     if (prefs.rows.length > 0 && prefs.rows[0].sms_enabled) {
-      sendSMS(userId, body).catch(() => {});
+      const u = await pool.query('SELECT phone_number FROM users WHERE id = $1', [userId]);
+      if (u.rows[0]?.phone_number) sendSMS(u.rows[0].phone_number, body).catch(() => {});
     }
 
     return result.rows[0].id;
