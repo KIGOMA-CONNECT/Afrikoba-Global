@@ -16,7 +16,8 @@ async function registerMerchant(userId, { name, business_type, phone, email }) {
 }
 
 async function getMerchants(search = null) {
-  let query = `SELECT * FROM merchants WHERE is_active = TRUE`;
+  // Usirudishe email/user_id kwenye public endpoint (PII protection)
+  let query = `SELECT id, name, business_type, phone, is_active FROM merchants WHERE is_active = TRUE`;
   const params = [];
   if (search) {
     query += ` AND (name ILIKE $1 OR phone = $2)`;

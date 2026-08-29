@@ -34,6 +34,13 @@ async function api(method, path, token, body) {
   return { status: res.status, data };
 }
 
+async function apiRaw(method, path, rawBody, headersExt) {
+  const res = await fetch(BASE + path, { method, headers: { 'Content-Type': 'application/json', ...headersExt }, body: rawBody });
+  let data = null;
+  try { data = await res.json(); } catch (e) { data = {}; }
+  return { status: res.status, data };
+}
+
 async function sendOtp(phoneNumber) {
   const r = await api('POST', '/api/auth/send-otp', null, { phoneNumber });
   return r.data.devOtp;
@@ -212,13 +219,11 @@ async function section(title) { console.log(`\n== ${title} ==`); }
     [depRef, regB.data.user.id]
   );
   const depBef = await balanceOf(regB.data.user.id);
-  const wb = await api('POST', '/api/payments/azampay-callback', null, {
-    utilityref: depRef, transactionstatus: 'SUCCESS', reference: 'EXT-1',
-  }, true);
-  const hdr = { Authorization: undefined, 'Content-Type': 'application/json', 'x-webhook-secret': config.webhook.secret };
+  const whBody = JSON.stringify({ utilityref: depRef, transactionstatus: 'SUCCESS', reference: 'EXT-1' });
+  const whSigGood = nodeCrypto.createHmac('sha256', config.security.webhookSecret || process.env.WEBHOOK_SECRET).update(whBody, 'utf8').digest('hex');
+  const hdr = { 'Content-Type': 'application/json', 'x-webhook-secret': config.webhook.secret, 'x-signature': whSigGood };
   const resWebhook = await fetch(BASE + '/api/payments/azampay-callback', {
-    method: 'POST', headers: hdr,
-    body: JSON.stringify({ utilityref: depRef, transactionstatus: 'SUCCESS', reference: 'EXT-1' }),
+    method: 'POST', headers: hdr, body: whBody,
   });
   const webhookData = await resWebhook.json();
   await expect(resWebhook.status === 200 && webhookData.success, 'Callback ya AzamPay inathibitisha deposit', `${resWebhook.status} ${JSON.stringify(webhookData)}`);
@@ -229,8 +234,7 @@ async function section(title) { console.log(`\n== ${title} ==`); }
   await expect(Number(revMid.rows[0].total_commission) - Number(revBefore.rows[0].total_commission) === 1000, 'Commission 1% inaenda company_revenue');
 
   const wbDup = await fetch(BASE + '/api/payments/azampay-callback', {
-    method: 'POST', headers: hdr,
-    body: JSON.stringify({ utilityref: depRef, transactionstatus: 'SUCCESS', reference: 'EXT-1' }),
+    method: 'POST', headers: hdr, body: whBody,
   });
   const dupData = await wbDup.json();
   const depAfterDup = await balanceOf(regB.data.user.id);
@@ -1451,6 +1455,36 @@ async function section(title) { console.log(`\n== ${title} ==`); }
     await expect(prEnd.threw === true && prEnd.status === 429, 'Token inafungwa baada ya attempts nyingi (429)', JSON.stringify(prEnd));
   } catch (e) {
     await expect(false, 'PIN RESET section inakamilika', `CRASH: ${e.message}`);
+  }
+
+  // ------------------------------------------------------------
+  section('WEBHOOK HMAC + MERCHANTS PII');
+  try {
+    const mEmail = `merchant${nowSuffix()}@afrikoba.test`;
+    const insM = await pool.query(`INSERT INTO merchants (name, business_type, phone, email) VALUES ($1,$2,$3,$4) RETURNING id`, ['Public Shop', 'Retail', `255700000${nowSuffix().slice(-2)}`, mEmail]);
+    const mId = insM.rows[0].id;
+    const mList = await api('GET', '/api/advanced/merchants', null, null);
+    const foundM = (mList.data.merchants || []).find((m) => m.id === mId);
+    await expect(!!foundM, 'Merchant mpya anaonekana kwenye public list', `${mId}`);
+    await expect(foundM && foundM.email === undefined && foundM.user_id === undefined, 'Public merchants haitoi email/user_id (PII fix)', foundM ? JSON.stringify(foundM) : 'not found');
+
+    const nodeCrypto2 = require('crypto');
+    const hmacSecret = config.security?.webhookSecret || process.env.WEBHOOK_SECRET;
+    const guardSecret = config.webhook?.secret;
+    if (hmacSecret && guardSecret) {
+      const raw = `{ "amount": 100, "reference": "WH_${nowSuffix()}" }`;
+      const sigGood = nodeCrypto2.createHmac('sha256', hmacSecret).update(raw, 'utf8').digest('hex');
+      const whNoSig = await api('POST', '/api/payments/azampay-callback', null, { amount: 100 });
+      await expect(whNoSig.status === 401 && (whNoSig.data.code === 'WEBHOOK_MISSING_SIGNATURE' || whNoSig.data.message === 'Unauthorized Webhook Request'), 'Webhook bila signature inakataliwa (hapana bypass)', `${whNoSig.status} ${whNoSig.data.code || ''}`);
+      const whBad = await apiRaw('POST', '/api/payments/azampay-callback', raw, { 'x-signature': 'deadbeef'.repeat(8), 'x-webhook-secret': guardSecret });
+      await expect(whBad.status === 401, 'Webhook HMAC mbaya inakataliwa (401)', `${whBad.status} ${whBad.data.code || whBad.data.message || ''}`);
+      const whGood = await apiRaw('POST', '/api/payments/azampay-callback', raw, { 'x-signature': sigGood, 'x-webhook-secret': guardSecret });
+      await expect(whGood.status === 404 || whGood.status === 200, 'Webhook HMAC sahihi kwenye raw body inapitishwa (404=ref ya kufikiri, si 401)', `${whGood.status} ${whGood.data.code || whGood.data.message || ''}`);
+    } else {
+      console.log('  (skip webhook HMAC HTTP tests - hakuna WEBHOOK_SECRET local)');
+    }
+  } catch (e) {
+    await expect(false, 'WEBHOOK HMAC + MERCHANTS section inakamilika', `CRASH: ${e.message}`);
   }
 
   // ------------------------------------------------------------

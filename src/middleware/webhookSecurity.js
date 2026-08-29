@@ -72,16 +72,24 @@ function webhookReplayProtection(req, res, next) {
 
 /**
  * H16: Webhook HMAC verification middleware.
+ * - Signature inahitajika iwapo secret imesetwa (hapana bypass kwa kuondoa header).
+ * - Verification inaenda kwenye RAW body halisi (req.rawBody).
  */
 function verifyWebhookHmac(req, res, next) {
-  // Skip if no signature header
-  const signature = req.headers['x-signature'] || req.headers['x-hub-signature-256'];
-  if (!signature) return next();
-
   const secret = config.security?.webhookSecret || process.env.WEBHOOK_SECRET;
   if (!secret) {
     logger.warn('SECURITY', 'No webhook secret configured - skipping HMAC verification');
     return next();
+  }
+
+  const signature = req.headers['x-signature'] || req.headers['x-hub-signature-256'];
+  if (!signature) {
+    logger.warn('SECURITY', `Missing webhook signature from ${req.ip}`);
+    return res.status(401).json({
+      success: false,
+      message: 'Webhook signature haipo.',
+      code: 'WEBHOOK_MISSING_SIGNATURE',
+    });
   }
 
   const rawBody = req.rawBody || JSON.stringify(req.body);

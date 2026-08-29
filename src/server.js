@@ -120,7 +120,11 @@ const corsOptions =
     : { origin: config.security.corsOrigins, credentials: false };
 
 app.use(cors(corsOptions));
-app.use(express.json({ limit: '1mb' }));
+app.use(express.json({
+  limit: '1mb',
+  // Capture raw body kwa webhook HMAC verification (exact bytes).
+  verify: (req, res, buf) => { req.rawBody = buf.toString('utf8'); },
+}));
 
 // Sentry request handler — must be before routes
 if (config.sentry.dsn) app.use(Sentry.Handlers.requestHandler());
