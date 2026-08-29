@@ -4,6 +4,7 @@
  */
 
 const logger = require('../utils/logger');
+const { tr, localizeError } = require('../i18n');
 
 /**
  * H1: Enhanced security headers
@@ -50,7 +51,7 @@ function requestValidation(req, res, next) {
     if (!contentType) {
       return res.status(415).json({
         success: false,
-        message: 'Content-Type header inahitajika.',
+        message: res.t('CONTENT_TYPE_REQUIRED'),
         code: 'VALIDATION_ERROR',
       });
     }
@@ -61,7 +62,7 @@ function requestValidation(req, res, next) {
     if (!isAllowed) {
       return res.status(415).json({
         success: false,
-        message: 'Content-Type haijaidhinishwa.',
+        message: res.t('CONTENT_TYPE_DENIED'),
         code: 'VALIDATION_ERROR',
       });
     }
@@ -129,7 +130,7 @@ function trackSuspiciousActivity(req, res, next) {
     suspiciousActivityTracker.delete(ip);
     return res.status(429).json({
       success: false,
-      message: 'Maombi mengi sana. Jaribu tena baadaye.',
+      message: res.t('TOO_MANY_REQUESTS'),
       code: 'RATE_LIMIT',
     });
   }
@@ -162,7 +163,7 @@ function strictCors(req, res, next) {
       logger.warn('SECURITY', `Blocked CORS origin: ${origin} from ${req.ip}`);
       return res.status(403).json({
         success: false,
-        message: 'Origin haijaidhinishwa.',
+        message: res.t('ORIGIN_DENIED'),
         code: 'FORBIDDEN',
       });
     }
@@ -180,12 +181,12 @@ function secureErrorHandler(err, req, res, next) {
   // Log the full error internally
   logger.error('ERROR', `${err.message} - ${req.method} ${req.path} - ${req.ip}`);
 
-  // Send sanitized error to client (keep real messages for 4xx business errors)
+  // Send sanitized error to client (localized 4xx business messages, generic 5xx)
   const statusCode = err.statusCode || err.status || 500;
   const isServerError = statusCode >= 500;
   const response = {
     success: false,
-    message: isServerError ? (isDev ? err.message : 'Hitilafu ya ndani ya server.') : err.message,
+    message: isServerError ? (isDev && !err.code ? err.message : tr('INTERNAL_ERROR', req.locale || 'sw')) : localizeError(err, req.locale || 'sw'),
     code: err.code || (isServerError ? 'INTERNAL_ERROR' : 'VALIDATION_ERROR'),
   };
 

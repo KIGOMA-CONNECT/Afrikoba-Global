@@ -2,8 +2,10 @@ import React, { useEffect, useState } from 'react';
 import api from '../api/client.js';
 import { formatMoney, StatusBadge } from '../components/ui.jsx';
 import ServiceLock from '../components/ServiceLock.jsx';
+import { useT } from '../i18n/LangProvider.jsx';
 
 export default function Rosca() {
+  const { t } = useT();
   const [pools, setPools] = useState([]);
   const [selected, setSelected] = useState(null);
   const [msg, setMsg] = useState({ type: '', text: '' });
@@ -57,15 +59,15 @@ export default function Rosca() {
   return (
     <ServiceLock serviceKey="ROSCA">
       <div className="page-head">
-        <h2>Upatu / ROSCA (Kikoba cha Mzunguko)</h2>
-        <p>Vikundi vya akiba kwa zamu - namba zinagawiwa kiotomatiki</p>
+        <h2>{t('rosca.title')}</h2>
+        <p>{t('rosca.sub')}</p>
       </div>
 
       {msg.text && <div className={`msg ${msg.type}`}>{msg.text}</div>}
 
       <div className="grid grid-2">
         <div className="card">
-          <h3>Unda Mzunguko</h3>
+          <h3>{t('rosca.create_cycle')}</h3>
           <form className="form-row" onSubmit={createPool}>
             <div className="field"><label>Jina</label><input value={pName} onChange={(e) => setPName(e.target.value)} required /></div>
             <div className="field"><label>Mchango (TZS)</label><input type="number" value={pAmount} onChange={(e) => setPAmount(e.target.value)} required /></div>
@@ -76,7 +78,7 @@ export default function Rosca() {
             <div className="field"><label>Aina</label>
               <select value={pType} onChange={(e) => setPType(e.target.value)}><option value="PUBLIC">Wazi</option><option value="PRIVATE_KIKOBA">Kikundi (Kibinafsi)</option></select>
             </div>
-            <button className="btn" type="submit">Unda</button>
+            <button className="btn" type="submit">{t('rosca.create_btn')}</button>
           </form>
         </div>
 
@@ -110,7 +112,7 @@ export default function Rosca() {
           <h3>{selected.pool_name} <span className="roles-tag" style={{ marginLeft: 8 }}>{selected.pool_type}</span></h3>
           {selected.status === 'WAITING_MEMBERS' && (
             <div className="inline-actions" style={{ marginBottom: 14 }}>
-              <button className="btn" onClick={() => joinPool(selected.id)}>Jiunge na Mzunguko</button>
+              <button className="btn" onClick={() => joinPool(selected.id)}>{t('rosca.join_cycle')}</button>
               <label className="roles-tag" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 <input type="checkbox" checked={wantEarly} onChange={(e) => setWantEarly(e.target.checked)} />
                 Nataka Namba ya Mwanzo (1/2) - inahitaji Collateral

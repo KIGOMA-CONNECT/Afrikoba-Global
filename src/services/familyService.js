@@ -2,6 +2,7 @@ const pool = require('../config/db');
 const crypto = require('crypto');
 const { transferWallet } = require('./walletService');
 const { sendSMS } = require('./smsService');
+const currencyService = require('./currencyService');
 const { generateReference, formatMoney } = require('../utils/helpers');
 const { logAudit } = require('./auditService');
 const logger = require('../utils/logger');
@@ -171,24 +172,29 @@ async function topUpCurrency(userId, currency, amount) {
        ON CONFLICT (user_id, currency_code) DO UPDATE SET balance = user_balances.balance + $3`,
       [userId, currency, amountNum]
     );
+    await client.query(
+      `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, currency_code, fx_rate, fx_base_currency, status, type, meta)
+       VALUES ($1, $2, $3, 0, $3, $4, $5, 'TZS', 'SUCCESS', 'CURRENCY_TOPUP', $6)`,
+      [generateReference(), userId, tzsCost, currency, rate, JSON.stringify({ amount: amountNum })]
+    );
     await client.query('COMMIT');
     return { success: true, currency, amount: amountNum, tzs_cost: tzsCost, message: `Umepata ${amountNum} ${currency}.` };
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
   } finally { client.release(); }
 }
 
 async function getFxRate(currency) {
-  const r = await pool.query('SELECT rate_to_tzs FROM fx_rates WHERE currency_code = $1', [currency]);
-  if (!r.rows.length) throw Object.assign(new Error('Sarafu hiyo haipatikani.'), { statusCode: 400 });
-  return r.rows[0].rate_to_tzs;
+  return currencyService.getRateToTzs(currency);
 }
 
 async function convertCurrency(userId, from, to, amount) {
   const amountNum = Number(amount);
   if (!amountNum || amountNum <= 0) throw Object.assign(new Error('Kiasi si sahihi.'), { statusCode: 400 });
-  const fromRate = await getFxRate(from);
-  const toRate = await getFxRate(to);
-  const tzsValue = amountNum * Number(fromRate);
-  const converted = tzsValue / Number(toRate);
+  const rateData = await currencyService.getExchangeRate(from, to);
+  if (!rateData) throw Object.assign(new Error('Kiwango cha ubadilishaji hakipatikani.'), { statusCode: 400 });
+  const converted = amountNum * rateData.rate;
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -200,8 +206,16 @@ async function convertCurrency(userId, from, to, amount) {
        ON CONFLICT (user_id, currency_code) DO UPDATE SET balance = user_balances.balance + $3`,
       [userId, to, converted]
     );
+    await client.query(
+      `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, currency_code, fx_rate, fx_base_currency, status, type, meta)
+       VALUES ($1, $2, $3, 0, $3, $4, $5, $6, 'SUCCESS', 'CURRENCY_CONVERT', $7)`,
+      [generateReference(), userId, amountNum, from, rateData.rate, 'TZS', JSON.stringify({ to, converted: Number(converted.toFixed(2)), rateSource: rateData.source })]
+    );
     await client.query('COMMIT');
     return { success: true, from, to, converted: Number(converted.toFixed(2)), message: `Imebadilishwa kuwa ${converted.toFixed(2)} ${to}.` };
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
   } finally { client.release(); }
 }
 
@@ -223,6 +237,9 @@ async function transferForeign(userId, toPhone, currency, amount) {
     );
     await client.query('COMMIT');
     return { success: true, amount: amountNum, currency, message: `Umetuma ${amountNum} ${currency}.` };
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
   } finally { client.release(); }
 }
 

@@ -1,7 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import api from '../api/client.js';
+import { useT } from '../i18n/LangProvider.jsx';
 
 export default function Settings() {
+  const { t, lang, setLang } = useT();
   const user = JSON.parse(localStorage.getItem('afrikoba_user') || '{}');
   const [prefs, setPrefs] = useState(null);
   const [fullName, setFullName] = useState(user.full_name || '');
@@ -31,9 +33,9 @@ export default function Settings() {
     try {
       const res = await api.put('/notifications/preferences', { [key]: value });
       setPrefs(res.data.preferences);
-      show('ok', 'Mapendeleo yamesimbwa.');
+      show('ok', t('settings.prefs_saved'));
     } catch (err) {
-      show('err', err.response?.data?.message || 'Hitilafu.');
+      show('err', err.response?.data?.message || t('settings.error'));
     }
   };
 
@@ -42,18 +44,18 @@ export default function Settings() {
       await api.patch('/auth/profile', { fullName, email });
       const updated = { ...user, full_name: fullName, email };
       localStorage.setItem('afrikoba_user', JSON.stringify(updated));
-      show('ok', 'Wasifu umesasishwa.');
+      show('ok', t('settings.profile_saved'));
     } catch (err) {
-      show('err', err.response?.data?.message || 'Hitilafu.');
+      show('err', err.response?.data?.message || t('settings.error'));
     }
   };
 
   const updateCurrency = async () => {
     try {
       await api.put('/currency/my-currency', { currency });
-      show('ok', `Sarafu imewekwa: ${currency}`);
+      show('ok', t('settings.currency_set', { currency }));
     } catch (err) {
-      show('err', err.response?.data?.message || 'Hitilafu.');
+      show('err', err.response?.data?.message || t('settings.error'));
     }
   };
 
@@ -67,63 +69,74 @@ export default function Settings() {
   return (
     <>
       <div className="page-head">
-        <h2>Mipangilio (Settings)</h2>
-        <p>Dhibiti wasifu, arifa na sarafu yako</p>
+        <h2>{t('settings.title')}</h2>
+        <p>{t('settings.desc')}</p>
       </div>
 
       {msg.text && <div className={`msg ${msg.type}`}>{msg.text}</div>}
 
       <div className="grid grid-2">
         <div className="card">
-          <h3>Wasifu Wako</h3>
+          <h3>{t('settings.profile')}</h3>
           <div className="field" style={{ marginBottom: 12 }}>
-            <label>Jina Kamili</label>
+            <label>{t('settings.full_name')}</label>
             <input value={fullName} onChange={(e) => setFullName(e.target.value)} />
           </div>
           <div className="field" style={{ marginBottom: 12 }}>
-            <label>Email</label>
+            <label>{t('settings.email')}</label>
             <input value={email} onChange={(e) => setEmail(e.target.value)} />
           </div>
           <div className="field" style={{ marginBottom: 12 }}>
-            <label>Simu</label>
+            <label>{t('settings.phone')}</label>
             <input value={user.phone_number || ''} disabled style={{ opacity: 0.6 }} />
           </div>
           <div className="field" style={{ marginBottom: 12 }}>
-            <label>Wajibu</label>
+            <label>{t('settings.country')}</label>
+            <input value={user.country_code || 'TZ'} disabled style={{ opacity: 0.6 }} />
+          </div>
+          <div className="field" style={{ marginBottom: 12 }}>
+            <label>{t('settings.role')}</label>
             <input value={user.role || ''} disabled style={{ opacity: 0.6 }} />
           </div>
-          <button className="btn" onClick={updateProfile}>Hifadhi Wasifu</button>
+          <button className="btn" onClick={updateProfile}>{t('settings.save_profile')}</button>
         </div>
 
         <div className="card">
-          <h3>Sarafu (Currency)</h3>
+          <h3>{t('settings.currency_card')}</h3>
           <div className="field" style={{ marginBottom: 12 }}>
-            <label>Sarafu Yako</label>
+            <label>{t('settings.your_currency')}</label>
             <select value={currency} onChange={(e) => setCurrency(e.target.value)}>
               {currencies.map((c) => (
                 <option key={c.code} value={c.code}>{c.code} — {c.name} ({c.symbol})</option>
               ))}
             </select>
           </div>
-          <button className="btn" onClick={updateCurrency}>Badilisha Sarafu</button>
+          <button className="btn" onClick={updateCurrency}>{t('settings.change_currency')}</button>
+
+          <h3 style={{ marginTop: 22 }}>{t('settings.language_card')}</h3>
+          <p className="roles-tag" style={{ marginBottom: 10 }}>{t('settings.language_hint')}</p>
+          <div className="inline-actions">
+            <button className={`lang-btn active-lang${lang === 'sw' ? ' act' : ''}`} onClick={() => setLang('sw')}>{t('settings.lang_sw')}</button>
+            <button className={`lang-btn active-lang${lang === 'en' ? ' act' : ''}`} onClick={() => setLang('en')}>{t('settings.lang_en')}</button>
+          </div>
         </div>
       </div>
 
       {prefs && (
         <div className="card section" style={{ marginTop: 20 }}>
-          <h3>Mapendeleo ya Arifa</h3>
+          <h3>{t('settings.notif_prefs')}</h3>
           <div className="grid grid-2">
             <div>
-              <Toggle label="SMS Arifa" checked={prefs.sms_enabled} onChange={(v) => updatePrefs('sms_enabled', v)} />
-              <Toggle label="Email Arifa" checked={prefs.email_enabled} onChange={(v) => updatePrefs('email_enabled', v)} />
-              <Toggle label="Push Arifa" checked={prefs.push_enabled} onChange={(v) => updatePrefs('push_enabled', v)} />
+              <Toggle label={t('settings.sms')} checked={prefs.sms_enabled} onChange={(v) => updatePrefs('sms_enabled', v)} />
+              <Toggle label={t('settings.email_alerts')} checked={prefs.email_enabled} onChange={(v) => updatePrefs('email_enabled', v)} />
+              <Toggle label={t('settings.push')} checked={prefs.push_enabled} onChange={(v) => updatePrefs('push_enabled', v)} />
             </div>
             <div>
-              <Toggle label="Arifa za Miamala" checked={prefs.transaction_alerts} onChange={(v) => updatePrefs('transaction_alerts', v)} />
-              <Toggle label="Arifa za VICOBA" checked={prefs.vicoba_alerts} onChange={(v) => updatePrefs('vicoba_alerts', v)} />
-              <Toggle label="Arifa za ROSCA" checked={prefs.rosca_alerts} onChange={(v) => updatePrefs('rosca_alerts', v)} />
-              <Toggle label="Arifa za P2P" checked={prefs.p2p_alerts} onChange={(v) => updatePrefs('p2p_alerts', v)} />
-              <Toggle label="Arifa za Matangazo" checked={prefs.promo_alerts} onChange={(v) => updatePrefs('promo_alerts', v)} />
+              <Toggle label={t('settings.transaction_alerts')} checked={prefs.transaction_alerts} onChange={(v) => updatePrefs('transaction_alerts', v)} />
+              <Toggle label={t('settings.vicoba_alerts')} checked={prefs.vicoba_alerts} onChange={(v) => updatePrefs('vicoba_alerts', v)} />
+              <Toggle label={t('settings.rosca_alerts')} checked={prefs.rosca_alerts} onChange={(v) => updatePrefs('rosca_alerts', v)} />
+              <Toggle label={t('settings.p2p_alerts')} checked={prefs.p2p_alerts} onChange={(v) => updatePrefs('p2p_alerts', v)} />
+              <Toggle label={t('settings.promo_alerts')} checked={prefs.promo_alerts} onChange={(v) => updatePrefs('promo_alerts', v)} />
             </div>
           </div>
         </div>

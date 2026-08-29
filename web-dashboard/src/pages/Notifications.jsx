@@ -1,7 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import api from '../api/client.js';
+import { useT } from '../i18n/LangProvider.jsx';
 
 export default function Notifications() {
+  const { t } = useT();
   const [notifications, setNotifications] = useState([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const [page, setPage] = useState(1);
@@ -52,8 +54,8 @@ export default function Notifications() {
   return (
     <>
       <div className="page-head">
-        <h2>Arifa (Notifications)</h2>
-        <p>Arifa zako za mfumo na miamala</p>
+        <h2>{t('notifications.title')}</h2>
+        <p>{t('notifications.sub')}</p>
       </div>
 
       {msg.text && <div className={`msg ${msg.type}`}>{msg.text}</div>}

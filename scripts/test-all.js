@@ -1306,6 +1306,72 @@ async function section(title) { console.log(`\n== ${title} ==`); }
   await new Promise((r) => webSrv.close(r));
 
   // ------------------------------------------------------------
+  section('I18N + Multi-Currency');
+
+  const countriesRes = await api('GET', '/api/auth/countries', null, null);
+  await expect(
+    countriesRes.status === 200 && Array.isArray(countriesRes.data.countries) &&
+    countriesRes.data.countries.some((c) => c.code === 'TZ') &&
+    countriesRes.data.countries.some((c) => c.code === 'KE'),
+    'GET /auth/countries returns supported countries (TZ + KE)'
+  );
+
+  // Accept-Language=EN → English message from backend
+  const enPhone = '255778' + nowSuffix();
+  let enRes = await fetch(BASE + '/api/auth/send-otp', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Accept-Language': 'en' },
+    body: JSON.stringify({ phoneNumber: enPhone }),
+  });
+  let enData = {};
+  try { enData = await enRes.json(); } catch (e) {}
+  await expect(enRes.status === 200 && enData.message === 'OTP sent.', `Accept-Language=EN → send-otp English (got "${enData.message}")`);
+
+  const noOtpPhone = '255779' + nowSuffix();
+  const enLogin = await fetch(BASE + '/api/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Accept-Language': 'en' },
+    body: JSON.stringify({ phoneNumber: noOtpPhone, otp: '000000' }),
+  });
+  let enLoginData = {};
+  try { enLoginData = await enLogin.json(); } catch (e) {}
+  await expect(
+    enLogin.status === 400 && enLoginData.code === 'AUTH_OTP_NOT_FOUND' && enLoginData.message === 'OTP not found.',
+    'Accept-Language=EN → login OTP-not-found English'
+  );
+
+  // Multi-country registration: Kenyan phone → country_code KE
+  const kePhone = '2547' + String(Date.now()).slice(-8);
+  const keUser = await register(kePhone, 'Keja Mwangi');
+  await expect(keUser.status === 201 && keUser.data.user.country_code === 'KE', `Register KE phone → country_code=KE (got ${keUser.data.user?.country_code})`);
+
+  // FX resolution: direct → inverse → triangulated via TZS
+  const fx = await api('GET', '/api/currency/rates/EUR/GBP', null, null);
+  await expect(fx.status === 200 && fx.data.source === 'TRIANGULATED' && fx.data.rate > 0.8 && fx.data.rate < 0.95, `FX EUR→GBP triangulated (${fx.data?.rate})`);
+  const ident = await api('GET', '/api/currency/rates/TZS/TZS', null, null);
+  await expect(ident.status === 200 && ident.data.rate === 1, 'FX identity TZS→TZS = 1');
+
+  // Admin sets a direct pair
+  const putRate = await api('PUT', '/api/currency/rates', adminToken, { from: 'EUR', to: 'GBP', rate: 0.85 });
+  await expect(putRate.status === 200 && putRate.data.success === true, 'Admin PUT /currency/rates EUR→GBP = 0.85');
+  const dirFx = await api('GET', '/api/currency/rates/EUR/GBP', null, null);
+  await expect(dirFx.status === 200 && dirFx.data.source === 'DIRECT' && Math.abs(dirFx.data.rate - 0.85) < 0.001, 'After admin rate → direct EUR→GBP');
+
+  // Personal convert + holdings + display currency
+  const fxUser = await register('255780' + nowSuffix(), 'Faida Trust');
+  await fundWallet(fxUser.data.user.id, 500000);
+  const fxConv = await api('POST', '/api/currency/convert', fxUser.data.token, { from: 'TZS', to: 'EUR', amount: 200000 });
+  await expect(fxConv.status === 200 && fxConv.data.success === true && fxConv.data.converted > 0, `Personal convert TZS→EUR (got ${fxConv.data?.converted})`);
+  const hold = await api('GET', '/api/currency/my-holdings', fxUser.data.token, null);
+  await expect(hold.status === 200 && hold.data.currencies.some((c) => c.currency === 'EUR'), 'my-holdings shows EUR after convert');
+  const fxConv2 = await api('POST', '/api/currency/convert', fxUser.data.token, { from: 'EUR', to: 'TZS', amount: 999999 });
+  await expect(fxConv2.status === 400 && fxConv2.data.code === 'CURRENCY_BALANCE_MISSING', 'Insufficient EUR balance rejected (CURRENCY_BALANCE_MISSING)');
+  const setCur = await api('PUT', '/api/currency/my-currency', fxUser.data.token, { currency: 'EUR' });
+  await expect(setCur.status === 200 && setCur.data.success === true, 'Set user display currency EUR');
+  const getCur = await api('GET', '/api/currency/my-currency', fxUser.data.token, null);
+  await expect(getCur.data.currency === 'EUR', 'my-currency returns EUR');
+
+  // ------------------------------------------------------------
   console.log('\n==============================');
   console.log(`RESULT: ${passed} PASSED, ${failed} FAILED`);
   if (failures.length) {

@@ -1,7 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import api from '../api/client.js';
+import { useT } from '../i18n/LangProvider.jsx';
 
 export default function Services() {
+  const { t } = useT();
   const [catalog, setCatalog] = useState([]);
   const [msg, setMsg] = useState('');
 
@@ -35,8 +37,8 @@ export default function Services() {
   return (
     <>
       <div className="page-head">
-        <h2>Huduma Zako</h2>
-        <p>Chagua huduma unazotaka kutumia. Wallet ni ya msingi - nyingine unaweza kuziona lakini kuzitumia baada ya kujiunga.</p>
+        <h2>{t('services.title')}</h2>
+        <p>{t('services.sub')}</p>
       </div>
 
       {msg && <div className={`msg ${msg.startsWith('Kamilisha') ? 'warn' : 'ok'}`}>{msg}</div>}
@@ -60,7 +62,7 @@ export default function Services() {
                   onClick={() => toggle(svc.key, svc.active)}
                   disabled={!svc.active && svc.key === 'WALLET'}
                 >
-                  {svc.active ? 'Ondoka' : 'Jiunge'}
+                  {svc.active ? t('services.leave') : t('services.join')}
                 </button>
               )}
             </div>

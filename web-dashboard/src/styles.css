@@ -213,3 +213,29 @@ tr:hover td { background: #f8fbf9; }
 
 .section { margin-top: 22px; }
 .roles-tag { font-size: 11px; color: var(--muted); }
+
+/* Language switcher */
+.lang-switcher {
+  padding: 12px 20px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.15);
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: rgba(255, 255, 255, 0.85);
+}
+.lang-btn {
+  padding: 4px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 6px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.85);
+  cursor: pointer;
+  font-size: 12px;
+}
+.lang-btn.active { background: var(--green-light); border-color: var(--green-light); color: #fff; }
+.auth-lang { display: flex; justify-content: flex-end; gap: 8px; margin-bottom: 8px; }
+.auth-lang .lang-btn { border-color: var(--border); color: var(--muted); }
+.auth-lang .lang-btn.active { background: var(--green); border-color: var(--green); color: #fff; }
+.inline-actions .lang-btn { border-color: var(--border); color: var(--muted); }
+.inline-actions .lang-btn.act { background: var(--green); border-color: var(--green); color: #fff; }

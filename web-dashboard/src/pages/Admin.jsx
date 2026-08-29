@@ -1,8 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import api from '../api/client.js';
 import { formatMoney, StatusBadge } from '../components/ui.jsx';
+import { useT } from '../i18n/LangProvider.jsx';
 
 export default function Admin() {
+  const { t } = useT();
   const [users, setUsers] = useState([]);
   const [txs, setTxs] = useState([]);
   const [stats, setStats] = useState(null);
@@ -16,8 +18,8 @@ export default function Admin() {
   return (
     <>
       <div className="page-head">
-        <h2>Utawala (Super Admin)</h2>
-        <p>Usimamizi wa watumiaji, miamala na mapato ya mfumo</p>
+        <h2>{t('admin.title')}</h2>
+        <p>{t('admin.sub')}</p>
       </div>
 
       {stats && (

@@ -1,10 +1,11 @@
 const { z } = require('zod');
+const { normalizeToE164 } = require('../utils/phone');
 
+// Multi-country phone: national (07xx→255 normalisation per hint/default TZ)
+// au E.164 kwa nchi yoyote iliyowashwa (254, 256, 250…). Canonical: 2550712345678.
 const toIntlPhone = (v, ctx) => {
-  let p = String(v).trim().replace(/\s+/g, '');
-  if (p.startsWith('+')) p = p.slice(1);
-  if (p.startsWith('0')) p = '255' + p.slice(1);
-  if (!/^255\d{9}$/.test(p)) {
+  const p = normalizeToE164(v, 'TZ');
+  if (!p) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Nambari ya simu si sahihi (mf: 071x xxx xxx)' });
     return z.NEVER;
   }

@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import api from '../api/client.js';
+import { useT } from '../i18n/LangProvider.jsx';
 
 const PUBLIC_SITE_URL = 'https://afrikoba.com';
 
@@ -10,6 +11,7 @@ function shareText(svc) {
 }
 
 export default function Promotions() {
+  const { t } = useT();
   const [offers, setOffers] = useState([]);
   const [active, setActive] = useState([]);
   const [msg, setMsg] = useState('');
@@ -53,8 +55,8 @@ export default function Promotions() {
   return (
     <>
       <div className="page-head">
-        <h2>Matangazo na Promotion</h2>
-        <p>Huduma zote tayari kwa matangazo - ndani ya mfumo na nje (landing pages, ads, SMS, WhatsApp)</p>
+        <h2>{t('promotions.title')}</h2>
+        <p>{t('promotions.sub')}</p>
       </div>
 
       {msg && <div className={`msg ${msg.includes('Umejiunga') || msg.includes('imenakiliwa') ? 'ok' : 'warn'}`}>{msg}</div>}

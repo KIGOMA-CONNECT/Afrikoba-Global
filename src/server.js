@@ -75,6 +75,10 @@ if (config.trustProxy) {
   app.set('trust proxy', 1);
 }
 
+// i18n: req.locale (Accept-Language) + res.t() — lazima kabla ya handlers zinazotumia messages
+const { i18n } = require('./i18n/middleware');
+app.use(i18n);
+
 // H1: Enhanced security headers
 app.use(securityHeaders);
 

@@ -1,8 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import api from '../api/client.js';
 import { formatMoney, StatusBadge } from '../components/ui.jsx';
+import { useT } from '../i18n/LangProvider.jsx';
 
 export default function Referrals() {
+  const { t } = useT();
   const [stats, setStats] = useState(null);
   const [msg, setMsg] = useState({ type: '', text: '' });
 
@@ -39,8 +41,8 @@ export default function Referrals() {
   return (
     <>
       <div className="page-head">
-        <h2>Referrals</h2>
-        <p>Alta rafiki, pata zawadi</p>
+        <h2>{t('referrals.title')}</h2>
+        <p>{t('referrals.sub')}</p>
       </div>
 
       {msg.text && <div className={`msg ${msg.type}`}>{msg.text}</div>}

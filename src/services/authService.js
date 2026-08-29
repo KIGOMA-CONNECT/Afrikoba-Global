@@ -4,6 +4,8 @@ const pool = require('../config/db');
 const config = require('../config');
 const { sendSMS } = require('./smsService');
 const { toInternationalFormat } = require('../utils/helpers');
+const { countryFromPhone } = require('../utils/phone');
+const { createAppError } = require('../utils/errorCodes');
 const logger = require('../utils/logger');
 
 const OTP_TTL_MINUTES = 10;
@@ -22,10 +24,7 @@ function checkSendRate(phone) {
   const last = sendLog.get(phone) || 0;
   if (now - last < cooldownMs) {
     const waitSeconds = Math.ceil((cooldownMs - (now - last)) / 1000);
-    throw Object.assign(
-      new Error(`Subiri sekunde ${waitSeconds} kabla ya kutuma OTP tena.`),
-      { statusCode: 429 }
-    );
+    throw Object.assign(createAppError('AUTH_OTP_COOLDOWN'), { _i18nVars: { waitSeconds } });
   }
   sendLog.set(phone, now);
   if (sendLog.size > 10000) sendLog.clear();
@@ -43,7 +42,8 @@ async function sendOtp(phoneNumber, purpose = 'LOGIN') {
     [phone, otp, purpose, expiresAt]
   );
 
-  const message = `AFRIKOBA: Msimbo wako wa uthibitisho ni ${otp}. Unamalizika ndani ya dakika ${OTP_TTL_MINUTES}. Usimpe mtu yeyote!`;
+  const { tr } = require('../i18n');
+  const message = tr('AUTH_OTP_SMS', 'sw', { otp, minutes: OTP_TTL_MINUTES });
   await sendSMS(phone, message);
   return otp;
 }
@@ -56,23 +56,26 @@ async function verifyOtp(phoneNumber, otpCode, purpose = 'LOGIN') {
      ORDER BY created_at DESC LIMIT 1`,
     [phone, purpose]
   );
-  if (result.rows.length === 0) return { success: false, message: 'OTP haujapatikana.' };
+  if (result.rows.length === 0) return { success: false, code: 'AUTH_OTP_NOT_FOUND', message: 'OTP haujapatikana.' };
   const record = result.rows[0];
   if (new Date() > new Date(record.expires_at)) {
-    return { success: false, message: 'OTP umemalizika muda wake.' };
+    return { success: false, code: 'AUTH_OTP_EXPIRED', message: 'OTP umemalizika muda wake.' };
   }
   if (record.attempts >= MAX_OTP_ATTEMPTS) {
     await pool.query('UPDATE otp_codes SET used = TRUE WHERE id = $1', [record.id]);
-    return { success: false, message: 'OTP umeshatumika mara nyingi. Tuma OTP mpya.' };
+    return { success: false, code: 'AUTH_OTP_MAX_ATTEMPTS', message: 'OTP umeshatumika mara nyingi. Tuma OTP mpya.' };
   }
   if (String(record.otp_code) !== String(otpCode)) {
     await pool.query('UPDATE otp_codes SET attempts = attempts + 1 WHERE id = $1', [record.id]);
     const remaining = MAX_OTP_ATTEMPTS - (record.attempts + 1);
+    if (remaining <= 0) {
+      return { success: false, code: 'AUTH_INVALID_OTP', message: 'OTP si sahihi. Tuma OTP mpya.' };
+    }
     return {
       success: false,
-      message: remaining <= 0
-        ? 'OTP si sahihi. Tuma OTP mpya.'
-        : `OTP si sahihi. Umebakiwa na majaribio ${remaining}.`,
+      code: 'AUTH_INVALID_OTP_ATTEMPTS',
+      _i18nVars: { remaining },
+      message: `OTP si sahihi. Umebakiwa na majaribio ${remaining}.`,
     };
   }
   await pool.query('UPDATE otp_codes SET used = TRUE WHERE id = $1', [record.id]);
@@ -82,19 +85,21 @@ async function verifyOtp(phoneNumber, otpCode, purpose = 'LOGIN') {
 async function registerUser({ fullName, phoneNumber, email, password, nidaNumber }) {
   const phone = toInternationalFormat(phoneNumber);
   const passwordHash = password ? bcrypt.hashSync(password, 10) : null;
+  const countryCode = countryFromPhone(phone, 'TZ');
 
   const result = await pool.query(
-    `INSERT INTO users (full_name, phone_number, email, password_hash, nida_number)
-     VALUES ($1, $2, $3, $4, $5)
-     RETURNING id, full_name, phone_number, email, kyc_level, role, wallet_balance, trust_score, created_at`,
-    [fullName, phone, email || null, passwordHash, nidaNumber || null]
+    `INSERT INTO users (full_name, phone_number, email, password_hash, nida_number, country_code)
+     VALUES ($1, $2, $3, $4, $5, $6)
+     RETURNING id, full_name, phone_number, email, kyc_level, role, wallet_balance, trust_score,
+               currency_code, country_code, created_at`,
+    [fullName, phone, email || null, passwordHash, nidaNumber || null, countryCode]
   );
   return result.rows[0];
 }
 
 async function setupPin(userId, pin) {
   if (!/^\d{4}$/.test(String(pin))) {
-    throw new Error('PIN lazima iwe tarakimu 4.');
+    throw Object.assign(createAppError('VALIDATION_ERROR', { fields: ['pin'] }), { _i18nVars: {}, message: 'PIN lazima iwe tarakimu 4.' });
   }
   const pinHash = bcrypt.hashSync(String(pin), 10);
   await pool.query('UPDATE users SET pin_hash = $1 WHERE id = $2', [pinHash, userId]);
@@ -115,10 +120,10 @@ async function loginWithPassword(emailOrPhone, password) {
     : 'SELECT * FROM users WHERE phone_number = $1';
   const key = isEmail ? String(emailOrPhone).trim() : toInternationalFormat(emailOrPhone);
   const result = await pool.query(query, [key]);
-  if (result.rows.length === 0) return { success: false, message: 'Akaunti haijapatikana.' };
+  if (result.rows.length === 0) return { success: false, code: 'AUTH_ACCOUNT_NOT_FOUND', message: 'Akaunti haijapatikana.' };
   const user = result.rows[0];
   if (!user.password_hash || !bcrypt.compareSync(String(password), user.password_hash)) {
-    return { success: false, message: 'Kitambulisho si sahihi.' };
+    return { success: false, code: 'AUTH_BAD_CREDENTIALS', message: 'Kitambulisho si sahihi.' };
   }
   delete user.password_hash;
   delete user.pin_hash;

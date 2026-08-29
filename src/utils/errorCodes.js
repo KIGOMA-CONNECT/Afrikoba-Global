@@ -13,9 +13,12 @@ const ERROR_CODES = {
 
   // Auth (403)
   AUTH_INVALID_OTP:              { status: 403, message: 'OTP si sahihi.' },
+  AUTH_OTP_NOT_FOUND:            { status: 403, message: 'OTP haujapatikana.' },
   AUTH_OTP_EXPIRED:              { status: 403, message: 'OTP imeisha.' },
   AUTH_OTP_MAX_ATTEMPTS:         { status: 403, message: 'Majaribio ya OTP yameisha.' },
   AUTH_OTP_COOLDOWN:             { status: 429, message: 'Subiri kabla ya kuomba OTP nyingine.' },
+  AUTH_ACCOUNT_NOT_FOUND:        { status: 404, message: 'Akaunti haijapatikana.' },
+  AUTH_BAD_CREDENTIALS:          { status: 401, message: 'Kitambulisho si sahihi.' },
   AUTH_INSUFFICIENT_SCOPE:       { status: 403, message: 'Huna ruhusa ya kufanya hii.' },
   AUTH_KYC_REQUIRED:             { status: 403, message: 'Hifadhi inahitaji kiwango cha KYC.' },
   AUTH_SUBSCRIPTION_REQUIRED:    { status: 403, message: 'Huduma hii inahitaji usajili.' },
@@ -41,6 +44,14 @@ const ERROR_CODES = {
   // P2P (400)
   P2P_PROJECT_EXCEEDS_TARGET:    { status: 400, message: 'Uwekezaji unazidi shabaha.' },
   P2P_PROJECT_NOT_ACTIVE:        { status: 400, message: 'Mradi si hai.' },
+
+  // Currency (400/404)
+  CURRENCY_NOT_SUPPORTED:        { status: 400, message: 'Sarafu haijaungwa.' },
+  CURRENCY_NOT_ACTIVE:           { status: 400, message: 'Sarafu haijawashwa.' },
+  CURRENCY_USER_NOT_FOUND:       { status: 404, message: 'Mtumiaji hajapatikana.' },
+  CURRENCY_BALANCE_MISSING:      { status: 400, message: 'Salio halitoshi.' },
+  CURRENCY_TZS_COST_MISSING:     { status: 400, message: 'Salio la TZS halitoshi.' },
+  FX_RATE_NOT_FOUND:             { status: 404, message: 'Kiwango cha ubadilishaji hakipatikani.' },
 
   // Generic
   INTERNAL_ERROR:                { status: 500, message: 'Hitilafu ya ndani ya server.' },

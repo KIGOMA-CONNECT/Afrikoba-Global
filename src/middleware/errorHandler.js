@@ -1,7 +1,13 @@
 const logger = require('../utils/logger');
+const { tr, localizeError } = require('../i18n');
 
 function notFound(req, res) {
-  res.status(404).json({ success: false, code: 'RESOURCE_NOT_FOUND', message: `Route ${req.method} ${req.path} haipatikani.` });
+  const locale = req.locale || 'sw';
+  res.status(404).json({
+    success: false,
+    code: 'RESOURCE_NOT_FOUND',
+    message: tr('ROUTE_NOT_FOUND', locale, { method: req.method, path: req.path }),
+  });
 }
 
 function errorHandler(err, req, res, next) {
@@ -10,7 +16,7 @@ function errorHandler(err, req, res, next) {
   const body = {
     success: false,
     code: err.code || (status >= 500 ? 'INTERNAL_ERROR' : 'VALIDATION_ERROR'),
-    message: status >= 500 ? 'Hitilafu ya ndani ya server.' : err.message,
+    message: localizeError(err, req.locale || 'sw'),
   };
   if (err.details) body.details = err.details;
   res.status(status).json(body);

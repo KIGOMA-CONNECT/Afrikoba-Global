@@ -2,8 +2,10 @@ import React, { useEffect, useState } from 'react';
 import api from '../api/client.js';
 import { formatMoney, StatusBadge } from '../components/ui.jsx';
 import ServiceLock from '../components/ServiceLock.jsx';
+import { useT } from '../i18n/LangProvider.jsx';
 
 export default function P2p() {
+  const { t } = useT();
   const user = JSON.parse(localStorage.getItem('afrikoba_user') || '{}');
   const isAdmin = user.role === 'ADMIN';
   const isIssuer = user.role === 'ISSUER' || isAdmin;
@@ -111,8 +113,8 @@ export default function P2p() {
   return (
     <ServiceLock serviceKey="P2P">
       <div className="page-head">
-        <h2>Uwekezaji (P2P Crowdfunding)</h2>
-        <p>Wekeza kwenye miradi iliyohakikiwa - Faida hurudishwa kiotomatiki</p>
+        <h2>{t('p2p.title')}</h2>
+        <p>{t('p2p.sub')}</p>
       </div>
 
       {msg.text && <div className={`msg ${msg.type}`}>{msg.text}</div>}

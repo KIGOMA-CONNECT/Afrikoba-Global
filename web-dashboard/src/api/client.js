@@ -9,6 +9,8 @@ api.interceptors.request.use((config) => {
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
   }
+  const lang = localStorage.getItem('afrikoba_lang') || 'sw';
+  config.headers['Accept-Language'] = lang;
   return config;
 });
 

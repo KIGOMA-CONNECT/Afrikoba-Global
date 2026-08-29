@@ -1,18 +1,17 @@
 const crypto = require('crypto');
+const { normalizeToE164 } = require('./phone');
 
 /**
- * Sasa namba ya simu kwenda format ya kimataifa 255XXXXXXXXX (Beem)
+ * Sasa namba ya simu kwenda format ya kimataifa 255XXXXXXXXX (Beem).
+ * Sasa inaunga nchi nyingi: namba yoyote ya E.164 ya nchi iliyowashwa
+ * (254, 256, 250…) hubakia kama ilivyo; national 07xx huenda kwa 255 kwa default.
  */
-function toInternationalFormat(phone) {
-  let p = String(phone).trim().replace(/\s+/g, '');
-  if (p.startsWith('+')) p = p.substring(1);
-  if (p.startsWith('0')) p = '255' + p.substring(1);
-  if (!p.startsWith('255')) p = '255' + p;
-  return p;
+function toInternationalFormat(phone, countryHint = 'TZ') {
+  return normalizeToE164(phone, countryHint) || String(phone).trim();
 }
 
 /**
- * Sasa namba kwenda format ya AzamPay MNO (0XXXXXXXXX)
+ * Sasa namba kwenda format ya AzamPay MNO (0XXXXXXXXX) — Tanzania pekee
  */
 function toLocalFormat(phone) {
   let p = String(phone).trim().replace(/\s+/g, '');
@@ -47,7 +46,8 @@ function formatMoney(n) {
 }
 
 function maskPhone(phone) {
-  const p = toInternationalFormat(phone);
+  const p = String(phone || '').replace(/\s+/g, '');
+  if (p.length < 8) return '****';
   return p.slice(0, 4) + '****' + p.slice(-3);
 }
 

@@ -2,8 +2,10 @@ import React, { useEffect, useState } from 'react';
 import api from '../api/client.js';
 import { formatMoney, StatusBadge } from '../components/ui.jsx';
 import ServiceLock from '../components/ServiceLock.jsx';
+import { useT } from '../i18n/LangProvider.jsx';
 
 export default function Vicoba() {
+  const { t } = useT();
   const user = JSON.parse(localStorage.getItem('afrikoba_user') || '{}');
   const [groups, setGroups] = useState([]);
   const [selected, setSelected] = useState(null);
@@ -131,8 +133,8 @@ export default function Vicoba() {
   return (
     <ServiceLock serviceKey="VICOBA">
       <div className="page-head">
-        <h2>VICOBA</h2>
-        <p>Usimamizi wa vikundi, hisa na mikopo (Multi-Signature)</p>
+        <h2>{t('vicoba.title')}</h2>
+        <p>{t('vicoba.sub')}</p>
       </div>
 
       {msg.text && <div className={`msg ${msg.type}`}>{msg.text}</div>}
@@ -153,7 +155,7 @@ export default function Vicoba() {
         </div>
 
         <div className="card">
-          <h3>Unda Kikundi Kipya</h3>
+          <h3>{t('vicoba.create_group')}</h3>
           <form className="form-row" onSubmit={createGroup}>
             <div className="field"><label>Jina</label><input value={gName} onChange={(e) => setGName(e.target.value)} required /></div>
             <div className="field"><label>Mzunguko</label>
@@ -163,16 +165,16 @@ export default function Vicoba() {
             </div>
             <div className="field"><label>Bei ya Hisa</label><input type="number" value={gShare} onChange={(e) => setGShare(e.target.value)} required /></div>
             <div className="field"><label>Ada ya Mwezi</label><input type="number" value={gFee} onChange={(e) => setGFee(e.target.value)} /></div>
-            <button className="btn" type="submit">Unda</button>
+            <button className="btn" type="submit">{t('vicoba.create_btn')}</button>
           </form>
 
-          <h3 style={{ marginTop: 18 }}>Jiunge kwa Msimbo wa Kikundi</h3>
+          <h3 style={{ marginTop: 18 }}>{t('vicoba.join_code')}</h3>
           <form className="form-row" onSubmit={joinByCode}>
             <div className="field">
               <label>Msimbo wa Kujiunga (unatuma Mwenyekiti)</label>
               <input value={joinCode} onChange={(e) => setJoinCode(e.target.value)} placeholder="e.g. C9C9BDE7" required />
             </div>
-            <button className="btn ghost" type="submit">Jiunge</button>
+            <button className="btn ghost" type="submit">{t('vicoba.join_btn')}</button>
           </form>
         </div>
       </div>
