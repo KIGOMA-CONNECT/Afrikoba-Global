@@ -54,6 +54,7 @@ const messages = {
 
     'dashboard.hello': 'Habari, {name}!',
     'dashboard.welcome_admin': 'Karibu, {name}!',
+    'dashboard.welcome_user': 'Habari, {name}!',
     'dashboard.balance': 'Salio la Wallet',
     'dashboard.hub': 'Huduma Central',
     'dashboard.quick_actions': 'Vitendo vya haraka',
@@ -182,6 +183,7 @@ const messages = {
     'services.sub': 'Washa na uzime huduma unazotumia',
     'services.leave': 'Ondoka',
     'services.join': 'Jiunge',
+    'services.back': 'Rudi kwenye Huduma',
   },
   en: {
     'brand.name': 'AFRIKOBA GLOBAL',
@@ -238,6 +240,7 @@ const messages = {
 
     'dashboard.hello': 'Hello, {name}!',
     'dashboard.welcome_admin': 'Welcome, {name}!',
+    'dashboard.welcome_user': 'Hello, {name}!',
     'dashboard.balance': 'Wallet Balance',
     'dashboard.hub': 'Services Hub',
     'dashboard.quick_actions': 'Quick actions',
@@ -366,6 +369,7 @@ const messages = {
     'services.sub': 'Turn on / off services you use',
     'services.leave': 'Leave',
     'services.join': 'Join',
+    'services.back': 'Back to Services',
   },
 };
 

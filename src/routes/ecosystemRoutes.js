@@ -63,7 +63,7 @@ router.post('/chat/start', authRequired, async (req, res, next) => {
   try {
     const { phone } = req.body;
     const pool = require('../config/db');
-    const user = await pool.query(`SELECT id FROM users WHERE phone = $1`, [phone]);
+    const user = await pool.query(`SELECT id FROM users WHERE phone_number = $1`, [phone]);
     if (user.rows.length === 0) return res.status(404).json({ success: false, message: 'Mtumiaji haupatikani.' });
     const convId = await chatService.getOrCreateConversation(req.user.id, user.rows[0].id);
     res.json({ success: true, conversationId: convId });

@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import api from '../api/client.js';
 import { useT } from '../i18n/LangProvider.jsx';
 
@@ -19,7 +20,9 @@ export default function Services() {
 
   useEffect(() => { refresh(); }, []);
 
-  const toggle = async (key, active) => {
+  const toggle = async (e, key, active) => {
+    e.preventDefault();
+    e.stopPropagation();
     setMsg('');
     try {
       if (active) {
@@ -45,28 +48,35 @@ export default function Services() {
 
       <div className="grid grid-2">
         {catalog.map((svc) => (
-          <div key={svc.key} className={`card ${!svc.active ? 'locked' : ''}`}>
-            <h3>{svc.swahili || svc.name}</h3>
-            <p>{svc.description}</p>
-            <div className="roles-tag" style={{ marginBottom: 12 }}>
-              {svc.baseService ? 'Huduma ya msingi' : `KYC Level ${svc.requiresKyc} inahitajika`}
-              {svc.comingSoon && ' · Inakuja hivi karibuni'}
+          <Link
+            key={svc.key}
+            to={`/dashboard/services/${svc.key}`}
+            className={`card svc-card ${!svc.active ? 'locked' : ''}`}
+          >
+            <div className="svc-card-top">
+              <span className="svc-card-emoji">{svc.emoji}</span>
+              <span className={`badge ${svc.active ? 'success' : svc.comingSoon ? 'pending' : 'info'}`}>
+                {svc.active ? 'IMEWASHWA' : svc.comingSoon ? 'Inakuja' : 'HAIJAWASHWA'}
+              </span>
             </div>
-            <div className="inline-actions">
-              <span className={`badge ${svc.active ? 'success' : 'info'}`}>
-                {svc.active ? 'IMEWASHWA' : 'HAIJAWASHWA'}
+            <h3>{svc.swahili || svc.name}</h3>
+            <p className="svc-card-tagline">{svc.tagline}</p>
+            <div className="svc-card-footer">
+              <span className="roles-tag">
+                {svc.baseService ? 'Huduma ya msingi' : `KYC Level ${svc.requiresKyc}`}
               </span>
               {!svc.baseService && !svc.comingSoon && (
                 <button
-                  className={`btn ${svc.active ? 'ghost' : ''}`}
-                  onClick={() => toggle(svc.key, svc.active)}
+                  className={`btn svc-toggle ${svc.active ? 'ghost' : ''}`}
+                  onClick={(e) => toggle(e, svc.key, svc.active)}
                   disabled={!svc.active && svc.key === 'WALLET'}
                 >
                   {svc.active ? t('services.leave') : t('services.join')}
                 </button>
               )}
+              {svc.comingSoon && <span className="roles-tag">Hivi karibuni</span>}
             </div>
-          </div>
+          </Link>
         ))}
       </div>
     </>

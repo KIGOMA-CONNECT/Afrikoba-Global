@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { useT } from '../i18n/LangProvider.jsx';
 
@@ -6,6 +6,7 @@ export default function Layout() {
   const navigate = useNavigate();
   const { t, lang, setLang } = useT();
   const user = JSON.parse(localStorage.getItem('afrikoba_user') || '{}');
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const logout = () => {
     localStorage.removeItem('afrikoba_token');
@@ -14,26 +15,47 @@ export default function Layout() {
   };
 
   const isAdmin = user.role === 'ADMIN';
+  const activeServices = user.services || [];
+
+  const navItems = [
+    { to: '/dashboard', key: 'nav.dashboard', end: true, always: true },
+    { to: '/dashboard/wallet', key: 'nav.wallet', always: true },
+    { to: '/dashboard/services', key: 'nav.services', always: true },
+    { to: '/dashboard/promotions', key: 'nav.promotions', always: true },
+    { to: '/dashboard/vicoba', key: 'nav.vicoba', svc: 'VICOBA' },
+    { to: '/dashboard/rosca', key: 'nav.rosca', svc: 'ROSCA' },
+    { to: '/dashboard/p2p', key: 'nav.p2p', svc: 'P2P' },
+    { to: '/dashboard/referrals', key: 'nav.referrals', always: true },
+    { to: '/dashboard/notifications', key: 'nav.notifications', always: true },
+    { to: '/dashboard/admin', key: 'nav.admin', admin: true },
+    { to: '/dashboard/settings', key: 'nav.settings', always: true },
+  ];
+
+  const closeSidebar = () => setSidebarOpen(false);
 
   return (
     <div className="layout">
-      <aside className="sidebar">
+      {sidebarOpen && <div className="sidebar-overlay" onClick={closeSidebar} />}
+      <aside className={`sidebar ${sidebarOpen ? 'open' : ''}`}>
         <div className="brand">
           <h1>{t('brand.name')}</h1>
           <p>{t('brand.tagline')}</p>
         </div>
         <nav className="nav">
-          <NavLink to="/" end>{t('nav.dashboard')}</NavLink>
-          <NavLink to="/wallet">{t('nav.wallet')}</NavLink>
-          <NavLink to="/services">{t('nav.services')}</NavLink>
-          <NavLink to="/promotions">{t('nav.promotions')}</NavLink>
-          <NavLink to="/vicoba">{t('nav.vicoba')}</NavLink>
-          <NavLink to="/rosca">{t('nav.rosca')}</NavLink>
-          <NavLink to="/p2p">{t('nav.p2p')}</NavLink>
-          <NavLink to="/referrals">{t('nav.referrals')}</NavLink>
-          <NavLink to="/notifications">{t('nav.notifications')}</NavLink>
-          {isAdmin && <NavLink to="/admin">{t('nav.admin')}</NavLink>}
-          <NavLink to="/settings">{t('nav.settings')}</NavLink>
+          {navItems.map((item) => {
+            if (item.admin && !isAdmin) return null;
+            if (item.svc && !activeServices.includes(item.svc)) return null;
+            return (
+              <NavLink
+                key={item.to}
+                to={item.to}
+                end={item.end}
+                onClick={closeSidebar}
+              >
+                {t(item.key)}
+              </NavLink>
+            );
+          })}
         </nav>
         <div className="lang-switcher">
           <span>{t('lang.label')}:</span>
@@ -57,6 +79,9 @@ export default function Layout() {
         </div>
       </aside>
       <main className="content">
+        <button className="hamburger" onClick={() => setSidebarOpen(!sidebarOpen)}>
+          ☰
+        </button>
         <Outlet />
       </main>
     </div>

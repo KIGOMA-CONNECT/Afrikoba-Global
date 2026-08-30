@@ -26,7 +26,7 @@ export default function Dashboard() {
   return (
     <>
       <div className="page-head">
-        <h2>{isAdmin ? t('dashboard.welcome_admin', { name: user.full_name }) : t('dashboard.welcome_admin', { name: user.full_name })}</h2>
+        <h2>{isAdmin ? t('dashboard.welcome_admin', { name: user.full_name }) : t('dashboard.welcome_user', { name: user.full_name })}</h2>
         <p>{isAdmin ? t('dashboard.admin_summary') : t('dashboard.user_summary')}</p>
       </div>
 
@@ -94,7 +94,7 @@ export default function Dashboard() {
 
       {!isAdmin && services.length > 0 && (
         <div className="card section">
-          <h3>{t('dashboard.your_services')} <Link to="/services" className="roles-tag" style={{ float: 'right' }}>{t('dashboard.manage')}</Link></h3>
+          <h3>{t('dashboard.your_services')} <Link to="/dashboard/services" className="roles-tag" style={{ float: 'right' }}>{t('dashboard.manage')}</Link></h3>
           <div className="inline-actions" style={{ gap: 10, flexWrap: 'wrap' }}>
             {services.map((svc) => (
               <span key={svc.key} className={`badge ${svc.active ? 'success' : 'info'}`}>

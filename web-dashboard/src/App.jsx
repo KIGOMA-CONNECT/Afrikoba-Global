@@ -15,6 +15,7 @@ const Promotions = lazy(() => import('./pages/Promotions.jsx'));
 const Notifications = lazy(() => import('./pages/Notifications.jsx'));
 const Referrals = lazy(() => import('./pages/Referrals.jsx'));
 const Settings = lazy(() => import('./pages/Settings.jsx'));
+const ServiceDetail = lazy(() => import('./pages/ServiceDetail.jsx'));
 
 function RequireAuth({ children }) {
   const token = localStorage.getItem('afrikoba_token');
@@ -45,6 +46,7 @@ export default function App() {
       >
         <Route index element={<Suspense fallback={<DashboardLoader />}><Dashboard /></Suspense>} />
         <Route path="services" element={<Suspense fallback={<DashboardLoader />}><Services /></Suspense>} />
+        <Route path="services/:key" element={<Suspense fallback={<DashboardLoader />}><ServiceDetail /></Suspense>} />
         <Route path="promotions" element={<Suspense fallback={<DashboardLoader />}><Promotions /></Suspense>} />
         <Route path="wallet" element={<Suspense fallback={<DashboardLoader />}><Wallet /></Suspense>} />
         <Route path="vicoba" element={<Suspense fallback={<DashboardLoader />}><Vicoba /></Suspense>} />
