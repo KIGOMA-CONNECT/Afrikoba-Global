@@ -36,7 +36,7 @@ export default function Login() {
 
   const goHome = (services) => {
     const onlyBase = Array.isArray(services) && services.length <= 1;
-    navigate(onlyBase ? '/services' : '/');
+    navigate(onlyBase ? '/dashboard/services' : '/dashboard');
   };
 
   const doLogin = async () => {
