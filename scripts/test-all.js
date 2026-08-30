@@ -1488,6 +1488,38 @@ async function section(title) { console.log(`\n== ${title} ==`); }
   }
 
   // ------------------------------------------------------------
+  section('REFRESH TOKEN ROTATION + REUSE DETECTION');
+  try {
+    const rtPhone = '255789000' + nowSuffix();
+    const rtOtp = await sendOtp(rtPhone);
+    const rtReg = await api('POST', '/api/auth/register', null, { fullName: 'Refresh User', phoneNumber: rtPhone, otp: rtOtp });
+    await expect(rtReg.status === 201, 'Refresh test user anasajiliwa', `${rtReg.status}: ${rtReg.data.message || ''}`);
+    const rtToken = rtReg.data.token;
+    const rtRefresh = rtReg.data.refreshToken;
+    await expect(!!rtToken && !!rtRefresh, 'Registration inarudisha access + refresh tokens', `token=${!!rtToken} refresh=${!!rtRefresh}`);
+
+    const rtMe = await api('GET', '/api/auth/me', rtToken, null);
+    await expect(rtMe.status === 200, 'Access token inafanya kazi baada ya registration', `${rtMe.status}`);
+
+    const rtRefreshRes = await api('POST', '/api/auth/refresh', null, { refreshToken: rtRefresh });
+    await expect(rtRefreshRes.status === 200 && rtRefreshRes.data.token && rtRefreshRes.data.refreshToken,
+      'Refresh inarudisha token mpya + refresh mpya', `${rtRefreshRes.status}`);
+    const rtNewToken = rtRefreshRes.data.token;
+    const rtNewRefresh = rtRefreshRes.data.refreshToken;
+
+    const rtMeNew = await api('GET', '/api/auth/me', rtNewToken, null);
+    await expect(rtMeNew.status === 200, 'Access token mpya inafanya kazi', `${rtMeNew.status}`);
+
+    const rtReuse = await api('POST', '/api/auth/refresh', null, { refreshToken: rtRefresh });
+    await expect(rtReuse.status === 401, 'Refresh token ya zamani (reused) inakataliwa', `${rtReuse.status}: ${rtReuse.data.message || ''}`);
+
+    const rtMeOldNew = await api('GET', '/api/auth/me', rtNewToken, null);
+    await expect(rtMeOldNew.status === 401, 'Access token zote zimefungwa baada ya reuse detection (auth_version bump)', `${rtMeOldNew.status}`);
+  } catch (e) {
+    await expect(false, 'REFRESH TOKEN ROTATION section inakamilika', `CRASH: ${e.message}`);
+  }
+
+  // ------------------------------------------------------------
   console.log('\n==============================');
   console.log(`RESULT: ${passed} PASSED, ${failed} FAILED`);
   if (failures.length) {

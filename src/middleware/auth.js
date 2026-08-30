@@ -5,7 +5,6 @@ const config = require('../config');
 const { hardenedVerify } = require('./jwtHardening');
 
 const JWT_SECRET = config.security.jwtSecret || config.DEFAULT_JWT;
-const TOKEN_TTL = config.security.jwtTtl;
 
 function signToken(user, expiresIn) {
   return jwt.sign(
@@ -17,7 +16,7 @@ function signToken(user, expiresIn) {
       jti: crypto.randomUUID(),
     },
     JWT_SECRET,
-    { expiresIn: expiresIn || TOKEN_TTL }
+    { expiresIn: expiresIn || '1h' }
   );
 }
 

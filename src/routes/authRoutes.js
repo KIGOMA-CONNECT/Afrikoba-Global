@@ -2,6 +2,7 @@ const express = require('express');
 const authService = require('../services/authService');
 const serviceService = require('../services/serviceService');
 const { signToken, authRequired } = require('../middleware/auth');
+const { generateTokenPair, refreshAccessToken, revokeToken, revokeRefreshToken, cleanupExpiredRefreshTokens } = require('../middleware/sessionManager');
 const { otpLimiter, authLimiter } = require('../middleware/rateLimiter');
 const { toInternationalFormat } = require('../utils/helpers');
 const { SUPPORTED_COUNTRIES } = require('../utils/phone');
@@ -57,8 +58,9 @@ router.post('/login', authLimiter, validate(schemas.auth.login), async (req, res
     }
     const user = userRes.rows[0];
     const services = await serviceService.getUserServices(user.id);
-    const token = signToken(user);
-    return res.json({ success: true, token, user: { ...user, services } });
+    const { accessToken, refreshToken } = await generateTokenPair(user);
+    await cleanupExpiredRefreshTokens();
+    return res.json({ success: true, token: accessToken, refreshToken, user: { ...user, services } });
   } catch (error) {
     next(error);
   }
@@ -74,8 +76,8 @@ router.post('/register', authLimiter, validate(schemas.auth.register), async (re
     const user = await authService.registerUser({ fullName, phoneNumber, email, password, nidaNumber });
     await serviceService.openWallet(user.id);
     user.services = ['WALLET'];
-    const token = signToken(user);
-    return res.status(201).json({ success: true, token, user });
+    const { accessToken, refreshToken } = await generateTokenPair(user);
+    return res.status(201).json({ success: true, token: accessToken, refreshToken, user });
   } catch (error) {
     if (error.code === '23505') {
       return res.status(400).json({ success: false, code: 'AUTH_PHONE_EMAIL_EXISTS', message: res.t('AUTH_PHONE_EMAIL_EXISTS') });
@@ -100,8 +102,9 @@ router.post('/login/password', authLimiter, validate(schemas.auth.loginPassword)
       return res.json({ success: true, requires2FA: true, tempToken, message: res.t('AUTH_TOTP_REQUIRED') });
     }
 
-    const token = signToken(result.user);
-    return res.json({ success: true, token, user: { ...result.user, services } });
+    const { accessToken, refreshToken } = await generateTokenPair(result.user);
+    await cleanupExpiredRefreshTokens();
+    return res.json({ success: true, token: accessToken, refreshToken, user: { ...result.user, services } });
   } catch (error) {
     next(error);
   }
@@ -140,8 +143,9 @@ router.post('/totp-login', authLimiter, async (req, res, next) => {
     }
 
     const services = await serviceService.getUserServices(user.id);
-    const fullToken = signToken(user);
-    return res.json({ success: true, token: fullToken, user: { id: user.id, role: user.role, phone_number: user.phone_number, services } });
+    const { accessToken, refreshToken } = await generateTokenPair(user);
+    await cleanupExpiredRefreshTokens();
+    return res.json({ success: true, token: accessToken, refreshToken, user: { id: user.id, role: user.role, phone_number: user.phone_number, services } });
   } catch (error) {
     next(error);
   }
@@ -208,15 +212,14 @@ router.patch('/profile', authRequired, async (req, res, next) => {
   }
 });
 
-// Refresh access token
+// Refresh access token + rotate refresh token
 router.post('/refresh', async (req, res, next) => {
   try {
     const { refreshToken } = req.body;
     if (!refreshToken) return res.status(400).json({ success: false, message: res.t('AUTH_REFRESH_REQUIRED') });
 
-    const { refreshAccessToken } = require('../middleware/sessionManager');
     const result = await refreshAccessToken(refreshToken);
-    return res.json({ success: true, ...result });
+    return res.json({ success: true, token: result.accessToken, refreshToken: result.refreshToken, expiresIn: result.expiresIn });
   } catch (error) {
     if (error.statusCode) return res.status(error.statusCode).json({ success: false, message: error.message });
     next(error);
@@ -237,14 +240,17 @@ router.post('/change-password', authRequired, validate(schemas.auth.changePasswo
   }
 });
 
-// Logout (revoke token)
+// Logout (revoke access + refresh tokens)
 router.post('/logout', authRequired, async (req, res, next) => {
   try {
-    const { revokeToken } = require('../middleware/sessionManager');
     const authHeader = req.headers.authorization;
     if (authHeader) {
       const token = authHeader.split(' ')[1];
       await revokeToken(token);
+    }
+    // Pia futa refresh token ikiwa imetumwa
+    if (req.body.refreshToken) {
+      await revokeRefreshToken(req.body.refreshToken);
     }
     return res.json({ success: true, message: res.t('AUTH_LOGGED_OUT') });
   } catch (error) {
