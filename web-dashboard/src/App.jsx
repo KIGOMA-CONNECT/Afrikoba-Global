@@ -3,6 +3,7 @@ import { Routes, Route, Navigate } from 'react-router-dom';
 import Landing from './pages/Landing.jsx';
 import Login from './pages/Login.jsx';
 import Layout from './components/Layout.jsx';
+import ErrorBoundary from './components/ErrorBoundary.jsx';
 
 const Dashboard = lazy(() => import('./pages/Dashboard.jsx'));
 const Wallet = lazy(() => import('./pages/Wallet.jsx'));
@@ -31,6 +32,10 @@ function DashboardLoader() {
   );
 }
 
+function Page({ children }) {
+  return <ErrorBoundary><Suspense fallback={<DashboardLoader />}>{children}</Suspense></ErrorBoundary>;
+}
+
 export default function App() {
   return (
     <Routes>
@@ -44,18 +49,18 @@ export default function App() {
           </RequireAuth>
         }
       >
-        <Route index element={<Suspense fallback={<DashboardLoader />}><Dashboard /></Suspense>} />
-        <Route path="services" element={<Suspense fallback={<DashboardLoader />}><Services /></Suspense>} />
-        <Route path="services/:key" element={<Suspense fallback={<DashboardLoader />}><ServiceDetail /></Suspense>} />
-        <Route path="promotions" element={<Suspense fallback={<DashboardLoader />}><Promotions /></Suspense>} />
-        <Route path="wallet" element={<Suspense fallback={<DashboardLoader />}><Wallet /></Suspense>} />
-        <Route path="vicoba" element={<Suspense fallback={<DashboardLoader />}><Vicoba /></Suspense>} />
-        <Route path="rosca" element={<Suspense fallback={<DashboardLoader />}><Rosca /></Suspense>} />
-        <Route path="p2p" element={<Suspense fallback={<DashboardLoader />}><P2p /></Suspense>} />
-        <Route path="admin" element={<Suspense fallback={<DashboardLoader />}><Admin /></Suspense>} />
-        <Route path="notifications" element={<Suspense fallback={<DashboardLoader />}><Notifications /></Suspense>} />
-        <Route path="referrals" element={<Suspense fallback={<DashboardLoader />}><Referrals /></Suspense>} />
-        <Route path="settings" element={<Suspense fallback={<DashboardLoader />}><Settings /></Suspense>} />
+        <Route index element={<Page><Dashboard /></Page>} />
+        <Route path="services" element={<Page><Services /></Page>} />
+        <Route path="services/:key" element={<Page><ServiceDetail /></Page>} />
+        <Route path="promotions" element={<Page><Promotions /></Page>} />
+        <Route path="wallet" element={<Page><Wallet /></Page>} />
+        <Route path="vicoba" element={<Page><Vicoba /></Page>} />
+        <Route path="rosca" element={<Page><Rosca /></Page>} />
+        <Route path="p2p" element={<Page><P2p /></Page>} />
+        <Route path="admin" element={<Page><Admin /></Page>} />
+        <Route path="notifications" element={<Page><Notifications /></Page>} />
+        <Route path="referrals" element={<Page><Referrals /></Page>} />
+        <Route path="settings" element={<Page><Settings /></Page>} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

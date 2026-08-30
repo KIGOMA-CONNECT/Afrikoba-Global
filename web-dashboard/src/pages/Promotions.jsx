@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import api from '../api/client.js';
 import { useT } from '../i18n/LangProvider.jsx';
 
-const PUBLIC_SITE_URL = 'https://afrikoba.com';
+const PUBLIC_SITE_URL = window.location.origin;
 
 function shareText(svc) {
   const link = `${PUBLIC_SITE_URL}/join?service=${svc.key}`;

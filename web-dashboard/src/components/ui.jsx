@@ -1,7 +1,9 @@
 import React from 'react';
 
-export function formatMoney(n) {
-  return `TZS ${Number(n || 0).toLocaleString('en-US')}`;
+export function formatMoney(n, currency) {
+  const cur = currency || 'TZS';
+  const val = Number(n || 0);
+  return `${cur} ${val.toLocaleString('en-US')}`;
 }
 
 export function StatusBadge({ status }) {
