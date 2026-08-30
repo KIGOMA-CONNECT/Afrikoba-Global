@@ -122,7 +122,7 @@ const corsOptions =
 
 app.use(cors(corsOptions));
 app.use(express.json({
-  limit: '1mb',
+  limit: '512kb',
   // Capture raw body kwa webhook HMAC verification (exact bytes).
   verify: (req, res, buf) => { req.rawBody = buf.toString('utf8'); },
 }));

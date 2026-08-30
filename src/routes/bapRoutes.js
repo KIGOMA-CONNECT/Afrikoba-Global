@@ -71,7 +71,7 @@ router.get('/admin/partners/:id/webhooks', authRequired, requireRoles('ADMIN'), 
 });
 
 // ===== K3-K6: PARTNER-SIGNED =====
-router.post('/payout', bapSignedLimiter, express.text({ type: '*/*' }), bapAuth, async (req, res, next) => {
+router.post('/payout', bapSignedLimiter, express.text({ type: '*/*', limit: '100kb' }), bapAuth, async (req, res, next) => {
   try {
     let payload = {};
     try { payload = JSON.parse(req.body || '{}'); } catch (e) { throw Object.assign(new Error('Body lazima iwe JSON string.'), { statusCode: 400 }); }
@@ -79,12 +79,12 @@ router.post('/payout', bapSignedLimiter, express.text({ type: '*/*' }), bapAuth,
   } catch (e) { next(e); }
 });
 
-router.get('/statement', bapSignedLimiter, express.text({ type: '*/*' }), bapAuth, async (req, res, next) => {
+router.get('/statement', bapSignedLimiter, express.text({ type: '*/*', limit: '100kb' }), bapAuth, async (req, res, next) => {
   try { res.json({ success: true, statement: await bap.partnerStatement(req.partner.id) }); }
   catch (e) { next(e); }
 });
 
-router.get('/summary', bapSignedLimiter, express.text({ type: '*/*' }), bapAuth, async (req, res, next) => {
+router.get('/summary', bapSignedLimiter, express.text({ type: '*/*', limit: '100kb' }), bapAuth, async (req, res, next) => {
   try { res.json({ success: true, summary: await bap.partnerSummary(req.partner.id) }); }
   catch (e) { next(e); }
 });
