@@ -1,0 +1,7 @@
+User-agent: *
+Allow: /
+Disallow: /api/
+Disallow: /dashboard/
+Disallow: /contracts/
+
+Sitemap: https://afrikoba.com/sitemap.xml

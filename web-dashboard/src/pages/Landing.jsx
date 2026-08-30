@@ -16,12 +16,23 @@ function useIsMobile() {
   return m;
 }
 
+function useLiveStats() {
+  const [stats, setStats] = useState({ totalBalanceFormatted: 'TZS 500M+', vicobaGroups: 1200, registeredUsers: 50000 });
+  useEffect(() => {
+    fetch('/api/stats/public').then(r => r.json()).then(d => {
+      if (d.success && d.stats) setStats(d.stats);
+    }).catch(() => {});
+  }, []);
+  return stats;
+}
+
 export default function Landing() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [bannerDismissed, setBannerDismissed] = useState(false);
   const [obStep, setObStep] = useState(0);
   const [obDone, setObDone] = useState(() => localStorage.getItem(ONBOARDING_KEY) === '1');
   const isMobile = useIsMobile();
+  const stats = useLiveStats();
 
   const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
   const showBanner = isMobile && !bannerDismissed && !isStandalone;
@@ -30,6 +41,15 @@ export default function Landing() {
 
   return (
     <>
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify({
+        "@context": "https://schema.org",
+        "@type": "Organization",
+        "name": "Afrikoba Global",
+        "url": "https://afrikoba.com",
+        "description": "Mfumo Salama wa Kidijitali wa Akiba, VICOBA, Mzunguko na Uwekezaji Barani Afrika.",
+        "address": { "@type": "PostalAddress", "addressCountry": "TZ", "addressLocality": "Dar es Salaam" },
+        "sameAs": []
+      }) }} />
       {/* NAVBAR */}
       <nav className="landing-nav">
         <div className="logo">
@@ -95,9 +115,9 @@ export default function Landing() {
             <div className="badge-item"><span className="badge-icon">✅</span><div className="badge-text">NIDA E-Signature<br/>Verified</div></div>
           </div>
           <div className="stats-row">
-            <div className="stat-item"><div className="stat-value">TZS 500M+</div><div className="stat-label">Zimesimamiwa</div></div>
-            <div className="stat-item"><div className="stat-value">1,200+</div><div className="stat-label">Vikundi Vimesajiliwa</div></div>
-            <div className="stat-item"><div className="stat-value">50,000+</div><div className="stat-label">Watumiaji Wenye Akaunti</div></div>
+            <div className="stat-item"><div className="stat-value">{stats.totalBalanceFormatted || 'TZS 500M+'}</div><div className="stat-label">Zimesimamiwa</div></div>
+            <div className="stat-item"><div className="stat-value">{(stats.vicobaGroups || 1200).toLocaleString()}+</div><div className="stat-label">Vikundi Vimesajiliwa</div></div>
+            <div className="stat-item"><div className="stat-value">{(stats.registeredUsers || 50000).toLocaleString()}+</div><div className="stat-label">Watumiaji Wenye Akaunti</div></div>
           </div>
         </div>
       </section>

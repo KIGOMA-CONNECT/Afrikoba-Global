@@ -50,6 +50,7 @@ const savingsRoutes = require('./routes/savingsRoutes');
 const creditRoutes = require('./routes/creditRoutes');
 const cardRoutes = require('./routes/cardRoutes');
 const bapRoutes = require('./routes/bapRoutes');
+const publicStatsRoutes = require('./routes/publicStats');
 const swaggerUi = require('swagger-ui-express');
 const { swaggerSpec } = require('./config/swagger');
 
@@ -98,7 +99,7 @@ app.use(
     contentSecurityPolicy: {
       directives: {
         defaultSrc: ["'self'"],
-        scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
+        scriptSrc: ["'self'", "'unsafe-inline'"],
         styleSrc: ["'self'", "'unsafe-inline'"],
         imgSrc: ["'self'", 'data:', 'blob:'],
         fontSrc: ["'self'", 'data:'],
@@ -201,6 +202,7 @@ for (const prefix of versionPrefixes) {
   app.use(`${prefix}/credit`, walletLimiter, creditRoutes);
   app.use(`${prefix}/cards`, walletLimiter, cardRoutes);
   app.use(`${prefix}/bap`, walletLimiter, bapRoutes);
+  app.use(`${prefix}/stats`, publicStatsRoutes);
 }
 
 // Swagger UI - API documentation (production off - usitangaze API surface)
