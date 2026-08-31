@@ -11,6 +11,8 @@ const fs = require('fs');
 const path = require('path');
 const { Client } = require('pg');
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 async function getWorkingClient() {
   const candidates = [
     {
@@ -28,7 +30,7 @@ async function getWorkingClient() {
       port: Number(process.env.DB_PORT || 5432),
     },
     {
-      user: process.env.DB_USER || 'postgres',
+      user: 'postgres',
       host: process.env.DB_HOST || 'db',
       database: process.env.DB_NAME || 'afrikoba_global',
       password: process.env.DB_PASSWORD || 'postgres',
@@ -43,25 +45,30 @@ async function getWorkingClient() {
     },
     {
       user: 'postgres',
-      host: process.env.DB_HOST || 'localhost',
+      host: 'localhost',
       database: process.env.DB_NAME || 'afrikoba_global',
       password: 'postgres',
       port: Number(process.env.DB_PORT || 5432),
     },
   ];
 
-  for (const config of candidates) {
-    const client = new Client(config);
-    try {
-      await client.connect();
-      console.log(`[MIGRATE] Connected to database using user '${config.user}' at host '${config.host}'.`);
-      return client;
-    } catch (err) {
-      await client.end().catch(() => {});
+  // Retry up to 15 times (30 seconds total) for Postgres to start accepting TCP connections
+  for (let attempt = 1; attempt <= 15; attempt++) {
+    for (const config of candidates) {
+      const client = new Client(config);
+      try {
+        await client.connect();
+        console.log(`[MIGRATE] Connected to database using user '${config.user}' at host '${config.host}'.`);
+        return client;
+      } catch (err) {
+        await client.end().catch(() => {});
+      }
     }
+    console.log(`[MIGRATE] Waiting for database connection (attempt ${attempt}/15)...`);
+    await sleep(2000);
   }
 
-  throw new Error('Could not connect to database with any known credential combination.');
+  throw new Error('Could not connect to database with any known credential combination after 15 attempts.');
 }
 
 async function main() {
