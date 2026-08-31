@@ -177,6 +177,18 @@ app.get('/metrics', async (req, res) => {
 });
 
 // Readiness check (DB connectivity - kwa orchestrators kama Docker/K8s)
+app.get('/health/db', async (req, res) => {
+  try {
+    const pool = require('./config/db');
+    await pool.query('SELECT 1');
+    res.json({ success: true, db: 'UP', time: new Date().toISOString() });
+  } catch (error) {
+    logger.error('HEALTH', `DB readiness imeshindikana: ${error.message}`);
+    res.status(503).json({ success: false, db: 'DOWN', time: new Date().toISOString() });
+  }
+});
+
+// Alias for orchestrators using the newer path
 app.get('/health/ready', async (req, res) => {
   try {
     const pool = require('./config/db');
