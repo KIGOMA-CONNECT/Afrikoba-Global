@@ -4,10 +4,11 @@ import '../styles/landing.css';
 
 export default function Landing() {
   const [menuOpen, setMenuOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState('vicoba');
+  const [activeTab, setActiveTab] = useState('yield');
   const [lang, setLang] = useState('sw');
   const [showBalance, setShowBalance] = useState(true);
   const [yieldAmount, setYieldAmount] = useState(1000000); // 1M TZS default
+  const [showSmartBanner, setShowSmartBanner] = useState(true);
 
   // Yield calculator formula: (Principal * 0.13) / 12
   const monthlyYield = Math.round((yieldAmount * 0.13) / 12);
@@ -15,8 +16,19 @@ export default function Landing() {
 
   return (
     <div className="landing-page">
+      {/* Smart Mobile App Banner */}
+      {showSmartBanner && (
+        <div className="smart-banner">
+          <span>📱 Unatumia simu? Pakua App ya Afrikoba kupata usimamizi rahisi wa VICOBA na Mzunguko.</span>
+          <div className="smart-banner-actions">
+            <a href="https://play.google.com/store/apps/details?id=com.afrikoba" target="_blank" rel="noopener noreferrer" className="store-badge-sm">Google Play</a>
+            <button className="banner-close" onClick={() => setShowSmartBanner(false)}>&times;</button>
+          </div>
+        </div>
+      )}
+
       {/* A. HEADER / NAVIGATION BAR (Sticky & Transparent) */}
-      <nav className="landing-nav">
+      <nav className={`landing-nav ${showSmartBanner ? 'with-banner' : ''}`}>
         <div className="logo">
           <div className="shield-icon">🛡️</div>
           <span>Afrikoba Global</span>
@@ -58,13 +70,27 @@ export default function Landing() {
             <div className="hero-badge">✨ Mfuko wa Kitaifa wa Kidijitali</div>
             <h1>Mfumo Salama wa Kidijitali wa Akiba, VICOBA, Mzunguko na <span>Uwekezaji</span> Barani Afrika.</h1>
             <p className="subtitle">Simamia VICOBA kwa uwazi wa 100%, shiriki kwenye mizunguko ya Upatu isiyo na utapeli, na wekeza kwenye Mfuko wa Faida (13% Annual Yield) au miradi ya uzalishaji.</p>
+            
             <div className="ctas">
               <a href="https://play.google.com/store/apps/details?id=com.afrikoba" target="_blank" rel="noopener noreferrer">
                 <button className="btn-lg primary">▶ Pakua App Sasa</button>
               </a>
               <Link to="/login"><button className="btn-lg secondary">Fungua Akaunti ya Web</button></Link>
             </div>
+
+            {/* App Store & Play Store Badges */}
+            <div className="store-badges-row">
+              <a href="https://play.google.com/store/apps/details?id=com.afrikoba" target="_blank" rel="noopener noreferrer" className="store-badge">
+                <span className="s-icon">🤖</span>
+                <div className="s-text"><small>Get it on</small><strong>Google Play</strong></div>
+              </a>
+              <a href="https://apps.apple.com/app/afrikoba/id123456789" target="_blank" rel="noopener noreferrer" className="store-badge">
+                <span className="s-icon">🍏</span>
+                <div className="s-text"><small>Download on the</small><strong>App Store</strong></div>
+              </a>
+            </div>
           </div>
+
           <div className="hero-visual">
             <div className="glass-mockup-card">
               <div className="mockup-header">
@@ -175,20 +201,24 @@ export default function Landing() {
             )}
 
             {activeTab === 'yield' && (
-              <div className="tab-pane yield-pane">
-                <div className="pane-info">
+              <div className="tab-pane yield-pane" style={{gridTemplateColumns:'1fr'}}>
+                <div className="pane-info" style={{maxWidth:700, margin:'0 auto', textAlign:'center'}}>
                   <h3>Afrikoba Yield (13% Annual Return)</h3>
                   <p>Funga mtaji wako kwa hiari upate faida ya 13% kwa mwaka inayolipwa kila mwezi moja kwa moja kwenye Wallet yako.</p>
+                  
                   <div className="calculator-box">
-                    <label>Weka Kiasi cha Mtaji: <strong>{yieldAmount.toLocaleString()} TZS</strong></label>
+                    <label style={{fontSize:16}}>Weka Kiasi cha Mtaji: <strong style={{color:'var(--primary)', fontSize:18}}>TZS {yieldAmount.toLocaleString()}</strong></label>
                     <input 
                       type="range" 
-                      min="50000" 
-                      max="20000000" 
-                      step="50000" 
+                      min="100000" 
+                      max="10000000" 
+                      step="100000" 
                       value={yieldAmount} 
                       onChange={(e) => setYieldAmount(Number(e.target.value))} 
                     />
+                    <div className="calc-live-result-banner">
+                      "Ukiweka TZS {yieldAmount.toLocaleString()} ➔ Utapokea TZS {monthlyYield.toLocaleString()} kila mwezi (13% p.a)."
+                    </div>
                     <div className="calc-results">
                       <div>Faida ya Kila Mwezi: <strong className="green-text">TZS {monthlyYield.toLocaleString()}</strong></div>
                       <div>Jumla ya Faida (Mwaka): <strong className="green-text">TZS {totalYield12Months.toLocaleString()}</strong></div>
