@@ -1,11 +1,34 @@
-import React, { Suspense, lazy } from 'react';
+import React, { Suspense, lazy, useEffect, useState } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import Landing from './pages/Landing.jsx';
 import Login from './pages/Login.jsx';
 import Layout from './components/Layout.jsx';
 import ErrorBoundary from './components/ErrorBoundary.jsx';
 
+// H20: Offline indicator
+function OfflineIndicator() {
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
+
+  useEffect(() => {
+    const handleStatus = () => setIsOnline(navigator.onLine);
+    window.addEventListener('online', handleStatus);
+    window.addEventListener('offline', handleStatus);
+    return () => {
+      window.removeEventListener('online', handleStatus);
+      window.removeEventListener('offline', handleStatus);
+    };
+  }, []);
+
+  if (isOnline) return null;
+  return (
+    <div style={{ position: 'fixed', bottom: 10, right: 10, background: '#e74c3c', color: 'white', padding: '10px 20px', borderRadius: 5, zIndex: 9999 }}>
+      Uko nje ya mtandao.
+    </div>
+  );
+}
+
 const Dashboard = lazy(() => import('./pages/Dashboard.jsx'));
+
 const Wallet = lazy(() => import('./pages/Wallet.jsx'));
 const Vicoba = lazy(() => import('./pages/Vicoba.jsx'));
 const Rosca = lazy(() => import('./pages/Rosca.jsx'));
@@ -38,9 +61,12 @@ function Page({ children }) {
 
 export default function App() {
   return (
-    <Routes>
-      <Route path="/" element={<Landing />} />
-      <Route path="/login" element={<Login />} />
+    <>
+      <OfflineIndicator />
+      <Routes>
+        <Route path="/" element={<Landing />} />
+        <Route path="/login" element={<Login />} />
+
       <Route
         path="/dashboard"
         element={

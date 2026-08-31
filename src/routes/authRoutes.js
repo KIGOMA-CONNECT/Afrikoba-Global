@@ -4,6 +4,8 @@ const serviceService = require('../services/serviceService');
 const { signToken, authRequired } = require('../middleware/auth');
 const { generateTokenPair, refreshAccessToken, revokeToken, revokeRefreshToken, cleanupExpiredRefreshTokens } = require('../middleware/sessionManager');
 const { otpLimiter, authLimiter } = require('../middleware/rateLimiter');
+const { requestSizeGuard } = require('../middleware/requestSizeGuard');
+const { lockoutGuard, recordFailedLogin, resetFailedLogins } = require('../middleware/accountLockout');
 const { toInternationalFormat } = require('../utils/helpers');
 const { SUPPORTED_COUNTRIES } = require('../utils/phone');
 const { validate } = require('../middleware/validate');
@@ -36,13 +38,17 @@ router.post('/send-otp', otpLimiter, validate(schemas.auth.sendOtp), async (req,
   }
 });
 
-// Login kwa OTP
-router.post('/login', authLimiter, validate(schemas.auth.login), async (req, res, next) => {
+// Login kwa OTP — inalindwa na account lockout
+router.post('/login', authLimiter, lockoutGuard(async (req, res, next) => {
   try {
     const { phoneNumber, otp } = req.body;
 
     const result = await authService.verifyOtp(phoneNumber, otp, 'LOGIN');
     if (!result.success) {
+      if (req._lockoutUserId) {
+        await recordFailedLogin(req._lockoutUserId);
+        logger.warn('AUTH_FAILURE', `Failed OTP login for ${phoneNumber}`, { phoneNumber, reason: result.code });
+      }
       return res.status(400).json({ success: false, code: result.code, message: res.t(result.code || 'VALIDATION_ERROR', result._i18nVars) });
     }
 
@@ -54,9 +60,12 @@ router.post('/login', authLimiter, validate(schemas.auth.login), async (req, res
       [toInternationalFormat(phoneNumber)]
     );
     if (userRes.rows.length === 0) {
+      logger.warn('AUTH_FAILURE', `Account not found for login: ${phoneNumber}`, { phoneNumber });
       return res.status(404).json({ success: false, code: 'AUTH_NO_ACCOUNT', message: res.t('AUTH_NO_ACCOUNT') });
     }
     const user = userRes.rows[0];
+    await resetFailedLogins(user.id);
+    logger.info('AUTH_SUCCESS', `User logged in: ${user.id}`, { userId: user.id, phoneNumber });
     const services = await serviceService.getUserServices(user.id);
     const { accessToken, refreshToken } = await generateTokenPair(user);
     await cleanupExpiredRefreshTokens();
@@ -64,10 +73,10 @@ router.post('/login', authLimiter, validate(schemas.auth.login), async (req, res
   } catch (error) {
     next(error);
   }
-});
+}));
 
 // Usajili mpya
-router.post('/register', authLimiter, validate(schemas.auth.register), async (req, res, next) => {
+router.post('/register', authLimiter, requestSizeGuard(51200), validate(schemas.auth.register), async (req, res, next) => {
   try {
     const { fullName, phoneNumber, email, password, otp, nidaNumber } = req.body;
     const otpCheck = await authService.verifyOtp(phoneNumber, otp, 'LOGIN');
@@ -86,12 +95,16 @@ router.post('/register', authLimiter, validate(schemas.auth.register), async (re
   }
 });
 
-// Login kwa Email + Password
-router.post('/login/password', authLimiter, validate(schemas.auth.loginPassword), async (req, res, next) => {
+// Login kwa Email + Password — inalindwa na account lockout
+router.post('/login/password', authLimiter, lockoutGuard(async (req, res, next) => {
   try {
     const { emailOrPhone, password } = req.body;
     const result = await authService.loginWithPassword(emailOrPhone, password);
-    if (!result.success) return res.status(401).json({ success: false, code: result.code, message: res.t(result.code || 'VALIDATION_ERROR') });
+    if (!result.success) {
+      if (req._lockoutUserId) await recordFailedLogin(req._lockoutUserId);
+      return res.status(401).json({ success: false, code: result.code, message: res.t(result.code || 'VALIDATION_ERROR') });
+    }
+    await resetFailedLogins(result.user.id);
     const services = await serviceService.getUserServices(result.user.id);
 
     // Check if TOTP 2FA is enabled
@@ -108,7 +121,7 @@ router.post('/login/password', authLimiter, validate(schemas.auth.loginPassword)
   } catch (error) {
     next(error);
   }
-});
+}));
 
 // TOTP 2FA login — verify tempToken + TOTP code, return full JWT
 router.post('/totp-login', authLimiter, async (req, res, next) => {

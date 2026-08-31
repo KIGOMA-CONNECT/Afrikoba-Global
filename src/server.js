@@ -1,4 +1,6 @@
 require('dotenv').config();
+const { startTracing } = require('./tracing');
+startTracing();
 
 const Sentry = require('@sentry/node');
 const express = require('express');
@@ -16,11 +18,16 @@ const { securityHeaders, requestValidation, trackSuspiciousActivity, strictCors,
 const { validateSession } = require('./middleware/sessionManager');
 const { initDbSecurity } = require('./middleware/dbSecurity');
 const { authLimiter, otpLimiter, walletLimiter, financialLimiter, adminLimiter, webhookLimiter } = require('./middleware/granularRateLimit');
-const { requestId, requestTimeout, sanitizeHeaders } = require('./middleware/requestHardening');
+const { requestId, responseTiming, requestTimeout, sanitizeHeaders } = require('./middleware/requestHardening');
 const { validateTokenPayload } = require('./middleware/jwtHardening');
 const { validateApiKey } = require('./middleware/apiKeyAuth');
 const { sqlInjectionGuard } = require('./middleware/sqlInjectionGuard');
 const { webhookReplayProtection, verifyWebhookHmac } = require('./middleware/webhookSecurity');
+const { xssProtection } = require('./middleware/xssProtection');
+const { verifyCsrfToken } = require('./middleware/csrf');
+const { inputLengthGuard } = require('./middleware/inputLengthGuard');
+const { ipBlockGuard, recordViolation } = require('./middleware/ipBlock');
+const { getMetrics, httpLatencyHistogram } = require('./services/metricsService');
 const logger = require('./utils/logger');
 
 const authRoutes = require('./routes/authRoutes');
@@ -89,6 +96,9 @@ app.use(requestValidation);
 // H6: Suspicious activity detection
 app.use(trackSuspiciousActivity);
 
+// IP block guard — blocks IPs after repeated violations
+app.use(ipBlockGuard);
+
 // H3: Session validation (check token blacklist)
 app.use(validateSession);
 
@@ -132,6 +142,17 @@ if (config.sentry.dsn) app.use(Sentry.Handlers.requestHandler());
 
 // Access logging + request-id
 app.use(requestId);
+app.use(responseTiming);
+
+// Prometheus latency metric
+app.use((req, res, next) => {
+  const end = httpLatencyHistogram.startTimer();
+  res.on('finish', () => {
+    end({ method: req.method, route: req.route?.path || req.path, status: res.statusCode });
+  });
+  next();
+});
+
 app.use(requestTimeout(30000));
 app.use(requestLog);
 
@@ -149,61 +170,65 @@ if (fs.existsSync(webDist)) {
   logger.warn('SERVER', 'web-dashboard/dist haipatikani - endesha npm run build kwenye web-dashboard.');
 }
 
-// Health check (liveness)
-app.get('/health', (req, res) => {
-  res.json({ success: true, service: 'Afrikoba Global', status: 'UP', time: new Date().toISOString() });
+// H12: Metrics endpoint for Prometheus
+app.get('/metrics', async (req, res) => {
+  res.set('Content-Type', require('./services/metricsService').client.register.contentType);
+  res.send(await getMetrics());
 });
 
 // Readiness check (DB connectivity - kwa orchestrators kama Docker/K8s)
-app.get('/health/db', async (req, res) => {
+app.get('/health/ready', async (req, res) => {
   try {
     const pool = require('./config/db');
     await pool.query('SELECT 1');
-    res.json({ success: true, db: 'UP', time: new Date().toISOString() });
+    res.json({ success: true, status: 'READY', time: new Date().toISOString() });
   } catch (error) {
-    logger.error('HEALTH', `DB readiness imeshindikana: ${error.message}`);
-    res.status(503).json({ success: false, db: 'DOWN', time: new Date().toISOString() });
+    logger.error('HEALTH', `Readiness check failed: ${error.message}`);
+    res.status(503).json({ success: false, status: 'NOT_READY', time: new Date().toISOString() });
   }
 });
+
 
 // API Routes - rate limited kwa jumla
 app.use('/api', apiLimiter);
 app.use('/api', sqlInjectionGuard);
+app.use('/api', verifyCsrfToken);
+app.use('/api', xssProtection);
+app.use('/api', inputLengthGuard);
 app.use('/api', validateApiKey);
 app.use('/api', validateTokenPayload);
 
-// v1 canonical prefix + backward-compatible /api prefix
-const versionPrefixes = ['/api/v1', '/api'];
-for (const prefix of versionPrefixes) {
-  app.use(`${prefix}/auth`, authLimiter, authRoutes);
-  app.use(`${prefix}/wallet`, walletLimiter, walletRoutes);
-  app.use(`${prefix}/vicoba`, walletLimiter, vicobaRoutes);
-  app.use(`${prefix}/vicoba`, walletLimiter, mkobaRoutes);
-  app.use(`${prefix}/rosca`, walletLimiter, roscaRoutes);
-  app.use(`${prefix}/p2p`, financialLimiter, p2pRoutes);
-  app.use(`${prefix}/admin`, adminLimiter, adminRoutes);
-  app.use(`${prefix}/payments`, webhookLimiter, webhookReplayProtection, verifyWebhookHmac, callbackRoutes);
-  app.use(`${prefix}/services`, serviceRoutes);
-  app.use(`${prefix}/marketing`, marketingRoutes);
-  app.use(`${prefix}/ussd`, webhookLimiter, ussdRoutes);
-  app.use(`${prefix}/totp`, authLimiter, totpRoutes);
-  app.use(`${prefix}/currency`, currencyRoutes);
-  app.use(`${prefix}/notifications`, notificationRoutes);
-  app.use(`${prefix}/referrals`, referralRoutes);
-  app.use(`${prefix}/analytics`, analyticsRoutes);
-  app.use(`${prefix}/banking`, walletLimiter, bankingRoutes);
-  app.use(`${prefix}/advanced`, walletLimiter, advancedRoutes);
-  app.use(`${prefix}/smart`, walletLimiter, smartRoutes);
-  app.use(`${prefix}/eco`, walletLimiter, ecosystemRoutes);
-  app.use(`${prefix}/network`, walletLimiter, networkRoutes);
-  app.use(`${prefix}/family`, walletLimiter, familyRoutes);
-  app.use(`${prefix}/business`, walletLimiter, businessRoutes);
-  app.use(`${prefix}/savings`, walletLimiter, savingsRoutes);
-  app.use(`${prefix}/credit`, walletLimiter, creditRoutes);
-  app.use(`${prefix}/cards`, walletLimiter, cardRoutes);
-  app.use(`${prefix}/bap`, walletLimiter, bapRoutes);
-  app.use(`${prefix}/stats`, publicStatsRoutes);
-}
+// v1 canonical prefix
+const versionPrefix = '/api/v1';
+  app.use(`${versionPrefix}/auth`, authLimiter, authRoutes);
+  app.use(`${versionPrefix}/wallet`, walletLimiter, walletRoutes);
+  app.use(`${versionPrefix}/vicoba`, walletLimiter, vicobaRoutes);
+  app.use(`${versionPrefix}/vicoba`, walletLimiter, mkobaRoutes);
+  app.use(`${versionPrefix}/rosca`, walletLimiter, roscaRoutes);
+  app.use(`${versionPrefix}/p2p`, financialLimiter, p2pRoutes);
+  app.use(`${versionPrefix}/admin`, adminLimiter, adminRoutes);
+  app.use(`${versionPrefix}/payments`, webhookLimiter, webhookReplayProtection, verifyWebhookHmac, callbackRoutes);
+  app.use(`${versionPrefix}/services`, serviceRoutes);
+  app.use(`${versionPrefix}/marketing`, marketingRoutes);
+  app.use(`${versionPrefix}/ussd`, webhookLimiter, ussdRoutes);
+  app.use(`${versionPrefix}/totp`, authLimiter, totpRoutes);
+  app.use(`${versionPrefix}/currency`, currencyRoutes);
+  app.use(`${versionPrefix}/notifications`, notificationRoutes);
+  app.use(`${versionPrefix}/referrals`, referralRoutes);
+  app.use(`${versionPrefix}/analytics`, analyticsRoutes);
+  app.use(`${versionPrefix}/banking`, walletLimiter, bankingRoutes);
+  app.use(`${versionPrefix}/advanced`, walletLimiter, advancedRoutes);
+  app.use(`${versionPrefix}/smart`, walletLimiter, smartRoutes);
+  app.use(`${versionPrefix}/eco`, walletLimiter, ecosystemRoutes);
+  app.use(`${versionPrefix}/network`, walletLimiter, networkRoutes);
+  app.use(`${versionPrefix}/family`, walletLimiter, familyRoutes);
+  app.use(`${versionPrefix}/business`, walletLimiter, businessRoutes);
+  app.use(`${versionPrefix}/savings`, walletLimiter, savingsRoutes);
+  app.use(`${versionPrefix}/credit`, walletLimiter, creditRoutes);
+  app.use(`${versionPrefix}/cards`, walletLimiter, cardRoutes);
+  app.use(`${versionPrefix}/bap`, walletLimiter, bapRoutes);
+  app.use(`${versionPrefix}/stats`, publicStatsRoutes);
+
 
 // Swagger UI - API documentation (production off - usitangaze API surface)
 if (config.nodeEnv !== 'production') {
@@ -222,15 +247,19 @@ app.get('/api/v1', (req, res) => {
   res.json({ success: true, version: '1.0.0', docs: config.nodeEnv === 'production' ? false : '/api/v1/docs' });
 });
 
-// Deprecation header for non-versioned /api routes
+// Deprecation header for legacy /api routes (forward to /api/v1)
 app.use('/api', (req, res, next) => {
   if (!req.path.startsWith('/v1')) {
+    const newUrl = `/api/v1${req.path}`;
     res.setHeader('Deprecation', 'true');
     res.setHeader('Sunset', new Date(Date.now() + 180 * 24 * 60 * 60 * 1000).toUTCString());
-    res.setHeader('Link', '</api/v1' + req.path + '>; rel="successor-version"');
+    res.setHeader('Link', `<${newUrl}>; rel="successor-version"`);
+    // Redirect to the new path
+    return res.redirect(301, newUrl);
   }
   next();
 });
+
 
 // SPA fallback: non-API routes -> index.html (React Router)
 app.get(/^\/(?!api|contracts|health).*/, (req, res, next) => {
@@ -300,3 +329,11 @@ if (hasTls) {
 }
 
 module.exports = app;
+
+// H14: Graceful handling of unhandled rejections
+process.on('unhandledRejection', (reason, promise) => {
+  logger.error('SERVER', 'Unhandled Rejection at: Promise', { promise, reason });
+});
+process.on('uncaughtException', (err) => {
+  logger.error('SERVER', 'Uncaught Exception', { err });
+});

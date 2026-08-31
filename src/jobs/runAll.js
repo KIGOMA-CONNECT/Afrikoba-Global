@@ -4,6 +4,7 @@ const { disburseDuePayouts } = require('../services/roscaService');
 const { reconcilePendingDeposits } = require('./reconciliationCron');
 const { runDueSplitPayments } = require('../services/splitPaymentService');
 const { processDueScheduledPayments } = require('../services/networkService');
+const { processYieldPayouts } = require('../services/yieldService');
 const { runMaintenance } = require('../services/dbMaintenanceService');
 const logger = require('../utils/logger');
 
@@ -45,6 +46,14 @@ function startAllJobs() {
       await runDueSplitPayments();
     } catch (e) {
       logger.error('CRON-SPLIT', e.message);
+    }
+  });
+
+  cron.schedule('0 0 * * *', async () => {
+    try {
+      await processYieldPayouts();
+    } catch (e) {
+      logger.error('CRON-YIELD', e.message);
     }
   });
 

@@ -10,7 +10,14 @@ export default function Dashboard() {
   const isAdmin = user.role === 'ADMIN';
   const [stats, setStats] = useState(null);
   const [balance, setBalance] = useState(null);
+  const [showBalance, setShowBalance] = useState(localStorage.getItem('afrikoba_show_balance') !== 'false');
   const [holdings, setHoldings] = useState(null);
+
+  const toggleBalance = () => {
+    const newVal = !showBalance;
+    setShowBalance(newVal);
+    localStorage.setItem('afrikoba_show_balance', newVal);
+  };
   const [services, setServices] = useState([]);
 
   useEffect(() => {
@@ -61,8 +68,17 @@ export default function Dashboard() {
 
       {!isAdmin && balance && (
         <div className="grid grid-3">
-          <div className="card stat">
-            <div className="value">{formatMoney(balance.wallet_balance)}</div>
+          <div className="card stat glass-card">
+            <div className="value">
+              {showBalance ? formatMoney(balance.wallet_balance) : 'TZS ***,***'}
+              <span 
+                onClick={toggleBalance} 
+                style={{ marginLeft: 10, cursor: 'pointer', fontSize: '0.6em', opacity: 0.7 }}
+                title={showBalance ? t('dashboard.hide') : t('dashboard.show')}
+              >
+                {showBalance ? '👁️' : '🙈'}
+              </span>
+            </div>
             <div className="label">{t('dashboard.balance')}</div>
           </div>
           <div className="card stat">

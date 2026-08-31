@@ -18,6 +18,22 @@ function requestId(req, res, next) {
 }
 
 /**
+ * H12: Track and log response time.
+ */
+function responseTiming(req, res, next) {
+  const startTime = Date.now();
+  res.on('finish', () => {
+    const duration = Date.now() - startTime;
+    logger.info('REQUEST_LOG', `${req.method} ${req.originalUrl}`, {
+      requestId: req.id,
+      durationMs: duration,
+      statusCode: res.statusCode,
+    });
+  });
+  next();
+}
+
+/**
  * H11: Request timeout (30 seconds).
  * Prevents hung requests from consuming connections.
  */
@@ -95,6 +111,7 @@ function gracefulErrorPages(req, res, next) {
 
 module.exports = {
   requestId,
+  responseTiming,
   requestTimeout,
   sanitizeForLog,
   sanitizeHeaders,

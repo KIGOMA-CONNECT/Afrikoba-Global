@@ -77,6 +77,11 @@ export default function Layout() {
           <div className="roles-tag">{user.role}</div>
           <div className="logout" onClick={logout}>{t('nav.logout')}</div>
         </div>
+        <div className="footer-badges">
+          <div className="badge-item">🔒 <span>SSL 256-bit</span></div>
+          <div className="badge-item">🛡️ <span>BOT Regulated</span></div>
+          <div className="badge-item">✅ <span>NIDA Verified</span></div>
+        </div>
       </aside>
       <main className="content">
         <button className="hamburger" onClick={() => setSidebarOpen(!sidebarOpen)}>

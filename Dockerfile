@@ -1,48 +1,23 @@
-# ============================================================
-# AFRIKOBA GLOBAL - Production Image
-# Stage 1: Build web-dashboard (Vite/React)
-# Stage 2: Runtime - Express API + static dashboard (single origin)
-# ============================================================
+# Use lightweight Node.js image
+FROM node:20-alpine
 
-# ---------- Stage 1: Build web-dashboard ----------
-FROM node:22-alpine AS dashboard-build
-WORKDIR /build
-COPY web-dashboard/package.json web-dashboard/package-lock.json* ./
-RUN npm ci
-COPY web-dashboard/ .
-RUN npm run build
-
-# ---------- Stage 2: Runtime ----------
-FROM node:22-alpine AS runtime
-ENV NODE_ENV=production
+# Set working directory
 WORKDIR /app
 
-# Dependencies za production (hakuna dev deps kwenye image)
-COPY package.json package-lock.json ./
-RUN npm ci --omit=dev
+# Install dependencies (both root and web-dashboard)
+COPY package*.json ./
+COPY web-dashboard/package*.json ./web-dashboard/
+RUN npm install
+RUN cd web-dashboard && npm install
 
-# Source code
-COPY src/ ./src/
-COPY db/ ./db/
-COPY scripts/ ./scripts/
-COPY .env.example ./
+# Copy application code
+COPY . .
 
-# Web dashboard iliyojengwa (single-origin)
-COPY --from=dashboard-build /build/dist ./web-dashboard/dist
+# Build the frontend
+RUN npm run build
 
-# Contracts directory (PDFs)
-RUN mkdir -p /app/contracts
-
-# Run as non-root user (security best practice)
-RUN addgroup -S afrikoba && adduser -S afrikoba -G afrikoba
-RUN chown -R afrikoba:afrikoba /app
-USER afrikoba
-
+# Expose application port
 EXPOSE 3000
 
-# Healthcheck kwa orchestrator pamoja na DB readiness
-HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD wget -q -O - http://localhost:3000/health/db || exit 1
-
-# Auto-migrate DB kisha anzisha API (runMigrations ni idempotent)
-CMD ["sh", "-c", "node scripts/runMigrations.js && node src/server.js"]
+# Start command
+CMD ["npm", "start"]

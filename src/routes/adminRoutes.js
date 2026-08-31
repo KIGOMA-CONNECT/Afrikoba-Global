@@ -4,6 +4,7 @@ const p2pService = require('../services/p2pService');
 const { requireRoles, authRequired } = require('../middleware/auth');
 const { validate } = require('../middleware/validate');
 const schemas = require('../validations/schemas');
+const { logAction } = require('../services/auditService');
 
 const router = express.Router();
 
@@ -70,6 +71,7 @@ router.post('/projects/:projectId/review', validate(schemas.p2p.review), async (
   try {
     const { decision, reason } = req.body;
     const result = await p2pService.reviewProject(req.user.id, parseInt(req.params.projectId, 10), decision, reason);
+    await logAction(req.user.id, 'PROJECT_REVIEWED', 'PROJECT', parseInt(req.params.projectId, 10), { decision, reason }, req);
     res.json(result);
   } catch (error) {
     next(error);
@@ -192,6 +194,7 @@ router.post('/backup/create', async (req, res, next) => {
   try {
     const { createBackup } = require('../services/backupService');
     const result = createBackup();
+    await logAction(req.user.id, 'BACKUP_CREATED', 'SYSTEM', null, { success: result.success }, req);
     res.json({ success: result.success, ...result });
   } catch (error) {
     next(error);
