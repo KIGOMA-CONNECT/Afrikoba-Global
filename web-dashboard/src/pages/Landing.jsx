@@ -9,6 +9,13 @@ export default function Landing() {
   const [showBalance, setShowBalance] = useState(true);
   const [yieldAmount, setYieldAmount] = useState(1000000); // 1M TZS default
   const [showSmartBanner, setShowSmartBanner] = useState(true);
+  const [isMobile, setIsMobile] = useState(window.innerWidth <= 900);
+
+  useEffect(() => {
+    const handleResize = () => setIsMobile(window.innerWidth <= 900);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
   // Yield calculator formula: (Principal * 0.13) / 12
   const monthlyYield = Math.round((yieldAmount * 0.13) / 12);
@@ -16,30 +23,33 @@ export default function Landing() {
 
   return (
     <div className="landing-page">
-      {/* Smart Mobile App Banner */}
-      {showSmartBanner && (
+      {/* 2. Conditional Smart Mobile Banner (Only visible on mobile) */}
+      {showSmartBanner && isMobile && (
         <div className="smart-banner">
-          <span>📱 Unatumia simu? Pakua App ya Afrikoba kupata usimamizi rahisi wa VICOBA na Mzunguko.</span>
+          <span>📱 Pakua App ya Afrikoba kupata usimamizi rahisi wa VICOBA.</span>
           <div className="smart-banner-actions">
-            <a href="https://play.google.com/store/apps/details?id=com.afrikoba" target="_blank" rel="noopener noreferrer" className="store-badge-sm">Google Play</a>
+            <a href="https://play.google.com/store/apps/details?id=com.afrikoba" target="_blank" rel="noopener noreferrer" className="store-badge-sm">Install</a>
             <button className="banner-close" onClick={() => setShowSmartBanner(false)}>&times;</button>
           </div>
         </div>
       )}
 
-      {/* A. HEADER / NAVIGATION BAR (Sticky & Transparent) */}
-      <nav className={`landing-nav ${showSmartBanner ? 'with-banner' : ''}`}>
+      {/* 1. Header / Navigation Bar (Fixed & Clean, No duplicate text) */}
+      <nav className={`landing-nav ${showSmartBanner && isMobile ? 'with-banner' : ''}`}>
         <div className="logo">
           <div className="shield-icon">🛡️</div>
           <span>Afrikoba Global</span>
         </div>
-        <ul className="nav-links">
+
+        {/* Desktop Menu Only */}
+        <ul className="nav-links desktop-only">
           <li><a href="#huduma">Huduma Zetu</a></li>
           <li><a href="#yield">Afrikoba Yield</a></li>
           <li><a href="#jinsi">Jinsi Inavyofanya Kazi</a></li>
           <li><a href="#uwekezaji">Uwekezaji (P2P)</a></li>
           <li><a href="#kuhusu">Kuhusu Sisi</a></li>
         </ul>
+
         <div className="nav-actions">
           <select className="lang-dropdown" value={lang} onChange={(e) => setLang(e.target.value)}>
             <option value="sw">SW</option>
@@ -47,13 +57,14 @@ export default function Landing() {
           </select>
           <Link to="/login"><button className="btn-outline">Ingia</button></Link>
           <Link to="/login"><button className="btn-primary">Jisajili</button></Link>
+          
+          <button className={`hamburger ${menuOpen ? 'open' : ''}`} onClick={() => setMenuOpen(!menuOpen)}>
+            <span /><span /><span />
+          </button>
         </div>
-        <button className={`hamburger ${menuOpen ? 'open' : ''}`} onClick={() => setMenuOpen(!menuOpen)}>
-          <span /><span /><span />
-        </button>
       </nav>
 
-      {/* Mobile Menu */}
+      {/* Mobile Drawer Menu (Hidden until toggled) */}
       <div className={`mobile-menu ${menuOpen ? 'open' : ''}`}>
         <a href="#huduma" onClick={() => setMenuOpen(false)}>Huduma Zetu</a>
         <a href="#yield" onClick={() => setMenuOpen(false)}>Afrikoba Yield</a>
@@ -206,8 +217,10 @@ export default function Landing() {
                   <h3>Afrikoba Yield (13% Annual Return)</h3>
                   <p>Funga mtaji wako kwa hiari upate faida ya 13% kwa mwaka inayolipwa kila mwezi moja kwa moja kwenye Wallet yako.</p>
                   
-                  <div className="calculator-box">
-                    <label style={{fontSize:16}}>Weka Kiasi cha Mtaji: <strong style={{color:'var(--primary)', fontSize:18}}>TZS {yieldAmount.toLocaleString()}</strong></label>
+                  {/* 4. Yield Calculator Isolated Card */}
+                  <div className="calculator-card-isolated">
+                    <label style={{fontSize:15, fontWeight:700}}>Weka Kiasi cha Mtaji:</label>
+                    <div className="capital-display">TZS {yieldAmount.toLocaleString()}</div>
                     <input 
                       type="range" 
                       min="100000" 
