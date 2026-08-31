@@ -3,7 +3,7 @@
  * Applies any unapplied db/migrations/*.sql files in filename order.
  * Tracks applied versions in a schema_migrations table (idempotent).
  *
- * Automatically creates the database if it does not exist yet.
+ * Automatically creates the database and runs base schema.sql if missing.
  */
 require('dotenv').config();
 const fs = require('fs');
@@ -12,50 +12,52 @@ const { Client } = require('pg');
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function ensureDatabaseExists() {
+async function ensureDatabaseAndSchema() {
   const targetDb = process.env.DB_NAME || 'afrikoba_global';
   const user = process.env.DB_USER || 'afrikoba';
   const password = process.env.DB_PASSWORD || 'change_me_strong_password';
   const host = process.env.DB_HOST || 'db';
   const port = Number(process.env.DB_PORT || 5432);
 
-  // 1. Connect to default 'postgres' or template db to create target db if missing
-  const adminCandidates = [
-    { user, host, database: 'postgres', password, port },
-    { user: 'postgres', host, database: 'postgres', password: 'postgres', port },
-    { user, host, database: 'template1', password, port },
-  ];
-
-  let adminClient = null;
-  for (const config of adminCandidates) {
-    const client = new Client(config);
-    try {
-      await client.connect();
-      adminClient = client;
-      break;
-    } catch (err) {
-      await client.end().catch(() => {});
+  // 1. Connect to 'postgres' to create target db if missing
+  const adminClient = new Client({ user, host, database: 'postgres', password, port });
+  try {
+    await adminClient.connect();
+    const res = await adminClient.query(`SELECT 1 FROM pg_database WHERE datname = $1`, [targetDb]);
+    if (res.rows.length === 0) {
+      console.log(`[MIGRATE] Database '${targetDb}' does not exist. Creating it now...`);
+      await adminClient.query(`CREATE DATABASE ${targetDb}`);
+      console.log(`[MIGRATE] Database '${targetDb}' created successfully.`);
     }
+  } catch (e) {
+    console.log(`[MIGRATE] Note: Could not auto-create database (${e.message}), assuming it exists.`);
+  } finally {
+    await adminClient.end().catch(() => {});
   }
 
-  if (adminClient) {
-    try {
-      const res = await adminClient.query(`SELECT 1 FROM pg_database WHERE datname = $1`, [targetDb]);
-      if (res.rows.length === 0) {
-        console.log(`[MIGRATE] Database '${targetDb}' does not exist. Creating it now...`);
-        await adminClient.query(`CREATE DATABASE ${targetDb}`);
-        console.log(`[MIGRATE] Database '${targetDb}' created successfully.`);
+  // 2. Connect to target db and check if base schema.sql needs to be run
+  const client = new Client({ user, host, database: targetDb, password, port });
+  try {
+    await client.connect();
+    const tableCheck = await client.query(`SELECT to_regclass('public.users')`);
+    if (!tableCheck.rows[0].to_regclass) {
+      console.log(`[MIGRATE] Base table 'users' not found. Executing db/schema.sql...`);
+      const schemaPath = path.join(__dirname, '..', 'db', 'schema.sql');
+      if (fs.existsSync(schemaPath)) {
+        const schemaSql = fs.readFileSync(schemaPath, 'utf8');
+        await client.query(schemaSql);
+        console.log(`[MIGRATE] Base schema.sql executed successfully.`);
       }
-    } catch (e) {
-      console.log(`[MIGRATE] Note: Could not auto-create database (${e.message}), assuming it exists.`);
-    } finally {
-      await adminClient.end().catch(() => {});
     }
+  } catch (err) {
+    console.error(`[MIGRATE ERROR] Schema setup failed: ${err.message}`);
+  } finally {
+    await client.end().catch(() => {});
   }
 }
 
 async function getWorkingClient() {
-  await ensureDatabaseExists();
+  await ensureDatabaseAndSchema();
 
   const candidates = [
     {
