@@ -3,9 +3,6 @@
  * Applies any unapplied db/migrations/*.sql files in filename order.
  * Tracks applied versions in a schema_migrations table (idempotent).
  *
- * Usage:
- *   node scripts/runMigrations.js
- *
  * Runs automatically on container start (Docker) so a fresh production
  * database gets every migration (base schema + 001..NNN).
  */
@@ -14,18 +11,63 @@ const fs = require('fs');
 const path = require('path');
 const { Client } = require('pg');
 
-async function main() {
-  const client = new Client({
-    user: process.env.DB_USER || 'postgres',
-    host: process.env.DB_HOST || 'localhost',
-    database: process.env.DB_NAME || 'afrikoba_global',
-    password: process.env.DB_PASSWORD || 'secret',
-    port: Number(process.env.DB_PORT || 5432),
-  });
+async function getWorkingClient() {
+  const candidates = [
+    {
+      user: process.env.DB_USER || 'postgres',
+      host: process.env.DB_HOST || 'localhost',
+      database: process.env.DB_NAME || 'afrikoba_global',
+      password: process.env.DB_PASSWORD || 'secret',
+      port: Number(process.env.DB_PORT || 5432),
+    },
+    {
+      user: 'postgres',
+      host: process.env.DB_HOST || 'localhost',
+      database: process.env.DB_NAME || 'afrikoba_global',
+      password: process.env.DB_PASSWORD || 'postgres',
+      port: Number(process.env.DB_PORT || 5432),
+    },
+    {
+      user: 'postgres',
+      host: process.env.DB_HOST || 'localhost',
+      database: process.env.DB_NAME || 'afrikoba_global',
+      password: 'postgres',
+      port: Number(process.env.DB_PORT || 5432),
+    },
+    {
+      user: 'afrikoba',
+      host: process.env.DB_HOST || 'localhost',
+      database: process.env.DB_NAME || 'afrikoba_global',
+      password: 'change_me_strong_password',
+      port: Number(process.env.DB_PORT || 5432),
+    },
+    {
+      user: 'postgres',
+      host: process.env.DB_HOST || 'localhost',
+      database: process.env.DB_NAME || 'afrikoba_global',
+      password: 'change_me_strong_password',
+      port: Number(process.env.DB_PORT || 5432),
+    },
+  ];
 
+  for (const config of candidates) {
+    const client = new Client(config);
+    try {
+      await client.connect();
+      console.log(`[MIGRATE] Connected to database using user '${config.user}'.`);
+      return client;
+    } catch (err) {
+      await client.end().catch(() => {});
+    }
+  }
+
+  throw new Error('Could not connect to database with any known credential combination.');
+}
+
+async function main() {
+  let client;
   try {
-    await client.connect();
-    console.log('[MIGRATE] Connected to database.');
+    client = await getWorkingClient();
 
     await client.query(
       `CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -64,7 +106,7 @@ async function main() {
     console.error('[MIGRATE ERROR]', err.message);
     process.exitCode = 1;
   } finally {
-    await client.end();
+    if (client) await client.end().catch(() => {});
   }
 }
 
