@@ -14,17 +14,31 @@ const { Client } = require('pg');
 async function getWorkingClient() {
   const candidates = [
     {
-      user: process.env.DB_USER || 'postgres',
-      host: process.env.DB_HOST || 'localhost',
+      user: process.env.DB_USER || 'afrikoba',
+      host: process.env.DB_HOST || 'db',
       database: process.env.DB_NAME || 'afrikoba_global',
-      password: process.env.DB_PASSWORD || 'secret',
+      password: process.env.DB_PASSWORD || 'change_me_strong_password',
+      port: Number(process.env.DB_PORT || 5432),
+    },
+    {
+      user: 'afrikoba',
+      host: process.env.DB_HOST || 'db',
+      database: process.env.DB_NAME || 'afrikoba_global',
+      password: 'change_me_strong_password',
+      port: Number(process.env.DB_PORT || 5432),
+    },
+    {
+      user: process.env.DB_USER || 'postgres',
+      host: process.env.DB_HOST || 'db',
+      database: process.env.DB_NAME || 'afrikoba_global',
+      password: process.env.DB_PASSWORD || 'postgres',
       port: Number(process.env.DB_PORT || 5432),
     },
     {
       user: 'postgres',
-      host: process.env.DB_HOST || 'localhost',
+      host: process.env.DB_HOST || 'db',
       database: process.env.DB_NAME || 'afrikoba_global',
-      password: process.env.DB_PASSWORD || 'postgres',
+      password: 'postgres',
       port: Number(process.env.DB_PORT || 5432),
     },
     {
@@ -34,27 +48,13 @@ async function getWorkingClient() {
       password: 'postgres',
       port: Number(process.env.DB_PORT || 5432),
     },
-    {
-      user: 'afrikoba',
-      host: process.env.DB_HOST || 'localhost',
-      database: process.env.DB_NAME || 'afrikoba_global',
-      password: 'change_me_strong_password',
-      port: Number(process.env.DB_PORT || 5432),
-    },
-    {
-      user: 'postgres',
-      host: process.env.DB_HOST || 'localhost',
-      database: process.env.DB_NAME || 'afrikoba_global',
-      password: 'change_me_strong_password',
-      port: Number(process.env.DB_PORT || 5432),
-    },
   ];
 
   for (const config of candidates) {
     const client = new Client(config);
     try {
       await client.connect();
-      console.log(`[MIGRATE] Connected to database using user '${config.user}'.`);
+      console.log(`[MIGRATE] Connected to database using user '${config.user}' at host '${config.host}'.`);
       return client;
     } catch (err) {
       await client.end().catch(() => {});
