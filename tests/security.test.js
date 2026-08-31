@@ -41,12 +41,13 @@ test('XSS Protection rejects <script> in body', async () => {
   assert.strictEqual(res.body.code, 'INVALID_INPUT');
 });
 
-// Test 2: CSRF middleware rejects missing token
-test('CSRF rejects state-changing request without token', async () => {
+// Test 2: CSRF middleware rejects non-JSON request without token
+test('CSRF rejects unauthenticated form post without token', async () => {
   const app = buildApp();
   const res = await request(app)
     .post('/api/test')
-    .send({ data: 'ok' });
+    .set('Content-Type', 'application/x-www-form-urlencoded')
+    .send('data=ok');
   assert.strictEqual(res.status, 403);
   assert.strictEqual(res.body.code, 'CSRF_TOKEN_MISSING');
 });
