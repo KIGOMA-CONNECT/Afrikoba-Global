@@ -2,259 +2,258 @@ import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import '../styles/landing.css';
 
-const ONBOARDING_KEY = 'afrikoba_onboarding_done';
-
-const serviceDetails = {
-  vicoba: {
-    icon: '👥',
-    title: 'VICOBA Automation',
-    tagline: 'Mikopo na akiba zenye uwazi wa saini mbili za viongozi (Mwenyekiti na Katibu) na SMS alerts kwa kila muamala.',
-    features: [
-      'Saini Mbili za Kiotomatiki: Kutoa mkopo kunahitaji idhini ya Mwenyekiti na Katibu.',
-      'Usimamizi wa Vikundi: Taarifa zote za michango, faini na mikopo zinahifadhiwa kwenye Cloud yenye ulinzi wa Bank-Grade.',
-      'SMS & Push Alerts: Wanachama wote wanapata taarifa ya papo hapo kupitia SMS kila muamala unapofanyika.',
-      'Single Source of Truth: Inazuia migogoro yote ya kimahesabu ndani ya kikundi.'
-    ],
-    steps: [
-      'Hatua ya 1: Pakua App au Jisajili kupitia www.afrikoba.com.',
-      'Hatua ya 2: Chagua "Unda Kikundi Kipya" au pokea mwaliko kutoka kwa Mwenyekiti wako.',
-      'Hatua ya 3: Weka akiba yako ya mwezi na uanze kufurahia mikopo ya uwazi na ya haraka.'
-    ]
-  },
-  rosca: {
-    icon: '🔄',
-    title: 'ROSCA / Upatu Engine',
-    tagline: 'Mzunguko wa kiotomatiki unaopangwa na kompyuta (Code as Law) bila kuogopa mtu kukimbia na fedha.',
-    features: [
-      'Code as Law: Mfumo unaratibu zamu zote bila upendeleo wala hofu ya mwanachama kukimbia na michango.',
-      'Auto-Debit & Payout: Siku ya zamu yako, mfumo unahamisha fedha moja kwa moja kwenye Wallet yako.',
-      'Uchaguzi wa Mizunguko: Unaweza kuchagua mzunguko wa wiki au mwezi kulingana na uwezo wako.',
-      'Ulinzi wa Dhamana: Mfumo unazuia kuchelewesha michango kupitia mfumo wa trust score.'
-    ],
-    steps: [
-      'Hatua ya 1: Chagua kiwango cha mchango na idadi ya wanafamilia/marafiki kwenye Upatu.',
-      'Hatua ya 2: Mfumo unapanga ratiba kamili na namba za zamu kwa haki kabisa.',
-      'Hatua ya 3: Pokea malipo yako ya mzunguko moja kwa moja kila zamu yako inapofika.'
-    ]
-  },
-  p2p: {
-    icon: '🌱',
-    title: 'P2P Investment Hub',
-    tagline: 'Wekeza kwenye Kilimo, Logistics, na Viwanda vilivyohakikiwa upate gawio la faida kiotomatiki kupitia Automated Split Payment Engine.',
-    features: [
-      'Verified Projects: Miradi yote hupitishwa kwenye ukaguzi mkali wa Due Diligence kabla ya kuwekwa kwenye soko.',
-      'Split Payment Engine: Mapato yanayoingia kutoka kwenye mradi yanagawanywa kiotomatiki kwenda kwa wawekezaji.',
-      'High Returns: Faida ya ushindani kuanzia 13% hadi 18% kwa mwaka.',
-      'Risk Transparency: Viwango vya hatari (Low/Medium) vinaonyeshwa wazi kabla hujawekeza.'
-    ],
-    steps: [
-      'Hatua ya 1: Vinjari miradi inayopatikana kwenye P2P Hub (Kilimo, Biashara, n.k).',
-      'HatuaData ya 2: Wekeza kiasi unachotaka kuanzia TZS 10,000 kupitia Digital Wallet yako.',
-      'Hatua ya 3: Fuatilia makuzi ya mtaji wako na upokee gawio la faida kila mwezi kwenye akaunti yako.'
-    ]
-  },
-  wallet: {
-    icon: '💳',
-    title: 'Digital Wallet',
-    tagline: 'Weka na utoe fedha papo hapo kupitia M-Pesa, Tigo Pesa, Airtel Money, Halopesa, na Benki.',
-    features: [
-      'Instant Deposit & Withdrawal: Uunganisho wa moja kwa moja na Mobile Money na mifumo ya Benki.',
-      'Multi-Currency Support: Simamia fedha za ndani na za kimataifa kwa urahisi.',
-      'Bank-Grade Encryption: Taarifa zote zinalindwa chini ya Sheria ya Ulinzi wa Data Binafsi (PDPC).',
-      'Instant Notifications: Pata ujumbe wa SMS na taarifa za papo hapo kwa kila muamala.'
-    ],
-    steps: [
-      'Hatua ya 1: Fungua akaunti yako kwa namba ya simu tu.',
-      'Hatua ya 2: Bonyeza "Weka Fedha" na uchague mtandao wako wa simu (M-Pesa, Tigo Pesa, n.k).',
-      'Hatua ya 3: Kamilisha muamala kupitia simu yako na uanze kufanya shughuli zote salama.'
-    ]
-  }
-};
-
 export default function Landing() {
   const [menuOpen, setMenuOpen] = useState(false);
-  const [activeModal, setActiveModal] = useState(null);
-  const [bannerDismissed, setBannerDismissed] = useState(false);
-  const stats = { totalBalanceFormatted: 'TZS 500M+', vicobaGroups: 1200, registeredUsers: 50000 };
+  const [activeTab, setActiveTab] = useState('vicoba');
+  const [lang, setLang] = useState('sw');
+  const [showBalance, setShowBalance] = useState(true);
+  const [yieldAmount, setYieldAmount] = useState(1000000); // 1M TZS default
+
+  // Yield calculator formula: (Principal * 0.13) / 12
+  const monthlyYield = Math.round((yieldAmount * 0.13) / 12);
+  const totalYield12Months = monthlyYield * 12;
 
   return (
-    <>
+    <div className="landing-page">
+      {/* A. HEADER / NAVIGATION BAR (Sticky & Transparent) */}
       <nav className="landing-nav">
         <div className="logo">
-          <svg viewBox="0 0 32 32" fill="none"><circle cx="16" cy="16" r="14" fill="#0b5d1e"/><path d="M10 20 L16 8 L22 20 Z" fill="#d4a843" opacity="0.9"/><circle cx="16" cy="16" r="4" fill="#fff"/></svg>
-          Afrikoba
+          <div className="shield-icon">🛡️</div>
+          <span>Afrikoba Global</span>
         </div>
         <ul className="nav-links">
-          <li><a href="#huduma">Huduma</a></li>
+          <li><a href="#huduma">Huduma Zetu</a></li>
+          <li><a href="#yield">Afrikoba Yield</a></li>
           <li><a href="#jinsi">Jinsi Inavyofanya Kazi</a></li>
-          <li><a href="#uwekezaji">Uwekezaji</a></li>
+          <li><a href="#uwekezaji">Uwekezaji (P2P)</a></li>
+          <li><a href="#kuhusu">Kuhusu Sisi</a></li>
         </ul>
         <div className="nav-actions">
-          <Link to="/login"><button className="btn-ghost">Ingia</button></Link>
+          <select className="lang-dropdown" value={lang} onChange={(e) => setLang(e.target.value)}>
+            <option value="sw">SW</option>
+            <option value="en">EN</option>
+          </select>
+          <Link to="/login"><button className="btn-outline">Ingia</button></Link>
           <Link to="/login"><button className="btn-primary">Jisajili</button></Link>
         </div>
         <button className={`hamburger ${menuOpen ? 'open' : ''}`} onClick={() => setMenuOpen(!menuOpen)}>
           <span /><span /><span />
         </button>
       </nav>
+
+      {/* Mobile Menu */}
       <div className={`mobile-menu ${menuOpen ? 'open' : ''}`}>
-        <a href="#huduma" onClick={() => setMenuOpen(false)}>Huduma</a>
+        <a href="#huduma" onClick={() => setMenuOpen(false)}>Huduma Zetu</a>
+        <a href="#yield" onClick={() => setMenuOpen(false)}>Afrikoba Yield</a>
         <a href="#jinsi" onClick={() => setMenuOpen(false)}>Jinsi Inavyofanya Kazi</a>
-        <a href="#uwekezaji" onClick={() => setMenuOpen(false)}>Uwekezaji</a>
-        <Link to="/login" onClick={() => setMenuOpen(false)}><button className="btn-primary">Jisajili Sasa</button></Link>
+        <a href="#uwekezaji" onClick={() => setMenuOpen(false)}>Uwekezaji (P2P)</a>
+        <a href="#kuhusu" onClick={() => setMenuOpen(false)}>Kuhusu Sisi</a>
+        <Link to="/login" onClick={() => setMenuOpen(false)}><button className="btn-primary" style={{width:'100%', marginTop:10}}>Jisajili Sasa</button></Link>
       </div>
 
+      {/* B. HERO SECTION */}
       <section className="hero">
         <div className="hero-inner">
           <div className="hero-content">
+            <div className="hero-badge">✨ Mfuko wa Kitaifa wa Kidijitali</div>
             <h1>Mfumo Salama wa Kidijitali wa Akiba, VICOBA, Mzunguko na <span>Uwekezaji</span> Barani Afrika.</h1>
-            <p className="subtitle">Simamia mfumo wako wa VICOBA kwa uwazi wa 100%, shiriki kwenye mizunguko ya Upatu isiyokuwa na utapeli, na wekeza kwenye miradi ya uzalishaji yenye faida.</p>
+            <p className="subtitle">Simamia VICOBA kwa uwazi wa 100%, shiriki kwenye mizunguko ya Upatu isiyo na utapeli, na wekeza kwenye Mfuko wa Faida (13% Annual Yield) au miradi ya uzalishaji.</p>
             <div className="ctas">
               <a href="https://play.google.com/store/apps/details?id=com.afrikoba" target="_blank" rel="noopener noreferrer">
-                <button className="btn-lg primary">▶ Pata App Sasa</button>
+                <button className="btn-lg primary">▶ Pakua App Sasa</button>
               </a>
-              <Link to="/login"><button className="btn-lg secondary">Fungua Akaunti</button></Link>
+              <Link to="/login"><button className="btn-lg secondary">Fungua Akaunti ya Web</button></Link>
             </div>
           </div>
           <div className="hero-visual">
-            <div className="hero-phone">
-              <div className="phone-inner">
-                <div className="phone-brand">Afrikoba</div>
-                <div className="phone-chart">
-                  {[30,50,40,70,55,85,65].map((h,i) => <div key={i} className="bar" style={{height:`${h}%`}} />)}
-                </div>
-                <div className="phone-stats">
-                  <div className="big">TZS 2.4M</div>
-                  <div className="small">Akiba yako ya mwezi huu (+12%)</div>
-                </div>
+            <div className="glass-mockup-card">
+              <div className="mockup-header">
+                <span>Akiba ya Mwezi</span>
+                <span className="badge-growth">+14.2% 📈</span>
+              </div>
+              <div className="mockup-balance">
+                {showBalance ? 'TZS 2,400,000' : 'TZS ***,***'}
+                <button className="eye-btn" onClick={() => setShowBalance(!showBalance)} title="Ficha / Onyesha Salio">
+                  {showBalance ? '👁️' : '🙈'}
+                </button>
+              </div>
+              <div className="mockup-chart-mini">
+                {[35, 55, 45, 75, 60, 90, 80].map((h, i) => (
+                  <div key={i} className="chart-bar" style={{ height: `${h}%` }} />
+                ))}
+              </div>
+              <div className="mockup-footer">
+                <span>🟢 Mfuko wa Faida: Hai</span>
+                <span className="gold-text">13% Pa.a</span>
               </div>
             </div>
           </div>
         </div>
       </section>
 
-      <section className="social-proof">
-        <div className="social-proof-inner">
-          <div className="badges-row">
-            <div className="badge-item"><span className="badge-icon">🏛️</span><div className="badge-text">BOT Regulated<br/>Payment Gateways</div></div>
-            <div className="badge-item"><span className="badge-icon">🔒</span><div className="badge-text">Bank-Grade<br/>SSL 256-bit Encryption</div></div>
-            <div className="badge-item"><span className="badge-icon">✅</span><div className="badge-text">NIDA E-Signature<br/>Verified</div></div>
+      {/* C. LIVE TRUST & SECURITY BAR */}
+      <section className="trust-bar">
+        <div className="trust-inner">
+          <div className="counters-row">
+            <div className="counter-box">
+              <h3>TZS 850M+</h3>
+              <p>Dedicated Capital</p>
+            </div>
+            <div className="counter-box">
+              <h3>2,500+</h3>
+              <p>Vikundi Vilivyosajiliwa</p>
+            </div>
+            <div className="counter-box">
+              <h3>15,000+</h3>
+              <p>Wawekezaji Hai</p>
+            </div>
           </div>
-          <div className="stats-row">
-            <div className="stat-item"><div className="stat-value">{stats.totalBalanceFormatted}</div><div className="stat-label">Zimesimamiwa</div></div>
-            <div className="stat-item"><div className="stat-value">{stats.vicobaGroups}+</div><div className="stat-label">Vikundi Vimesajiliwa</div></div>
-            <div className="stat-item"><div className="stat-value">{stats.registeredUsers}+</div><div className="stat-label">Watumiaji Wenye Akaunti</div></div>
+          <div className="security-badges">
+            <div className="s-badge">🏛️ BOT-Regulated Gateway</div>
+            <div className="s-badge">🔒 256-Bit SSL Encrypted</div>
+            <div className="s-badge">🛡️ PDPC Data Protection Compliant</div>
+            <div className="s-badge">✅ NIDA Verified System</div>
           </div>
         </div>
       </section>
 
-      <section className="services" id="huduma">
-        <div className="services-inner">
+      {/* D. INTERACTIVE PRODUCT SHOWCASE (TAB BEDDING) */}
+      <section className="showcase" id="huduma">
+        <div className="showcase-inner">
           <div className="section-header">
-            <h2>Huduma Kuu Zetu</h2>
-            <p>Bofya huduma yoyote hapa chini ili kusoma maelezo ya kina na kujisajili mara moja.</p>
+            <h2>Interactive Product Showcase</h2>
+            <p>Bofya kichupo chochote hapa chini kuona teknolojia na mifumo yetu ikifanya kazi.</p>
           </div>
-          <div className="services-grid">
-            <div className="service-card" onClick={() => setActiveModal('vicoba')} style={{cursor:'pointer'}}>
-              <div className="icon">👥</div>
-              <h3>VICOBA Automation</h3>
-              <p>Mikopo na akiba zenye uwazi wa saini mbili za viongozi (Mwenyekiti na Katibu) na SMS alerts kwa kila muamala.</p>
-              <span className="service-link">Soma zaidi &rarr;</span>
-            </div>
-            <div className="service-card" onClick={() => setActiveModal('rosca')} style={{cursor:'pointer'}}>
-              <div className="icon">🔄</div>
-              <h3>ROSCA / Upatu Engine</h3>
-              <p>Mzunguko wa kiotomatiki unaopangwa na kompyuta (Code as Law) bila kuogopa mtu kukimbia na fedha.</p>
-              <span className="service-link">Soma zaidi &rarr;</span>
-            </div>
-            <div className="service-card" onClick={() => setActiveModal('p2p')} style={{cursor:'pointer'}}>
-              <div className="icon">🌱</div>
-              <h3>P2P Investment Hub</h3>
-              <p>Wekeza kwenye Kilimo, Logistics, na Viwanda vilivyohakikiwa upate gawio la faida kiotomatiki kupitia Automated Split Payment Engine.</p>
-              <span className="service-link">Soma zaidi &rarr;</span>
-            </div>
-            <div className="service-card" onClick={() => setActiveModal('wallet')} style={{cursor:'pointer'}}>
-              <div className="icon">💳</div>
-              <h3>Digital Wallet</h3>
-              <p>Weka na utoe fedha papo hapo kupitia M-Pesa, Tigo Pesa, Airtel Money, Halopesa, na Benki.</p>
-              <span className="service-link">Soma zaidi &rarr;</span>
-            </div>
+          
+          <div className="tabs-header">
+            <button className={`tab-btn ${activeTab === 'vicoba' ? 'active' : ''}`} onClick={() => setActiveTab('vicoba')}>👥 VICOBA Digital</button>
+            <button className={`tab-btn ${activeTab === 'rosca' ? 'active' : ''}`} onClick={() => setActiveTab('rosca')}>🔄 ROSCA / Upatu</button>
+            <button className={`tab-btn ${activeTab === 'yield' ? 'active' : ''}`} onClick={() => setActiveTab('yield')} id="yield">🌱 Afrikoba Yield</button>
+            <button className={`tab-btn ${activeTab === 'p2p' ? 'active' : ''}`} onClick={() => setActiveTab('p2p')} id="uwekezaji">💳 P2P Crowdfunding</button>
+          </div>
+
+          <div className="tab-content-card">
+            {activeTab === 'vicoba' && (
+              <div className="tab-pane">
+                <div className="pane-info">
+                  <h3>VICOBA Automation & Multi-Sig Approvals</h3>
+                  <p>Kila ombi la mkopo linahitaji idhini ya pande mbili (Mwenyekiti na Katibu) ili kuzuia matumizi mabaya ya fedha za kikundi.</p>
+                  <div className="approval-status-box">
+                    <div className="approver">Mwenyekiti: <span className="badge-ok">Approved ✅</span></div>
+                    <div className="approver">Katibu: <span className="badge-pending">Pending ⏳</span></div>
+                  </div>
+                </div>
+                <div className="pane-visual vicoba-mock">
+                  <div className="mock-box">
+                    <strong>Ombi la Mkopo #402</strong>
+                    <p>Kiasi: TZS 1,500,000</p>
+                    <p>Hali: Inasubiri Saini ya Katibu</p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {activeTab === 'rosca' && (
+              <div className="tab-pane">
+                <div className="pane-info">
+                  <h3>ROSCA / Upatu Engine (Code as Law)</h3>
+                  <p>Mzunguko wa fedha unaopangwa kiotomatiki na kompyuta. Hakuna haja ya kukusanya pesa mkononi; mfumo unakata na kugawanya kwa wakati.</p>
+                  <ul className="feature-list">
+                    <li>✓ Mzunguko wa #3 kati ya 10</li>
+                    <li>✓ Mwanachama Anayepokea Mwezi Huu: <strong>Aisha Juma</strong></li>
+                  </ul>
+                </div>
+                <div className="pane-visual">
+                  <div className="timeline-mock">
+                    <div className="t-step done">Mwezi 1 ✓</div>
+                    <div className="t-step done">Mwezi 2 ✓</div>
+                    <div className="t-step active">Mwezi 3 (Sasa) 🟢</div>
+                    <div className="t-step">Mwezi 4 ⏳</div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {activeTab === 'yield' && (
+              <div className="tab-pane yield-pane">
+                <div className="pane-info">
+                  <h3>Afrikoba Yield (13% Annual Return)</h3>
+                  <p>Funga mtaji wako kwa hiari upate faida ya 13% kwa mwaka inayolipwa kila mwezi moja kwa moja kwenye Wallet yako.</p>
+                  <div className="calculator-box">
+                    <label>Weka Kiasi cha Mtaji: <strong>{yieldAmount.toLocaleString()} TZS</strong></label>
+                    <input 
+                      type="range" 
+                      min="50000" 
+                      max="20000000" 
+                      step="50000" 
+                      value={yieldAmount} 
+                      onChange={(e) => setYieldAmount(Number(e.target.value))} 
+                    />
+                    <div className="calc-results">
+                      <div>Faida ya Kila Mwezi: <strong className="green-text">TZS {monthlyYield.toLocaleString()}</strong></div>
+                      <div>Jumla ya Faida (Mwaka): <strong className="green-text">TZS {totalYield12Months.toLocaleString()}</strong></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {activeTab === 'p2p' && (
+              <div className="tab-pane">
+                <div className="pane-info">
+                  <h3>P2P Crowdfunding & Split Payment</h3>
+                  <p>Wekeza kwenye kilimo cha biashara na logistics. Faida inarudishwa moja kwa moja kupitia Automated Split Payment Engine.</p>
+                  <div className="p2p-card-preview">
+                    <div className="p2p-top">
+                      <span>Kilimo cha Umwagiliaji Morogoro</span>
+                      <span className="badge-green">ROI: 18% Pa.a</span>
+                    </div>
+                    <div className="progress-bar-wrap">
+                      <div className="progress-fill" style={{width: '75%'}} />
+                    </div>
+                    <div className="p2p-bot">
+                      <span>Mtaji: TZS 15M / 20M</span>
+                      <span className="risk-tag">Risk: Low</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </section>
 
-      {/* SERVICE DETAILS MODAL */}
-      {activeModal && serviceDetails[activeModal] && (
-        <div className="modal-backdrop" onClick={() => setActiveModal(null)}>
-          <div className="modal-content" onClick={e => e.stopPropagation()}>
-            <button className="modal-close" onClick={() => setActiveModal(null)}>&times;</button>
-            <div className="modal-header">
-              <span className="modal-icon">{serviceDetails[activeModal].icon}</span>
-              <h2>{serviceDetails[activeModal].title}</h2>
-            </div>
-            <p className="modal-tagline">{serviceDetails[activeModal].tagline}</p>
-            
-            <div className="modal-section">
-              <h4>Vipengele Muhimu</h4>
-              <ul>
-                {serviceDetails[activeModal].features.map((f, i) => (
-                  <li key={i}>{f}</li>
-                ))}
-              </ul>
-            </div>
-
-            <div className="modal-cta-box">
-              <Link to="/login">
-                <button className="btn-primary-lg">Jiunge / Register Now</button>
-              </Link>
-            </div>
-
-            <div className="modal-section steps-section">
-              <h4>Jinsi ya Kujiunga na Kutumia</h4>
-              <ol>
-                {serviceDetails[activeModal].steps.map((s, i) => (
-                  <li key={i}>{s}</li>
-                ))}
-              </ol>
-            </div>
-          </div>
-        </div>
-      )}
-
+      {/* E. HOW IT WORKS & FOOTER */}
       <section className="how-it-works" id="jinsi">
         <div className="how-inner">
           <div className="section-header">
             <h2>Jinsi Inavyofanya Kazi</h2>
-            <p>Hatua tatu tu kuanza.</p>
+            <p>Hatua tatu rahisi kuanza safari yako ya kifedha.</p>
           </div>
           <div className="steps">
             <div className="step">
               <div className="step-num">1</div>
               <h3>Pakua au Jisajili</h3>
-              <p>Pakua App ya Afrikoba au jisajili kwa namba ya simu/NIDA kwenye www.afrikoba.com.</p>
+              <p>Pakua App au fungua akaunti ya mtandaoni kwa namba ya simu au NIDA.</p>
             </div>
             <div className="step">
               <div className="step-num">2</div>
-              <h3>Jiunge na Kikundi</h3>
-              <p>Jiunge na Kikundi chako, Chagua Mzunguko wa Upatu, au Omba mkopo wa P2P Investment.</p>
+              <h3>Chagua Huduma</h3>
+              <p>Jiunge na kikundi cha VICOBA, anzisha Upatu, au wekeza kwenye Afrikoba Yield.</p>
             </div>
             <div className="step">
               <div className="step-num">3</div>
-              <h3>Weka Akiba, Pokea Faida</h3>
-              <p>Weka akiba, pokea mzunguko, au pata gawio la faida moja kwa moja kwenye Wallet yako.</p>
+              <h3>Simamia na Ukuze</h3>
+              <p>Pokea gawio la faida, fuatilia miamala kwa urahisi, na ulinde akiba yako.</p>
             </div>
           </div>
         </div>
       </section>
 
-      <section className="investor" id="uwekezaji">
-        <div className="investor-inner">
-          <h2>Una mradi unaotafuta mtaji?</h2>
-          <p>Jiunge kama Issuer kwenye Afrikoba P2P Crowdfunding. Wasilisha mradi wako, weka malipo ya awali (listing fee), na upate mtaji kutoka kwa wawekezaji wetu. Mfumo wetu wa Automated Split Payment utagawanya faida kiotomatiki.</p>
-          <div className="ctas">
-            <Link to="/login"><button className="btn-lg gold">Wasilisha Mradi Wako</button></Link>
-            <a href="mailto:support@afrikoba.com"><button className="btn-lg outline">Wasiliana Nasi</button></a>
-          </div>
+      <section className="kuhusu" id="kuhusu">
+        <div className="kuhusu-inner">
+          <h2>Kuhusu Afrikoba Global</h2>
+          <p>Afrikoba Global ni jukwaa la kidijitali lenye maono ya miaka 150 ijayo ya kuleta ulinzi wa kibenki, uwazi wa VICOBA, na fursa za uwekezaji kwa mamilioni ya wananchi barani Afrika chini ya sheria za ulinzi wa data binafsi (PDPC).</p>
         </div>
       </section>
 
@@ -263,20 +262,20 @@ export default function Landing() {
           <div className="footer-grid">
             <div className="footer-brand">
               <h3>Afrikoba Global</h3>
-              <p>Mfumo Salama wa Kidijitali wa Akiba, VICOBA, Mzunguko na Uwekezaji Barani Afrika.</p>
+              <p>Mfumo Salama wa Kidijitali wa Akiba, VICOBA, Mzunguko na Uwekezaji.</p>
             </div>
             <div className="footer-links">
               <h4>Huduma</h4>
-              <a href="#huduma">VICOBA</a>
+              <a href="#huduma">VICOBA Automation</a>
               <a href="#huduma">ROSCA / Upatu</a>
-              <a href="#huduma">P2P Investment</a>
-              <a href="#huduma">Digital Wallet</a>
+              <a href="#huduma">Afrikoba Yield</a>
+              <a href="#huduma">P2P Hub</a>
             </div>
             <div className="footer-links">
-              <h4>Kampuni</h4>
-              <Link to="/login">Kuhusu Sisi</Link>
-              <a href="mailto:support@afrikoba.com">Mawasiliano</a>
-              <Link to="/login">Sheria na Masharti</Link>
+              <h4>Mawasiliano</h4>
+              <a href="mailto:support@afrikoba.com">support@afrikoba.com</a>
+              <a href="tel:+255700000000">+255 700 000 000</a>
+              <Link to="/login">Wasiliana Nasi</Link>
             </div>
           </div>
           <div className="footer-bottom">
@@ -284,6 +283,6 @@ export default function Landing() {
           </div>
         </div>
       </footer>
-    </>
+    </div>
   );
 }
