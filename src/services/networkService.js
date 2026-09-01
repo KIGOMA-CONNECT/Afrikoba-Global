@@ -145,10 +145,28 @@ async function agentSettlement(agentId, amount, type) {
     await client.query('BEGIN');
     if (type === 'DEPOSIT') {
       await client.query('UPDATE agents SET balance = balance + $1 WHERE id = $2', [amountNum, agentId]);
+      await fin.postJournal({
+        client,
+        lines: [
+          { accountCode: 'MNO_CLEARING', direction: 'DR', amount: amountNum },
+          { accountCode: 'AGENT_BALANCE', direction: 'CR', amount: amountNum }
+        ],
+        referenceId: `${reference}:STL`,
+        description: 'Agent settlement DEPOSIT'
+      });
     } else {
       const a = await client.query('SELECT balance FROM agents WHERE id = $1 FOR UPDATE', [agentId]);
       if (Number(a.rows[0].balance) < amountNum) throw Object.assign(new Error('Wakala hana balance ya kutosha.'), { statusCode: 400 });
       await client.query('UPDATE agents SET balance = balance - $1 WHERE id = $2', [amountNum, agentId]);
+      await fin.postJournal({
+        client,
+        lines: [
+          { accountCode: 'AGENT_BALANCE', direction: 'DR', amount: amountNum },
+          { accountCode: 'MNO_CLEARING', direction: 'CR', amount: amountNum }
+        ],
+        referenceId: `${reference}:STL`,
+        description: 'Agent settlement WITHDRAWAL'
+      });
     }
     await client.query(
       `INSERT INTO agent_settlements (agent_id, amount, type, reference, status) VALUES ($1,$2,$3,$4,'PENDING') RETURNING *`,

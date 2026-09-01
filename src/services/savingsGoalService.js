@@ -5,6 +5,8 @@
 
 const pool = require('../config/db');
 const logger = require('../utils/logger');
+const { generateReference } = require('../utils/helpers');
+const fin = require('./financialEngine');
 
 /**
  * Get all savings goals for user.
@@ -79,44 +81,47 @@ async function deposit(userId, goalId, amount) {
 
   const g = goal.rows[0];
 
-  // Check wallet balance
-  const wallet = await pool.query(
-    `SELECT wallet_amount FROM wallets WHERE user_id = $1`,
-    [userId]
-  );
-
-  if (wallet.rows.length === 0 || parseFloat(wallet.rows[0].wallet_amount) < amount) {
-    throw new Error('Salio la wallet haikutosha.');
-  }
-
-  // Transfer from wallet to savings goal
-  await pool.query(
-    `UPDATE wallets SET wallet_amount = wallet_amount - $1, updated_at = NOW() WHERE user_id = $2`,
-    [amount, userId]
-  );
+  const ref = generateReference('SGD');
 
   const newAmount = parseFloat(g.current_amount) + amount;
   const isCompleted = newAmount >= parseFloat(g.target_amount);
 
-  const result = await pool.query(
-    `UPDATE savings_goals
-     SET current_amount = $1, is_completed = $2, completed_at = CASE WHEN $2 THEN NOW() ELSE completed_at END, updated_at = NOW()
-     WHERE id = $3 RETURNING *`,
-    [newAmount, isCompleted, goalId]
-  );
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
 
-  // Record transaction
-  await pool.query(
-    `INSERT INTO transactions (user_id, type, amount, status, description, category_id)
-     VALUES ($1, 'SAVINGS_DEPOSIT', $2, 'COMPLETED', $3, (SELECT id FROM spending_categories WHERE name = 'Savings'))`,
-    [userId, amount, `Akiba kwenye: ${g.name}`]
-  );
+    await fin.debitWallet({
+      client, userId, amount, reference: ref,
+      toAccount: 'SUSPENSE',
+      description: `Savings goal deposit: ${g.name}`
+    });
 
-  if (isCompleted) {
-    logger.info('SAVINGS', `Goal "${g.name}" completed by user ${userId}!`);
+    const result = await client.query(
+      `UPDATE savings_goals
+       SET current_amount = $1, is_completed = $2, completed_at = CASE WHEN $2 THEN NOW() ELSE completed_at END, updated_at = NOW()
+       WHERE id = $3 RETURNING *`,
+      [newAmount, isCompleted, goalId]
+    );
+
+    // Record transaction
+    await client.query(
+      `INSERT INTO transactions (user_id, type, amount, status, description, category_id, reference_id)
+       VALUES ($1, 'SAVINGS_DEPOSIT', $2, 'COMPLETED', $3, (SELECT id FROM spending_categories WHERE name = 'Savings'), $4)`,
+      [userId, amount, `Akiba kwenye: ${g.name}`, ref]
+    );
+
+    if (isCompleted) {
+      logger.info('SAVINGS', `Goal "${g.name}" completed by user ${userId}!`);
+    }
+
+    await client.query('COMMIT');
+    return { goal: result.rows[0], isCompleted };
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
   }
-
-  return { goal: result.rows[0], isCompleted };
 }
 
 /**
@@ -139,27 +144,41 @@ async function withdraw(userId, goalId, amount) {
     throw new Error('Kikomo cha akiba haikitosha.');
   }
 
-  await pool.query(
-    `UPDATE wallets SET wallet_amount = wallet_amount + $1, updated_at = NOW() WHERE user_id = $2`,
-    [amount, userId]
-  );
+  const ref = generateReference('SGW');
 
   const newAmount = parseFloat(g.current_amount) - amount;
 
-  const result = await pool.query(
-    `UPDATE savings_goals
-     SET current_amount = $1, is_completed = FALSE, completed_at = NULL, updated_at = NOW()
-     WHERE id = $2 RETURNING *`,
-    [newAmount, goalId]
-  );
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
 
-  await pool.query(
-    `INSERT INTO transactions (user_id, type, amount, status, description, category_id)
-     VALUES ($1, 'SAVINGS_WITHDRAWAL', $2, 'COMPLETED', $3, (SELECT id FROM spending_categories WHERE name = 'Savings'))`,
-    [userId, amount, `Kutoa kutoka: ${g.name}`]
-  );
+    await fin.creditWallet({
+      client, userId, amount, reference: ref,
+      fromAccount: 'SUSPENSE',
+      description: `Savings goal withdrawal: ${g.name}`
+    });
 
-  return result.rows[0];
+    const result = await client.query(
+      `UPDATE savings_goals
+       SET current_amount = $1, is_completed = FALSE, completed_at = NULL, updated_at = NOW()
+       WHERE id = $2 RETURNING *`,
+      [newAmount, goalId]
+    );
+
+    await client.query(
+      `INSERT INTO transactions (user_id, type, amount, status, description, category_id, reference_id)
+       VALUES ($1, 'SAVINGS_WITHDRAWAL', $2, 'COMPLETED', $3, (SELECT id FROM spending_categories WHERE name = 'Savings'), $4)`,
+      [userId, amount, `Kutoa kutoka: ${g.name}`, ref]
+    );
+
+    await client.query('COMMIT');
+    return result.rows[0];
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 /**

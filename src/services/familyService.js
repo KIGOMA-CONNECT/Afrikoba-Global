@@ -105,14 +105,33 @@ async function familySpend(walletId, userId, amount, description) {
   if (Number(member.rows[0].spending_limit) > 0 && amountNum > Number(member.rows[0].spending_limit)) {
     throw Object.assign(new Error('Kiasi kimezidi limit yako.'), { statusCode: 400 });
   }
-  const w = await pool.query('SELECT balance FROM family_wallets WHERE id = $1 FOR UPDATE', [walletId]);
-  if (Number(w.rows[0].balance) < amountNum) throw Object.assign(new Error('Salio la familia halitoshi.'), { statusCode: 400 });
-  await pool.query('UPDATE family_wallets SET balance = balance - $1 WHERE id = $2', [amountNum, walletId]);
-  await pool.query(
-    `INSERT INTO family_wallet_transactions (wallet_id, actor_user_id, amount, type, description) VALUES ($1,$2,$3,'SPEND',$4)`,
-    [walletId, userId, amountNum, description || 'Matumizi ya familia']
-  );
-  return { success: true, amount: amountNum, message: 'Matumizi yamepunguza salio la familia.' };
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const w = await client.query('SELECT balance FROM family_wallets WHERE id = $1 FOR UPDATE', [walletId]);
+    if (Number(w.rows[0].balance) < amountNum) throw Object.assign(new Error('Salio la familia halitoshi.'), { statusCode: 400 });
+    await client.query('UPDATE family_wallets SET balance = balance - $1 WHERE id = $2', [amountNum, walletId]);
+    await fin.postJournal({
+      client,
+      lines: [
+        { accountCode: 'FAMILY_WALLET', direction: 'DR', amount: amountNum },
+        { accountCode: 'SUSPENSE', direction: 'CR', amount: amountNum }
+      ],
+      referenceId: `${generateReference('FS')}:SPD`,
+      description: description || 'Matumizi ya familia'
+    });
+    await client.query(
+      `INSERT INTO family_wallet_transactions (wallet_id, actor_user_id, amount, type, description) VALUES ($1,$2,$3,'SPEND',$4)`,
+      [walletId, userId, amountNum, description || 'Matumizi ya familia']
+    );
+    await client.query('COMMIT');
+    return { success: true, amount: amountNum, message: 'Matumizi yamepunguza salio la familia.' };
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 async function familyTransfer(walletId, userId, toPhone, amount) {

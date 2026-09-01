@@ -29,6 +29,22 @@ const PROJECTIONS = {
     label: 'company_revenue.total_commission',
     sql: `SELECT COALESCE(SUM(total_commission),0)::numeric AS v FROM company_revenue`,
   },
+  AGENT_BALANCE: {
+    label: 'Sum agents.balance (agent float liability)',
+    sql: `SELECT COALESCE(SUM(balance),0)::numeric AS v FROM agents`,
+  },
+  PARTNER_BALANCE: {
+    label: 'Sum partners.balance (partner liability)',
+    sql: `SELECT COALESCE(SUM(balance),0)::numeric AS v FROM partners`,
+  },
+  FAMILY_WALLET: {
+    label: 'Sum family_wallets.balance (shared wallet liability)',
+    sql: `SELECT COALESCE(SUM(balance),0)::numeric AS v FROM family_wallets`,
+  },
+  REFERRAL_REWARD: {
+    label: 'Sum referral_rewards.reward_amount (paid referral expense)',
+    sql: `SELECT COALESCE(SUM(reward_amount),0)::numeric AS v FROM referral_rewards`,
+  },
 };
 
 /**

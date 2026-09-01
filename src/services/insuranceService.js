@@ -4,6 +4,8 @@
  */
 
 const pool = require('../config/db');
+const { generateReference } = require('../utils/helpers');
+const fin = require('./financialEngine');
 
 async function getProducts(category = null) {
   let query = `SELECT * FROM insurance_products WHERE is_active = TRUE`;
@@ -24,28 +26,39 @@ async function purchasePolicy(userId, { product_id, age }) {
   }
 
   // Check wallet for first premium
-  const wallet = await pool.query(`SELECT wallet_amount FROM wallets WHERE user_id = $1`, [userId]);
-  if (wallet.rows.length === 0 || parseFloat(wallet.rows[0].wallet_amount) < parseFloat(p.premium_monthly)) {
-    throw new Error('Salio la wallet haikutosha kwa ada ya kwanza.');
+  const ref = generateReference('INS');
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    await fin.debitWallet({
+      client, userId, amount: parseFloat(p.premium_monthly), reference: ref,
+      toAccount: 'MNO_CLEARING',
+      description: `Insurance premium: ${p.name}`
+    });
+
+    const result = await client.query(
+      `INSERT INTO insurance_policies (user_id, product_id, premium_paid, next_premium_date, coverage_start)
+       VALUES ($1, $2, $3, CURRENT_DATE + INTERVAL '1 month', CURRENT_DATE) RETURNING *`,
+      [userId, product_id, p.premium_monthly]
+    );
+
+    await client.query(
+      `INSERT INTO transactions (user_id, type, total_charged, commission, status, reference_id, meta)
+       VALUES ($1, 'WITHDRAWAL', $2, 0, 'SUCCESS', $3, $4)`,
+      [userId, p.premium_monthly, ref,
+       JSON.stringify({ type: 'INSURANCE_PREMIUM', product: p.name })]
+    );
+
+    await client.query('COMMIT');
+    return { policy: result.rows[0], product: p };
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
   }
-
-  await pool.query(`UPDATE wallets SET wallet_amount = wallet_amount - $1 WHERE user_id = $2`,
-    [parseFloat(p.premium_monthly), userId]);
-
-  const result = await pool.query(
-    `INSERT INTO insurance_policies (user_id, product_id, premium_paid, next_premium_date, coverage_start)
-     VALUES ($1, $2, $3, CURRENT_DATE + INTERVAL '1 month', CURRENT_DATE) RETURNING *`,
-    [userId, product_id, p.premium_monthly]
-  );
-
-  await pool.query(
-    `INSERT INTO transactions (user_id, type, total_charged, commission, status, reference_id, meta)
-     VALUES ($1, 'WITHDRAWAL', $2, 0, 'SUCCESS', $3, $4)`,
-    [userId, p.premium_monthly, `INS-${result.rows[0].id}`,
-     JSON.stringify({ type: 'INSURANCE_PREMIUM', product: p.name })]
-  );
-
-  return { policy: result.rows[0], product: p };
 }
 
 async function getPolicies(userId) {
@@ -70,20 +83,39 @@ async function renewPolicy(userId, policyId) {
   if (policy.rows.length === 0) throw new Error('Sera haipatikani.');
 
   const p = policy.rows[0];
-  const wallet = await pool.query(`SELECT wallet_amount FROM wallets WHERE user_id = $1`, [userId]);
-  if (parseFloat(wallet.rows[0].wallet_amount) < parseFloat(p.premium_monthly)) {
-    throw new Error('Salio la wallet haikutosha.');
+
+  const ref = generateReference('INS');
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    await fin.debitWallet({
+      client, userId, amount: parseFloat(p.premium_monthly), reference: ref,
+      toAccount: 'MNO_CLEARING',
+      description: `Insurance premium renewal: policy ${policyId}`
+    });
+
+    await client.query(
+      `UPDATE insurance_policies SET premium_paid = premium_paid + $1, next_premium_date = next_premium_date + INTERVAL '1 month' WHERE id = $2`,
+      [p.premium_monthly, policyId]
+    );
+
+    await client.query(
+      `INSERT INTO transactions (user_id, type, total_charged, commission, status, reference_id, meta)
+       VALUES ($1, 'WITHDRAWAL', $2, 0, 'SUCCESS', $3, $4)`,
+      [userId, p.premium_monthly, ref,
+       JSON.stringify({ type: 'INSURANCE_PREMIUM_RENEWAL', product: p.name })]
+    );
+
+    await client.query('COMMIT');
+    return { success: true, message: 'Sera imesh Renewed.' };
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
   }
-
-  await pool.query(`UPDATE wallets SET wallet_amount = wallet_amount - $1 WHERE user_id = $2`,
-    [parseFloat(p.premium_monthly), userId]);
-
-  await pool.query(
-    `UPDATE insurance_policies SET premium_paid = premium_paid + $1, next_premium_date = next_premium_date + INTERVAL '1 month' WHERE id = $2`,
-    [p.premium_monthly, policyId]
-  );
-
-  return { success: true, message: 'Sera imesh Renewed.' };
 }
 
 module.exports = { getProducts, purchasePolicy, getPolicies, renewPolicy };

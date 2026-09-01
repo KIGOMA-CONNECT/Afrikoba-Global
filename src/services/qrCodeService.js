@@ -5,6 +5,7 @@
 
 const pool = require('../config/db');
 const crypto = require('crypto');
+const fin = require('./financialEngine');
 
 function generateQrCode() {
   return 'QR-' + crypto.randomBytes(8).toString('hex').toUpperCase();
@@ -68,29 +69,36 @@ async function payQrCode(qrCodeId, payerId, amount) {
   const payAmount = q.amount || amount;
   if (!payAmount || payAmount <= 0) throw new Error('Kiasi kinahitajika.');
 
-  // Check wallet
-  const wallet = await pool.query(`SELECT wallet_amount FROM wallets WHERE user_id = $1`, [payerId]);
-  if (wallet.rows.length === 0 || parseFloat(wallet.rows[0].wallet_amount) < payAmount) {
-    throw new Error('Salio la wallet haikutosha.');
-  }
-
-  // Transfer
-  await pool.query(`UPDATE wallets SET wallet_amount = wallet_amount - $1 WHERE user_id = $2`, [payAmount, payerId]);
-  await pool.query(`UPDATE wallets SET wallet_amount = wallet_amount + $1 WHERE user_id = $2`, [payAmount, q.user_id]);
-
   const ref = `QR-${crypto.randomBytes(6).toString('hex').toUpperCase()}`;
-  await pool.query(
-    `INSERT INTO qr_payments (qr_code_id, payer_id, payee_id, amount, status) VALUES ($1, $2, $3, $4, 'SUCCESS')`,
-    [qrCodeId, payerId, q.user_id, payAmount]
-  );
 
-  await pool.query(
-    `INSERT INTO transactions (user_id, type, total_charged, commission, status, reference_id, meta)
-     VALUES ($1, 'TRANSFER', $2, 0, 'SUCCESS', $3, $4)`,
-    [payerId, payAmount, ref, JSON.stringify({ type: 'QR_PAYMENT', qr_code: q.code, payee_id: q.user_id })]
-  );
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
 
-  return { success: true, reference: ref, amount: payAmount, payee: q.user_id };
+    await fin.internalTransfer({
+      client, fromUserId: payerId, toUserId: q.user_id, amount: payAmount,
+      reference: ref, description: `QR payment to ${q.user_id}`
+    });
+
+    await client.query(
+      `INSERT INTO qr_payments (qr_code_id, payer_id, payee_id, amount, status) VALUES ($1, $2, $3, $4, 'SUCCESS')`,
+      [qrCodeId, payerId, q.user_id, payAmount]
+    );
+
+    await client.query(
+      `INSERT INTO transactions (user_id, type, total_charged, commission, status, reference_id, meta)
+       VALUES ($1, 'TRANSFER', $2, 0, 'SUCCESS', $3, $4)`,
+      [payerId, payAmount, ref, JSON.stringify({ type: 'QR_PAYMENT', qr_code: q.code, payee_id: q.user_id })]
+    );
+
+    await client.query('COMMIT');
+    return { success: true, reference: ref, amount: payAmount, payee: q.user_id };
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 async function deactivateQrCode(userId, qrId) {

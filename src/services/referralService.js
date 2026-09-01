@@ -110,6 +110,11 @@ async function rewardReferral(userId) {
       fromAccount: 'REFERRAL_REWARD',
       description: `Referral reward for referring user ${userId}`,
     });
+    await client.query(
+      `INSERT INTO referral_rewards (referrer_id, referred_id, reward_amount, status, paid_at)
+       VALUES ($1, $2, $3, 'PAID', NOW())`,
+      [referral.referrer_user_id, userId, Number(rewardAmount)]
+    );
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});

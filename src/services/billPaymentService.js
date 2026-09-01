@@ -5,6 +5,7 @@
 
 const pool = require('../config/db');
 const crypto = require('crypto');
+const fin = require('./financialEngine');
 
 async function getBillers(category = null) {
   let query = `SELECT * FROM billers WHERE is_active = TRUE`;
@@ -33,30 +34,45 @@ async function payBill(userId, { biller_id, account_number, amount }) {
 
   const totalCharged = amount + fee;
 
-  // Check wallet
-  const wallet = await pool.query(`SELECT wallet_amount FROM wallets WHERE user_id = $1`, [userId]);
-  if (wallet.rows.length === 0 || parseFloat(wallet.rows[0].wallet_amount) < totalCharged) {
-    throw new Error(`Salio la wallet haikutosha. Unahitaji TSh ${totalCharged.toLocaleString()}.`);
-  }
-
-  // Deduct
-  await pool.query(`UPDATE wallets SET wallet_amount = wallet_amount - $1 WHERE user_id = $2`, [totalCharged, userId]);
-
   const ref = `BILL-${crypto.randomBytes(6).toString('hex').toUpperCase()}`;
 
-  const result = await pool.query(
-    `INSERT INTO bill_payments (user_id, biller_id, account_number, amount, fee, total_charged, reference, status)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, 'SUCCESS') RETURNING *`,
-    [userId, biller_id, account_number, amount, fee, totalCharged, ref]
-  );
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
 
-  await pool.query(
-    `INSERT INTO transactions (user_id, type, total_charged, commission, status, reference_id, meta)
-     VALUES ($1, 'WITHDRAWAL', $2, 0, 'SUCCESS', $3, $4)`,
-    [userId, totalCharged, ref, JSON.stringify({ type: 'BILL_PAYMENT', biller: b.name, account: account_number })]
-  );
+    await fin.debitWallet({
+      client, userId, amount, reference: `${ref}:AMT`,
+      toAccount: 'MNO_CLEARING',
+      description: `Bill payment to ${b.name}`
+    });
+    if (fee > 0) {
+      await fin.debitWallet({
+        client, userId, amount: fee, reference: `${ref}:FEE`,
+        toAccount: 'PLATFORM_FEES',
+        description: `Bill payment fee to ${b.name}`
+      });
+    }
 
-  return { success: true, reference: ref, biller: b.name, amount, fee, total: totalCharged };
+    const result = await client.query(
+      `INSERT INTO bill_payments (user_id, biller_id, account_number, amount, fee, total_charged, reference, status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'SUCCESS') RETURNING *`,
+      [userId, biller_id, account_number, amount, fee, totalCharged, ref]
+    );
+
+    await client.query(
+      `INSERT INTO transactions (user_id, type, total_charged, commission, status, reference_id, meta)
+       VALUES ($1, 'WITHDRAWAL', $2, 0, 'SUCCESS', $3, $4)`,
+      [userId, totalCharged, ref, JSON.stringify({ type: 'BILL_PAYMENT', biller: b.name, account: account_number })]
+    );
+
+    await client.query('COMMIT');
+    return { success: true, reference: ref, biller: b.name, amount, fee, total: totalCharged };
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 async function getBillPayments(userId, limit = 20) {

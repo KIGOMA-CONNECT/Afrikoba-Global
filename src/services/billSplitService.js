@@ -4,6 +4,8 @@
  */
 
 const pool = require('../config/db');
+const { generateReference } = require('../utils/helpers');
+const fin = require('./financialEngine');
 
 async function createSplit(creatorId, { title, total_amount, participant_phones }) {
   if (!title || !total_amount || !participant_phones || participant_phones.length < 2) {
@@ -80,44 +82,56 @@ async function paySplit(splitId, userId, amount) {
 
   const newPaid = parseFloat(p.amount_paid) + amount;
 
-  await pool.query(
-    `UPDATE bill_split_participants
-     SET amount_paid = $1, status = CASE WHEN $1 >= amount_owed THEN 'PAID' ELSE 'PENDING' END,
-         paid_at = CASE WHEN $1 >= amount_owed THEN NOW() ELSE paid_at END
-     WHERE id = $2`,
-    [newPaid, p.id]
-  );
-
-  // Check if split is complete
-  const allPaid = await pool.query(
-    `SELECT COUNT(*)::int AS unpaid
-     FROM bill_split_participants
-     WHERE split_id = $1 AND status != 'PAID'`,
-    [splitId]
-  );
-
-  if (allPaid.rows[0].unpaid === 0) {
-    await pool.query(`UPDATE bill_splits SET status = 'COMPLETED', updated_at = NOW() WHERE id = $1`, [splitId]);
-  } else {
-    await pool.query(`UPDATE bill_splits SET status = 'PARTIAL', updated_at = NOW() WHERE id = $1`, [splitId]);
-  }
-
   // Transfer from wallet to creator
   const split = await pool.query(`SELECT creator_id FROM bill_splits WHERE id = $1`, [splitId]);
-  if (split.rows.length > 0) {
-    await pool.query(
-      `UPDATE wallets SET wallet_amount = wallet_amount - $1, updated_at = NOW() WHERE user_id = $2`,
-      [amount, userId]
+  if (split.rows.length === 0) throw new Error('Split haipatikani.');
+  const creatorId = split.rows[0].creator_id;
+
+  const ref = generateReference('BS');
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    await client.query(
+      `UPDATE bill_split_participants
+       SET amount_paid = $1, status = CASE WHEN $1 >= amount_owed THEN 'PAID' ELSE 'PENDING' END,
+           paid_at = CASE WHEN $1 >= amount_owed THEN NOW() ELSE paid_at END
+       WHERE id = $2`,
+      [newPaid, p.id]
     );
-    await pool.query(
-      `UPDATE wallets SET wallet_amount = wallet_amount + $1, updated_at = NOW() WHERE user_id = $2`,
-      [amount, split.rows[0].creator_id]
+
+    // Check if split is complete
+    const allPaid = await client.query(
+      `SELECT COUNT(*)::int AS unpaid
+       FROM bill_split_participants
+       WHERE split_id = $1 AND status != 'PAID'`,
+      [splitId]
     );
-    await pool.query(
+
+    if (allPaid.rows[0].unpaid === 0) {
+      await client.query(`UPDATE bill_splits SET status = 'COMPLETED', updated_at = NOW() WHERE id = $1`, [splitId]);
+    } else {
+      await client.query(`UPDATE bill_splits SET status = 'PARTIAL', updated_at = NOW() WHERE id = $1`, [splitId]);
+    }
+
+    await fin.internalTransfer({
+      client, fromUserId: userId, toUserId: creatorId, amount,
+      reference: ref, description: `Bill split payment for split ${splitId}`
+    });
+
+    await client.query(
       `INSERT INTO transactions (user_id, type, total_charged, commission, status, reference_id, meta)
        VALUES ($1, 'TRANSFER', $2, 0, 'SUCCESS', $3, $4)`,
-      [userId, amount, `SPLIT-${splitId}`, JSON.stringify({ split_id: splitId, type: 'BILL_SPLIT' })]
+      [userId, amount, ref, JSON.stringify({ split_id: splitId, type: 'BILL_SPLIT', unique: ref })]
     );
+
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
   }
 
   return { success: true, message: `Umelipa TSh ${amount.toLocaleString()}` };

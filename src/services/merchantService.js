@@ -5,6 +5,7 @@
 
 const pool = require('../config/db');
 const crypto = require('crypto');
+const fin = require('./financialEngine');
 
 async function registerMerchant(userId, { name, business_type, phone, email }) {
   const result = await pool.query(
@@ -37,50 +38,53 @@ async function payMerchant(payerId, merchantId, amount, description) {
   );
   if (merchant.rows.length === 0) throw new Error('Biashara haipatikani.');
 
-  const wallet = await pool.query(
-    `SELECT wallet_amount FROM wallets WHERE user_id = $1`,
-    [payerId]
-  );
-  if (wallet.rows.length === 0 || parseFloat(wallet.rows[0].wallet_amount) < amount) {
-    throw new Error('Salio la wallet haikutosha.');
-  }
-
-  // Deduct from payer
-  await pool.query(
-    `UPDATE wallets SET wallet_amount = wallet_amount - $1, updated_at = NOW() WHERE user_id = $2`,
-    [amount, payerId]
-  );
-
-  // Credit merchant
   const merchantUserId = merchant.rows[0].user_id;
-  if (merchantUserId) {
-    await pool.query(
-      `UPDATE wallets SET wallet_amount = wallet_amount + $1, updated_at = NOW() WHERE user_id = $2`,
-      [amount, merchantUserId]
-    );
-  }
 
   const ref = `MERCH-${crypto.randomBytes(6).toString('hex').toUpperCase()}`;
 
-  // Record payment
-  await pool.query(
-    `INSERT INTO merchant_payments (merchant_id, payer_id, amount, reference, description, status)
-     VALUES ($1, $2, $3, $4, $5, 'SUCCESS')`,
-    [merchantId, payerId, amount, ref, description || `Malipo kwa ${merchant.rows[0].name}`]
-  );
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
 
-  // Record transaction
-  await pool.query(
-    `INSERT INTO transactions (user_id, type, total_charged, commission, status, reference_id, meta)
-     VALUES ($1, 'TRANSFER', $2, 0, 'SUCCESS', $3, $4)`,
-    [payerId, amount, ref, JSON.stringify({
-      merchant_id: merchantId,
-      merchant_name: merchant.rows[0].name,
-      type: 'MERCHANT_PAYMENT',
-    })]
-  );
+    if (merchantUserId && merchantUserId !== payerId) {
+      await fin.internalTransfer({
+        client, fromUserId: payerId, toUserId: merchantUserId, amount,
+        reference: ref, description: `Merchant payment to ${merchant.rows[0].name}`
+      });
+    } else {
+      await fin.debitWallet({
+        client, userId: payerId, amount, reference: ref,
+        toAccount: 'SUSPENSE',
+        description: `Merchant payment to ${merchant.rows[0].name}`
+      });
+    }
 
-  return { success: true, reference: ref, merchant: merchant.rows[0].name };
+    // Record payment
+    await client.query(
+      `INSERT INTO merchant_payments (merchant_id, payer_id, amount, reference, description, status)
+       VALUES ($1, $2, $3, $4, $5, 'SUCCESS')`,
+      [merchantId, payerId, amount, ref, description || `Malipo kwa ${merchant.rows[0].name}`]
+    );
+
+    // Record transaction
+    await client.query(
+      `INSERT INTO transactions (user_id, type, total_charged, commission, status, reference_id, meta)
+       VALUES ($1, 'TRANSFER', $2, 0, 'SUCCESS', $3, $4)`,
+      [payerId, amount, ref, JSON.stringify({
+        merchant_id: merchantId,
+        merchant_name: merchant.rows[0].name,
+        type: 'MERCHANT_PAYMENT',
+      })]
+    );
+
+    await client.query('COMMIT');
+    return { success: true, reference: ref, merchant: merchant.rows[0].name };
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 async function getMerchantPayments(merchantId) {

@@ -5,6 +5,8 @@
 
 const pool = require('../config/db');
 const logger = require('../utils/logger');
+const { generateReference } = require('../utils/helpers');
+const fin = require('./financialEngine');
 
 const TIERS = {
   BRONZE: { min: 0, multiplier: 1 },
@@ -86,28 +88,43 @@ async function redeemPoints(userId, points, description) {
   // Convert points to TSh (100 points = TSh 100)
   const cashValue = Math.floor(points / 100);
 
-  await pool.query(
-    `UPDATE rewards SET points = points - $1, total_redeemed = total_redeemed + $1, updated_at = NOW() WHERE user_id = $2`,
-    [points, userId]
-  );
+  const ref = generateReference('RWD');
 
-  await pool.query(
-    `INSERT INTO reward_transactions (user_id, type, points, description, reference_type)
-     VALUES ($1, 'REDEEM', $2, $3, 'CASHBACK')`,
-    [userId, points, description || `Ukitumia ${points} pointi`]
-  );
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
 
-  // Credit wallet
-  if (cashValue > 0) {
-    await pool.query(
-      `UPDATE wallets SET wallet_amount = wallet_amount + $1, updated_at = NOW() WHERE user_id = $2`,
-      [cashValue, userId]
+    await client.query(
+      `UPDATE rewards SET points = points - $1, total_redeemed = total_redeemed + $1, updated_at = NOW() WHERE user_id = $2`,
+      [points, userId]
     );
-    await pool.query(
-      `INSERT INTO transactions (user_id, type, total_charged, commission, status, reference_id, meta)
-       VALUES ($1, 'DEPOSIT', $2, 0, 'SUCCESS', $3, $4)`,
-      [userId, cashValue, `REWARD-${Date.now()}`, JSON.stringify({ type: 'CASHBACK', points })]
+
+    await client.query(
+      `INSERT INTO reward_transactions (user_id, type, points, description, reference_type)
+       VALUES ($1, 'REDEEM', $2, $3, 'CASHBACK')`,
+      [userId, points, description || `Ukitumia ${points} pointi`]
     );
+
+    // Credit wallet
+    if (cashValue > 0) {
+      await fin.creditWallet({
+        client, userId, amount: cashValue, reference: ref,
+        fromAccount: 'SUSPENSE',
+        description: `Reward cashback redemption`
+      });
+      await client.query(
+        `INSERT INTO transactions (user_id, type, total_charged, commission, status, reference_id, meta)
+         VALUES ($1, 'DEPOSIT', $2, 0, 'SUCCESS', $3, $4)`,
+        [userId, cashValue, ref, JSON.stringify({ type: 'CASHBACK', points })]
+      );
+    }
+
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
   }
 
   const updated = await pool.query(`SELECT * FROM rewards WHERE user_id = $1`, [userId]);

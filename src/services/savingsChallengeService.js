@@ -4,6 +4,8 @@
  */
 
 const pool = require('../config/db');
+const { generateReference } = require('../utils/helpers');
+const fin = require('./financialEngine');
 
 async function createChallenge(creatorId, { name, target_amount, start_date, end_date, frequency, per_contribution }) {
   if (!name || !target_amount || !start_date || !end_date || !frequency || !per_contribution) {
@@ -52,46 +54,63 @@ async function contribute(challengeId, userId, amount) {
   );
   if (member.rows.length === 0) throw new Error('Huwezi kuchangia. Hujaungana bado.');
 
-  // Check wallet
-  const wallet = await pool.query(`SELECT wallet_amount FROM wallets WHERE user_id = $1`, [userId]);
-  if (wallet.rows.length === 0 || parseFloat(wallet.rows[0].wallet_amount) < amount) {
-    throw new Error('Salio la wallet haikutosha.');
+  const ref = generateReference('SCC');
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    await fin.debitWallet({
+      client, userId, amount, reference: ref,
+      toAccount: 'SUSPENSE',
+      description: `Savings challenge contribution to challenge ${challengeId}`
+    });
+
+    const dayNumber = parseInt(member.rows[0].contributions_count) + 1;
+
+    await client.query(
+      `INSERT INTO challenge_contributions (challenge_id, user_id, amount, day_number) VALUES ($1, $2, $3, $4)`,
+      [challengeId, userId, amount, dayNumber]
+    );
+
+    // Update member
+    const newStreak = parseInt(member.rows[0].streak) + 1;
+    const newBestStreak = Math.max(newStreak, parseInt(member.rows[0].best_streak));
+
+    await client.query(
+      `UPDATE savings_challenge_members
+       SET total_contributed = total_contributed + $1, contributions_count = contributions_count + 1,
+           streak = $2, best_streak = $3
+       WHERE challenge_id = $4 AND user_id = $5`,
+      [amount, newStreak, newBestStreak, challengeId, userId]
+    );
+
+    // Update challenge total
+    await client.query(
+      `UPDATE savings_challenges SET current_amount = current_amount + $1, updated_at = NOW() WHERE id = $2`,
+      [amount, challengeId]
+    );
+
+    // Check if challenge complete
+    const updated = await client.query(`SELECT current_amount, target_amount FROM savings_challenges WHERE id = $1`, [challengeId]);
+    if (parseFloat(updated.rows[0].current_amount) >= parseFloat(updated.rows[0].target_amount)) {
+      await client.query(`UPDATE savings_challenges SET status = 'COMPLETED', updated_at = NOW() WHERE id = $1`, [challengeId]);
+    }
+
+    await client.query(
+      `INSERT INTO transactions (user_id, type, total_charged, commission, status, reference_id, meta)
+       VALUES ($1, 'WITHDRAWAL', $2, 0, 'SUCCESS', $3, $4)`,
+      [userId, amount, ref, JSON.stringify({ type: 'SAVINGS_CHALLENGE', challenge_id: challengeId })]
+    );
+
+    await client.query('COMMIT');
+    return { success: true, streak: newStreak, dayNumber };
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
   }
-
-  await pool.query(`UPDATE wallets SET wallet_amount = wallet_amount - $1 WHERE user_id = $2`, [amount, userId]);
-
-  const dayNumber = parseInt(member.rows[0].contributions_count) + 1;
-
-  await pool.query(
-    `INSERT INTO challenge_contributions (challenge_id, user_id, amount, day_number) VALUES ($1, $2, $3, $4)`,
-    [challengeId, userId, amount, dayNumber]
-  );
-
-  // Update member
-  const newStreak = parseInt(member.rows[0].streak) + 1;
-  const newBestStreak = Math.max(newStreak, parseInt(member.rows[0].best_streak));
-
-  await pool.query(
-    `UPDATE savings_challenge_members
-     SET total_contributed = total_contributed + $1, contributions_count = contributions_count + 1,
-         streak = $2, best_streak = $3
-     WHERE challenge_id = $4 AND user_id = $5`,
-    [amount, newStreak, newBestStreak, challengeId, userId]
-  );
-
-  // Update challenge total
-  await pool.query(
-    `UPDATE savings_challenges SET current_amount = current_amount + $1, updated_at = NOW() WHERE id = $2`,
-    [amount, challengeId]
-  );
-
-  // Check if challenge complete
-  const updated = await pool.query(`SELECT current_amount, target_amount FROM savings_challenges WHERE id = $1`, [challengeId]);
-  if (parseFloat(updated.rows[0].current_amount) >= parseFloat(updated.rows[0].target_amount)) {
-    await pool.query(`UPDATE savings_challenges SET status = 'COMPLETED', updated_at = NOW() WHERE id = $1`, [challengeId]);
-  }
-
-  return { success: true, streak: newStreak, dayNumber };
 }
 
 async function getChallenges(userId) {

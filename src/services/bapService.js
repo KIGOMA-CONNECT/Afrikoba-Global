@@ -30,8 +30,9 @@ async function logTx(client, userId, amount, type, meta) {
   );
 }
 
-async function logPartnerTxn(partnerId, type, amount, ref, requestId, phone, status) {
-  await pool.query(
+async function logPartnerTxn(partnerId, type, amount, ref, requestId, phone, status, client) {
+  const run = client || pool;
+  await run.query(
     `INSERT INTO partner_transactions (partner_id, type, amount, reference, request_id, phone, status)
      VALUES ($1,$2,$3,$4,$5,$6,$7)`,
     [partnerId, type, amount, ref, requestId || null, phone || null, status || 'COMPLETED']
@@ -148,11 +149,30 @@ async function setPartnerSuspended(adminId, partnerId, suspended) {
 async function fundPartner(adminId, partnerId, amount) {
   const amountNum = Number(amount);
   if (!isFinite(amountNum) || amountNum <= 0) throw badge('Kiasi si sahihi.', 400);
-  const p = await pool.query('SELECT * FROM partners WHERE id=$1 FOR UPDATE', [partnerId]);
-  if (!p.rows.length) throw badge('Partner hapatikani.', 404);
-  await pool.query('UPDATE partners SET balance = balance + $1, updated_at=NOW() WHERE id=$2', [amountNum, partnerId]);
   const ref = generateReference('PF');
-  await logPartnerTxn(partnerId, 'FUNDING', amountNum, ref, null, null, 'COMPLETED');
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const p = await client.query('SELECT * FROM partners WHERE id=$1 FOR UPDATE', [partnerId]);
+    if (!p.rows.length) throw badge('Partner hapatikani.', 404);
+    await client.query('UPDATE partners SET balance = balance + $1, updated_at=NOW() WHERE id=$2', [amountNum, partnerId]);
+    await fin.postJournal({
+      client,
+      lines: [
+        { accountCode: 'SUSPENSE', direction: 'DR', amount: amountNum },
+        { accountCode: 'PARTNER_BALANCE', direction: 'CR', amount: amountNum }
+      ],
+      referenceId: `${ref}:FND`,
+      description: `Partner funding: ${p.rows[0].name}`
+    });
+    await logPartnerTxn(partnerId, 'FUNDING', amountNum, ref, null, null, 'COMPLETED', client);
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
   await logAudit(adminId, 'PARTNER_FUNDING', `Partner #${partnerId} +${formatMoney(amountNum)}`).catch(() => {});
   const after = await pool.query('SELECT balance FROM partners WHERE id=$1', [partnerId]);
   return { partner_id: partnerId, reference: ref, balance: Number(after.rows[0].balance) };

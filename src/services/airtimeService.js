@@ -4,6 +4,7 @@
 
 const pool = require('../config/db');
 const crypto = require('crypto');
+const fin = require('./financialEngine');
 
 const PROVIDERS = {
   VODACOM: { name: 'Vodacom', prefixes: ['0754', '0755', '0756', '0757', '0758'] },
@@ -37,29 +38,38 @@ async function purchaseAirtime(userId, { phone, provider, product_id, amount }) 
   if (!phone || !provider || !amount) throw new Error('Taarifa zote zinahitajika.');
   if (!PROVIDERS[provider]) throw new Error('Mtoa huduma batili.');
 
-  // Check wallet
-  const wallet = await pool.query(`SELECT wallet_amount FROM wallets WHERE user_id = $1`, [userId]);
-  if (wallet.rows.length === 0 || parseFloat(wallet.rows[0].wallet_amount) < amount) {
-    throw new Error('Salio la wallet haikutosha.');
-  }
-
-  await pool.query(`UPDATE wallets SET wallet_amount = wallet_amount - $1 WHERE user_id = $2`, [amount, userId]);
-
   const ref = `AIR-${crypto.randomBytes(6).toString('hex').toUpperCase()}`;
 
-  const result = await pool.query(
-    `INSERT INTO airtime_purchases (user_id, phone, provider, product_type, amount, reference, status)
-     VALUES ($1, $2, $3, 'AIRTIME', $4, $5, 'SUCCESS') RETURNING *`,
-    [userId, phone, provider, amount, ref]
-  );
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
 
-  await pool.query(
-    `INSERT INTO transactions (user_id, type, total_charged, commission, status, reference_id, meta)
-     VALUES ($1, 'WITHDRAWAL', $2, 0, 'SUCCESS', $3, $4)`,
-    [userId, amount, ref, JSON.stringify({ type: 'AIRTIME', phone, provider })]
-  );
+    await fin.debitWallet({
+      client, userId, amount, reference: ref,
+      toAccount: 'MNO_CLEARING',
+      description: `Airtime purchase: ${phone}`
+    });
 
-  return { success: true, reference: ref, phone, provider: PROVIDERS[provider].name, amount };
+    const result = await client.query(
+      `INSERT INTO airtime_purchases (user_id, phone, provider, product_type, amount, reference, status)
+       VALUES ($1, $2, $3, 'AIRTIME', $4, $5, 'SUCCESS') RETURNING *`,
+      [userId, phone, provider, amount, ref]
+    );
+
+    await client.query(
+      `INSERT INTO transactions (user_id, type, total_charged, commission, status, reference_id, meta)
+       VALUES ($1, 'WITHDRAWAL', $2, 0, 'SUCCESS', $3, $4)`,
+      [userId, amount, ref, JSON.stringify({ type: 'AIRTIME', phone, provider })]
+    );
+
+    await client.query('COMMIT');
+    return { success: true, reference: ref, phone, provider: PROVIDERS[provider].name, amount };
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 async function getPurchaseHistory(userId, limit = 20) {

@@ -68,10 +68,10 @@ async function calculateScore(userId) {
 
   // 5. Balance maintenance (0-100 points)
   const wallet = await pool.query(
-    `SELECT wallet_amount FROM wallets WHERE user_id = $1`,
+    `SELECT wallet_balance FROM users WHERE id = $1`,
     [userId]
   );
-  const balance = parseFloat(wallet.rows[0]?.wallet_amount || 0);
+  const balance = parseFloat(wallet.rows[0]?.wallet_balance || 0);
   const balanceScore = Math.min(100, Math.floor(balance / 10000));
   factors.push({ factor: 'BALANCE', score: balanceScore, detail: `TSh ${balance.toLocaleString()}` });
   totalScore += balanceScore;

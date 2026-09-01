@@ -5,6 +5,8 @@
 
 const pool = require('../config/db');
 const logger = require('../utils/logger');
+const { generateReference } = require('../utils/helpers');
+const fin = require('./financialEngine');
 
 const VALID_REASONS = ['UNAUTHORIZED', 'WRONG_AMOUNT', 'DUPLICATE', 'NOT_RECEIVED', 'FRAUD', 'OTHER'];
 const VALID_STATUSES = ['OPEN', 'UNDER_REVIEW', 'RESOLVED', 'REJECTED'];
@@ -134,15 +136,30 @@ async function resolveDispute(disputeId, adminId, resolution, status = 'RESOLVED
     const dispute = result.rows[0];
     if (dispute.reason === 'DUPLICATE' || dispute.reason === 'NOT_RECEIVED') {
       // Auto-credit back to user
-      await pool.query(
-        `UPDATE wallets SET balance = balance + $1, updated_at = NOW() WHERE user_id = $2`,
-        [dispute.amount_disputed, dispute.user_id]
-      );
-      await pool.query(
-        `INSERT INTO transactions (user_id, type, amount, status, description, reference_type)
-         VALUES ($1, 'DISPUTE_REFUND', $2, 'COMPLETED', $3, 'DISPUTE')`,
-        [dispute.user_id, dispute.amount_disputed, `Mrejesho kwa mjadala #${disputeId}`]
-      );
+      const ref = generateReference('DSP');
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+
+        await fin.creditWallet({
+          client, userId: dispute.user_id, amount: dispute.amount_disputed,
+          reference: ref, fromAccount: 'SUSPENSE',
+          description: 'Dispute refund'
+        });
+
+        await client.query(
+          `INSERT INTO transactions (user_id, type, amount, status, description, reference_type, reference_id)
+           VALUES ($1, 'DISPUTE_REFUND', $2, 'COMPLETED', $3, 'DISPUTE', $4)`,
+          [dispute.user_id, dispute.amount_disputed, `Mrejesho kwa mjadala #${disputeId}`, ref]
+        );
+
+        await client.query('COMMIT');
+      } catch (error) {
+        await client.query('ROLLBACK').catch(() => {});
+        throw error;
+      } finally {
+        client.release();
+      }
       logger.info('DISPUTE', `Refund TSh ${dispute.amount_disputed} for dispute #${disputeId}`);
     }
   }
