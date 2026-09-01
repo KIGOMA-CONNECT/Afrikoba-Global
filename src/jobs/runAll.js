@@ -6,6 +6,7 @@ const { runDueSplitPayments } = require('../services/splitPaymentService');
 const { processDueScheduledPayments } = require('../services/networkService');
 const { processYieldPayouts } = require('../services/yieldService');
 const { runMaintenance } = require('../services/dbMaintenanceService');
+const { runBalanceReconciliation } = require('./balanceReconciliation');
 const logger = require('../utils/logger');
 
 /**
@@ -54,6 +55,15 @@ function startAllJobs() {
       await processYieldPayouts();
     } catch (e) {
       logger.error('CRON-YIELD', e.message);
+    }
+  });
+
+  // Daily balance reconciliation - asserts ledger == projection (diff should be 0).
+  cron.schedule('15 0 * * *', async () => {
+    try {
+      await runBalanceReconciliation('DAILY');
+    } catch (e) {
+      logger.error('CRON-BALANCE-RECON', e.message);
     }
   });
 

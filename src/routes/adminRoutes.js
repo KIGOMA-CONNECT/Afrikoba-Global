@@ -258,4 +258,47 @@ router.post('/api-keys', async (req, res, next) => {
   }
 });
 
+// ===== FINANCIAL RECONCILIATION ENDPOINTS (Phase 5) =====
+const { runBalanceReconciliation, recentRuns } = require('../jobs/balanceReconciliation');
+
+// Orodha ya reconciliation runs zilizopita
+router.get('/reconciliation/runs', async (req, res, next) => {
+  try {
+    const runs = await recentRuns(Number(req.query.limit) || 20);
+    res.json({ success: true, runs });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Maelezo ya run moja ikiwa ni pamoja na line items
+router.get('/reconciliation/runs/:id', async (req, res, next) => {
+  try {
+    const run = await pool.query(
+      `SELECT * FROM reconciliation_runs WHERE id = $1`, [req.params.id]
+    );
+    if (run.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Run haipatikani.' });
+    }
+    const items = await pool.query(
+      `SELECT account_code, balance_name, state, journal_balance, expected_balance,
+              difference, detail
+       FROM reconciliation_line_items WHERE run_id = $1 ORDER BY id`, [req.params.id]
+    );
+    res.json({ success: true, run: run.rows[0], items: items.rows });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Kuanzisha reconciliation manually (ops/ad-hoc)
+router.post('/reconciliation/run', async (req, res, next) => {
+  try {
+    const summary = await runBalanceReconciliation('MANUAL');
+    res.json({ success: true, summary });
+  } catch (error) {
+    next(error);
+  }
+});
+
 module.exports = router;
