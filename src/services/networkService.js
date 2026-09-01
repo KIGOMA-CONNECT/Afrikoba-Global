@@ -378,7 +378,10 @@ async function sendRemittance(senderId, data) {
        VALUES ($1,$2,$3,$4,$5,'SUCCESS','REMITTANCE', $6)`,
       [reference, senderId, amountNum, fee, amountNum + fee, JSON.stringify({ recipient_phone, recipient_country, to_amount: toAmount })]
     );
-    await fin.debitWallet({ client, userId: senderId, amount: amountNum + fee, reference, toAccount: 'MNO_CLEARING', description: 'Remittance' });
+    await fin.debitWallet({ client, userId: senderId, amount: amountNum, reference: `${reference}:AMT`, toAccount: 'MNO_CLEARING', description: 'Remittance' });
+    if (fee > 0) {
+      await fin.debitWallet({ client, userId: senderId, amount: fee, reference: `${reference}:FEE`, toAccount: 'PLATFORM_FEES', description: 'Remittance fee' });
+    }
     await client.query(
       `INSERT INTO remittance_transfers (sender_id, recipient_phone, recipient_name, recipient_country, from_amount, to_amount, exchange_rate, fee, reference, status, pickup_code)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'COMPLETED',$10) RETURNING *`,
