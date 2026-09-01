@@ -160,12 +160,12 @@ async function runBalanceReconciliation(runType = 'DAILY') {
 
     await client.query(
       `UPDATE reconciliation_runs
-       SET status = CASE WHEN $3 > 0 THEN 'COMPLETE_WITH_DIFF' ELSE 'COMPLETE' END,
+       SET status = CASE WHEN $2 > 0 THEN 'COMPLETE_WITH_DIFF' ELSE 'COMPLETE' END,
            finished_at = NOW(),
-           total_checked = $4, total_matched = $5, total_missing = $6, total_diff = $7,
-           difference = $8
+           total_checked = $3, total_matched = $4, total_missing = $5, total_diff = $6,
+           difference = $7
        WHERE id = $1`,
-      [runId, runType, aggregateDifference, totalChecked, totalMatched, totalMissing, totalDiff, aggregateDifference]
+      [runId, aggregateDifference, totalChecked, totalMatched, totalMissing, totalDiff, aggregateDifference]
     );
 
     await client.query('COMMIT');
