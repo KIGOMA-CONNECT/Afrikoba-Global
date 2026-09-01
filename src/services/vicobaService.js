@@ -472,8 +472,8 @@ async function payContribution(groupId, userId, cycleNumber, amount, sharesCount
 
     if (penaltyAmount > 0) {
       await client.query(
-        `INSERT INTO vicoba_penalties (group_id, user_id, penalty_type, amount, reason, related_schedule_id, status)
-         VALUES ($1, $2, 'LATE_CONTRIBUTION', $3, $4, $5, 'UNPAID')`,
+        `INSERT INTO vicoba_penalties (group_id, user_id, penalty_type, amount, reason, related_schedule_id, status, paid_at)
+         VALUES ($1, $2, 'LATE_CONTRIBUTION', $3, $4, $5, 'PAID', NOW())`,
         [groupId, userId, penaltyAmount, `Late payment for cycle ${cycleNumber} (${daysLate} days late)`, schedule.id]
       );
       await client.query(
@@ -984,8 +984,8 @@ async function repayLoan(userId, loanId, amount, note) {
     // Record penalty if late
     if (penaltyAmount > 0) {
       await client.query(
-        `INSERT INTO vicoba_penalties (group_id, user_id, penalty_type, amount, reason, related_loan_id, status)
-         VALUES ($1, $2, 'LATE_LOAN_REPAYMENT', $3, $4, $5, 'UNPAID')`,
+        `INSERT INTO vicoba_penalties (group_id, user_id, penalty_type, amount, reason, related_loan_id, status, paid_at)
+         VALUES ($1, $2, 'LATE_LOAN_REPAYMENT', $3, $4, $5, 'PAID', NOW())`,
         [loan.group_id, userId, penaltyAmount, `Late repayment for installment ${schedule.installment_number}`, loanId]
       );
     }

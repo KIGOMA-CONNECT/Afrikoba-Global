@@ -445,7 +445,7 @@ async function creditWallet({ client, userId, amount, reference, fromAccount = '
   await postJournal({
     client,
     lines: [
-      { accountCode: fromAccount, direction: 'DR', amount: amountN },
+      { accountCode: fromAccount, direction: await legDirection(client, fromAccount, 'source'), amount: amountN },
       { accountCode: 'CUSTOMER_WALLET', direction: 'CR', amount: amountN },
     ],
     referenceId: reference, description, postedBy: actor,
@@ -477,7 +477,7 @@ async function debitWallet({ client, userId, amount, reference, toAccount = 'PLA
     client,
     lines: [
       { accountCode: 'CUSTOMER_WALLET', direction: 'DR', amount: amountN },
-      { accountCode: toAccount, direction: 'CR', amount: amountN },
+      { accountCode: toAccount, direction: await legDirection(client, toAccount, 'target'), amount: amountN },
     ],
     referenceId: reference, description, postedBy: actor,
   });
@@ -485,6 +485,13 @@ async function debitWallet({ client, userId, amount, reference, toAccount = 'PLA
   await client.query(`UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2`, [amountN, userId]);
   await auditBalance({ client, accountKind: 'USER_BALANCE', accountId: userId, operation: 'debit', amount: amountN, balanceBefore: before, balanceAfter: before - amountN, reference, actor });
   return { success: true, reference, debited: amountN };
+}
+
+async function legDirection(client, accountCode, role) {
+  const acct = await client.query('SELECT account_type FROM ledger_accounts WHERE account_code = $1', [accountCode]);
+  const type = (acct.rows[0] && acct.rows[0].account_type) || 'ASSET';
+  if (role === 'source') return type === 'ASSET' ? 'CR' : 'DR';
+  return (type === 'ASSET' || type === 'EXPENSE') ? 'DR' : 'CR';
 }
 
 /**

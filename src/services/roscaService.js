@@ -235,7 +235,7 @@ async function disburseDuePayouts() {
           client,
           lines: [
             { accountCode: 'ROSICA_POOL', direction: 'DR', amount: Number(sched.comm_amount) },
-            { accountCode: 'PLATFORM_FEES', direction: 'CR', amount: Number(sched.comm_amount) },
+            { accountCode: 'COMMISSION', direction: 'CR', amount: Number(sched.comm_amount) },
           ],
           referenceId: `${referenceId}:CM`,
           description: 'ROSCA Commission',

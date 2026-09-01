@@ -595,6 +595,7 @@ async function getUserReferralCode(userId) {
 }
 
 async function awardReferral(referrerId, referredId) {
+  if (referrerId === referredId) throw Object.assign(new Error('Huwezi kujitaja mwenyewe.'), { statusCode: 400 });
   const existing = await pool.query('SELECT id FROM referral_rewards WHERE referrer_id = $1 AND referred_id = $2', [referrerId, referredId]);
   if (existing.rows.length) return { message: 'Tayari imetolewa.' };
   const count = await pool.query('SELECT COUNT(*) AS c FROM referral_rewards WHERE referrer_id = $1', [referrerId]);
@@ -603,6 +604,19 @@ async function awardReferral(referrerId, referredId) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    const referred = await client.query('SELECT id FROM users WHERE id = $1 FOR UPDATE', [referredId]);
+    if (!referred.rows.length) throw Object.assign(new Error('Mtumiaji aliyerejelewa hajapatikana.'), { statusCode: 404 });
+    const claimed = await client.query('SELECT id FROM referral_rewards WHERE referred_id = $1 FOR UPDATE', [referredId]);
+    if (claimed.rows.length) throw Object.assign(new Error('Mtumiaji huyu tayari amedaiwa na mrejeleaji mwingine.'), { statusCode: 400 });
+    const minDepositResult = await client.query("SELECT setting_value FROM system_settings WHERE setting_key = 'referral_min_deposit'");
+    const minDeposit = parseFloat(minDepositResult.rows[0]?.setting_value) || 10000;
+    const dep = await client.query(
+      `SELECT COALESCE(SUM(wallet_amount),0)::numeric AS v FROM transactions WHERE user_id = $1 AND type = 'DEPOSIT' AND status = 'SUCCESS'`,
+      [referredId]
+    );
+    if (Number(dep.rows[0].v) < minDeposit) {
+      throw Object.assign(new Error('Mteja wako bado hajakamilisha amana ya chini kwa bonasi hii.'), { statusCode: 400 });
+    }
     await client.query(
       `INSERT INTO referral_rewards (referrer_id, referred_id, tier_name, reward_amount, status) VALUES ($1,$2,$3,$4,'PENDING')`,
       [referrerId, referredId, tier.rows.length ? tier.rows[0].name : 'Starter', reward]
@@ -612,7 +626,12 @@ async function awardReferral(referrerId, referredId) {
     await client.query('COMMIT');
     await logAudit({ eventType: 'REFERRAL_REWARD', action: 'CREATE', entityType: 'REFERRAL', userId: referrerId, afterData: { referred_id: referredId, reward } });
     return { success: true, reward, tier: tier.rows.length ? tier.rows[0].name : 'Starter' };
-  } finally { client.release(); }
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 async function getReferralStats(userId) {
