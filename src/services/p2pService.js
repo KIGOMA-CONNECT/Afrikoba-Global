@@ -6,6 +6,7 @@ const { generateInvestmentContract } = require('./contractService');
 const { logAudit } = require('./auditService');
 const { parsePagination, paginationMeta } = require('../utils/pagination');
 const logger = require('../utils/logger');
+const fin = require('../services/financialEngine');
 
 async function createProject(ownerUserId, projectData) {
   const required = ['title', 'sector', 'description', 'targetAmount', 'sharePrice', 'roiPercentage', 'tenureMonths', 'paybackStartMonths', 'businessPlan', 'teamInfo'];
@@ -303,7 +304,7 @@ async function invest(userId, projectId, sharesToBuy, signatureIp) {
       [referenceId, userId, totalAmount, JSON.stringify({ project_id: projectId })]
     );
 
-    await client.query('UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2', [totalAmount, userId]);
+    await fin.debitWallet({ client, userId, amount: totalAmount, reference: referenceId, toAccount: 'SUSPENSE', description: 'Investment funding' });
     await client.query(
       'UPDATE investment_projects SET raised_amount = raised_amount + $1 WHERE id = $2',
       [totalAmount, projectId]
@@ -398,12 +399,8 @@ async function releaseMilestone(adminUserId, milestoneId) {
       `UPDATE escrow_milestones SET status = 'RELEASED', released_at = NOW(), released_by = $1 WHERE id = $2`,
       [adminUserId, milestoneId]
     );
-    await client.query(
-      'UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2',
-      [milestone.amount, milestone.owner_user_id]
-    );
-
     const referenceId = generateReference('EM');
+    await fin.creditWallet({ client, userId: milestone.owner_user_id, amount: milestone.amount, reference: referenceId, fromAccount: 'SUSPENSE', description: 'Escrow milestone release' });
     const txRes = await client.query(
       `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
        VALUES ($1, $2, $3, 0, $3, 'SUCCESS', 'INVESTMENT_PAYOUT', $4)

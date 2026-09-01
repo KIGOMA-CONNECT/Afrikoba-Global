@@ -4,6 +4,7 @@ const { sendSMS } = require('./smsService');
 const { generateReference, formatMoney } = require('../utils/helpers');
 const { logAudit } = require('./auditService');
 const logger = require('../utils/logger');
+const fin = require('../services/financialEngine');
 
 // ====================================================================
 // F1: AGENT NETWORK (cash-in / cash-out agents)
@@ -86,7 +87,7 @@ async function agentCashIn(agentId, customerPhone, amount) {
        VALUES ($1,$2,$3,0,$3,'SUCCESS','CASH_IN', $4)`,
       [reference, cust.id, amountNum, JSON.stringify({ agent_id: agentId, agent_code: agent.agent_code })]
     );
-    await client.query('UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2', [amountNum, cust.id]);
+    await fin.creditWallet({ client, userId: cust.id, amount: amountNum, reference, fromAccount: 'AGENT_BALANCE', description: 'Agent cash-in' });
     await client.query('UPDATE agents SET balance = balance - $1 WHERE id = $2', [amountNum, agent.id]);
     await client.query(
       `INSERT INTO agent_transactions (agent_id, customer_phone, type, amount, commission, reference, status)
@@ -121,7 +122,7 @@ async function agentCashOut(agentId, customerPhone, amount) {
        VALUES ($1,$2,$3,0,$3,'SUCCESS','CASH_OUT', $4)`,
       [reference, cust.id, amountNum, JSON.stringify({ agent_id: agentId, agent_code: agent.agent_code })]
     );
-    await client.query('UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2', [amountNum, cust.id]);
+    await fin.debitWallet({ client, userId: cust.id, amount: amountNum, reference, toAccount: 'AGENT_BALANCE', description: 'Agent cash-out' });
     await client.query('UPDATE agents SET balance = balance + $1 WHERE id = $2', [amountNum, agent.id]);
     await client.query(
       `INSERT INTO agent_transactions (agent_id, customer_phone, type, amount, commission, reference, status)
@@ -227,8 +228,7 @@ async function processBulkBatch(batchId) {
            VALUES ($1,$2,$3,0,$3,'SUCCESS','BULK_PAYMENT', $4)`,
           [reference, b.user_id, item.amount, JSON.stringify({ recipient: item.recipient_phone, batch_id: batchId })]
         );
-        await client.query('UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2', [item.amount, b.user_id]);
-        await client.query('UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2', [item.amount, recipient.rows[0].id]);
+        await fin.internalTransfer({ client, fromUserId: b.user_id, toUserId: recipient.rows[0].id, amount: Number(item.amount), reference: `NET:${item.id}:TR`, description: 'Bulk transfer' });
         await client.query("UPDATE bulk_payment_items SET status = 'SUCCESS', transaction_id = (SELECT id FROM transactions WHERE reference_id = $1) WHERE id = $2", [reference, item.id]);
         success++;
       } catch (e) {
@@ -360,7 +360,7 @@ async function sendRemittance(senderId, data) {
        VALUES ($1,$2,$3,$4,$5,'SUCCESS','REMITTANCE', $6)`,
       [reference, senderId, amountNum, fee, amountNum + fee, JSON.stringify({ recipient_phone, recipient_country, to_amount: toAmount })]
     );
-    await client.query('UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2', [amountNum + fee, senderId]);
+    await fin.debitWallet({ client, userId: senderId, amount: amountNum + fee, reference, toAccount: 'MNO_CLEARING', description: 'Remittance' });
     await client.query(
       `INSERT INTO remittance_transfers (sender_id, recipient_phone, recipient_name, recipient_country, from_amount, to_amount, exchange_rate, fee, reference, status, pickup_code)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'COMPLETED',$10) RETURNING *`,
@@ -589,7 +589,8 @@ async function awardReferral(referrerId, referredId) {
       `INSERT INTO referral_rewards (referrer_id, referred_id, tier_name, reward_amount, status) VALUES ($1,$2,$3,$4,'PENDING')`,
       [referrerId, referredId, tier.rows.length ? tier.rows[0].name : 'Starter', reward]
     );
-    await client.query('UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2', [reward, referrerId]);
+    const refRef = generateReference('REF');
+    await fin.creditWallet({ client, userId: referrerId, amount: reward, reference: refRef, fromAccount: 'REFERRAL_REWARD', description: 'Referral reward' });
     await client.query('COMMIT');
     await logAudit({ eventType: 'REFERRAL_REWARD', action: 'CREATE', entityType: 'REFERRAL', userId: referrerId, afterData: { referred_id: referredId, reward } });
     return { success: true, reward, tier: tier.rows.length ? tier.rows[0].name : 'Starter' };

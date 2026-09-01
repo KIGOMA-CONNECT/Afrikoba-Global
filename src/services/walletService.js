@@ -216,14 +216,7 @@ async function transferWallet(fromUserId, toPhoneNumber, amount, note) {
       [referenceId, fromUserId, amountNum, JSON.stringify({ to_user_id: to.id, note: note || null })]
     );
 
-    await client.query(
-      'UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2',
-      [amountNum, from.id]
-    );
-    await client.query(
-      'UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2',
-      [amountNum, to.id]
-    );
+    await fin.internalTransfer({ client, fromUserId: from.id, toUserId: to.id, amount: amountNum, reference: referenceId, description: note || 'Uhamisho wa wallet' });
     await client.query(
       `INSERT INTO wallet_ledger (transaction_id, reference_id, from_user_id, to_user_id, amount, description)
        VALUES ($1, $2, $3, $4, $5, $6)`,

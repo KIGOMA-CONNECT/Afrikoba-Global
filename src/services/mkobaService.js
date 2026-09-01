@@ -4,6 +4,7 @@ const { generateReference, formatMoney, toInternationalFormat } = require('../ut
 const { sendSMS } = require('./smsService');
 const { logAudit } = require('./auditService');
 const logger = require('../utils/logger');
+const fin = require('./financialEngine');
 
 // ==========================================
 // GROUP CONSTITUTION / RULES
@@ -88,11 +89,11 @@ async function buyShares(userId, groupId, sharesCount) {
     await client.query('BEGIN');
 
     const memberRes = await client.query(
-      `SELECT vm.*, u.wallet_balance, u.phone_number, u.full_name
+      `SELECT vm.*, u.phone_number, u.full_name
        FROM vicoba_members vm
        JOIN users u ON u.id = vm.user_id
        WHERE vm.group_id = $1 AND vm.user_id = $2
-       FOR UPDATE OF u, vm`,
+       FOR UPDATE OF vm`,
       [groupId, userId]
     );
     if (memberRes.rows.length === 0) {
@@ -105,18 +106,14 @@ async function buyShares(userId, groupId, sharesCount) {
     }
 
     const cost = count * rules.share_price;
-    if (Number(member.wallet_balance) < cost) {
-      throw Object.assign(new Error(`Salio la wallet halitoshi. Unahitaji TSh ${formatMoney(cost)} kwa hisa ${count}.`), { statusCode: 400 });
-    }
 
-    await client.query('UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2', [cost, userId]);
-    await client.query('UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance + $1 WHERE id = $2', [cost, groupId]);
+    const referenceId = generateReference('VS');
+    await fin.walletToGroup({ client, userId, groupId, groupAccount: 'VICOBA_GROUP', groupSql: 'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance + $1 WHERE id = $2', amount: cost, reference: `${referenceId}:WG`, description: 'VICOBA Share Purchase' });
     await client.query(
       'UPDATE vicoba_members SET total_shares = total_shares + $1, share_capital = share_capital + $2 WHERE group_id = $3 AND user_id = $4',
       [count, cost, groupId, userId]
     );
 
-    const referenceId = generateReference('VS');
     const txRes = await client.query(
       `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
        VALUES ($1, $2, $3, 0, $3, 'SUCCESS', 'VICOBA_SHARE', $4)
@@ -298,12 +295,9 @@ async function approveProfitDistribution(distributionId, approverUserId) {
     );
 
     for (const payout of payouts.rows) {
-      await client.query(
-        'UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2',
-        [payout.dividend_amount, payout.user_id]
-      );
-
       const referenceId = generateReference('PD');
+      await fin.groupToWallet({ client, userId: payout.user_id, groupId: dist.group_id, groupAccount: 'VICOBA_GROUP', amount: Number(payout.dividend_amount), reference: `${referenceId}:GW`, description: 'VICOBA Profit Payout' });
+
       await client.query(
         `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
          VALUES ($1, $2, $3, 0, $3, 'SUCCESS', 'VICOBA_PROFIT_PAYOUT', $4)`,
@@ -484,16 +478,8 @@ async function approveTransfer(approverUserId, transferId, { approved, note }) {
       throw Object.assign(new Error('Salio la kikundi halitoshi kwa uhamisho huu.'), { statusCode: 400 });
     }
 
-    await client.query(
-      'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance - $1 WHERE id = $2',
-      [transfer.amount, transfer.group_id]
-    );
-
     if (transfer.recipient_type === 'MEMBER' && transfer.recipient_user_id) {
-      await client.query(
-        'UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2',
-        [transfer.amount, transfer.recipient_user_id]
-      );
+      await fin.groupToWallet({ client, userId: transfer.recipient_user_id, groupId: transfer.group_id, groupAccount: 'VICOBA_GROUP', groupSql: 'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance - $1 WHERE id = $2', amount: transfer.amount, reference: `${transfer.reference_id}:GW`, description: 'VICOBA Fund Transfer to Member' });
 
       const recipient = await client.query('SELECT full_name, phone_number FROM users WHERE id = $1', [transfer.recipient_user_id]);
       const refId = generateReference('TW');
@@ -507,6 +493,20 @@ async function approveTransfer(approverUserId, transferId, { approved, note }) {
       if (recipient.rows.length > 0) {
         await sendSMS(recipient.rows[0].phone_number, `Habari ${recipient.rows[0].full_name}, umepokea TSh ${formatMoney(transfer.amount)} kutoka kikundi.`);
       }
+    } else {
+      await fin.postJournal({
+        client,
+        lines: [
+          { accountCode: 'VICOBA_GROUP', direction: 'DR', amount: Number(transfer.amount) },
+          { accountCode: 'SUSPENSE', direction: 'CR', amount: Number(transfer.amount) },
+        ],
+        referenceId: `${transfer.reference_id}:GW`,
+        description: 'VICOBA Fund Transfer (external)',
+      });
+      await client.query(
+        'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance - $1 WHERE id = $2',
+        [transfer.amount, transfer.group_id]
+      );
     }
 
     await client.query(
@@ -567,6 +567,16 @@ async function processCrossNetworkTopUp(groupId, userId, { amount, provider, ext
     );
     if (memberRes.rows.length === 0) throw Object.assign(new Error('Hauko kwenye kikundi hiki.'), { statusCode: 403 });
 
+    const referenceId = generateReference('CN');
+    await fin.postJournal({
+      client,
+      lines: [
+        { accountCode: 'MNO_CLEARING', direction: 'DR', amount: amountNum },
+        { accountCode: 'VICOBA_GROUP', direction: 'CR', amount: amountNum },
+      ],
+      referenceId: `${referenceId}:GTOP`,
+      description: 'Cross-network Group Top-up',
+    });
     await client.query(
       'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance + $1 WHERE id = $2',
       [amountNum, groupId]
@@ -577,7 +587,6 @@ async function processCrossNetworkTopUp(groupId, userId, { amount, provider, ext
       [amountNum, groupId, userId]
     );
 
-    const referenceId = generateReference('CN');
     await client.query(
       `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
        VALUES ($1, $2, $3, 0, $3, 'SUCCESS', 'VICOBA_SHARE', $4)`,

@@ -5,6 +5,7 @@ const { sendSMS } = require('./smsService');
 const { triggerPayout } = require('./azampayService');
 const { logAudit } = require('./auditService');
 const logger = require('../utils/logger');
+const fin = require('./financialEngine');
 
 async function createPool(userId, { poolName, contributionAmount, cycleFrequency, totalMembers, poolType }) {
   if (parseInt(totalMembers, 10) < 3) {
@@ -87,14 +88,12 @@ async function joinPool(userId, poolId, opts = {}) {
       if (Number(user.wallet_balance) < collateral) {
         throw Object.assign(new Error(`Unahitaji Locked Collateral ya ${formatMoney(collateral)} kwenye wallet kupata namba hii.`), { statusCode: 400 });
       }
-      await client.query(
-        'UPDATE users SET wallet_balance = wallet_balance - $1, locked_balance = locked_balance + $1 WHERE id = $2',
-        [collateral, userId]
-      );
+      const lockRef = generateReference('RL');
+      await fin.lockWallet({ client, userId, amount: collateral, reference: `${lockRef}:LK`, description: 'ROSCA Locked Collateral' });
       await client.query(
         `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
          VALUES ($1, $2, $3, 0, $3, 'SUCCESS', 'ROSCA_LOCK', $4)`,
-        [generateReference('RL'), userId, collateral, JSON.stringify({ pool_id: poolId, queue_number: queueNumber })]
+        [lockRef, userId, collateral, JSON.stringify({ pool_id: poolId, queue_number: queueNumber })]
       );
     }
 
@@ -218,24 +217,30 @@ async function disburseDuePayouts() {
       }
 
       for (const member of contributors.rows) {
-        await client.query(
-          'UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2',
-          [sched.contribution_amount, member.user_id]
-        );
+        const memberRef = `${referenceId}:RC:${member.user_id}`;
+        await fin.debitWallet({ client, userId: member.user_id, amount: sched.contribution_amount, reference: memberRef, toAccount: 'ROSICA_POOL', description: 'ROSCA Contribution' });
         await client.query(
           `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
            VALUES ($1, $2, $3, 0, $3, 'SUCCESS', 'ROSCA_CONTRIBUTION', $4)`,
-          [generateReference('RC'), member.user_id, sched.contribution_amount, JSON.stringify({ pool_id: sched.pool_id, cycle_number: sched.cycle_number })]
+          [memberRef, member.user_id, sched.contribution_amount, JSON.stringify({ pool_id: sched.pool_id, cycle_number: sched.cycle_number })]
         );
         collected.push(member.user_id);
       }
 
       const netPayout = Math.round((sched.total_payout_amount - sched.comm_amount) * 100) / 100;
 
-      await client.query(
-        'UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2',
-        [netPayout, sched.recipient_user_id]
-      );
+      await fin.groupToWallet({ client, userId: sched.recipient_user_id, groupId: sched.pool_id, groupAccount: 'ROSICA_POOL', amount: netPayout, reference: `${referenceId}:PO`, description: 'ROSCA Payout' });
+      if (sched.comm_amount > 0) {
+        await fin.postJournal({
+          client,
+          lines: [
+            { accountCode: 'ROSICA_POOL', direction: 'DR', amount: Number(sched.comm_amount) },
+            { accountCode: 'PLATFORM_FEES', direction: 'CR', amount: Number(sched.comm_amount) },
+          ],
+          referenceId: `${referenceId}:CM`,
+          description: 'ROSCA Commission',
+        });
+      }
       await client.query(
         `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
          VALUES ($1, $2, $3, $4, $3, 'SUCCESS', 'ROSCA_PAYOUT', $5)`,

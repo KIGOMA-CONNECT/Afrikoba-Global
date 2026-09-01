@@ -2,6 +2,7 @@ const pool = require('../config/db');
 const { createNotification } = require('./notificationService');
 const logger = require('../utils/logger');
 const crypto = require('crypto');
+const fin = require('../services/financialEngine');
 
 /**
  * Referral system — users invite friends, earn rewards on first deposit.
@@ -98,10 +99,24 @@ async function rewardReferral(userId) {
   if (totalDeposited < minDeposit) return null;
 
   // Credit referrer
-  await pool.query(
-    'UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2',
-    [rewardAmount, referral.referrer_user_id]
-  );
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await fin.creditWallet({
+      client,
+      userId: referral.referrer_user_id,
+      amount: Number(rewardAmount),
+      reference: `REF:${referral.id}:CR`,
+      fromAccount: 'REFERRAL_REWARD',
+      description: `Referral reward for referring user ${userId}`,
+    });
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
 
   // Create transaction
   await pool.query(

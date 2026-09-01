@@ -1,4 +1,5 @@
 const pool = require('../config/db');
+const fin = require('../services/financialEngine');
 const logger = require('../utils/logger');
 
 const sessions = new Map();
@@ -188,8 +189,7 @@ async function handleUssd(sessionId, phoneNumber, text) {
             let ref = 'USSD-';
             for (let i = 0; i < 8; i++) ref += chars[Math.floor(Math.random() * chars.length)];
 
-            await client.query('UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2', [session.data.amount, u.id]);
-            await client.query('UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2', [session.data.amount, session.data.toUserId]);
+            await fin.internalTransfer({ client, fromUserId: u.id, toUserId: session.data.toUserId, amount: session.data.amount, reference: ref, description: 'USSD Transfer' });
 
             await client.query(
               `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)

@@ -10,6 +10,7 @@ const { transferWallet } = require('./walletService');
 const { generateReference, formatMoney } = require('../utils/helpers');
 const { logAudit } = require('./auditService');
 const logger = require('../utils/logger');
+const fin = require('./financialEngine');
 
 // ------------------------------------------------------------------
 // Helpers
@@ -82,9 +83,7 @@ async function fundBusiness(businessId, ownerId, amount) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const u = await client.query('SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE', [ownerId]);
-    if (Number(u.rows[0].wallet_balance) < amountNum) throw Object.assign(new Error('Salio lako halitoshi.'), { statusCode: 400 });
-    await client.query('UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2', [amountNum, ownerId]);
+    await fin.debitWallet({ client, userId: ownerId, amount: amountNum, reference: generateReference('BIZFUND'), toAccount: 'PLATFORM_FEES', description: 'Business wallet top-up' });
     await client.query('UPDATE business_accounts SET balance = balance + $1 WHERE id = $2', [amountNum, businessId]);
     await logTx(client, ownerId, amountNum, 'DEPOSIT', { feature: 'business_fund', business_id: businessId });
     await client.query('COMMIT');
@@ -102,7 +101,7 @@ async function businessToWallet(businessId, ownerId, amount) {
     const b = await client.query('SELECT balance FROM business_accounts WHERE id = $1 FOR UPDATE', [businessId]);
     if (Number(b.rows[0].balance) < amountNum) throw Object.assign(new Error('Salio la biashara halitoshi.'), { statusCode: 400 });
     await client.query('UPDATE business_accounts SET balance = balance - $1 WHERE id = $2', [amountNum, businessId]);
-    await client.query('UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2', [amountNum, ownerId]);
+    await fin.creditWallet({ client, userId: ownerId, amount: amountNum, reference: generateReference('BIZOUT'), fromAccount: 'PLATFORM_FEES', description: 'Business withdraw to wallet' });
     await logTx(client, ownerId, amountNum, 'WITHDRAWAL', { feature: 'business_withdraw', business_id: businessId });
     await client.query('COMMIT');
     return { success: true, amount: amountNum, message: 'Fedha zimetolewa kwenye wallet yako.' };
@@ -141,9 +140,7 @@ async function payPaymentLink(reference, payerUserId) {
     const link = await client.query("SELECT * FROM payment_links WHERE reference = $1 AND status = 'ACTIVE' FOR UPDATE", [reference]);
     if (!link.rows.length) throw Object.assign(new Error('Kiungo hakipatikani au hakitumiki.'), { statusCode: 404 });
     const l = link.rows[0];
-    const payer = await client.query('SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE', [payerUserId]);
-    if (Number(payer.rows[0].wallet_balance) < Number(l.amount)) throw Object.assign(new Error('Salio lako halitoshi.'), { statusCode: 400 });
-    await client.query('UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2', [l.amount, payerUserId]);
+    await fin.debitWallet({ client, userId: payerUserId, amount: l.amount, reference: `BIZLINK:${l.reference}:PAID`, toAccount: 'PLATFORM_FEES', description: 'Payment link payment' });
     await client.query('UPDATE business_accounts SET balance = balance + $1 WHERE id = $2', [l.amount, l.business_id]);
     await client.query("UPDATE payment_links SET status = 'PAID', payer_user_id = $1, paid_amount = $2, paid_at = NOW() WHERE id = $3", [payerUserId, l.amount, l.id]);
     await logTx(client, payerUserId, Number(l.amount), 'TRANSFER', { feature: 'payment_link', payment_link: l.reference, business_id: l.business_id });
@@ -200,9 +197,7 @@ async function payInvoice(invoiceId, payerUserId) {
     const inv = await client.query("SELECT * FROM business_invoices WHERE id = $1 AND status = 'PENDING' FOR UPDATE", [invoiceId]);
     if (!inv.rows.length) throw Object.assign(new Error('Ankara haipatikani au imelipwa.'), { statusCode: 404 });
     const i = inv.rows[0];
-    const payer = await client.query('SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE', [payerUserId]);
-    if (Number(payer.rows[0].wallet_balance) < Number(i.total_amount)) throw Object.assign(new Error('Salio lako halitoshi.'), { statusCode: 400 });
-    await client.query('UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2', [i.total_amount, payerUserId]);
+    await fin.debitWallet({ client, userId: payerUserId, amount: i.total_amount, reference: `BIZINV:${i.invoice_number}:PAID`, toAccount: 'PLATFORM_FEES', description: 'Invoice payment' });
     await client.query('UPDATE business_accounts SET balance = balance + $1 WHERE id = $2', [i.total_amount, i.business_id]);
     await client.query("UPDATE business_invoices SET status = 'PAID', paid_at = NOW() WHERE id = $1", [invoiceId]);
     await logTx(client, payerUserId, Number(i.total_amount), 'TRANSFER', { feature: 'invoice', invoice_number: i.invoice_number, business_id: i.business_id });
@@ -277,7 +272,7 @@ async function runPayroll(businessId, ownerId, period, employees) {
     for (const e of employees) {
       const emp = await client.query('SELECT id FROM users WHERE phone_number = $1', [e.phone.trim()]);
       if (!emp.rows.length) { failed++; continue; }
-      await client.query('UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2', [e.amount, emp.rows[0].id]);
+      await fin.creditWallet({ client, userId: emp.rows[0].id, amount: e.amount, reference: `BIZPAYROLL:${run.rows[0].id}:${e.phone}`, fromAccount: 'PLATFORM_FEES', description: 'Payroll payment' });
       await client.query(
         `INSERT INTO payroll_items (payroll_run_id, employee_phone, employee_name, amount, status) VALUES ($1,$2,$3,$4,'PROCESSED')`,
         [run.rows[0].id, e.phone, e.name || emp.rows[0].id, Number(e.amount)]

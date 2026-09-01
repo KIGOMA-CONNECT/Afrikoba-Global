@@ -1,6 +1,7 @@
 const pool = require('../config/db');
 const { createAppError } = require('../utils/errorCodes');
 const { tr } = require('../i18n');
+const fin = require('../services/financialEngine');
 
 /**
  * Unified multi-currency service.
@@ -211,13 +212,14 @@ async function convertHolding(userId, fromCurrency, toCurrency, amount) {
   try {
     await client.query('BEGIN');
 
+    const fxRef = 'FX-' + require('crypto').randomBytes(4).toString('hex').toUpperCase();
     // Debit source
     if (from === 'TZS') {
       const u = await client.query('SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE', [userId]);
       if (Number(u.rows[0].wallet_balance) < amountNum) {
         throw createAppError('WALLET_INSUFFICIENT_FUNDS');
       }
-      await client.query('UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2', [amountNum, userId]);
+      await fin.debitWallet({ client, userId, amount: amountNum, reference: fxRef + ':DR', toAccount: 'SUSPENSE', description: 'Currency conversion debit' });
     } else {
       const debit = await client.query(
         'SELECT balance FROM user_balances WHERE user_id = $1 AND currency_code = $2 FOR UPDATE',
@@ -234,7 +236,7 @@ async function convertHolding(userId, fromCurrency, toCurrency, amount) {
 
     // Credit destination
     if (to === 'TZS') {
-      await client.query('UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2', [converted, userId]);
+      await fin.creditWallet({ client, userId, amount: converted, reference: fxRef + ':CR', fromAccount: 'SUSPENSE', description: 'Currency conversion credit' });
     } else {
       await client.query(
         `INSERT INTO user_balances (user_id, currency_code, balance) VALUES ($1,$2,$3)
@@ -247,7 +249,7 @@ async function convertHolding(userId, fromCurrency, toCurrency, amount) {
       `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, currency_code, fx_rate, fx_base_currency, status, type, meta)
        VALUES ($1, $2, $3, 0, $3, $4, $5, $6, 'SUCCESS', 'CURRENCY_CONVERT', $7)`,
       [
-        'FX-' + require('crypto').randomBytes(4).toString('hex').toUpperCase(),
+        fxRef,
         userId,
         amountNum,
         from,

@@ -5,6 +5,7 @@
 
 const pool = require('../config/db');
 const logger = require('../utils/logger');
+const fin = require('../services/financialEngine');
 
 async function processYieldPayouts() {
   logger.info('YIELD', 'Starting automated yield payout job...');
@@ -22,10 +23,14 @@ async function processYieldPayouts() {
 
     for (const inv of dueInvestments.rows) {
       // 1. Credit user wallet
-      await client.query(
-        'UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2',
-        [inv.monthly_payout_amount, inv.user_id]
-      );
+      await fin.creditWallet({
+        client,
+        userId: inv.user_id,
+        amount: Number(inv.monthly_payout_amount),
+        reference: `YIELD:${inv.id}:CR`,
+        fromAccount: 'YIELD_LIABILITY',
+        description: 'Yield interest payout',
+      });
 
       // 2. Log payout
       await client.query(

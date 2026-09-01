@@ -6,6 +6,7 @@ const currencyService = require('./currencyService');
 const { generateReference, formatMoney } = require('../utils/helpers');
 const { logAudit } = require('./auditService');
 const logger = require('../utils/logger');
+const fin = require('../services/financialEngine');
 
 // ====================================================================
 // G1: FAMILY / SHARED WALLETS
@@ -84,8 +85,8 @@ async function familyContribute(walletId, userId, amount) {
     await client.query('BEGIN');
     const sender = await client.query('SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE', [userId]);
     if (Number(sender.rows[0].wallet_balance) < amountNum) throw Object.assign(new Error('Salio lako halitoshi.'), { statusCode: 400 });
-    await client.query('UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2', [amountNum, userId]);
-    await client.query('UPDATE family_wallets SET balance = balance + $1 WHERE id = $2', [amountNum, walletId]);
+    const fcRef = generateReference('FC');
+    await fin.walletToGroup({ client, userId, groupId: walletId, groupAccount: 'FAMILY_WALLET', groupSql: 'UPDATE family_wallets SET balance = balance + $1 WHERE id = $2', amount: amountNum, reference: fcRef, description: 'Mchango wa familia' });
     await client.query(
       `INSERT INTO family_wallet_transactions (wallet_id, actor_user_id, amount, type, description) VALUES ($1,$2,$3,'CONTRIBUTION',$4)`,
       [walletId, userId, amountNum, 'Mchango wa familia']
@@ -125,10 +126,10 @@ async function familyTransfer(walletId, userId, toPhone, amount) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    await client.query('UPDATE family_wallets SET balance = balance - $1 WHERE id = $2', [amountNum, walletId]);
     const to = await client.query('SELECT id, wallet_balance, full_name, phone_number FROM users WHERE phone_number = $1 FOR UPDATE', [toPhone.trim()]);
     if (!to.rows.length) throw Object.assign(new Error('Mpokeaji hajapatikana.'), { statusCode: 404 });
-    await client.query('UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2', [amountNum, to.rows[0].id]);
+    const ftRef = generateReference('FT');
+    await fin.groupToWallet({ client, userId: to.rows[0].id, groupId: walletId, groupAccount: 'FAMILY_WALLET', groupSql: 'UPDATE family_wallets SET balance = balance - $1 WHERE id = $2', amount: amountNum, reference: ftRef, description: `Tuma kwa ${toPhone}` });
     await client.query(
       `INSERT INTO family_wallet_transactions (wallet_id, actor_user_id, counterparty_user_id, amount, type, description) VALUES ($1,$2,$3,$4,'TRANSFER_OUT',$5)`,
       [walletId, userId, to.rows[0].id, amountNum, `Tuma kwa ${toPhone}`]
@@ -166,7 +167,8 @@ async function topUpCurrency(userId, currency, amount) {
     await client.query('BEGIN');
     const u = await client.query('SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE', [userId]);
     if (Number(u.rows[0].wallet_balance) < tzsCost) throw Object.assign(new Error(`Salio la TZS halitoshi (unahitaji ${formatMoney(tzsCost)}).`), { statusCode: 400 });
-    await client.query('UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2', [tzsCost, userId]);
+    const ctRef = generateReference('CT');
+    await fin.debitWallet({ client, userId, amount: tzsCost, reference: ctRef, toAccount: 'PLATFORM_FEES', description: 'Currency top-up' });
     await client.query(
       `INSERT INTO user_balances (user_id, currency_code, balance) VALUES ($1,$2,$3)
        ON CONFLICT (user_id, currency_code) DO UPDATE SET balance = user_balances.balance + $3`,
@@ -391,7 +393,8 @@ async function processRoundUps(userId) {
       if (spare <= 0) continue;
       const u = await client.query('SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE', [userId]);
       if (Number(u.rows[0].wallet_balance) < spare) continue;
-      await client.query('UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2', [spare, userId]);
+      const ruRef = generateReference('RU');
+      await fin.debitWallet({ client, userId, amount: spare, reference: ruRef, toAccount: 'SUSPENSE', description: 'Round-up savings' });
       totalRound += spare;
       await client.query('INSERT INTO roundup_log (user_id, transaction_id, rounded_amount) VALUES ($1,$2,$3)', [userId, t.id, spare]);
       if (r.savings_goal_id) {

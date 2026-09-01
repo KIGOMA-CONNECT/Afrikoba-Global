@@ -12,6 +12,7 @@ const https = require('https');
 const { generateReference, formatMoney } = require('../utils/helpers');
 const { logAudit } = require('./auditService');
 const logger = require('../utils/logger');
+const fin = require('../services/financialEngine');
 
 function computeSignature(secret, timestampSec, body) {
   return crypto.createHmac('sha256', secret).update(`${timestampSec}\n${body}`).digest('hex');
@@ -194,7 +195,14 @@ async function processPayout(partner, payload) {
       throw badge('Mteja hapatikani kwenye mfumo.', 404);
     }
     await client.query('UPDATE partners SET balance = balance - $1, monthly_volume = monthly_volume + $1, updated_at=NOW() WHERE id=$2', [amountNum, partner.id]);
-    await client.query('UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id=$2', [amountNum, u.rows[0].id]);
+    await fin.creditWallet({
+      client,
+      userId: u.rows[0].id,
+      amount: Number(amountNum),
+      reference: `BP:${request_id}:CR`,
+      fromAccount: 'PARTNER_BALANCE',
+      description: `Partner payout ${reference}`,
+    });
     await logTx(client, u.rows[0].id, amountNum, 'PARTNER_PAYOUT', { partner_id: partner.id, partner_name: partner.name, reference });
     await logPartnerTxn(partner.id, 'PAYOUT', amountNum, reference, request_id, phone, 'COMPLETED');
     const after = await client.query('SELECT balance, monthly_volume FROM partners WHERE id=$1', [partner.id]);

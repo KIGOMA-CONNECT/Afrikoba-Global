@@ -9,6 +9,7 @@ const pool = require('../config/db');
 const { generateReference, formatMoney } = require('../utils/helpers');
 const { logAudit } = require('./auditService');
 const logger = require('../utils/logger');
+const fin = require('./financialEngine');
 
 function round2(n) {
   return Math.round((Number(n) + Number.EPSILON) * 100) / 100;
@@ -73,9 +74,7 @@ async function contributeGoal(userId, goalId, amount) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const u = await client.query('SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE', [userId]);
-    if (Number(u.rows[0].wallet_balance) < amountNum) throw badge('Salio lako halitoshi.', 400);
-    await client.query('UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2', [amountNum, userId]);
+    await fin.debitWallet({ client, userId, amount: amountNum, reference: generateReference('SCGOAL'), toAccount: 'SUSPENSE', description: 'Savings goal contribution' });
     const newAmount = round2(Number(g.current_amount) + amountNum);
     const completed = newAmount >= Number(g.target_amount);
     await client.query(
@@ -130,7 +129,7 @@ async function runAutoSave(userId) {
       const amountNum = Number(rule.amount);
       const u = await client.query('SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE', [userId]);
       if (Number(u.rows[0].wallet_balance) < amountNum) { skipped += 1; continue; }
-      await client.query('UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2', [amountNum, userId]);
+      await fin.debitWallet({ client, userId, amount: amountNum, reference: generateReference('SCAUTO'), toAccount: 'SUSPENSE', description: 'Auto-save contribution' });
       const newAmount = round2(Number(rule.current_amount) + amountNum);
       const completed = newAmount >= Number(rule.target_amount);
       await client.query(
@@ -172,9 +171,7 @@ async function createFixedDeposit(userId, data) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const u = await client.query('SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE', [userId]);
-    if (Number(u.rows[0].wallet_balance) < amountNum) throw badge('Salio lako halitoshi.', 400);
-    await client.query('UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2', [amountNum, userId]);
+    await fin.debitWallet({ client, userId, amount: amountNum, reference: generateReference('SCFD'), toAccount: 'SUSPENSE', description: 'Fixed deposit booking' });
     const res = await client.query(
       `INSERT INTO fixed_deposits (user_id, amount, term_months, annual_rate, maturity_date)
        VALUES ($1,$2,$3,$4,$5) RETURNING *`,
@@ -231,7 +228,7 @@ async function withdrawFixedDeposit(userId, depositId, data) {
     } else {
       throw badge('Mchango huu haujakomaa bado. Tumia allow_early=true kwa kuondoa mapema (penalty 2%).', 400);
     }
-    await client.query('UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2', [deposit, userId]);
+    await fin.creditWallet({ client, userId, amount: deposit, reference: `SCFD:${depositId}:WITH`, fromAccount: 'SUSPENSE', description: 'Fixed deposit withdrawal' });
     await logTx(client, userId, amountNum, 'FIXED_DEPOSIT', { feature: 'fixed_deposit_withdraw', deposit_id: depositId, matured, penalty });
     if (interest > 0) await logTx(client, userId, interest, 'FIXED_DEPOSIT_INTEREST', { feature: 'fixed_deposit_interest', deposit_id: depositId });
     if (penalty > 0) await logTx(client, userId, penalty, 'FIXED_DEPOSIT_PENALTY', { feature: 'fixed_deposit_penalty', deposit_id: depositId });
@@ -411,7 +408,7 @@ async function respondGuarantor(userId, loanId, accept) {
       await client.query('BEGIN');
       const u = await client.query('SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE', [userId]);
       if (Number(u.rows[0].wallet_balance) < blocked) throw badge('Salio la mdhamini halitoshi kwa dhamana hii.', 400);
-      await client.query('UPDATE users SET wallet_balance = wallet_balance - $1, locked_balance = locked_balance + $1 WHERE id = $2', [blocked, userId]);
+      await fin.lockWallet({ client, userId, amount: blocked, reference: `SCGUAR:${loanId}:${userId}:LOCK`, description: 'Loan guarantee hold' });
       await client.query(`UPDATE loan_guarantors SET status = 'ACCEPTED', decided_at = NOW() WHERE id = $1`, [inv.rows[0].id]);
       await logTx(client, userId, blocked, 'LOAN_GUARANTEE', { feature: 'loan_guarantee', loan_id: loanId });
       await client.query('COMMIT');
@@ -432,7 +429,7 @@ async function releaseGuarantees(client, loanId) {
   );
   for (const g of active.rows) {
     const blocked = Number(g.blocked_amount);
-    await client.query('UPDATE users SET wallet_balance = wallet_balance + $1, locked_balance = locked_balance - $1 WHERE id = $2', [blocked, g.guarantor_id]);
+    await fin.unlockWallet({ client, userId: g.guarantor_id, amount: blocked, reference: `SCGUAR:${loanId}:${g.guarantor_id}:REL`, description: 'Loan guarantee release' });
     await client.query(`UPDATE loan_guarantors SET status = 'RELEASED', released_at = NOW() WHERE id = $1`, [g.id]);
     await logTx(client, g.guarantor_id, blocked, 'LOAN_GUARANTEE_RELEASE', { feature: 'loan_guarantee_release', loan_id: loanId, guarantor_id: g.guarantor_id });
   }
@@ -453,7 +450,7 @@ async function adminDisburseMicroLoan(loanId, adminId) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    await client.query('UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2', [l.amount, l.user_id]);
+    await fin.creditWallet({ client, userId: l.user_id, amount: l.amount, reference: `SCLOAN:${loanId}:DISBURSE`, fromAccount: 'SUSPENSE', description: 'Micro loan disbursement' });
     await client.query(
       `UPDATE micro_loans SET status = 'ACTIVE', due_amount = $1, monthly_installment = $2, disbursed_at = NOW(), updated_at = NOW() WHERE id = $3`,
       [due, installment, loanId]
@@ -494,9 +491,7 @@ async function payInstallment(userId, loanId, installmentId) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const u = await client.query('SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE', [userId]);
-    if (Number(u.rows[0].wallet_balance) < amount) throw badge('Salio lako halitoshi.', 400);
-    await client.query('UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2', [amount, userId]);
+    await fin.debitWallet({ client, userId, amount, reference: `SCLOAN:${loanId}:INST:${installmentId}:PAY`, toAccount: 'SUSPENSE', description: 'Micro loan installment repayment' });
     await client.query(`UPDATE loan_installments SET paid_amount = $1, status = 'PAID', paid_at = NOW() WHERE id = $2`, [amount, installmentId]);
     const paidAmount = round2(Number(l.paid_amount) + amount);
     const status = paidAmount >= Number(l.due_amount) ? 'REPAID' : 'ACTIVE';
@@ -519,9 +514,7 @@ async function payoffLoan(userId, loanId) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const u = await client.query('SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE', [userId]);
-    if (Number(u.rows[0].wallet_balance) < remaining) throw badge('Salio lako halitoshi.', 400);
-    await client.query('UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2', [remaining, userId]);
+    await fin.debitWallet({ client, userId, amount: remaining, reference: `SCLOAN:${loanId}:PAYOFF`, toAccount: 'SUSPENSE', description: 'Micro loan payoff' });
     const waived = await client.query(
       `UPDATE loan_installments SET status = 'WAIVED', paid_at = NOW()
        WHERE loan_id = $1 AND status = 'PENDING' RETURNING id`,

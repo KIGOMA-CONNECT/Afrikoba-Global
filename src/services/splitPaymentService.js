@@ -3,6 +3,7 @@ const config = require('../config');
 const { generateReference, formatMoney } = require('../utils/helpers');
 const { sendSMS } = require('./smsService');
 const logger = require('../utils/logger');
+const fin = require('../services/financialEngine');
 
 /**
  * AUTOMATED SPLIT PAYMENT ENGINE
@@ -58,10 +59,14 @@ async function runSplitPayment(projectId, periodMonth, periodYear) {
     const platformShare = Math.round((totalRevenue - operationalShare - investorShare) * 100) / 100;
 
     // 1. Operational -> wallet ya mjasiriamali
-    await client.query(
-      'UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2',
-      [operationalShare, project.owner_user_id]
-    );
+    await fin.creditWallet({
+      client,
+      userId: project.owner_user_id,
+      amount: Number(operationalShare),
+      reference: `SPLIT:${projectId}:${periodYear}-${periodMonth}:OP`,
+      fromAccount: 'SUSPENSE',
+      description: 'Operational share split payout',
+    });
 
     // 2. Investor Returns -> kwa wawekezaji kulingana na hisa zao
     const investors = await client.query(
@@ -80,10 +85,14 @@ async function runSplitPayment(projectId, periodMonth, periodYear) {
       const shareOfInvestor = Math.round((inv.shares_bought / totalShares) * investorShare * 100) / 100;
       if (shareOfInvestor <= 0) continue;
 
-      await client.query(
-        'UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2',
-        [shareOfInvestor, inv.investor_user_id]
-      );
+      await fin.creditWallet({
+        client,
+        userId: inv.investor_user_id,
+        amount: Number(shareOfInvestor),
+        reference: `SPLIT:${projectId}:${periodYear}-${periodMonth}:INV:${inv.investor_user_id}`,
+        fromAccount: 'SUSPENSE',
+        description: 'Investor return split payout',
+      });
       await client.query(
         `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
          VALUES ($1, $2, $3, 0, $3, 'SUCCESS', 'INVESTMENT_PAYOUT', $4)`,

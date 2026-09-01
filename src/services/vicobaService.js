@@ -5,6 +5,7 @@ const { generateReference, formatMoney, toInternationalFormat } = require('../ut
 const { sendSMS } = require('./smsService');
 const { logAudit } = require('./auditService');
 const logger = require('../utils/logger');
+const fin = require('./financialEngine');
 
 function generateJoinCode() {
   return crypto.randomBytes(4).toString('hex').toUpperCase();
@@ -68,20 +69,16 @@ async function contributeShares(groupId, userId, amount, sharesCount) {
     await client.query('BEGIN');
 
     const memberRes = await client.query(
-      `SELECT vm.*, u.wallet_balance, u.phone_number, u.full_name
+      `SELECT vm.*, u.phone_number, u.full_name
        FROM vicoba_members vm
        JOIN users u ON u.id = vm.user_id
-       WHERE vm.group_id = $1 AND vm.user_id = $2
-       FOR UPDATE OF u`,
+       WHERE vm.group_id = $1 AND vm.user_id = $2`,
       [groupId, userId]
     );
     if (memberRes.rows.length === 0) {
       throw Object.assign(new Error('Hauko kwenye kikundi hiki.'), { statusCode: 403 });
     }
     const member = memberRes.rows[0];
-    if (Number(member.wallet_balance) < amountNum) {
-      throw Object.assign(new Error('Salio la wallet lako halitoshi.'), { statusCode: 400 });
-    }
 
     const referenceId = generateReference('VS');
     const tx = await client.query(
@@ -92,8 +89,7 @@ async function contributeShares(groupId, userId, amount, sharesCount) {
       [referenceId, userId, amountNum, JSON.stringify({ group_id: groupId })]
     );
 
-    await client.query('UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2', [amountNum, userId]);
-    await client.query('UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance + $1 WHERE id = $2', [amountNum, groupId]);
+    await fin.walletToGroup({ client, userId, groupId, groupAccount: 'VICOBA_GROUP', groupSql: 'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance + $1 WHERE id = $2', amount: amountNum, reference: `${referenceId}:WG`, description: 'VICOBA Share Contribution' });
     await client.query(
       `UPDATE vicoba_members SET total_shares = total_shares + $1, contribution_balance = contribution_balance + $2
        WHERE group_id = $3 AND user_id = $4`,
@@ -194,14 +190,7 @@ async function approveLoan(approverUserId, loanId, approvedAmount) {
       [referenceId, ctx.applicant_id, finalAmount, JSON.stringify({ group_id: loan.group_id, loan_id: loanId })]
     );
 
-    await client.query(
-      'UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2',
-      [finalAmount, ctx.applicant_id]
-    );
-    await client.query(
-      'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance - $1 WHERE id = $2',
-      [finalAmount, loan.group_id]
-    );
+    await fin.groupToWallet({ client, userId: ctx.applicant_id, groupId: loan.group_id, groupAccount: 'VICOBA_GROUP', groupSql: 'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance - $1 WHERE id = $2', amount: finalAmount, reference: `${referenceId}:GW`, description: 'VICOBA Loan Disbursement' });
     await client.query(
       'UPDATE vicoba_loan_requests SET status = $1, updated_at = NOW() WHERE id = $2',
       ['DISBURSED', loanId]
@@ -238,6 +227,15 @@ async function chargeMaintenanceFee(groupId) {
       throw new Error('Salio la kikundi halitoshi kulipia ada ya huduma.');
     }
 
+    await fin.postJournal({
+      client,
+      lines: [
+        { accountCode: 'VICOBA_GROUP', direction: 'DR', amount: Number(group.monthly_maintenance_fee) },
+        { accountCode: 'PLATFORM_FEES', direction: 'CR', amount: Number(group.monthly_maintenance_fee) },
+      ],
+      referenceId: `MF:${groupId}`,
+      description: 'VICOBA Maintenance Fee',
+    });
     await client.query(
       'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance - $1 WHERE id = $2',
       [group.monthly_maintenance_fee, groupId]
@@ -441,19 +439,18 @@ async function payContribution(groupId, userId, cycleNumber, amount, sharesCount
     }
 
     const userRes = await client.query(
-      'SELECT wallet_balance, phone_number, full_name FROM users WHERE id = $1 FOR UPDATE',
+      'SELECT phone_number, full_name FROM users WHERE id = $1',
       [userId]
     );
     const user = userRes.rows[0];
     const totalDeduct = amountNum + penaltyAmount;
-    if (Number(user.wallet_balance) < totalDeduct) {
-      throw Object.assign(new Error(`Salio la wallet halitoshi. Unahitaji TSh ${formatMoney(totalDeduct)} (hisa + faini)`), { statusCode: 400 });
-    }
-
-    await client.query('UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2', [totalDeduct, userId]);
-    await client.query('UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance + $1 WHERE id = $2', [amountNum, groupId]);
 
     const referenceId = generateReference('VC');
+    await fin.walletToGroup({ client, userId, groupId, groupAccount: 'VICOBA_GROUP', groupSql: 'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance + $1 WHERE id = $2', amount: amountNum, reference: `${referenceId}:WG`, description: 'VICOBA Contribution' });
+    if (penaltyAmount > 0) {
+      await fin.debitWallet({ client, userId, amount: penaltyAmount, reference: `${referenceId}:DR`, toAccount: 'PLATFORM_FEES', description: 'VICOBA Late Penalty' });
+    }
+
     const tx = await client.query(
       `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
        VALUES ($1, $2, $3, 0, $3, 'SUCCESS', 'VICOBA_SHARE', $4)
@@ -563,16 +560,13 @@ async function payPenalty(userId, penaltyId) {
       throw Object.assign(new Error('Faini tayari imelipwa.'), { statusCode: 400 });
     }
 
-    const userRes = await client.query('SELECT wallet_balance, phone_number, full_name FROM users WHERE id = $1 FOR UPDATE', [userId]);
+    const userRes = await client.query('SELECT phone_number, full_name FROM users WHERE id = $1', [userId]);
     const user = userRes.rows[0];
-    if (Number(user.wallet_balance) < penalty.amount) {
-      throw Object.assign(new Error('Salio la wallet halitoshi kulipa faini.'), { statusCode: 400 });
-    }
-
-    await client.query('UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2', [penalty.amount, userId]);
-    await client.query("UPDATE vicoba_penalties SET status = 'PAID', paid_at = NOW() WHERE id = $1", [penaltyId]);
 
     const referenceId = generateReference('VP');
+    await fin.debitWallet({ client, userId, amount: penalty.amount, reference: `${referenceId}:DR`, toAccount: 'PLATFORM_FEES', description: 'VICOBA Penalty Payment' });
+    await client.query("UPDATE vicoba_penalties SET status = 'PAID', paid_at = NOW() WHERE id = $1", [penaltyId]);
+
     await client.query(
       `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
        VALUES ($1, $2, $3, 0, $3, 'SUCCESS', 'VICOBA_PENALTY', $4)`,
@@ -670,20 +664,16 @@ async function contributeSocialFund(groupId, userId, month) {
       throw Object.assign(new Error('Umeshachanga kwa mwezi huu.'), { statusCode: 400 });
     }
 
-    const userRes = await client.query('SELECT wallet_balance, phone_number, full_name FROM users WHERE id = $1 FOR UPDATE', [userId]);
+    const userRes = await client.query('SELECT phone_number, full_name FROM users WHERE id = $1', [userId]);
     const user = userRes.rows[0];
-    if (Number(user.wallet_balance) < fund.monthly_contribution) {
-      throw Object.assign(new Error('Salio la wallet halitoshi.'), { statusCode: 400 });
-    }
 
-    await client.query('UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2', [fund.monthly_contribution, userId]);
-    await client.query('UPDATE vicoba_social_fund SET total_balance = total_balance + $1, total_collected = total_collected + $1 WHERE id = $2', [fund.monthly_contribution, fund.id]);
+    const referenceId = generateReference('SF');
+    await fin.walletToGroup({ client, userId, groupId: fund.id, groupAccount: 'VICOBA_GROUP', groupSql: 'UPDATE vicoba_social_fund SET total_balance = total_balance + $1, total_collected = total_collected + $1 WHERE id = $2', amount: fund.monthly_contribution, reference: `${referenceId}:WG`, description: 'VICOBA Social Fund Contribution' });
     await client.query(
       `UPDATE vicoba_members SET social_fund_balance = social_fund_balance + $1 WHERE group_id = $2 AND user_id = $3`,
       [fund.monthly_contribution, groupId, userId]
     );
 
-    const referenceId = generateReference('SF');
     await client.query(
       `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
        VALUES ($1, $2, $3, 0, $3, 'SUCCESS', 'VICOBA_SOCIAL_FUND', $4)`,
@@ -768,14 +758,9 @@ async function approveSocialFundDisbursement(actorUserId, requestId, approvedAmo
       `UPDATE vicoba_social_fund_requests SET approved_amount = $1, approved_by = $2, status = 'APPROVED', updated_at = NOW() WHERE id = $3`,
       [finalAmount, actorUserId, requestId]
     );
-    await client.query(
-      `UPDATE vicoba_social_fund SET total_balance = total_balance - $1, total_disbursed = total_disbursed + $1 WHERE id = $2`,
-      [finalAmount, request.fund_id]
-    );
-
-    await client.query('UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2', [finalAmount, request.requester_id]);
-
     const referenceId = generateReference('SD');
+    await fin.groupToWallet({ client, userId: request.requester_id, groupId: request.fund_id, groupAccount: 'VICOBA_GROUP', groupSql: 'UPDATE vicoba_social_fund SET total_balance = total_balance - $1, total_disbursed = total_disbursed + $1 WHERE id = $2', amount: finalAmount, reference: `${referenceId}:GW`, description: 'VICOBA Social Fund Disbursement' });
+
     await client.query(
       `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
        VALUES ($1, $2, $3, 0, $3, 'SUCCESS', 'VICOBA_SOCIAL_FUND_DISBURSEMENT', $4)`,
@@ -930,11 +915,8 @@ async function repayLoan(userId, loanId, amount, note) {
       throw Object.assign(new Error('Mkopo haujaondolewa au tayari umelipwa.'), { statusCode: 400 });
     }
 
-    const userRes = await client.query('SELECT wallet_balance, phone_number, full_name FROM users WHERE id = $1 FOR UPDATE', [userId]);
+    const userRes = await client.query('SELECT phone_number, full_name FROM users WHERE id = $1 FOR UPDATE', [userId]);
     const user = userRes.rows[0];
-    if (Number(user.wallet_balance) < amountNum) {
-      throw Object.assign(new Error('Salio la wallet halitoshi.'), { statusCode: 400 });
-    }
 
     // Find next pending installment
     const scheduleRes = await client.query(
@@ -964,12 +946,12 @@ async function repayLoan(userId, loanId, amount, note) {
     }
 
     const totalDeduct = amountNum + penaltyAmount;
-    if (Number(user.wallet_balance) < totalDeduct) {
-      throw Object.assign(new Error(`Salio la wallet halitoshi. Unahitaji TSh ${formatMoney(totalDeduct)} (deni + faini)`), { statusCode: 400 });
-    }
 
-    await client.query('UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2', [totalDeduct, userId]);
-    await client.query('UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance + $1 WHERE id = $2', [amountNum, loan.group_id]);
+    const referenceId = generateReference('LR');
+    await fin.walletToGroup({ client, userId, groupId: loan.group_id, groupAccount: 'VICOBA_GROUP', groupSql: 'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance + $1 WHERE id = $2', amount: amountNum, reference: `${referenceId}:WG`, description: 'VICOBA Loan Repayment' });
+    if (penaltyAmount > 0) {
+      await fin.debitWallet({ client, userId, amount: penaltyAmount, reference: `${referenceId}:DR`, toAccount: 'PLATFORM_FEES', description: 'VICOBA Late Loan Penalty' });
+    }
 
     // Update schedule
     const newPaid = Number(schedule.paid_amount) + amountNum;
@@ -1008,7 +990,6 @@ async function repayLoan(userId, loanId, amount, note) {
       );
     }
 
-    const referenceId = generateReference('LR');
     await client.query(
       `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
        VALUES ($1, $2, $3, 0, $3, 'SUCCESS', 'VICOBA_LOAN_REPAYMENT', $4)`,

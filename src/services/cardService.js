@@ -9,6 +9,7 @@ const pool = require('../config/db');
 const { generateReference } = require('../utils/helpers');
 const { logAudit } = require('./auditService');
 const logger = require('../utils/logger');
+const fin = require('./financialEngine');
 
 function sha256(s) {
   return crypto.createHash('sha256').update(String(s)).digest('hex');
@@ -202,7 +203,7 @@ async function authorizeCard(userId, cardId, data) {
       rc.release();
       throw badge('Salio lako halitoshi.', 400);
     }
-    await client.query('UPDATE users SET wallet_balance = wallet_balance - $1, locked_balance = locked_balance + $1 WHERE id = $2', [amountNum, userId]);
+    await fin.lockWallet({ client, userId, amount: amountNum, reference: `${authRef}:LOCK`, description: 'Card authorization hold' });
     await logCardTx(client, userId, cardId, merchant_name, amountNum, 'AUTH_HOLD', authRef, null);
     const after = await client.query('SELECT wallet_balance, locked_balance FROM users WHERE id = $1', [userId]);
     await client.query('COMMIT');
@@ -227,7 +228,7 @@ async function settleCardAuth(adminId, authReference) {
     );
     if (!tx.rows.length) throw badge('Authorization haipatikani au imeshawekwa.', 404);
     const t = tx.rows[0];
-    await client.query('UPDATE users SET locked_balance = locked_balance - $1 WHERE id = $2', [t.amount, t.user_id]);
+    await fin.captureLock({ client, userId: t.user_id, amount: t.amount, reference: `${authReference}:CAPTURE`, toAccount: 'MNO_CLEARING', description: 'Card settlement' });
     await client.query(`UPDATE card_transactions SET status = 'SETTLED', settled_at = NOW() WHERE id = $1`, [t.id]);
     await client.query('COMMIT');
     await logAudit(adminId, 'CARD_SETTLEMENT', `AUTH ${authReference} imesettle (${t.amount})`).catch(() => {});
@@ -248,7 +249,7 @@ async function refundCardAuth(adminId, authReference) {
     );
     if (!tx.rows.length) throw badge('Authorization haipatikani au imeshawekwa.', 404);
     const t = tx.rows[0];
-    await client.query('UPDATE users SET wallet_balance = wallet_balance + $1, locked_balance = locked_balance - $1 WHERE id = $2', [t.amount, t.user_id]);
+    await fin.unlockWallet({ client, userId: t.user_id, amount: t.amount, reference: `${authReference}:REFUND`, description: 'Card refund' });
     await client.query(`UPDATE card_transactions SET status = 'REFUNDED', settled_at = NOW() WHERE id = $1`, [t.id]);
     await client.query('COMMIT');
     await logAudit(adminId, 'CARD_REFUND', `AUTH ${authReference} imerefund (${t.amount})`).catch(() => {});

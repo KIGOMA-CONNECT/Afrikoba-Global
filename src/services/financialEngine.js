@@ -420,6 +420,264 @@ async function recordException({ type, reference, transactionId, detail = {} }) 
   }
 }
 
+/* ============================================================================
+ * TRANSACTION-AWARE PRIMITIVES (Phase 7)
+ * These run INSIDE a caller-supplied transaction `client` so a service can
+ * journal its money movement atomically with its own business updates.
+ * Every primitive: claims the reference (idempotent), posts a balanced journal
+ * group against CUSTOMER_WALLET, updates the projection, writes the audit log.
+ * ==========================================================================*/
+
+/**
+ * Credit a user's available wallet balance.
+ *   DR <fromAccount>   CR CUSTOMER_WALLET
+ */
+async function creditWallet({ client, userId, amount, reference, fromAccount = 'SUSPENSE', description = 'Wallet credit', actor = 'engine:credit' }) {
+  const amountN = Number(amount);
+  if (!(amountN > 0)) throw new Error('Invalid amount for credit');
+  const op = await claimOperation({ client, operationType: 'CREDIT', reference, userId, amount: amountN });
+  if (!op.claimed) return { dedup: true, reference };
+
+  const { rows } = await client.query(`SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE`, [userId]);
+  if (rows.length === 0) throw new Error('User not found');
+  const before = Number(rows[0].wallet_balance);
+
+  await postJournal({
+    client,
+    lines: [
+      { accountCode: fromAccount, direction: 'DR', amount: amountN },
+      { accountCode: 'CUSTOMER_WALLET', direction: 'CR', amount: amountN },
+    ],
+    referenceId: reference, description, postedBy: actor,
+  });
+
+  await client.query(`UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2`, [amountN, userId]);
+  await auditBalance({ client, accountKind: 'USER_BALANCE', accountId: userId, operation: 'credit', amount: amountN, balanceBefore: before, balanceAfter: before + amountN, reference, actor });
+  return { success: true, reference, credited: amountN };
+}
+
+/**
+ * Debit a user's available wallet balance (with insufficient-funds guard).
+ *   DR CUSTOMER_WALLET   CR <toAccount>
+ */
+async function debitWallet({ client, userId, amount, reference, toAccount = 'PLATFORM_FEES', description = 'Wallet debit', actor = 'engine:debit' }) {
+  const amountN = Number(amount);
+  if (!(amountN > 0)) throw new Error('Invalid amount for debit');
+  const op = await claimOperation({ client, operationType: 'DEBIT', reference, userId, amount: amountN });
+  if (!op.claimed) return { dedup: true, reference };
+
+  const { rows } = await client.query(`SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE`, [userId]);
+  if (rows.length === 0) throw new Error('User not found');
+  const before = Number(rows[0].wallet_balance);
+  if (before < amountN) {
+    throw Object.assign(new Error('Salio lako halitoshi.'), { statusCode: 400 });
+  }
+
+  await postJournal({
+    client,
+    lines: [
+      { accountCode: 'CUSTOMER_WALLET', direction: 'DR', amount: amountN },
+      { accountCode: toAccount, direction: 'CR', amount: amountN },
+    ],
+    referenceId: reference, description, postedBy: actor,
+  });
+
+  await client.query(`UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2`, [amountN, userId]);
+  await auditBalance({ client, accountKind: 'USER_BALANCE', accountId: userId, operation: 'debit', amount: amountN, balanceBefore: before, balanceAfter: before - amountN, reference, actor });
+  return { success: true, reference, debited: amountN };
+}
+
+/**
+ * Internal transfer between two customer wallets (aggregate-neutral).
+ *   DR CUSTOMER_WALLET (from)   CR CUSTOMER_WALLET (to)
+ */
+async function internalTransfer({ client, fromUserId, toUserId, amount, reference, description = 'Internal transfer', actor = 'engine:transfer' }) {
+  const amountN = Number(amount);
+  const op = await claimOperation({ client, operationType: 'TRANSFER', reference, userId: fromUserId, amount: amountN });
+  if (!op.claimed) return { dedup: true, reference };
+
+  const a = Math.min(fromUserId, toUserId);
+  const b = Math.max(fromUserId, toUserId);
+  for (const id of [a, b]) {
+    await client.query(`SELECT id FROM users WHERE id = $1 FOR UPDATE`, [id]);
+  }
+  const f = await client.query(`SELECT wallet_balance FROM users WHERE id = $1`, [fromUserId]);
+  if (f.rows.length === 0) throw new Error('Sender not found');
+  const fromBefore = Number(f.rows[0].wallet_balance);
+  if (fromBefore < amountN) {
+    throw Object.assign(new Error('Salio lako halitoshi.'), { statusCode: 400 });
+  }
+  const t = await client.query(`SELECT wallet_balance FROM users WHERE id = $1`, [toUserId]);
+  if (t.rows.length === 0) throw new Error('Recipient not found');
+  const toBefore = Number(t.rows[0].wallet_balance);
+
+  await postJournal({
+    client,
+    lines: [
+      { accountCode: 'CUSTOMER_WALLET', direction: 'DR', amount: amountN },
+      { accountCode: 'CUSTOMER_WALLET', direction: 'CR', amount: amountN },
+    ],
+    referenceId: reference, description, postedBy: actor,
+  });
+
+  await client.query(`UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2`, [amountN, fromUserId]);
+  await client.query(`UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2`, [amountN, toUserId]);
+  await auditBalance({ client, accountKind: 'USER_BALANCE', accountId: fromUserId, operation: 'transfer_debit', amount: amountN, balanceBefore: fromBefore, balanceAfter: fromBefore - amountN, reference, actor });
+  await auditBalance({ client, accountKind: 'USER_BALANCE', accountId: toUserId, operation: 'transfer_credit', amount: amountN, balanceBefore: toBefore, balanceAfter: toBefore + amountN, reference, actor });
+  return { success: true, reference, transferred: amountN };
+}
+
+/**
+ * Move funds from a user wallet into a group wallet (e.g. VICOBA contribution).
+ *   DR CUSTOMER_WALLET   CR <groupAccountCode>   [+ users -X, group +Y]
+ */
+async function walletToGroup({ client, userId, groupId, groupAccount = 'VICOBA_GROUP', groupSql, amount, reference, description = 'Wallet to group', actor = 'engine:walletToGroup' }) {
+  const amountN = Number(amount);
+  const op = await claimOperation({ client, operationType: 'WALLET_TO_GROUP', reference, userId, amount: amountN });
+  if (!op.claimed) return { dedup: true, reference };
+
+  const { rows } = await client.query(`SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE`, [userId]);
+  if (rows.length === 0) throw new Error('User not found');
+  const before = Number(rows[0].wallet_balance);
+  if (before < amountN) {
+    throw Object.assign(new Error('Salio lako halitoshi.'), { statusCode: 400 });
+  }
+
+  await postJournal({
+    client,
+    lines: [
+      { accountCode: 'CUSTOMER_WALLET', direction: 'DR', amount: amountN },
+      { accountCode: groupAccount, direction: 'CR', amount: amountN },
+    ],
+    referenceId: reference, description, postedBy: actor,
+  });
+
+  await client.query(`UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2`, [amountN, userId]);
+  if (groupSql) {
+    await client.query(groupSql, [amountN, groupId]);
+  }
+  await auditBalance({ client, accountKind: 'USER_BALANCE', accountId: userId, operation: 'wallet_to_group', amount: amountN, balanceBefore: before, balanceAfter: before - amountN, reference, actor });
+  return { success: true, reference, moved: amountN };
+}
+
+/**
+ * Move funds from a group wallet back to a user wallet (e.g. VICOBA payout).
+ *   DR <groupAccountCode>   CR CUSTOMER_WALLET   [+ group -Y, users +X]
+ */
+async function groupToWallet({ client, userId, groupId, groupAccount = 'VICOBA_GROUP', groupSql, amount, reference, description = 'Group to wallet', actor = 'engine:groupToWallet' }) {
+  const amountN = Number(amount);
+  const op = await claimOperation({ client, operationType: 'GROUP_TO_WALLET', reference, userId, amount: amountN });
+  if (!op.claimed) return { dedup: true, reference };
+
+  const { rows } = await client.query(`SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE`, [userId]);
+  if (rows.length === 0) throw new Error('User not found');
+  const before = Number(rows[0].wallet_balance);
+
+  await postJournal({
+    client,
+    lines: [
+      { accountCode: groupAccount, direction: 'DR', amount: amountN },
+      { accountCode: 'CUSTOMER_WALLET', direction: 'CR', amount: amountN },
+    ],
+    referenceId: reference, description, postedBy: actor,
+  });
+
+  if (groupSql) {
+    await client.query(groupSql, [amountN, groupId]);
+  }
+  await client.query(`UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2`, [amountN, userId]);
+  await auditBalance({ client, accountKind: 'USER_BALANCE', accountId: userId, operation: 'group_to_wallet', amount: amountN, balanceBefore: before, balanceAfter: before + amountN, reference, actor });
+  return { success: true, reference, moved: amountN };
+}
+
+/**
+ * LOCK available funds (available -> locked). In-transaction hold.
+ *   DR <sourceAccount>   CR CARD_HOLD
+ */
+async function lockWallet({ client, userId, amount, reference, sourceAccount = 'CUSTOMER_WALLET', description = 'Lock funds', actor = 'engine:lock' }) {
+  const amountN = Number(amount);
+  const op = await claimOperation({ client, operationType: 'LOCK', reference, userId, amount: amountN });
+  if (!op.claimed) return { dedup: true, reference };
+
+  const { rows } = await client.query(`SELECT wallet_balance, locked_balance FROM users WHERE id = $1 FOR UPDATE`, [userId]);
+  if (rows.length === 0) throw new Error('User not found');
+  const availBefore = Number(rows[0].wallet_balance);
+  const lockedBefore = Number(rows[0].locked_balance);
+  if (availBefore < amountN) {
+    throw Object.assign(new Error('Salio lako halitoshi kwa hold hii.'), { statusCode: 400 });
+  }
+
+  await postJournal({
+    client,
+    lines: [
+      { accountCode: sourceAccount, direction: 'DR', amount: amountN },
+      { accountCode: 'CARD_HOLD', direction: 'CR', amount: amountN },
+    ],
+    referenceId: reference, description, postedBy: actor,
+  });
+
+  await client.query(`UPDATE users SET wallet_balance = wallet_balance - $1, locked_balance = locked_balance + $1 WHERE id = $2`, [amountN, userId]);
+  await auditBalance({ client, accountKind: 'USER_BALANCE', accountId: userId, operation: 'lock', amount: amountN, balanceBefore: availBefore, balanceAfter: availBefore - amountN, reference, actor });
+  await auditBalance({ client, accountKind: 'USER_LOCKED', accountId: userId, operation: 'lock', amount: amountN, balanceBefore: lockedBefore, balanceAfter: lockedBefore + amountN, reference, actor });
+  return { success: true, reference, locked: amountN };
+}
+
+/**
+ * UNLOCK reserved funds (locked -> available). In-transaction release.
+ *   DR CARD_HOLD   CR <sourceAccount>
+ */
+async function unlockWallet({ client, userId, amount, reference, sourceAccount = 'CUSTOMER_WALLET', description = 'Unlock funds', actor = 'engine:unlock' }) {
+  const amountN = Number(amount);
+  const op = await claimOperation({ client, operationType: 'UNLOCK', reference, userId, amount: amountN });
+  if (!op.claimed) return { dedup: true, reference };
+
+  const { rows } = await client.query(`SELECT wallet_balance, locked_balance FROM users WHERE id = $1 FOR UPDATE`, [userId]);
+  if (rows.length === 0) throw new Error('User not found');
+  const availBefore = Number(rows[0].wallet_balance);
+  const lockedBefore = Number(rows[0].locked_balance);
+
+  await postJournal({
+    client,
+    lines: [
+      { accountCode: 'CARD_HOLD', direction: 'DR', amount: amountN },
+      { accountCode: sourceAccount, direction: 'CR', amount: amountN },
+    ],
+    referenceId: reference, description, postedBy: actor,
+  });
+
+  await client.query(`UPDATE users SET wallet_balance = wallet_balance + $1, locked_balance = locked_balance - $1 WHERE id = $2`, [amountN, userId]);
+  await auditBalance({ client, accountKind: 'USER_BALANCE', accountId: userId, operation: 'unlock', amount: amountN, balanceBefore: availBefore, balanceAfter: availBefore + amountN, reference, actor });
+  await auditBalance({ client, accountKind: 'USER_LOCKED', accountId: userId, operation: 'unlock', amount: amountN, balanceBefore: lockedBefore, balanceAfter: lockedBefore - amountN, reference, actor });
+  return { success: true, reference, unlocked: amountN };
+}
+
+/**
+ * CAPTURE locked funds (locked funds permanently leave to MNO/merchant).
+ *   DR CARD_HOLD   CR <toAccount>
+ */
+async function captureLock({ client, userId, amount, reference, toAccount = 'MNO_CLEARING', description = 'Capture locked funds', actor = 'engine:captureLock' }) {
+  const amountN = Number(amount);
+  const op = await claimOperation({ client, operationType: 'CAPTURE', reference, userId, amount: amountN });
+  if (!op.claimed) return { dedup: true, reference };
+
+  const { rows } = await client.query(`SELECT locked_balance FROM users WHERE id = $1 FOR UPDATE`, [userId]);
+  if (rows.length === 0) throw new Error('User not found');
+  const lockedBefore = Number(rows[0].locked_balance);
+
+  await postJournal({
+    client,
+    lines: [
+      { accountCode: 'CARD_HOLD', direction: 'DR', amount: amountN },
+      { accountCode: toAccount, direction: 'CR', amount: amountN },
+    ],
+    referenceId: reference, description, postedBy: actor,
+  });
+
+  await client.query(`UPDATE users SET locked_balance = locked_balance - $1 WHERE id = $2`, [amountN, userId]);
+  await auditBalance({ client, accountKind: 'USER_LOCKED', accountId: userId, operation: 'capture', amount: amountN, balanceBefore: lockedBefore, balanceAfter: lockedBefore - amountN, reference, actor });
+  return { success: true, reference, captured: amountN };
+}
+
 module.exports = {
   postJournal,
   postDeposit,
@@ -427,6 +685,16 @@ module.exports = {
   releaseHold,
   captureHold,
   transfer,
+  creditWallet,
+  debitWallet,
+  internalTransfer,
+  walletToGroup,
+  groupToWallet,
+  lockWallet,
+  unlockWallet,
+  captureLock,
+  claimOperation,
+  auditBalance,
   recordException,
   accountIdByCode,
 };
