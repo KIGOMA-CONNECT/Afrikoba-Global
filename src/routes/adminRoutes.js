@@ -260,6 +260,7 @@ router.post('/api-keys', async (req, res, next) => {
 
 // ===== FINANCIAL RECONCILIATION ENDPOINTS (Phase 5) =====
 const { runBalanceReconciliation, recentRuns } = require('../jobs/balanceReconciliation');
+const { financialHealthSnapshot } = require('../services/financialMonitoring');
 
 // Orodha ya reconciliation runs zilizopita
 router.get('/reconciliation/runs', async (req, res, next) => {
@@ -296,6 +297,17 @@ router.post('/reconciliation/run', async (req, res, next) => {
   try {
     const summary = await runBalanceReconciliation('MANUAL');
     res.json({ success: true, summary });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ===== FINANCIAL HEALTH / MONITORING (Phase 6) =====
+// Muhtasari wa afya ya kifedha: recon difference, open exceptions, aging.
+router.get('/financial/monitoring', async (req, res, next) => {
+  try {
+    const snapshot = await financialHealthSnapshot();
+    res.json({ success: true, ...snapshot });
   } catch (error) {
     next(error);
   }

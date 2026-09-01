@@ -31,6 +31,39 @@ async function accountIdByCode(code, client) {
 }
 
 /**
+ * Atomic idempotency gate using the financial_operations registry.
+ * Attempts to claim the reference; if already present, we dedup.
+ * Runs *inside* the caller's transaction (client must be mid-BEGIN).
+ * Returns { claimed: boolean } - true means this call owns the operation.
+ */
+async function claimOperation({ client, operationType, reference, transactionId = null, userId = null, amount = 0 }) {
+  const r = await client.query(
+    `INSERT INTO financial_operations (operation_type, reference_id, transaction_id, user_id, amount, status, attempts)
+     VALUES ($1,$2,$3,$4,$5,'NEW',1)
+     ON CONFLICT (reference_id) DO NOTHING
+     RETURNING id`,
+    [operationType, reference, transactionId, userId, amount]
+  );
+  return { claimed: r.rows.length > 0 };
+}
+
+/**
+ * Write a financial audit row describing one projection-balance mutation.
+ */
+async function auditBalance({ client, accountKind, accountId, operation, amount, balanceBefore, balanceAfter, reference, actor = 'engine' }) {
+  try {
+    await client.query(
+      `INSERT INTO financial_audit_log
+         (account_kind, account_id, operation, amount, balance_before, balance_after, reference_id, actor)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [accountKind, accountId, operation, amount, balanceBefore, balanceAfter, reference, actor]
+    );
+  } catch (e) {
+    logger.error('FIN_AUDIT', `audit write failed for ${reference}: ${e.message}`);
+  }
+}
+
+/**
  * Post a balanced journal entry group.
  * @param {object} opts
  * @param pg client    - transactional client
@@ -87,15 +120,19 @@ async function postDeposit({ userId, amount, commission, reference, externalTxId
   try {
     await client.query('BEGIN');
 
-    // Hard idempotency: a reference that already has a journal group is a retry.
-    const gp = await guardAgainstDuplicate(reference, client);
-    if (gp.dedup) {
+    const amountN = Number(amount);
+    const commissionN = Number(commission || 0);
+
+    // Hard idempotency: claim the reference atomically. A retried reference
+    // returns nothing to post and is reported as a duplicate.
+    const op = await claimOperation({
+      client, operationType: 'DEPOSIT', reference,
+      transactionId: null, userId, amount: amountN,
+    });
+    if (!op.claimed) {
       await client.query('ROLLBACK');
       return { dedup: true, reference };
     }
-
-    const amountN = Number(amount);
-    const commissionN = Number(commission || 0);
 
     // Post double-entry journal.
     const journalLines = [
@@ -110,15 +147,22 @@ async function postDeposit({ userId, amount, commission, reference, externalTxId
       description, postedBy: 'engine:deposit'
     });
 
+    const before = await client.query(`SELECT wallet_balance FROM users WHERE id = $1`, [userId]);
+    const beforeBal = Number(before.rows[0].wallet_balance);
+
     await client.query(
       `UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2`,
       [amountN, userId]
     );
-
     await client.query(
       `UPDATE company_revenue SET total_commission = total_commission + $1, updated_at = NOW() WHERE id = 1`,
       [commissionN]
     );
+
+    await auditBalance({ client, accountKind: 'USER_BALANCE', accountId: userId, operation: 'deposit', amount: amountN, balanceBefore: beforeBal, balanceAfter: beforeBal + amountN, reference, actor: 'engine:deposit' });
+    if (commissionN > 0) {
+      await auditBalance({ client, accountKind: 'COMPANY_REVENUE', accountId: 1, operation: 'commission', amount: commissionN, balanceBefore: null, balanceAfter: null, reference, actor: 'engine:deposit' });
+    }
 
     await client.query('COMMIT');
     return { success: true, reference, posted: true };
@@ -141,8 +185,12 @@ async function holdFunds({ userId, amount, accountCode = 'CUSTOMER_WALLET', refe
   try {
     await client.query('BEGIN');
 
-    const gp = await guardAgainstDuplicate(reference, client);
-    if (gp.dedup) {
+    const amountN = Number(amount);
+
+    const op = await claimOperation({
+      client, operationType: 'HOLD', reference, userId, amount: amountN,
+    });
+    if (!op.claimed) {
       await client.query('ROLLBACK');
       return { dedup: true, reference };
     }
@@ -153,7 +201,7 @@ async function holdFunds({ userId, amount, accountCode = 'CUSTOMER_WALLET', refe
     );
     if (rows.length === 0) throw new Error('User not found');
     const avail = Number(rows[0].wallet_balance);
-    const amountN = Number(amount);
+    const lockedBefore = Number(rows[0].locked_balance);
     if (avail < amountN) {
       throw Object.assign(new Error('Salio lako halitoshi kwa hold hii.'), { statusCode: 400 });
     }
@@ -171,6 +219,9 @@ async function holdFunds({ userId, amount, accountCode = 'CUSTOMER_WALLET', refe
       `UPDATE users SET wallet_balance = wallet_balance - $1, locked_balance = locked_balance + $1 WHERE id = $2`,
       [amountN, userId]
     );
+
+    await auditBalance({ client, accountKind: 'USER_BALANCE', accountId: userId, operation: 'hold', amount: amountN, balanceBefore: avail, balanceAfter: avail - amountN, reference, actor: 'engine:hold' });
+    await auditBalance({ client, accountKind: 'USER_LOCKED', accountId: userId, operation: 'hold', amount: amountN, balanceBefore: lockedBefore, balanceAfter: lockedBefore + amountN, reference, actor: 'engine:hold' });
 
     await client.query('COMMIT');
     return { success: true, reference, held: amountN };
@@ -192,28 +243,41 @@ async function releaseHold({ userId, amount, accountCode = 'CUSTOMER_WALLET', re
   try {
     await client.query('BEGIN');
 
-    const gp = await guardAgainstDuplicate(reference, client);
-    if (gp.dedup) {
+    const amountN = Number(amount);
+
+    const op = await claimOperation({
+      client, operationType: 'RELEASE', reference, userId, amount: amountN,
+    });
+    if (!op.claimed) {
       await client.query('ROLLBACK');
       return { dedup: true, reference };
     }
 
+    const { rows } = await client.query(
+      `SELECT wallet_balance, locked_balance FROM users WHERE id = $1 FOR UPDATE`, [userId]
+    );
+    const availBefore = Number(rows[0].wallet_balance);
+    const lockedBefore = Number(rows[0].locked_balance);
+
     await postJournal({
       client,
       lines: [
-        { accountCode: 'CARD_HOLD', direction: 'DR', amount: Number(amount) },
-        { accountCode, direction: 'CR', amount: Number(amount) },
+        { accountCode: 'CARD_HOLD', direction: 'DR', amount: amountN },
+        { accountCode, direction: 'CR', amount: amountN },
       ],
       referenceId: reference, description, postedBy: 'engine:release'
     });
 
     await client.query(
       `UPDATE users SET wallet_balance = wallet_balance + $1, locked_balance = locked_balance - $1 WHERE id = $2`,
-      [Number(amount), userId]
+      [amountN, userId]
     );
 
+    await auditBalance({ client, accountKind: 'USER_BALANCE', accountId: userId, operation: 'release', amount: amountN, balanceBefore: availBefore, balanceAfter: availBefore + amountN, reference, actor: 'engine:release' });
+    await auditBalance({ client, accountKind: 'USER_LOCKED', accountId: userId, operation: 'release', amount: amountN, balanceBefore: lockedBefore, balanceAfter: lockedBefore - amountN, reference, actor: 'engine:release' });
+
     await client.query('COMMIT');
-    return { success: true, reference, released: Number(amount) };
+    return { success: true, reference, released: amountN };
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {});
     logger.error('FIN_ENGINE_RELEASE', error.message, { userId, reference });
@@ -232,28 +296,39 @@ async function captureHold({ userId, amount, accountCode = 'CUSTOMER_WALLET', re
   try {
     await client.query('BEGIN');
 
-    const gp = await guardAgainstDuplicate(reference, client);
-    if (gp.dedup) {
+    const amountN = Number(amount);
+
+    const op = await claimOperation({
+      client, operationType: 'CAPTURE', reference, userId, amount: amountN,
+    });
+    if (!op.claimed) {
       await client.query('ROLLBACK');
       return { dedup: true, reference };
     }
 
+    const { rows } = await client.query(
+      `SELECT locked_balance FROM users WHERE id = $1 FOR UPDATE`, [userId]
+    );
+    const lockedBefore = Number(rows[0].locked_balance);
+
     await postJournal({
       client,
       lines: [
-        { accountCode: 'CARD_HOLD', direction: 'DR', amount: Number(amount) },
-        { accountCode: 'MNO_CLEARING', direction: 'CR', amount: Number(amount) },
+        { accountCode: 'CARD_HOLD', direction: 'DR', amount: amountN },
+        { accountCode: 'MNO_CLEARING', direction: 'CR', amount: amountN },
       ],
       referenceId: reference, description, postedBy: 'engine:capture'
     });
 
     await client.query(
       `UPDATE users SET locked_balance = locked_balance - $1 WHERE id = $2`,
-      [Number(amount), userId]
+      [amountN, userId]
     );
 
+    await auditBalance({ client, accountKind: 'USER_LOCKED', accountId: userId, operation: 'capture', amount: amountN, balanceBefore: lockedBefore, balanceAfter: lockedBefore - amountN, reference, actor: 'engine:capture' });
+
     await client.query('COMMIT');
-    return { success: true, reference, captured: Number(amount) };
+    return { success: true, reference, captured: amountN };
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {});
     logger.error('FIN_ENGINE_CAPTURE', error.message, { userId, reference });
@@ -272,8 +347,12 @@ async function transfer({ fromUserId, toUserId, amount, reference, description =
   try {
     await client.query('BEGIN');
 
-    const gp = await guardAgainstDuplicate(reference, client);
-    if (gp.dedup) {
+    const amountN = Number(amount);
+
+    const op = await claimOperation({
+      client, operationType: 'TRANSFER', reference, userId: fromUserId, amount: amountN,
+    });
+    if (!op.claimed) {
       await client.query('ROLLBACK');
       return { dedup: true, reference };
     }
@@ -287,28 +366,34 @@ async function transfer({ fromUserId, toUserId, amount, reference, description =
     const { rows } = await client.query(
       `SELECT wallet_balance FROM users WHERE id = $1`, [fromUserId]
     );
-    if (Number(rows[0].wallet_balance) < Number(amount)) {
+    const fromBefore = Number(rows[0].wallet_balance);
+    if (fromBefore < amountN) {
       throw Object.assign(new Error('Salio lako halitoshi.'), { statusCode: 400 });
     }
+    const toRows = await client.query(`SELECT wallet_balance FROM users WHERE id = $1`, [toUserId]);
+    const toBefore = Number(toRows.rows[0].wallet_balance);
 
     await postJournal({
       client,
       lines: [
-        { accountCode: 'CUSTOMER_WALLET', direction: 'DR', amount: Number(amount) },
-        { accountCode: 'CUSTOMER_WALLET', direction: 'CR', amount: Number(amount) },
+        { accountCode: 'CUSTOMER_WALLET', direction: 'DR', amount: amountN },
+        { accountCode: 'CUSTOMER_WALLET', direction: 'CR', amount: amountN },
       ],
       referenceId: reference, description, postedBy: 'engine:transfer'
     });
 
     await client.query(
-      `UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2`, [Number(amount), fromUserId]
+      `UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2`, [amountN, fromUserId]
     );
     await client.query(
-      `UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2`, [Number(amount), toUserId]
+      `UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2`, [amountN, toUserId]
     );
 
+    await auditBalance({ client, accountKind: 'USER_BALANCE', accountId: fromUserId, operation: 'transfer_debit', amount: amountN, balanceBefore: fromBefore, balanceAfter: fromBefore - amountN, reference, actor: 'engine:transfer' });
+    await auditBalance({ client, accountKind: 'USER_BALANCE', accountId: toUserId, operation: 'transfer_credit', amount: amountN, balanceBefore: toBefore, balanceAfter: toBefore + amountN, reference, actor: 'engine:transfer' });
+
     await client.query('COMMIT');
-    return { success: true, reference, transferred: Number(amount) };
+    return { success: true, reference, transferred: amountN };
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {});
     logger.error('FIN_ENGINE_TRANSFER', error.message, { fromUserId, toUserId, reference });
