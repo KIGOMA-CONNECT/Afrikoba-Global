@@ -45,6 +45,10 @@ const PROJECTIONS = {
     label: 'Sum referral_rewards.reward_amount (paid referral expense)',
     sql: `SELECT COALESCE(SUM(reward_amount),0)::numeric AS v FROM referral_rewards`,
   },
+  BUSINESS_WALLET: {
+    label: 'Sum business_accounts.balance (business float liability)',
+    sql: `SELECT COALESCE(SUM(balance),0)::numeric AS v FROM business_accounts`,
+  },
 };
 
 /**

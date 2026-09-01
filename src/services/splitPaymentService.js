@@ -104,7 +104,16 @@ async function runSplitPayment(projectId, periodMonth, periodYear) {
       );
     }
 
-    // 3. Platform Commission -> company_revenue
+    // 3. Platform Commission -> company_revenue (+ ledger: fund from the revenue
+    //    booked into SUSPENSE at recordProjectRevenue time)
+    await fin.postJournal({
+      client,
+      lines: [
+        { accountCode: 'SUSPENSE', direction: 'DR', amount: platformShare },
+        { accountCode: 'PLATFORM_FEES', direction: 'CR', amount: platformShare },
+      ],
+      referenceId: `SPLIT:${projectId}:${periodYear}-${periodMonth}:PF`, description: 'Platform commission split from project revenue',
+    });
     await client.query(
       `UPDATE company_revenue SET total_platform_fees = total_platform_fees + $1, updated_at = NOW() WHERE id = 1`,
       [platformShare]
@@ -156,15 +165,34 @@ async function recordProjectRevenue(projectId, amount, description) {
   if (!amountNum || amountNum <= 0) {
     throw Object.assign(new Error('Kiasi cha mapato si sahihi.'), { statusCode: 400 });
   }
-  const result = await pool.query(
-    `UPDATE project_business_wallets
-     SET total_revenue_collected = total_revenue_collected + $1
-     WHERE project_id = $2 RETURNING *`,
-    [amountNum, projectId]
-  );
-  if (result.rows.length === 0) throw new Error('Project Business Wallet haijapatikana.');
-  logger.info('REVENUE', `Project ${projectId} mapato +${amountNum}`, { description });
-  return result.rows[0];
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const result = await client.query(
+      `UPDATE project_business_wallets
+       SET total_revenue_collected = total_revenue_collected + $1
+       WHERE project_id = $2 RETURNING *`,
+      [amountNum, projectId]
+    );
+    if (result.rows.length === 0) throw new Error('Project Business Wallet haijapatikana.');
+    const ref = `REV:${projectId}:${Date.now()}`;
+    await fin.postJournal({
+      client,
+      lines: [
+        { accountCode: 'MNO_CLEARING', direction: 'DR', amount: amountNum },
+        { accountCode: 'SUSPENSE', direction: 'CR', amount: amountNum },
+      ],
+      referenceId: ref, description: `Project revenue booked into suspense (${description || 'sales'})`,
+    });
+    await client.query('COMMIT');
+    logger.info('REVENUE', `Project ${projectId} mapato +${amountNum}`, { description, reference: ref });
+    return result.rows[0];
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 /**

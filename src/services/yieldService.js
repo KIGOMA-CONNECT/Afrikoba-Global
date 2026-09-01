@@ -28,7 +28,7 @@ async function processYieldPayouts() {
         userId: inv.user_id,
         amount: Number(inv.monthly_payout_amount),
         reference: `YIELD:${inv.id}:CR`,
-        fromAccount: 'YIELD_LIABILITY',
+        fromAccount: 'INTEREST_INCOME',
         description: 'Yield interest payout',
       });
 
