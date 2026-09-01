@@ -4,6 +4,7 @@ const { triggerMnoCheckout } = require('./azampayService');
 const { sendSMS } = require('./smsService');
 const { computeDepositAmounts, generateReference, formatMoney } = require('../utils/helpers');
 const { logAudit } = require('./auditService');
+const fin = require('./financialEngine');
 const logger = require('../utils/logger');
 
 /**
@@ -95,7 +96,7 @@ async function processDepositCallback({ utilityref, transactionstatus, reference
        FROM transactions t
        JOIN users u ON u.id = t.user_id
        WHERE t.reference_id = $1
-       FOR UPDATE OF t, u`,
+       FOR UPDATE OF t`,
       [referenceId]
     );
 
@@ -111,22 +112,22 @@ async function processDepositCallback({ utilityref, transactionstatus, reference
     }
 
     if (incomingStatus === 'SUCCESS') {
+      // Route money movement through the Financial Engine. It is idempotent on
+      // reference_id, so even if the reconciliation job also honours this same
+      // deposit, only ONE credit + ONE journal group is ever posted.
+      const posted = await fin.postDeposit({
+        userId: tx.user_id,
+        amount: tx.wallet_amount,
+        commission: tx.commission,
+        reference: referenceId,
+        externalTxId: reference || null,
+        description: 'Deposit kupitia AzamPay',
+      });
+
       await client.query(
         `UPDATE transactions SET status = 'SUCCESS', external_tx_id = $1, updated_at = NOW()
          WHERE reference_id = $2`,
         [reference || null, referenceId]
-      );
-
-      const walletResult = await client.query(
-        `UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2 RETURNING wallet_balance`,
-        [tx.wallet_amount, tx.user_id]
-      );
-      const newBalance = walletResult.rows[0].wallet_balance;
-
-      await client.query(
-        `UPDATE company_revenue SET total_commission = total_commission + $1, updated_at = NOW()
-         WHERE id = 1`,
-        [tx.commission]
       );
 
       await client.query(
@@ -137,10 +138,15 @@ async function processDepositCallback({ utilityref, transactionstatus, reference
 
       await client.query('COMMIT');
 
-      await logAudit({ eventType: 'DEPOSIT', action: 'CREATE', entityType: 'TRANSACTION', userId: tx.user_id, referenceId, amount: tx.wallet_amount, afterData: { status: 'PENDING', provider } });
+      await logAudit({ eventType: 'DEPOSIT', action: 'CREATE', entityType: 'TRANSACTION', userId: tx.user_id, referenceId, amount: tx.wallet_amount, afterData: { status: 'SUCCESS', provider } });
 
-      const smsMsg = `Habari ${tx.full_name}, deposit yako ya ${formatMoney(tx.wallet_amount)} imefanikiwa! Salio jipya: ${formatMoney(newBalance)}. Ref: ${referenceId}`;
-      await sendSMS(tx.phone_number, smsMsg).catch((smsErr) => logger.error('WALLET', `SMS post-deposit imefunga: ${smsErr.message}`));
+      const balRes = await client.query(
+        'SELECT wallet_balance, phone_number, full_name FROM users WHERE id = $1', [tx.user_id]
+      );
+      const bal = balRes.rows[0];
+      const newBalance = bal.wallet_balance;
+      const smsMsg = `Habari ${bal.full_name}, deposit yako ya ${formatMoney(tx.wallet_amount)} imefanikiwa! Salio jipya: ${formatMoney(newBalance)}. Ref: ${referenceId}`;
+      await sendSMS(bal.phone_number, smsMsg).catch((smsErr) => logger.error('WALLET', `SMS post-deposit imefunga: ${smsErr.message}`));
 
       return { success: true, message: 'Deposit Processed Successfully.' };
     }
@@ -247,6 +253,14 @@ async function transferWallet(fromUserId, toPhoneNumber, amount, note) {
 
 /**
  * 4) WITHDRAWAL - salio la wallet linahamishwa kwenye mtandao wa simu
+ *
+ * FINANCIAL MODEL (reservation):
+ *   available decline, locked rise, total unchanged on request.
+ *   After MNO processing:
+ *     SUCCESS -> captureHold (locked leaves, funds paid to MNO)
+ *     FAILED  -> releaseHold (locked returns to available)
+ * This removes the ambiguous "money disappeared into PENDING" state and the
+ * dangerous timeout-based refund that could double-credit a customer.
  */
 async function withdrawToMno(userId, amount, provider) {
   const amountNum = parseFloat(amount);
@@ -254,50 +268,60 @@ async function withdrawToMno(userId, amount, provider) {
     throw Object.assign(new Error('Kiasi kidogo cha withdrawal ni TZS 1,000.'), { statusCode: 400 });
   }
 
-  const client = await pool.connect();
+  const referenceId = generateReference('WD');
+
   try {
-    await client.query('BEGIN');
-    const userRes = await client.query(
-      'SELECT id, wallet_balance, phone_number, full_name FROM users WHERE id = $1 FOR UPDATE',
-      [userId]
-    );
-    const user = userRes.rows[0];
-    if (Number(user.wallet_balance) < amountNum) {
-      throw Object.assign(new Error('Salio lako halitoshi.'), { statusCode: 400 });
+    const held = await fin.holdFunds({
+      userId,
+      amount: amountNum,
+      accountCode: 'CUSTOMER_WALLET',
+      reference: referenceId,
+      description: 'Withdrawal reservation',
+    });
+
+    if (held.dedup) {
+      return { success: true, referenceId, message: 'Ombi hili tayari limepokelewa.', status: 'PENDING' };
     }
 
-    const referenceId = generateReference('WD');
-    const txRes = await client.query(
-      `INSERT INTO transactions
-        (reference_id, user_id, wallet_amount, commission, total_charged, status, type)
-       VALUES ($1, $2, $3, 0, $3, 'PENDING', 'WITHDRAWAL')
-       RETURNING id`,
-      [referenceId, userId, amountNum]
-    );
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const userRes = await client.query(
+        `SELECT id, phone_number, full_name FROM users WHERE id = $1`, [userId]
+      );
+      const user = userRes.rows[0];
 
-    await client.query(
-      `INSERT INTO wallet_ledger (transaction_id, reference_id, from_user_id, to_user_id, amount, description)
-       VALUES ($1, $2, $3, NULL, $4, 'Withdrawal to MNO')`,
-      [txRes.rows[0].id, referenceId, userId, amountNum]
-    );
+      const txRes = await client.query(
+        `INSERT INTO transactions
+          (reference_id, user_id, wallet_amount, commission, total_charged, status, type,
+           available_balance, locked_balance)
+         VALUES ($1, $2, $3, 0, $3, 'PROCESSING', 'WITHDRAWAL', 0, $3)
+         RETURNING id`,
+        [referenceId, userId, amountNum]
+      );
 
-    await client.query(
-      'UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2',
-      [amountNum, userId]
-    );
-    await client.query('COMMIT');
+      await client.query(
+        `INSERT INTO wallet_ledger (transaction_id, reference_id, from_user_id, to_user_id, amount, description)
+         VALUES ($1, $2, $3, NULL, $4, 'Withdrawal reserved (locked)')`,
+        [txRes.rows[0].id, referenceId, userId, amountNum]
+      );
+      await client.query('COMMIT');
 
-    await logAudit({ eventType: 'WITHDRAWAL', action: 'CREATE', entityType: 'TRANSACTION', userId, referenceId, amount: amountNum, afterData: { status: 'PENDING', provider } });
+      await logAudit({ eventType: 'WITHDRAWAL', action: 'CREATE', entityType: 'TRANSACTION', userId, referenceId, amount: amountNum, afterData: { status: 'PROCESSING', provider } });
 
-    const msg = `AFRIKOBA: Ombi la kutoa ${formatMoney(amountNum)} limepokelewa. Ingiza PIN kwenye simu kuthibitisha.`;
-    await sendSMS(user.phone_number, msg).catch((smsErr) => logger.error('WALLET', `SMS post-withdrawal imefunga: ${smsErr.message}`));
+      const msg = `AFRIKOBA: Ombi la kutoa ${formatMoney(amountNum)} limepokelewa. Ingiza PIN kwenye simu kuthibitisha.`;
+      await sendSMS(user.phone_number, msg).catch((smsErr) => logger.error('WALLET', `SMS post-withdrawal imefunga: ${smsErr.message}`));
 
-    return { success: true, referenceId, message: 'Ombi la withdrawal limepokelewa.', status: 'PENDING' };
+      return { success: true, referenceId, message: 'Ombi la withdrawal limepokelewa.', status: 'PROCESSING' };
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw error;
+    } finally {
+      client.release();
+    }
   } catch (error) {
-    await client.query('ROLLBACK').catch(() => {});
+    logger.error('WALLET_WD', error.message, { userId, amount: amountNum, referenceId });
     throw error;
-  } finally {
-    client.release();
   }
 }
 
