@@ -6,6 +6,7 @@
 const express = require('express');
 const { authRequired } = require('../middleware/auth');
 const mkt = require('../services/marketplaceService');
+const verifySvc = require('../services/sellerVerificationService');
 
 const router = express.Router();
 
@@ -92,6 +93,14 @@ router.post('/orders/:id/cancel', authRequired, async (req, res, next) => {
   try {
     const result = await mkt.cancelOrder(req.user.id, parseInt(req.params.id, 10));
     res.json({ success: true, ...result });
+  } catch (e) { next(e); }
+});
+
+// ===== SELLER VERIFICATION (trust layer) =====
+router.get('/sellers/:id/verify', authRequired, async (req, res, next) => {
+  try {
+    const profile = await verifySvc.getSellerVerification(parseInt(req.params.id, 10));
+    res.json({ success: true, ...profile });
   } catch (e) { next(e); }
 });
 

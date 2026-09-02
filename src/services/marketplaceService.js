@@ -79,10 +79,12 @@ async function listListings({ category, q, min, max, sort, limit } = {}) {
   const lim = Math.min(Number(limit) || 50, 100);
   const res = await pool.query(
     `SELECT l.*, u.full_name AS seller_name,
+            v.verified AS seller_verified, v.tier AS seller_tier,
             ROUND((SELECT AVG(r.rating)::numeric FROM marketplace_reviews r JOIN marketplace_orders o ON o.id=r.order_id
                    WHERE o.listing_id=l.id)::numeric,1) AS avg_rating
        FROM marketplace_listings l
        JOIN users u ON u.id = l.seller_user_id
+       LEFT JOIN seller_verification v ON v.user_id = l.seller_user_id
       WHERE ${where.join(' AND ')} ORDER BY ${order} LIMIT $${params.length + 1}`,
     [...params, lim]
   );
@@ -92,9 +94,11 @@ async function listListings({ category, q, min, max, sort, limit } = {}) {
 async function getListing(listingId) {
   const res = await pool.query(
     `SELECT l.*, u.full_name AS seller_name,
+            v.verified AS seller_verified, v.tier AS seller_tier,
             ROUND((SELECT AVG(r.rating)::numeric FROM marketplace_reviews r JOIN marketplace_orders o ON o.id=r.order_id
                    WHERE o.listing_id=l.id)::numeric,1) AS avg_rating
        FROM marketplace_listings l JOIN users u ON u.id=l.seller_user_id
+       LEFT JOIN seller_verification v ON v.user_id = l.seller_user_id
       WHERE l.id=$1`, [listingId]
   );
   if (!res.rows.length) throw badge('Bidhaa haipatikani.', 404);

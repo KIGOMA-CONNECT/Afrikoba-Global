@@ -8,6 +8,7 @@ const { processYieldPayouts } = require('../services/yieldService');
 const { runMaintenance } = require('../services/dbMaintenanceService');
 const { runBalanceReconciliation } = require('./balanceReconciliation');
 const { runAutopilotPayouts } = require('../services/financialAutopilotService');
+const { recomputeAll: recomputeSellerVerifications } = require('../services/sellerVerificationService');
 const logger = require('../utils/logger');
 
 /**
@@ -88,7 +89,16 @@ function startAllJobs() {
     }
   });
 
-  logger.info('CRON', 'Cron Jobs zimeanzishwa (reconciliation, ROSCA payout, DB maintenance, split payment, scheduled payments, autopilot)');
+  // Daily seller verification refresh - 24h badge cache (identity + behaviour).
+  cron.schedule('30 0 * * *', async () => {
+    try {
+      await recomputeSellerVerifications();
+    } catch (e) {
+      logger.error('CRON-SELLER-VERIFY', e.message);
+    }
+  });
+
+  logger.info('CRON', 'Cron Jobs zimeanzishwa (reconciliation, ROSCA payout, DB maintenance, split payment, scheduled payments, autopilot, seller verification)');
 }
 
 module.exports = { startAllJobs };
