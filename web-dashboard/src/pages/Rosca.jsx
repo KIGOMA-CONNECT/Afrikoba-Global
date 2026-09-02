@@ -17,6 +17,7 @@ export default function Rosca() {
   const [pMembers, setPMembers] = useState('');
   const [pType, setPType] = useState('PUBLIC');
   const [wantEarly, setWantEarly] = useState(false);
+  const [trust, setTrust] = useState(null);
 
   const show = (type, text) => {
     setMsg({ type, text });
@@ -28,7 +29,14 @@ export default function Rosca() {
     api.get(`/rosca/pools${q}`).then((r) => setPools(r.data.pools)).catch(() => {});
   };
 
+  const loadTrust = () => {
+    api.get('/rosca/trust/summary').then((r) => {
+      setTrust({ totals: r.data.totals, history: r.data.history || [] });
+    }).catch(() => {});
+  };
+
   useEffect(load, [statusFilter]);
+  useEffect(loadTrust, []);
 
   const createPool = async (e) => {
     e.preventDefault();
@@ -108,7 +116,36 @@ export default function Rosca() {
         </div>
       </div>
 
-      {selected && (
+      {trust && (
+        <div className="card section">
+          <h3>{t('rosca.trust_title')}</h3>
+          <p className="roles-tag" style={{ marginBottom: 14 }}>{t('rosca.trust_sub')}</p>
+          <div className="grid grid-3">
+            <div className="stat"><div className="value">{trust.totals?.contributions_ok ?? 0}</div><div className="label">{t('rosca.trust_ok')}</div></div>
+            <div className="stat"><div className="value">{trust.totals?.contributions_missed ?? 0}</div><div className="label">{t('rosca.trust_missed')}</div></div>
+            <div className="stat"><div className="value">{trust.totals?.best_streak ?? 0}</div><div className="label">{t('rosca.trust_streak')}</div></div>
+          </div>
+
+          <h3 style={{ margin: '22px 0 8px' }}>{t('rosca.trust_history')}</h3>
+          <table>
+            <thead><tr><th>{t('rosca.trust_h_pool')}</th><th>{t('rosca.trust_h_cycle')}</th><th>{t('rosca.trust_h_reason')}</th><th>{t('rosca.trust_h_delta')}</th><th>{t('rosca.trust_h_score')}</th><th>{t('rosca.trust_h_date')}</th></tr></thead>
+            <tbody>
+              {trust.history.map((h, i) => (
+                <tr key={i}>
+                  <td>{h.pool_name || `#${h.pool_id ?? ''}`}</td>
+                  <td>{h.cycle_number ? `#${h.cycle_number}` : '-'}</td>
+                  <td>{t(`rosca.reason.${h.reason}`)}</td>
+                  <td style={{ color: Number(h.delta) >= 0 ? 'inherit' : 'var(--red, #d33)' }}>{Number(h.delta) > 0 ? `+${h.delta}` : h.delta}</td>
+                  <td>{h.score_after}</td>
+                  <td>{new Date(h.created_at).toLocaleDateString('en-GB')}</td>
+                </tr>
+              ))}
+              {trust.history.length === 0 && <tr><td colSpan="6" className="roles-tag">{t('rosca.trust_no_history')}</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      )}
+
         <div className="card section">
           <h3>{selected.pool_name} <span className="roles-tag" style={{ marginLeft: 8 }}>{selected.pool_type}</span></h3>
           {selected.status === 'WAITING_MEMBERS' && (
