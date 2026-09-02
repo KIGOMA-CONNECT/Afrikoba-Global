@@ -35,6 +35,7 @@ export default function Layout() {
     { to: '/dashboard/merchant', key: 'nav.merchant', always: true },
     { to: '/dashboard/cards', key: 'nav.cards', always: true },
     { to: '/dashboard/subscriptions', key: 'nav.subscriptions', always: true },
+    { to: '/dashboard/family', key: 'nav.family', always: true },
     { to: '/dashboard/notifications', key: 'nav.notifications', always: true },
     { to: '/dashboard/admin', key: 'nav.admin', admin: true },
     { to: '/dashboard/settings', key: 'nav.settings', always: true },
