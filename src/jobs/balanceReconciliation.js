@@ -49,6 +49,10 @@ const PROJECTIONS = {
     label: 'Sum business_accounts.balance (business float liability)',
     sql: `SELECT COALESCE(SUM(balance),0)::numeric AS v FROM business_accounts`,
   },
+  MARKETPLACE_ESCROW: {
+    label: 'Sum marketplace_orders.total_amount held in escrow',
+    sql: `SELECT COALESCE(SUM(total_amount),0)::numeric AS v FROM marketplace_orders WHERE status='ESCROW_HELD'`,
+  },
 };
 
 /**
