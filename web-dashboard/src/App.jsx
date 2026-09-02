@@ -40,6 +40,9 @@ const Notifications = lazy(() => import('./pages/Notifications.jsx'));
 const Referrals = lazy(() => import('./pages/Referrals.jsx'));
 const Settings = lazy(() => import('./pages/Settings.jsx'));
 const ServiceDetail = lazy(() => import('./pages/ServiceDetail.jsx'));
+const Marketplace = lazy(() => import('./pages/Marketplace.jsx'));
+const Financing = lazy(() => import('./pages/Financing.jsx'));
+const Verification = lazy(() => import('./pages/Verification.jsx'));
 
 function RequireAuth({ children }) {
   const token = localStorage.getItem('afrikoba_token');
@@ -86,6 +89,9 @@ export default function App() {
         <Route path="admin" element={<Page><Admin /></Page>} />
         <Route path="notifications" element={<Page><Notifications /></Page>} />
         <Route path="referrals" element={<Page><Referrals /></Page>} />
+        <Route path="marketplace" element={<Page><Marketplace /></Page>} />
+        <Route path="financing" element={<Page><Financing /></Page>} />
+        <Route path="verification" element={<Page><Verification /></Page>} />
         <Route path="settings" element={<Page><Settings /></Page>} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
