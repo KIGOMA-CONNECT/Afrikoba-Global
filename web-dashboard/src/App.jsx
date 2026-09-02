@@ -47,6 +47,7 @@ const CreditScore = lazy(() => import('./pages/CreditScore.jsx'));
 const Budget = lazy(() => import('./pages/Budget.jsx'));
 const Vaults = lazy(() => import('./pages/Vaults.jsx'));
 const Merchant = lazy(() => import('./pages/Merchant.jsx'));
+const Cards = lazy(() => import('./pages/Cards.jsx'));
 
 function RequireAuth({ children }) {
   const token = localStorage.getItem('afrikoba_token');
@@ -100,6 +101,7 @@ export default function App() {
         <Route path="budget" element={<Page><Budget /></Page>} />
         <Route path="vaults" element={<Page><Vaults /></Page>} />
         <Route path="merchant" element={<Page><Merchant /></Page>} />
+        <Route path="cards" element={<Page><Cards /></Page>} />
         <Route path="settings" element={<Page><Settings /></Page>} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
