@@ -430,9 +430,10 @@ async function payFinancingInstallment(buyerId, financingId) {
 
     const principalShare = round2(financed / term);
     const feeShare = round2(feeTotal / term);
-    let pPart = Math.min(principalShare, remaining);
-    let fPart = Math.min(feeShare, Math.max(0, remaining - pPart));
-    if (pPart + fPart < remaining) { pPart = round2(remaining - fPart); } // last payment clears remainder
+    const installment = round2(principalShare + feeShare);
+    const amount = Math.min(remaining, installment); // final payment clears any rounding remainder
+    const fPart = Math.min(feeShare, amount);
+    const pPart = round2(amount - fPart);
 
     const instRef = `MKTFIN:${generateReference()}`;
     if (pPart > 0) {
