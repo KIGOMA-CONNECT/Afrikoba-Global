@@ -148,6 +148,20 @@ async function priceGuide(category, itemKey) {
       guide = { category, item_key: itemKey || category, min_price: L.mn, avg_price: round2(Number(L.avg)), max_price: L.mx, sample_count: L.cnt, source: 'LIVE' };
     }
   }
+  // Fall back to a category-level band built from seeded market data so a buyer
+  // still gets a fair price reference even with zero live listings in the category.
+  if (!guide) {
+    const seed = await pool.query(
+      `SELECT COUNT(*)::int AS cnt,
+              COALESCE(MIN(min_price),0)::numeric AS mn,
+              COALESCE(AVG((min_price + max_price) / 2),0)::numeric AS avg,
+              COALESCE(MAX(max_price),0)::numeric AS mx
+         FROM marketplace_price_guide WHERE category=$1`, [category]);
+    const S = seed.rows[0];
+    if (S.cnt > 0) {
+      guide = { category, item_key: itemKey || null, min_price: S.mn, avg_price: round2(Number(S.avg)), max_price: S.mx, sample_count: S.cnt, source: 'MARKET_SEED' };
+    }
+  }
   return {
     category,
     item_key: itemKey || null,
