@@ -24,17 +24,17 @@ export default function Admin() {
 
       {stats && (
         <div className="grid grid-4" style={{ marginBottom: 20 }}>
-          <div className="card stat"><div className="value">{stats.users}</div><div className="label">Watumiaji</div></div>
-          <div className="card stat"><div className="value">{formatMoney(stats.revenue.total_commission)}</div><div className="label">Kamisheni (1%)</div></div>
-          <div className="card stat"><div className="value">{formatMoney(stats.revenue.total_platform_fees)}</div><div className="label">Ada za Jukwaa (2%)</div></div>
-          <div className="card stat"><div className="value">{formatMoney(stats.revenue.total_maintenance_fees)}</div><div className="label">Ada za VICOBA</div></div>
+          <div className="card stat"><div className="value">{stats.users}</div><div className="label">{t('admin.users')}</div></div>
+          <div className="card stat"><div className="value">{formatMoney(stats.revenue.total_commission)}</div><div className="label">{t('admin.commission')}</div></div>
+          <div className="card stat"><div className="value">{formatMoney(stats.revenue.total_platform_fees)}</div><div className="label">{t('admin.platform_fees')}</div></div>
+          <div className="card stat"><div className="value">{formatMoney(stats.revenue.total_maintenance_fees)}</div><div className="label">{t('admin.maintenance_fees')}</div></div>
         </div>
       )}
 
       <div className="card section">
-        <h3>Watumiaji Wote</h3>
+        <h3>{t('admin.all_users')}</h3>
         <table>
-          <thead><tr><th>ID</th><th>Jina</th><th>Simu</th><th>Email</th><th>Wajibu</th><th>KYC</th><th>Salio</th><th>Trust</th></tr></thead>
+          <thead><tr><th>ID</th><th>{t('admin.th_name')}</th><th>{t('admin.th_phone')}</th><th>{t('admin.th_email')}</th><th>{t('admin.th_role')}</th><th>{t('admin.th_kyc')}</th><th>{t('admin.th_balance')}</th><th>{t('admin.th_trust')}</th></tr></thead>
           <tbody>
             {users.map((u) => (
               <tr key={u.id}>
@@ -53,9 +53,9 @@ export default function Admin() {
       </div>
 
       <div className="card section">
-        <h3>Miamala Yote ya Mfumo</h3>
+        <h3>{t('admin.all_transactions')}</h3>
         <table>
-          <thead><tr><th>Ref</th><th>Mteja</th><th>Aina</th><th>Kiasi</th><th>Ada</th><th>Hali</th><th>Tarehe</th></tr></thead>
+          <thead><tr><th>{t('admin.th_ref')}</th><th>{t('admin.th_user')}</th><th>{t('admin.th_type')}</th><th>{t('admin.th_amount')}</th><th>{t('admin.th_fee')}</th><th>{t('admin.th_status')}</th><th>{t('admin.th_date')}</th></tr></thead>
           <tbody>
             {txs.map((t) => (
               <tr key={t.id}>

@@ -76,7 +76,10 @@ export default function Login() {
           <button className={`lang-btn${lang === 'sw' ? ' active' : ''}`} onClick={() => setLang('sw')}>{t('lang.sw')}</button>
           <button className={`lang-btn${lang === 'en' ? ' active' : ''}`} onClick={() => setLang('en')}>{t('lang.en')}</button>
         </div>
-        <h1>AFRIKOBA GLOBAL</h1>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
+          <img src="/afrikoba-icon.png" alt="Afrikoba" style={{ width: 40, height: 40, borderRadius: 10 }} onError={(e) => { e.target.style.display = 'none'; }} />
+          <h1 style={{ margin: 0 }}>AFRIKOBA GLOBAL</h1>
+        </div>
         <div className="sub">{t('login.sub')}</div>
 
         <div className="tabs">

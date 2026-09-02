@@ -41,7 +41,10 @@ export default function Layout() {
       {sidebarOpen && <div className="sidebar-overlay" onClick={closeSidebar} />}
       <aside className={`sidebar ${sidebarOpen ? 'open' : ''}`}>
         <div className="brand">
-          <h1>{t('brand.name')}</h1>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <img src="/afrikoba-icon.png" alt="Afrikoba" style={{ width: 32, height: 32, borderRadius: 6 }} onError={(e) => { e.target.style.display = 'none'; }} />
+            <h1>{t('brand.name')}</h1>
+          </div>
           <p>{t('brand.tagline')}</p>
         </div>
         <nav className="nav">

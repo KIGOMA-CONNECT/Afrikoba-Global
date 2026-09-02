@@ -36,7 +36,8 @@ export default function Landing() {
       {/* 1. STYLED HEADER */}
       <header className={`landing-header ${showSmartBanner && isMobile ? 'banner-offset' : ''}`}>
         <div className="landing-logo">
-          <div className="logo-shield">🛡️</div>
+          <img src="/afrikoba-icon.png" alt="Afrikoba" className="logo-img" style={{ width: 36, height: 36, borderRadius: 8 }} onError={(e) => { e.target.style.display = 'none'; e.target.nextSibling.style.display = 'flex'; }} />
+          <div className="logo-shield" style={{ display: 'none' }}>🛡️</div>
           <span className="logo-text">Afrikoba <span className="logo-highlight">Global</span></span>
         </div>
         
@@ -278,7 +279,10 @@ export default function Landing() {
       <footer className="landing-footer" id="kuhusu">
         <div className="landing-footer-container">
           <div className="footer-col">
-            <h3>🛡️ Afrikoba Global</h3>
+            <h3 style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <img src="/afrikoba-icon.png" alt="Afrikoba" style={{ width: 28, height: 28, borderRadius: 6 }} onError={(e) => { e.target.style.display = 'none'; }} />
+              Afrikoba Global
+            </h3>
             <p>Mfumo Salama wa Kidijitali wa Akiba, VICOBA, Mzunguko na Uwekezaji.</p>
           </div>
           <div className="footer-col">

@@ -37,6 +37,17 @@ export default function Dashboard() {
         <p>{isAdmin ? t('dashboard.admin_summary') : t('dashboard.user_summary')}</p>
       </div>
 
+      {isAdmin && !stats && (
+        <div className="grid grid-3">
+          {[1,2,3,4,5,6].map((i) => (
+            <div className="card stat" key={i} style={{ opacity: 0.5 }}>
+              <div className="value" style={{ background: 'var(--border)', borderRadius: 6, width: 80, height: 28, margin: '0 auto' }}>&nbsp;</div>
+              <div className="label" style={{ background: 'var(--border)', borderRadius: 4, width: 60, height: 12, margin: '8px auto 0' }}>&nbsp;</div>
+            </div>
+          ))}
+        </div>
+      )}
+
       {isAdmin && stats && (
         <div className="grid grid-3">
           <div className="card stat">
@@ -63,6 +74,17 @@ export default function Dashboard() {
             <div className="value">{formatMoney(stats.revenue.total_commission + stats.revenue.total_platform_fees + stats.revenue.total_maintenance_fees)}</div>
             <div className="label">{t('dashboard.company_revenue')}</div>
           </div>
+        </div>
+      )}
+
+      {!isAdmin && !balance && (
+        <div className="grid grid-3">
+          {[1,2,3].map((i) => (
+            <div className="card stat" key={i} style={{ opacity: 0.5 }}>
+              <div className="value" style={{ background: 'var(--border)', borderRadius: 6, width: 120, height: 28, margin: '0 auto' }}>&nbsp;</div>
+              <div className="label" style={{ background: 'var(--border)', borderRadius: 4, width: 80, height: 12, margin: '8px auto 0' }}>&nbsp;</div>
+            </div>
+          ))}
         </div>
       )}
 
