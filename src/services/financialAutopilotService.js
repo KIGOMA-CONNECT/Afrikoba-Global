@@ -16,6 +16,9 @@
 
 const pool = require('../config/db');
 const { getPassport } = require('./financialPassportService');
+const fin = require('./financialEngine');
+const { logAudit } = require('./auditService');
+const logger = require('../utils/logger');
 
 // Configurable guardrails (sensible defaults, overridable later)
 const DEFAULTS = {
@@ -158,4 +161,186 @@ async function buildPlanForUser(userId, opts = {}) {
   return buildPlan({ userId, ...opts });
 }
 
-module.exports = { buildPlan, buildPlanForUser, DEFAULTS };
+// ====================================================================
+// AUTO-EXECUTION (Phase 13) - opted-in, journaled savings automation.
+// The ADVISORY buildPlan above becomes EXPLICIT, governed automation here.
+// ====================================================================
+
+function badge(err, statusCode) {
+  return Object.assign(new Error(err), { statusCode });
+}
+
+function round2(n) {
+  return Math.round((Number(n) + Number.EPSILON) * 100) / 100;
+}
+
+function periodKey(d) {
+  const date = d || new Date();
+  return `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, '0')}`; // e.g. 202609 (monthly period)
+}
+
+/**
+ * Activate an autopilot plan.
+ * Derives the recommended MONTHLY allocation from the user's current passport
+ * plan (governance: snapshotted at activation so it never silently changes),
+ * then persists the opt-in objective.
+ */
+async function activatePlan(userId, data) {
+  const { target_amount, goal_id, frequency } = data || {};
+  const target = Number(target_amount);
+  if (!target || target <= 0) throw badge('Target (lengo) ni lazima kiwe chanya.', 400);
+
+  const plan = await buildPlan({ userId, targetAmount: target });
+  const monthly = Math.max(0, Math.round(plan.numbers.monthlySavings));
+  if (monthly <= 0) {
+    throw badge('Hakuna uwezo wa kuweka akiba kila mwezi (disposable capacity ni 0). Rekebisha mapato au gharama.', 400);
+  }
+
+  if (goal_id) {
+    const g = await pool.query("SELECT id FROM savings_goals WHERE id=$1 AND user_id=$2 AND status='ACTIVE'", [goal_id, userId]);
+    if (!g.rows.length) throw badge('Lengo (goal) halipatikani.', 404);
+  }
+
+  const freq = ['DAILY', 'WEEKLY', 'MONTHLY'].includes(frequency) ? frequency : 'MONTHLY';
+  const res = await pool.query(
+    `INSERT INTO autopilot_plans (user_id, goal_id, target_amount, monthly_allocation, frequency, status)
+     VALUES ($1,$2,$3,$4,$5,'ACTIVE') RETURNING *`,
+    [userId, goal_id || null, target, monthly, freq]
+  );
+  await logAudit(userId, 'AUTOPILOT_ACTIVATED',
+    `Autopilot imewashwa: TZS ${monthly.toLocaleString()}/mwezi kuelekea TZS ${target.toLocaleString()}`).catch(() => {});
+  logger.info('AUTOPILOT', `User ${userId} activated plan #${res.rows[0].id} at ${monthly}/mo`);
+  return { plan: res.rows[0], monthlyAllocationSnapshot: monthly, basedOnPassportVersion: plan.basedOnPassportVersion };
+}
+
+/** List a user's plans. */
+async function listPlans(userId) {
+  const res = await pool.query(
+    `SELECT id, goal_id, target_amount, monthly_allocation, frequency, status,
+            last_executed_at, total_saved, skip_count, created_at
+       FROM autopilot_plans
+      WHERE user_id=$1 ORDER BY created_at DESC`, [userId]
+  );
+  return res.rows;
+}
+
+/** Pause / activate / complete a plan. */
+async function setPlanStatus(userId, planId, status) {
+  if (!['PAUSED', 'ACTIVE', 'COMPLETED'].includes(status)) throw badge('status si sahihi.', 400);
+  const res = await pool.query(
+    `UPDATE autopilot_plans SET status=$1, updated_at=NOW()
+      WHERE id=$2 AND user_id=$3 RETURNING *`,
+    [status, planId, userId]
+  );
+  if (!res.rows.length) throw badge('Mpango haupatikani.', 404);
+  await logAudit(userId, `AUTOPILOT_${status}`, `Autopilot #${planId} sasa ${status}`).catch(() => {});
+  return { plan: res.rows[0] };
+}
+
+/** Remove a plan. */
+async function deletePlan(userId, planId) {
+  const res = await pool.query('DELETE FROM autopilot_plans WHERE id=$1 AND user_id=$2 RETURNING id', [planId, userId]);
+  if (!res.rows.length) throw badge('Mpango haupatikani.', 404);
+  return { success: true, deleted: planId };
+}
+
+/**
+ * CRON: execute due autopilot savings for all ACTIVE plans.
+ * Safety:
+ *   * Idempotent per PERIOD - unique reference AUTOPILOT:<plan>:<YYYYMM> so a
+ *     retry can never double-move money (ledger-level uniqueness on reference).
+ *   * SKIPS (never fails) if wallet lacks funds OR current passport disposable
+ *     capacity has dropped below the snapshotted allocation.
+ *   * Journals DR wallet -> CR SUSPENSE via financialEngine, then credits the
+ *     goal, mirroring the existing auto-save mechanic.
+ */
+async function runAutopilotPayouts() {
+  const client = await pool.connect();
+  let executed = 0, skipped = 0;
+  try {
+    await client.query('BEGIN');
+    const due = await client.query(
+      `SELECT p.*, g.name AS goal_name, g.target_amount AS goal_target, g.current_amount AS goal_current
+         FROM autopilot_plans p
+         LEFT JOIN savings_goals g ON g.id = p.goal_id
+        WHERE p.status='ACTIVE' AND p.frequency='MONTHLY'
+          AND (p.last_executed_at IS NULL
+               OR p.last_executed_at < date_trunc('month', NOW()))`
+    );
+    for (const plan of due.rows) {
+      const alloc = Number(plan.monthly_allocation);
+      if (!alloc || alloc <= 0) { skipped += 1; continue; }
+
+      // Current passport affordability check - skip if capacity dropped below allocation.
+      let disposable;
+      try {
+        const up = await getPassport(plan.user_id);
+        disposable = Number(up.capacity?.disposable ?? 0);
+      } catch (e) {
+        disposable = Infinity; // passport failure shouldn't block a funded plan
+      }
+      if (disposable !== Infinity && disposable < alloc) {
+        await client.query(`UPDATE autopilot_plans SET skip_count=skip_count+1, updated_at=NOW() WHERE id=$1`, [plan.id]);
+        skipped += 1;
+        continue;
+      }
+
+      // Wallet funds check.
+      const w = await client.query('SELECT wallet_balance FROM users WHERE id=$1 FOR UPDATE', [plan.user_id]);
+      if (Number(w.rows[0].wallet_balance) < alloc) {
+        await client.query(`UPDATE autopilot_plans SET skip_count=skip_count+1, updated_at=NOW() WHERE id=$1`, [plan.id]);
+        skipped += 1;
+        continue;
+      }
+
+      const reference = `AUTOPILOT:${plan.id}:${periodKey()}`;
+      const debit = await fin.debitWallet({ client, userId: plan.user_id, amount: alloc, reference, toAccount: 'SUSPENSE', description: 'Autopilot savings contribution' });
+      if (debit.dedup) continue; // this period already executed - never double-move
+
+      // Credit the goal if one is attached.
+      if (plan.goal_id) {
+        const g = await client.query('SELECT current_amount FROM savings_goals WHERE id=$1 AND status=$2', [plan.goal_id, 'ACTIVE']);
+        if (g.rows.length) {
+          const newAmount = round2(Number(g.rows[0].current_amount) + alloc);
+          const completed = Number(plan.goal_target) > 0 && newAmount >= Number(plan.goal_target);
+          await client.query(
+            `UPDATE savings_goals
+                SET current_amount=$1, status=CASE WHEN $2 THEN 'COMPLETED' ELSE status END,
+                    is_completed=$2, completed_at=CASE WHEN $2 THEN NOW() ELSE completed_at END,
+                    updated_at=NOW()
+              WHERE id=$3`,
+            [newAmount, completed, plan.goal_id]
+          );
+          if (completed) {
+            await client.query(`UPDATE autopilot_plans SET status='COMPLETED', updated_at=NOW() WHERE id=$1`, [plan.id]);
+          }
+        }
+      }
+
+      await client.query(
+        `UPDATE autopilot_plans
+            SET total_saved=total_saved+$1, last_executed_at=NOW(), updated_at=NOW()
+          WHERE id=$2`,
+        [alloc, plan.id]
+      );
+      await client.query(
+        `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
+         VALUES ($1,$2,$3,0,$3,'SUCCESS','SAVINGS_DEPOSIT',$4)`,
+        [generateAutopilotRef(), plan.user_id, alloc, JSON.stringify({ feature: 'autopilot', plan_id: plan.id, goal_id: plan.goal_id || null })]
+      );
+      executed += 1;
+    }
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally { client.release(); }
+  return { processed: executed, skipped, executed };
+}
+
+function generateAutopilotRef() {
+  const crypto = require('crypto');
+  return `APTX-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
+}
+
+module.exports = { buildPlan, buildPlanForUser, DEFAULTS, activatePlan, listPlans, setPlanStatus, deletePlan, runAutopilotPayouts };

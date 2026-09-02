@@ -7,6 +7,7 @@ const { processDueScheduledPayments } = require('../services/networkService');
 const { processYieldPayouts } = require('../services/yieldService');
 const { runMaintenance } = require('../services/dbMaintenanceService');
 const { runBalanceReconciliation } = require('./balanceReconciliation');
+const { runAutopilotPayouts } = require('../services/financialAutopilotService');
 const logger = require('../utils/logger');
 
 /**
@@ -76,7 +77,18 @@ function startAllJobs() {
     }
   });
 
-  logger.info('CRON', 'Cron Jobs zimeanzishwa (reconciliation, ROSCA payout, DB maintenance, split payment, scheduled payments)');
+  // Daily autopilot auto-save execution - derives due ACTIVE plans, journals the
+  // snapshotted monthly allocation into the savings goal if affordable & funded.
+  cron.schedule('20 0 * * *', async () => {
+    try {
+      const r = await runAutopilotPayouts();
+      if (r.processed > 0) logger.info('CRON-AUTOPILOT', `Autopilot savings: ${r.processed} executed, ${r.skipped} skipped`);
+    } catch (e) {
+      logger.error('CRON-AUTOPILOT', e.message);
+    }
+  });
+
+  logger.info('CRON', 'Cron Jobs zimeanzishwa (reconciliation, ROSCA payout, DB maintenance, split payment, scheduled payments, autopilot)');
 }
 
 module.exports = { startAllJobs };

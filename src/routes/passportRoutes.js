@@ -46,4 +46,39 @@ router.get('/autopilot', authRequired, async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
+/**
+ * POST /passport/autopilot/plans  - activate an auto-executed savings plan
+ * Body: { target_amount, goal_id?, frequency? }
+ */
+router.post('/autopilot/plans', authRequired, async (req, res, next) => {
+  try {
+    const result = await autopilotService.activatePlan(req.user.id, req.body);
+    res.status(201).json({ success: true, ...result });
+  } catch (error) { next(error); }
+});
+
+/** GET /passport/autopilot/plans  - list user's plans */
+router.get('/autopilot/plans', authRequired, async (req, res, next) => {
+  try {
+    const plans = await autopilotService.listPlans(req.user.id);
+    res.json({ success: true, plans });
+  } catch (error) { next(error); }
+});
+
+/** PATCH /passport/autopilot/plans/:id  - { status: ACTIVE|PAUSED|COMPLETED } */
+router.patch('/autopilot/plans/:id', authRequired, async (req, res, next) => {
+  try {
+    const result = await autopilotService.setPlanStatus(req.user.id, parseInt(req.params.id, 10), req.body?.status);
+    res.json({ success: true, ...result });
+  } catch (error) { next(error); }
+});
+
+/** DELETE /passport/autopilot/plans/:id */
+router.delete('/autopilot/plans/:id', authRequired, async (req, res, next) => {
+  try {
+    const result = await autopilotService.deletePlan(req.user.id, parseInt(req.params.id, 10));
+    res.json({ success: true, ...result });
+  } catch (error) { next(error); }
+});
+
 module.exports = router;
