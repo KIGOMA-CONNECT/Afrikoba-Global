@@ -29,6 +29,12 @@ export default function Vicoba() {
   const [joinCode, setJoinCode] = useState('');
   const [invitePhones, setInvitePhones] = useState('');
 
+  const [pCycle, setPCycle] = useState('1');
+  const [pProfit, setPProfit] = useState('');
+  const [profitCalc, setProfitCalc] = useState(null);
+  const [distributions, setDistributions] = useState([]);
+  const [myPayouts, setMyPayouts] = useState([]);
+
   const show = (type, text) => {
     setMsg({ type, text });
     setTimeout(() => setMsg({ type: '', text: '' }), 5000);
@@ -46,6 +52,8 @@ export default function Vicoba() {
     setSelected(g);
     api.get(`/vicoba/groups/${g.id}`).then((r) => setSelected(r.data.group)).catch(() => {});
     api.get(`/vicoba/groups/${g.id}/loans`).then((r) => setLoans(r.data.loans)).catch(() => {});
+    api.get(`/vicoba/groups/${g.id}/profits`).then((r) => setDistributions(r.data.distributions)).catch(() => { setDistributions([]); });
+    api.get('/vicoba/profits/my').then((r) => setMyPayouts(r.data.payouts)).catch(() => setMyPayouts([]));
   };
 
   const createGroup = async (e) => {
@@ -126,6 +134,31 @@ export default function Vicoba() {
   };
 
   const myRole = selected?.role_in_group || '';
+
+  const calculateProfit = async (e) => {
+    e.preventDefault();
+    try {
+      const res = await api.post(`/vicoba/groups/${selected.id}/profits/calculate`, {
+        cycleNumber: pCycle, totalProfit: pProfit,
+      });
+      setProfitCalc(res.data);
+      show('ok', t('vicoba.profit_calculated'));
+      const dl = await api.get(`/vicoba/groups/${selected.id}/profits`).then((r) => r.data.distributions);
+      setDistributions(dl);
+    } catch (err) { show('err', err.response?.data?.message || t('vicoba.error')); }
+  };
+
+  const approveProfit = async (distId) => {
+    try {
+      const res = await api.post(`/vicoba/profits/${distId}/approve`);
+      show('ok', res.data.message);
+      setProfitCalc(null);
+      const dl = await api.get(`/vicoba/groups/${selected.id}/profits`).then((r) => r.data.distributions);
+      setDistributions(dl);
+      api.get('/vicoba/profits/my').then((r) => setMyPayouts(r.data.payouts)).catch(() => {});
+    } catch (err) { show('err', err.response?.data?.message || t('vicoba.error')); }
+  };
+
   const canApprove = myRole === 'MWEKAHAZINA' || myRole === 'KATIBU';
   const canAddLoan = ['MWENYEKITI', 'MWEKAHAZINA', 'KATIBU'].includes(myRole);
   const isLeader = canAddLoan;
@@ -268,6 +301,82 @@ export default function Vicoba() {
               {loans.length === 0 && <tr><td colSpan="6" className="roles-tag">{t('vicoba.no_loans')}</td></tr>}
             </tbody>
           </table>
+
+          <h3 style={{ marginTop: 22 }}>{t('vicoba.profit_title')}</h3>
+          <p className="roles-tag" style={{ marginBottom: 12 }}>{t('vicoba.profit_sub')}</p>
+
+          {isLeader && (
+            <form className="form-row" onSubmit={calculateProfit} style={{ marginBottom: 12 }}>
+              <div className="field"><label>{t('vicoba.profit_cycle')}</label><input type="number" value={pCycle} onChange={(e) => setPCycle(e.target.value)} required /></div>
+              <div className="field"><label>{t('vicoba.profit_total')}</label><input type="number" value={pProfit} onChange={(e) => setPProfit(e.target.value)} required /></div>
+              <button className="btn" type="submit">{t('vicoba.profit_calc_btn')}</button>
+            </form>
+          )}
+
+          {profitCalc && (
+            <div className="card" style={{ marginBottom: 12, padding: 14 }}>
+              <strong>{t('vicoba.profit_preview')}: {formatMoney(profitCalc.totalProfit)}</strong>
+              <div className="roles-tag">{t('vicoba.profit_per_share', { v: formatMoney(profitCalc.perShareDividend) })} · {t('vicoba.profit_members', { c: profitCalc.payouts?.length || 0 })}</div>
+              <table style={{ marginTop: 10 }}>
+                <thead><tr><th>{t('vicoba.m_th_name')}</th><th>{t('vicoba.m_th_shares')}</th><th>{t('vicoba.profit_dividend')}</th></tr></thead>
+                <tbody>
+                  {(profitCalc.payouts || []).map((p, i) => (
+                    <tr key={i}><td>{p.name}</td><td>{p.shares}</td><td>{formatMoney(p.dividend)}</td></tr>
+                  ))}
+                </tbody>
+              </table>
+              {profitCalc.distribution && (
+                <div className="inline-actions" style={{ marginTop: 10 }}>
+                  <button className="btn warn" onClick={() => approveProfit(profitCalc.distribution.id)}>{t('vicoba.profit_approve')}</button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {distributions.length > 0 && (
+            <>
+              <h3 style={{ marginTop: 16, marginBottom: 8 }}>{t('vicoba.profit_distributions')}</h3>
+              <table>
+                <thead><tr><th>{t('vicoba.profit_d_cycle')}</th><th>{t('vicoba.profit_total2')}</th><th>{t('vicoba.profit_per_share2')}</th><th>{t('vicoba.profit_d_members')}</th><th>{t('vicoba.profit_d_paid')}</th><th>{t('vicoba.th_loan_status')}</th><th></th></tr></thead>
+                <tbody>
+                  {distributions.map((d) => (
+                    <tr key={d.id}>
+                      <td>#{d.cycle_number}</td>
+                      <td>{formatMoney(d.total_profit)}</td>
+                      <td>{formatMoney(d.per_share_dividend)}</td>
+                      <td>{d.payout_count}</td>
+                      <td>{formatMoney(d.total_paid)}</td>
+                      <td><StatusBadge status={d.status} /></td>
+                      <td>{isLeader && d.status === 'PENDING' && (
+                        <button className="btn warn" onClick={() => approveProfit(d.id)}>{t('vicoba.profit_approve')}</button>
+                      )}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </>
+          )}
+
+          {myPayouts.length > 0 && (
+            <>
+              <h3 style={{ marginTop: 16, marginBottom: 8 }}>{t('vicoba.profit_my')}</h3>
+              <table>
+                <thead><tr><th>{t('vicoba.profit_d_cycle')}</th><th>{t('vicoba.profit_dividend')}</th><th>{t('vicoba.m_th_shares')}</th><th>{t('vicoba.rollover')}</th><th>{t('vicoba.profit_paid')}</th><th>{t('vicoba.th_loan_status')}</th></tr></thead>
+                <tbody>
+                  {myPayouts.map((p) => (
+                    <tr key={p.id}>
+                      <td>#{p.cycle_number}</td>
+                      <td>{formatMoney(p.dividend_amount)}</td>
+                      <td>{p.shares_count}</td>
+                      <td>{p.rollover_shares}</td>
+                      <td>{formatMoney(p.dividend_amount)}</td>
+                      <td>{p.paid ? t('vicoba.yes') : t('vicoba.no')}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </>
+          )}
         </div>
       )}
     </ServiceLock>
