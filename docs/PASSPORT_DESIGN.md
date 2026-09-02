@@ -143,16 +143,41 @@ A dedicated hardening step should sync `auditService` to the real `audit_logs`
 schema (Phase 8+ regression, pre-existing, affects many services that import the
 non-existent `logAudit`).
 
-### 4.2 AFRIKOBA Marketplace
-Converge wallet / procurement / groups / finance around goods & services:
-```
-Need → discover → compare → finance → purchase → pay → insure → save → review
-```
-- Verified suppliers, AI-assisted price comparison, affordability checks via the
-  passport, cash / credit / group financing, escrow-payment, delivery confirm,
-  settlement, warranty/insurance.
-- AFRIKOBA should not wait for suppliers to manually populate prices before
-  helping the buyer establish a reasonable market price.
+### 4.2 AFRIKOBA Marketplace — IMPLEMENTED (Phase 15, v1)
+
+The need → discover → compare → finance → purchase → pay → insure → save → review
+loop is wired, built on the hardened ledger rather than replacing it:
+
+- **Migration `038_marketplace.sql`** — `marketplace_listings` (open catalog:
+  any verified seller, optional business float), `marketplace_orders` (escrow
+  statuses `ESCROW_HELD → CONFIRMED/CANCELLED/DISPUTED`), `marketplace_reviews`
+  (one per confirmed order), `marketplace_price_guide` (seeded market-data
+  price bands per item) and a new **`MARKETPLACE_ESCROW`** ledger account
+  (LIABILITY).
+- **`marketplaceService.js`**:
+  - *Discover/compare* — browse listings (category/query/price range/sort) +
+    `priceGuide()` which merges seeded market data with **live** listings so a
+    buyer gets a fair market band even before any seller lists an item.
+  - *Purchase/pay* — `buyListing()` journals `DR CUSTOMER_WALLET / CR
+    MARKETPLACE_ESCROW` through the engine (idempotent per-order reference),
+    decrements stock, and returns a **passport affordability advisory**
+    (disposable-capacity-gated reason; wallet balance is the hard gate).
+  - *Settle/refund* — `confirmDelivery()` settles escrow to the seller
+    (`DR MARKETPLACE_ESCROW / CR CUSTOMER_WALLET`); `cancelOrder()` refunds the
+    buyer. Both atomic with the order-status transition.
+  - *Review* — `reviewOrder()` (rating 1–5, upsert per order).
+- Escrow is a real ledger liability: reconciliation gains a
+  `MARKETPLACE_ESCROW` projection (`SUM(orders.total_amount WHERE ESCROW_HELD)`),
+  verified at 0-diff.
+- Routes mounted at `/marketplace` (public listing/price-guide; auth for
+  order/review).
+- Insure (insuranceService) and save (savings/autopilot) remain the dedicated
+  engines the marketplace can call into; financing is via passport-governed
+  eligibility (`creditScoreService.checkEligibility`).
+
+Roadmap (not yet built): business-buyer procurement & bulk RFQs, financing
+installments on orders, delivery-evidence/dispute resolution inside the loop,
+and seller onboarding/KYC verification badges.
 
 ### 4.3 Long-term product shape
 ```
@@ -183,3 +208,7 @@ Need → discover → compare → finance → purchase → pay → insure → sa
 - Eligibility now carries reasons, giving AFRIKOBA a stronger governance stance.
 - Autopilot auto-execution is **opt-in only** and **snapshots** the allocation at
   activation; it cannot silently change the amount or bypass affordability.
+- Marketplace escrow holds buyer funds in a dedicated **liability** ledger account
+  (`MARKETPLACE_ESCROW`), reconciled against `SUM(orders.total_amount WHERE
+  ESCROW_HELD)`; settlement/refund are journaled atomically with order-status
+  changes, so money can never appear or vanish outside the double-entry book.
