@@ -22,13 +22,13 @@ Everything we build must pass the "international standards" bar:
 
 | Reference Platform | Proven Feature | AFRIKOBA Module | Status |
 |---|---|---|---|
-| **eRosca / Moneyfellows** | Automated ROSCA collections + payout cycles; credit score from contribution history | Upatu (ROSCA) Engine | ✅ Built (payout cron, queue allocation) → **next**: auto-contribution scheduling + trust_score from history |
-| **ChamaPro / Mwanga** | Full chama accounting: contributions, loans, dividends/share-outs, member reports | VICOBA (Group Savings & Loans) | ✅ Built (multi-sig loans) → **next**: share-outs, dividend runs, group financial statements |
+| **eRosca / Moneyfellows** | Automated ROSCA collections + payout cycles; credit score from contribution history | Upatu (ROSCA) Engine | ✅ Auto-contribution + **trust_score from history** done (migration 042): on-time +/- missed scoring, per-member reliability, member trust history |
+| **ChamaPro / Mwanga** | Full chama accounting: contributions, loans, dividends/share-outs, member reports | VICOBA (Group Savings & Loans) | ✅ Built (multi-sig loans) + **share-outs/dividend runs** (calculate → approve → disburse per-share dividends, member payouts) |
 | **Tandem / Jamii** | Low-cost financial inclusion, microsavings, light KYC tiers | Light KYC onboarding + micro-vaults | 🔨 Onboarding (choose services) in progress |
 | **Kiva** | Global P2P crowdfunded microloans, field partners, transparent repayment | P2P Investment + **Donor/Crowdfunding Loans** | P2P ✅ built → **next**: Kiva-style lending circles + field partner API |
 | **Farmdrive / Complete Farmer** | Agri-financing tied to farm cycle; input financing; offtake-backed repayment | **Kilimo (Agri-Finance)** module | 🆕 Planned: input loans, harvest-cycle repayment, agronomist network |
 | **LendingClub / Prosper** | Risk grades, fractional investing, automated matching, secondary market | P2P Investment | ✅ risk grading + fractional shares → **next**: secondary market, auto-invest |
-| **Revolut / Monzo** | Multi-currency wallets, vaults/spaces, instant P2P, budgeting, cards | Digital Banking module | 🔨 wallet/wallet built → **next**: vaults, multi-currency, virtual cards |
+| **Revolut / Monzo** | Multi-currency wallets, vaults/spaces, instant P2P, budgeting, cards | Digital Banking module | ✅ Multi-currency wallets + FX done (TZS + KES/UGX/USD/EUR/GBP/RWF/GHS/NGN ...): live rates (direct/inverse/triangulated), ledgered conversions, display currency |
 | **Stripe Connect** | Platforms & connected accounts, split payments, escrow, KYC onboarding, dispute tools | **Malipo (Payments Platform)** + Split Engine | Split Engine ✅ built → **next**: connected merchant accounts, marketplace payouts |
 
 ### Feature cross-map → module ownership
@@ -100,10 +100,10 @@ Everything we build must pass the "international standards" bar:
 - [ ] Group invitations inbox (accept/reject)
 
 ### Phase 3 — Platform depth (world-class parity)
-- [ ] VICOBA share-outs & dividend runs (ChamaPro)
-- [ ] ROSCA auto-contribution scheduling + collections (eRosca)
-- [ ] Trust → **AFRIKOBA Credit Score** dashboard
-- [ ] Multi-currency wallets + FX (Revolut) — TZS, KES, UGX, USD
+- [x] VICOBA share-outs & dividend runs (ChamaPro) — done: calculate → approve per-share dividends, member payouts
+- [x] ROSCA auto-contribution scheduling + trust_score from history (eRosca) — done: migration 042, on-time/missed scoring
+- [x] Trust → **AFRIKOBA Credit Score** dashboard — done: 0-850 gauge, pillars, capacity, explained dimensions
+- [x] Multi-currency wallets + FX (Revolut) — TZS, KES, UGX, USD, EUR, GBP ... — done: dynamic currencies, live FX, holdings portfolio
 - [ ] Vaults/Spaces (targeted saving goals) (Monzo/Revolut)
 - [ ] Budgeting & spending insights (Monzo)
 
