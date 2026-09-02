@@ -17,7 +17,7 @@
 const pool = require('../config/db');
 const { getPassport } = require('./financialPassportService');
 const fin = require('./financialEngine');
-const { logAudit } = require('./auditService');
+const { logAction } = require('./auditService');
 const logger = require('../utils/logger');
 
 // Configurable guardrails (sensible defaults, overridable later)
@@ -207,8 +207,8 @@ async function activatePlan(userId, data) {
      VALUES ($1,$2,$3,$4,$5,'ACTIVE') RETURNING *`,
     [userId, goal_id || null, target, monthly, freq]
   );
-  await logAudit(userId, 'AUTOPILOT_ACTIVATED',
-    `Autopilot imewashwa: TZS ${monthly.toLocaleString()}/mwezi kuelekea TZS ${target.toLocaleString()}`).catch(() => {});
+  await logAction(userId, 'AUTOPILOT_ACTIVATED', 'AUTOPILOT_PLAN', res.rows[0].id,
+    `Autopilot: TZS ${monthly}/month toward TZS ${target}`);
   logger.info('AUTOPILOT', `User ${userId} activated plan #${res.rows[0].id} at ${monthly}/mo`);
   return { plan: res.rows[0], monthlyAllocationSnapshot: monthly, basedOnPassportVersion: plan.basedOnPassportVersion };
 }
@@ -233,7 +233,7 @@ async function setPlanStatus(userId, planId, status) {
     [status, planId, userId]
   );
   if (!res.rows.length) throw badge('Mpango haupatikani.', 404);
-  await logAudit(userId, `AUTOPILOT_${status}`, `Autopilot #${planId} sasa ${status}`).catch(() => {});
+  await logAction(userId, `AUTOPILOT_${status}`, 'AUTOPILOT_PLAN', planId, `Status -> ${status}`);
   return { plan: res.rows[0] };
 }
 
