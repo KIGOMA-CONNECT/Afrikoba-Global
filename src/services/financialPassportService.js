@@ -233,7 +233,7 @@ async function computeGroups(userId) {
   if (total === 0) { dims.push({ dimension: 'Group Participation', band: '0', reason: 'Not yet part of any group' }); }
   // meeting attendance reliability
   const att = await pool.query(
-    `SELECT COALESCE(SUM(m.meetings_attended),0)::int AS attended, COALESCE(SUM(meetings_attended + meetings_missed),0)::int AS total
+    `SELECT COALESCE(SUM(meetings_attended),0)::int AS attended, COALESCE(SUM(meetings_attended + meetings_missed),0)::int AS total
        FROM vicoba_members WHERE user_id = $1`, [userId]
   );
   let attScore = 0;
