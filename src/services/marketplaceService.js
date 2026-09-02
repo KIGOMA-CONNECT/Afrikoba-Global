@@ -383,11 +383,13 @@ async function buyListingFinanced(buyerId, listingId, qty, opts = {}) {
       [ref, buyerId, listing.seller_user_id, listing.id, listing.category, listing.title, unit, q, total, down]
     );
 
+    const firstDue = new Date();
+    firstDue.setMonth(firstDue.getMonth() + term);
     const finAgree = await client.query(
       `INSERT INTO marketplace_financing (order_id, buyer_user_id, financed_amount, fee_total, term_months, monthly_installment, next_due_date)
-       VALUES ($1,$2,$3,$4,$5,$6, NOW()::date + ($5 || ' months')::interval)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)
        RETURNING *`,
-      [order.rows[0].id, buyerId, financed, feeTotal, term, monthly]
+      [order.rows[0].id, buyerId, financed, feeTotal, term, monthly, firstDue.toISOString().slice(0, 10)]
     );
 
     await client.query(
