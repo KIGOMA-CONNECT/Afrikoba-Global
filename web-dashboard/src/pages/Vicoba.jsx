@@ -54,10 +54,10 @@ export default function Vicoba() {
       await api.post('/vicoba/groups', {
         groupName: gName, cycleType: gCycle, shareValue: gShare, monthlyMaintenanceFee: gFee || undefined,
       });
-      show('ok', 'Kikundi kimeundwa.');
+      show('ok', t('vicoba.group_created'));
       setGName(''); setGShare(''); setGFee('');
       loadGroups();
-    } catch (err) { show('err', err.response?.data?.message || 'Hitilafu.'); }
+    } catch (err) { show('err', err.response?.data?.message || t('vicoba.error')); }
   };
 
   const contribute = async (e) => {
@@ -69,17 +69,17 @@ export default function Vicoba() {
       show('ok', res.data.message);
       setContributeAmt('');
       selectGroup(selected);
-    } catch (err) { show('err', err.response?.data?.message || 'Hitilafu.'); }
+    } catch (err) { show('err', err.response?.data?.message || t('vicoba.error')); }
   };
 
   const addMember = async (e) => {
     e.preventDefault();
     try {
       await api.post(`/vicoba/groups/${selected.id}/members`, { userId: newMemberId });
-      show('ok', 'Mwanachama ameongezwa.');
+      show('ok', t('vicoba.member_added'));
       setNewMemberId('');
       selectGroup(selected);
-    } catch (err) { show('err', err.response?.data?.message || 'Hitilafu.'); }
+    } catch (err) { show('err', err.response?.data?.message || t('vicoba.error')); }
   };
 
   const joinByCode = async (e) => {
@@ -89,7 +89,7 @@ export default function Vicoba() {
       show('ok', res.data.message);
       setJoinCode('');
       loadGroups();
-    } catch (err) { show('err', err.response?.data?.message || 'Hitilafu.'); }
+    } catch (err) { show('err', err.response?.data?.message || t('vicoba.error')); }
   };
 
   const invite = async (e) => {
@@ -99,7 +99,7 @@ export default function Vicoba() {
       const res = await api.post(`/vicoba/groups/${selected.id}/invite`, { phoneNumbers: phones });
       show('ok', `Mialiko ${res.data.invited} imetumwa kwa SMS. Msimbo wa kikundi: ${res.data.joinCode}`);
       setInvitePhones('');
-    } catch (err) { show('err', err.response?.data?.message || 'Hitilafu.'); }
+    } catch (err) { show('err', err.response?.data?.message || t('vicoba.error')); }
   };
 
   const addLoan = async (e) => {
@@ -109,10 +109,10 @@ export default function Vicoba() {
         applicantUserId: loanApplicant, requestedAmount: loanAmount,
         interestRate: loanInterest, repaymentMonths: loanMonths,
       });
-      show('ok', 'Ombi la mkopo limeongezwa (linasubiri idhini ya Mwekahazina).');
+      show('ok', t('vicoba.loan_added'));
       setLoanApplicant(''); setLoanAmount('');
       api.get(`/vicoba/groups/${selected.id}/loans`).then((r) => setLoans(r.data.loans)).catch(() => {});
-    } catch (err) { show('err', err.response?.data?.message || 'Hitilafu.'); }
+    } catch (err) { show('err', err.response?.data?.message || t('vicoba.error')); }
   };
 
   const approve = async (loanId) => {
@@ -122,7 +122,7 @@ export default function Vicoba() {
       });
       show('ok', res.data.message);
       selectGroup(selected);
-    } catch (err) { show('err', err.response?.data?.message || 'Hitilafu.'); }
+    } catch (err) { show('err', err.response?.data?.message || t('vicoba.error')); }
   };
 
   const myRole = selected?.role_in_group || '';
@@ -141,15 +141,15 @@ export default function Vicoba() {
 
       <div className="grid grid-2">
         <div className="card">
-          <h3>Vikundi Vyako</h3>
-          {groups.length === 0 && <p className="roles-tag">Hujajiunga na kikundi chochote bado.</p>}
+          <h3>{t('vicoba.groups')}</h3>
+          {groups.length === 0 && <p className="roles-tag">{t('vicoba.no_groups')}</p>}
           {groups.map((g) => (
             <div key={g.id} className="inline-actions" style={{ justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--border)' }}>
               <div>
                 <strong>{g.group_name}</strong>
-                <div className="roles-tag">{g.cycle_type} · Hisa {formatMoney(g.share_value)} · Wewe: {g.role_in_group}</div>
+                <div className="roles-tag">{g.cycle_type} · {t('vicoba.share')} {formatMoney(g.share_value)} · Wewe: {g.role_in_group}</div>
               </div>
-              <button className="btn ghost" onClick={() => selectGroup(g)}>Fungua</button>
+              <button className="btn ghost" onClick={() => selectGroup(g)}>{t('vicoba.open')}</button>
             </div>
           ))}
         </div>
@@ -157,21 +157,21 @@ export default function Vicoba() {
         <div className="card">
           <h3>{t('vicoba.create_group')}</h3>
           <form className="form-row" onSubmit={createGroup}>
-            <div className="field"><label>Jina</label><input value={gName} onChange={(e) => setGName(e.target.value)} required /></div>
-            <div className="field"><label>Mzunguko</label>
+            <div className="field"><label>{t('vicoba.name')}</label><input value={gName} onChange={(e) => setGName(e.target.value)} required /></div>
+            <div className="field"><label>{t('vicoba.cycle')}</label>
               <select value={gCycle} onChange={(e) => setGCycle(e.target.value)}>
                 <option value="WEEKLY">Wiki</option><option value="MONTHLY">Mwezi</option>
               </select>
             </div>
-            <div className="field"><label>Bei ya Hisa</label><input type="number" value={gShare} onChange={(e) => setGShare(e.target.value)} required /></div>
-            <div className="field"><label>Ada ya Mwezi</label><input type="number" value={gFee} onChange={(e) => setGFee(e.target.value)} /></div>
+            <div className="field"><label>{t('vicoba.share')}</label><input type="number" value={gShare} onChange={(e) => setGShare(e.target.value)} required /></div>
+            <div className="field"><label>{t('vicoba.fee')}</label><input type="number" value={gFee} onChange={(e) => setGFee(e.target.value)} /></div>
             <button className="btn" type="submit">{t('vicoba.create_btn')}</button>
           </form>
 
           <h3 style={{ marginTop: 18 }}>{t('vicoba.join_code')}</h3>
           <form className="form-row" onSubmit={joinByCode}>
             <div className="field">
-              <label>Msimbo wa Kujiunga (unatuma Mwenyekiti)</label>
+              <label>{t('vicoba.join_code_prompt')}</label>
               <input value={joinCode} onChange={(e) => setJoinCode(e.target.value)} placeholder="e.g. C9C9BDE7" required />
             </div>
             <button className="btn ghost" type="submit">{t('vicoba.join_btn')}</button>
@@ -182,37 +182,37 @@ export default function Vicoba() {
       {selected && (
         <div className="card section">
           <h3>{selected.group_name}
-            <span className="roles-tag" style={{ marginLeft: 12 }}>Wallet ya Kikundi: <strong>{formatMoney(selected.group_wallet_balance)}</strong></span>
+            <span className="roles-tag" style={{ marginLeft: 12 }}>{t('vicoba.group_wallet')}: <strong>{formatMoney(selected.group_wallet_balance)}</strong></span>
             {selected.join_code && (
-              <span className="roles-tag" style={{ marginLeft: 12 }}>Msimbo: <strong>{selected.join_code}</strong></span>
+              <span className="roles-tag" style={{ marginLeft: 12 }}>{t('vicoba.code')}: <strong>{selected.join_code}</strong></span>
             )}
           </h3>
 
           <div className="grid grid-2" style={{ marginBottom: 16 }}>
             <form className="form-row" onSubmit={contribute}>
-              <div className="field"><label>Weka Hisa (Kiasi)</label><input type="number" value={contributeAmt} onChange={(e) => setContributeAmt(e.target.value)} required /></div>
-              <div className="field"><label>Idadi ya Hisa</label><input type="number" value={contributeShares} onChange={(e) => setContributeShares(e.target.value)} /></div>
-              <button className="btn" type="submit">Weka Hisa</button>
+              <div className="field"><label>{t('vicoba.contribute')}</label><input type="number" value={contributeAmt} onChange={(e) => setContributeAmt(e.target.value)} required /></div>
+              <div className="field"><label>{t('vicoba.share_count')}</label><input type="number" value={contributeShares} onChange={(e) => setContributeShares(e.target.value)} /></div>
+              <button className="btn" type="submit">{t('vicoba.contribute_btn')}</button>
             </form>
             <form className="form-row" onSubmit={addMember}>
-              <div className="field"><label>Ongeza Mwanachama (User ID)</label><input type="number" value={newMemberId} onChange={(e) => setNewMemberId(e.target.value)} required /></div>
-              <button className="btn ghost" type="submit">Ongeza</button>
+              <div className="field"><label>{t('vicoba.add_member')}</label><input type="number" value={newMemberId} onChange={(e) => setNewMemberId(e.target.value)} required /></div>
+              <button className="btn ghost" type="submit">{t('vicoba.add')}</button>
             </form>
           </div>
 
           {isLeader && (
             <form className="form-row" onSubmit={invite} style={{ marginBottom: 16 }}>
               <div className="field" style={{ flex: 1 }}>
-                <label>Tuma Mialiko ya SMS (namba zikitenganishwa kwa koma)</label>
+                <label>{t('vicoba.invite_sms')}</label>
                 <input value={invitePhones} onChange={(e) => setInvitePhones(e.target.value)} placeholder="0712000001, 0713000002" />
               </div>
-              <button className="btn warn" type="submit">Tuma Mialiko</button>
+              <button className="btn warn" type="submit">{t('vicoba.send_invites')}</button>
             </form>
           )}
 
-          <h3 style={{ marginTop: 18 }}>Wanachama</h3>
+          <h3 style={{ marginTop: 18 }}>{t('vicoba.members')}</h3>
           <table>
-            <thead><tr><th>Jina</th><th>Namba</th><th>Wajibu</th><th>Hisa</th><th>Michango</th></tr></thead>
+            <thead><tr><th>{t('vicoba.m_th_name')}</th><th>{t('vicoba.m_th_phone')}</th><th>{t('vicoba.m_th_role')}</th><th>{t('vicoba.m_th_shares')}</th><th>{t('vicoba.m_th_contrib')}</th></tr></thead>
             <tbody>
               {selected.members.map((m) => (
                 <tr key={m.user_id}>
@@ -226,19 +226,19 @@ export default function Vicoba() {
             </tbody>
           </table>
 
-          <h3 style={{ marginTop: 22 }}>Mikopo (Multi-Signature)</h3>
+          <h3 style={{ marginTop: 22 }}>{t('vicoba.loans')}</h3>
           {canAddLoan && (
             <form className="form-row" onSubmit={addLoan}>
-              <div className="field"><label>Mwanachama (User ID)</label><input type="number" value={loanApplicant} onChange={(e) => setLoanApplicant(e.target.value)} required /></div>
-              <div className="field"><label>Kiasi</label><input type="number" value={loanAmount} onChange={(e) => setLoanAmount(e.target.value)} required /></div>
-              <div className="field"><label>Riba %</label><input type="number" value={loanInterest} onChange={(e) => setLoanInterest(e.target.value)} /></div>
-              <div className="field"><label>Miezi</label><input type="number" value={loanMonths} onChange={(e) => setLoanMonths(e.target.value)} /></div>
-              <button className="btn" type="submit">Ongeza Ombi</button>
+              <div className="field"><label>{t('vicoba.loan_member')}</label><input type="number" value={loanApplicant} onChange={(e) => setLoanApplicant(e.target.value)} required /></div>
+              <div className="field"><label>{t('vicoba.loan_amount')}</label><input type="number" value={loanAmount} onChange={(e) => setLoanAmount(e.target.value)} required /></div>
+              <div className="field"><label>{t('vicoba.loan_interest')}</label><input type="number" value={loanInterest} onChange={(e) => setLoanInterest(e.target.value)} /></div>
+              <div className="field"><label>{t('vicoba.loan_months')}</label><input type="number" value={loanMonths} onChange={(e) => setLoanMonths(e.target.value)} /></div>
+              <button className="btn" type="submit">{t('vicoba.add_loan')}</button>
             </form>
           )}
 
           <table>
-            <thead><tr><th>Ombi</th><th>Mwombaji</th><th>Kiasi</th><th>Idhini</th><th>Hali</th><th>Vitendo</th></tr></thead>
+            <thead><tr><th>{t('vicoba.th_request')}</th><th>{t('vicoba.th_applicant')}</th><th>{t('vicoba.loan_amount')}</th><th>{t('vicoba.th_approval')}</th><th>{t('vicoba.th_loan_status')}</th><th>{t('vicoba.th_loan_actions')}</th></tr></thead>
             <tbody>
               {loans.map((l) => (
                 <tr key={l.id}>
@@ -247,7 +247,7 @@ export default function Vicoba() {
                   <td>{formatMoney(l.requested_amount)}</td>
                   <td>
                     <span className="roles-tag">
-                      Mwenyekiti: {l.chairman_approval ? '✓' : '✗'} · Mwekahazina: {l.treasurer_approval ? '✓' : '✗'}
+                      {t('vicoba.approvals', { c: l.chairman_approval ? '✓' : '✗', t: l.treasurer_approval ? `${String.fromCharCode(10003)}` : '✗' })}
                     </span>
                   </td>
                   <td><StatusBadge status={l.status} /></td>
@@ -256,16 +256,16 @@ export default function Vicoba() {
                       <div className="inline-actions">
                         <input type="number" placeholder="Kiasi" style={{ minWidth: 80 }} value={approveAmount}
                           onChange={(e) => setApproveAmount(e.target.value)} />
-                        <button className="btn" onClick={() => approve(l.id)}>Toa Mkopo</button>
+                        <button className="btn" onClick={() => approve(l.id)}>{t('vicoba.release_loan')}</button>
                       </div>
                     )}
                     {l.status === 'PENDING' && l.treasurer_approval === false && canApprove && (
-                      <button className="btn warn" onClick={() => approve(l.id)}>Idhinisha</button>
+                      <button className="btn warn" onClick={() => approve(l.id)}>{t('vicoba.approve_loan')}</button>
                     )}
                   </td>
                 </tr>
               ))}
-              {loans.length === 0 && <tr><td colSpan="6" className="roles-tag">Hakuna mikopo.</td></tr>}
+              {loans.length === 0 && <tr><td colSpan="6" className="roles-tag">{t('vicoba.no_loans')}</td></tr>}
             </tbody>
           </table>
         </div>

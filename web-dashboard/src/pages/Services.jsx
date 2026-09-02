@@ -30,10 +30,10 @@ export default function Services() {
       } else {
         await api.post('/services/subscribe', { serviceKey: key });
       }
-      setMsg(active ? 'Umeondoka kwenye huduma hiyo.' : 'Umejiunga na huduma hiyo.');
+      setMsg(active ? t('services.left_msg') : t('services.joined_msg'));
       setTimeout(refresh, 600);
     } catch (e) {
-      setMsg(e.response?.data?.message || 'Hitilafu.');
+      setMsg(e.response?.data?.message || t('services.error'));
     }
   };
 
@@ -44,7 +44,7 @@ export default function Services() {
         <p>{t('services.sub')}</p>
       </div>
 
-      {msg && <div className={`msg ${msg.startsWith('Kamilisha') ? 'warn' : 'ok'}`}>{msg}</div>}
+      {msg && <div className="msg ok">{msg}</div>}
 
       <div className="grid grid-2">
         {catalog.map((svc) => (
@@ -56,14 +56,14 @@ export default function Services() {
             <div className="svc-card-top">
               <span className="svc-card-emoji">{svc.emoji}</span>
               <span className={`badge ${svc.active ? 'success' : svc.comingSoon ? 'pending' : 'info'}`}>
-                {svc.active ? 'IMEWASHWA' : svc.comingSoon ? 'Inakuja' : 'HAIJAWASHWA'}
+                {svc.active ? t('services.active') : svc.comingSoon ? t('services.coming') : t('services.inactive')}
               </span>
             </div>
             <h3>{svc.swahili || svc.name}</h3>
             <p className="svc-card-tagline">{svc.tagline}</p>
             <div className="svc-card-footer">
               <span className="roles-tag">
-                {svc.baseService ? 'Huduma ya msingi' : `KYC Level ${svc.requiresKyc}`}
+                {svc.baseService ? t('services.base') : t('services.kyc_level', { level: svc.requiresKyc })}
               </span>
               {!svc.baseService && !svc.comingSoon && (
                 <button
@@ -74,7 +74,7 @@ export default function Services() {
                   {svc.active ? t('services.leave') : t('services.join')}
                 </button>
               )}
-              {svc.comingSoon && <span className="roles-tag">Hivi karibuni</span>}
+              {svc.comingSoon && <span className="roles-tag">{t('services.soon')}</span>}
             </div>
           </Link>
         ))}

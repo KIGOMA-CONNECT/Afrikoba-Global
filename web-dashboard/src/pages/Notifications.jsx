@@ -37,7 +37,7 @@ export default function Notifications() {
 
   const markAllRead = async () => {
     const res = await api.put('/notifications/read-all');
-    show('ok', `${res.data.count} zimesomwa.`);
+    show('ok', t('notifications.read_all_msg', { count: res.data.count }));
     load();
   };
 
@@ -63,17 +63,17 @@ export default function Notifications() {
       <div className="card" style={{ marginBottom: 16 }}>
         <div className="inline-actions" style={{ justifyContent: 'space-between' }}>
           <div className="inline-actions">
-            <button className={`btn ${!unreadOnly ? '' : 'ghost'}`} onClick={() => { setUnreadOnly(false); setPage(1); }}>Zote</button>
+            <button className={`btn ${!unreadOnly ? '' : 'ghost'}`} onClick={() => { setUnreadOnly(false); setPage(1); }}>{t('notifications.all')}</button>
             <button className={`btn ${unreadOnly ? '' : 'ghost'}`} onClick={() => { setUnreadOnly(true); setPage(1); }}>
-              Hazijasomwa ({unreadCount})
+              {t('notifications.unread', { count: unreadCount })}
             </button>
           </div>
-          <button className="btn ghost" onClick={markAllRead}>Soma Zote</button>
+          <button className="btn ghost" onClick={markAllRead}>{t('notifications.read_all')}</button>
         </div>
       </div>
 
       <div className="card">
-        {notifications.length === 0 && <p className="roles-tag">Hakuna arifa.</p>}
+        {notifications.length === 0 && <p className="roles-tag">{t('notifications.empty')}</p>}
         {notifications.map((n) => (
           <div key={n.id} style={{
             padding: '12px 0',
@@ -93,7 +93,7 @@ export default function Notifications() {
             </div>
             {!n.read_at && (
               <button className="btn ghost" style={{ fontSize: 11, padding: '4px 8px' }} onClick={() => markRead(n.id)}>
-                Soma
+                {t('notifications.read')}
               </button>
             )}
           </div>
@@ -102,9 +102,9 @@ export default function Notifications() {
 
       {totalPages > 1 && (
         <div className="inline-actions" style={{ justifyContent: 'center', marginTop: 16 }}>
-          <button className="btn ghost" disabled={page <= 1} onClick={() => setPage(page - 1)}>Nyuma</button>
-          <span className="roles-tag">Ukurasa {page} / {totalPages}</span>
-          <button className="btn ghost" disabled={page >= totalPages} onClick={() => setPage(page + 1)}>Mbele</button>
+          <button className="btn ghost" disabled={page <= 1} onClick={() => setPage(page - 1)}>{t('notifications.prev')}</button>
+          <span className="roles-tag">{t('notifications.page', { page, total: totalPages })}</span>
+          <button className="btn ghost" disabled={page >= totalPages} onClick={() => setPage(page + 1)}>{t('notifications.next')}</button>
         </div>
       )}
     </>

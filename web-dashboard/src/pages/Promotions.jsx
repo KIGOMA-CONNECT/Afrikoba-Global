@@ -31,14 +31,14 @@ export default function Promotions() {
     setMsg('');
     try {
       await api.post('/services/subscribe', { serviceKey: key });
-      setMsg('Umejiunga na huduma hii. Karibu!');
+      setMsg(t('promotions.joined_msg'));
       setTimeout(() => {
         api.get('/services/catalog').then((r) => {
           setActive(r.data.catalog.filter((s) => s.active).map((s) => s.key));
         }).catch(() => {});
       }, 700);
     } catch (e) {
-      setMsg(e.response?.data?.message || 'Hitilafu.');
+      setMsg(e.response?.data?.message || t('promotions.error'));
     }
   };
 
@@ -46,9 +46,9 @@ export default function Promotions() {
     const text = shareText(svc);
     try {
       await navigator.clipboard.writeText(text);
-      setMsg(`Ujumbe wa ${svc.swahili} umenakiliwa — tayari kwa SMS/WhatsApp.`);
+      setMsg(t('promotions.copied', { name: svc.swahili }));
     } catch {
-      setMsg('Haukuweza kunakili. Nakili kwa mkono: ' + text);
+      setMsg(t('promotions.copy_fail', { text }));
     }
   };
 
@@ -59,7 +59,7 @@ export default function Promotions() {
         <p>{t('promotions.sub')}</p>
       </div>
 
-      {msg && <div className={`msg ${msg.includes('Umejiunga') || msg.includes('imenakiliwa') ? 'ok' : 'warn'}`}>{msg}</div>}
+      {msg && <div className="msg ok">{msg}</div>}
 
       <div className="grid grid-2">
         {offers.map((svc) => {
@@ -68,7 +68,7 @@ export default function Promotions() {
             <div key={svc.key} className={`card ${!isOn ? 'locked' : ''}`} style={{ borderTop: `4px solid ${svc.color}` }}>
               <div className="inline-actions" style={{ justifyContent: 'space-between' }}>
                 <h3 style={{ margin: 0 }}>{svc.emoji} {svc.swahili}</h3>
-                <span className={`badge ${isOn ? 'success' : 'info'}`}>{isOn ? 'IMEWASHWA' : 'HAIJAWASHWA'}</span>
+                <span className={`badge ${isOn ? 'success' : 'info'}`}>{isOn ? t('promotions.on') : t('promotions.off')}</span>
               </div>
               <p style={{ fontStyle: 'italic', color: svc.color }}>{svc.tagline}</p>
               <p className="roles-tag">{svc.description}</p>
@@ -81,11 +81,11 @@ export default function Promotions() {
                 {svc.comingSoon ? (
                   <span className="roles-tag">{svc.cta}</span>
                 ) : isOn ? (
-                  <span className="badge success">Uko ndani ✓</span>
+                  <span className="badge success">{t('promotions.you_in')}</span>
                 ) : (
                   <button className="btn" onClick={() => subscribe(svc.key)}>{svc.cta}</button>
                 )}
-                <button className="btn ghost" onClick={() => copyShare(svc)}>📣 Nakili Mwaliko</button>
+                <button className="btn ghost" onClick={() => copyShare(svc)}>{t('promotions.copy_invite')}</button>
               </div>
             </div>
           );
@@ -93,10 +93,9 @@ export default function Promotions() {
       </div>
 
       <div className="card section">
-        <h3>Kwa nje ya mfumo (API ya Matangazo)</h3>
+        <h3>{t('promotions.public_api')}</h3>
         <p className="roles-tag">
-          Data hizi pia zinapatikana kwa umma kupitia <code>GET /api/marketing/offers</code> - unaweza
-          kuzitumia kwenye website, landing pages, banners na adverts bila kuingia mfumo.
+          {t('promotions.public_api_note', { code: 'GET /api/marketing/offers' })}
         </p>
         <p style={{ fontSize: 13 }}>📣 Share: <strong>Afrikoba Global - Digital Banking & Upatu. {PUBLIC_SITE_URL}</strong></p>
       </div>

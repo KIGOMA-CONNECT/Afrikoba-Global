@@ -37,10 +37,10 @@ export default function Rosca() {
         poolName: pName, contributionAmount: pAmount, cycleFrequency: pFreq,
         totalMembers: pMembers, poolType: pType,
       });
-      show('ok', 'Mzunguko umeundwa.');
+      show('ok', t('rosca.pool_created'));
       setPName(''); setPAmount(''); setPMembers('');
       load();
-    } catch (err) { show('err', err.response?.data?.message || 'Hitilafu.'); }
+    } catch (err) { show('err', err.response?.data?.message || t('rosca.error')); }
   };
 
   const openPool = async (id) => {
@@ -53,7 +53,7 @@ export default function Rosca() {
       const res = await api.post(`/rosca/pools/${id}/join`, { wantEarlySlot: wantEarly });
       show('ok', res.data.message);
       openPool(id);
-    } catch (err) { show('err', err.response?.data?.message || 'Hitilafu.'); }
+    } catch (err) { show('err', err.response?.data?.message || t('rosca.error')); }
   };
 
   return (
@@ -69,13 +69,13 @@ export default function Rosca() {
         <div className="card">
           <h3>{t('rosca.create_cycle')}</h3>
           <form className="form-row" onSubmit={createPool}>
-            <div className="field"><label>Jina</label><input value={pName} onChange={(e) => setPName(e.target.value)} required /></div>
-            <div className="field"><label>Mchango (TZS)</label><input type="number" value={pAmount} onChange={(e) => setPAmount(e.target.value)} required /></div>
-            <div className="field"><label>Mzunguko</label>
+            <div className="field"><label>{t('rosca.name')}</label><input value={pName} onChange={(e) => setPName(e.target.value)} required /></div>
+            <div className="field"><label>{t('rosca.contribution')}</label><input type="number" value={pAmount} onChange={(e) => setPAmount(e.target.value)} required /></div>
+            <div className="field"><label>{t('rosca.frequency')}</label>
               <select value={pFreq} onChange={(e) => setPFreq(e.target.value)}><option value="WEEKLY">Wiki</option><option value="MONTHLY">Mwezi</option></select>
             </div>
-            <div className="field"><label>Idadi ya Wanachama</label><input type="number" value={pMembers} onChange={(e) => setPMembers(e.target.value)} required /></div>
-            <div className="field"><label>Aina</label>
+            <div className="field"><label>{t('rosca.member_count')}</label><input type="number" value={pMembers} onChange={(e) => setPMembers(e.target.value)} required /></div>
+            <div className="field"><label>{t('rosca.type')}</label>
               <select value={pType} onChange={(e) => setPType(e.target.value)}><option value="PUBLIC">Wazi</option><option value="PRIVATE_KIKOBA">Kikundi (Kibinafsi)</option></select>
             </div>
             <button className="btn" type="submit">{t('rosca.create_btn')}</button>
@@ -83,15 +83,16 @@ export default function Rosca() {
         </div>
 
         <div className="card">
-          <h3>Mizunguko Inayopatikana</h3>
+          <h3>{t('rosca.available')}</h3>
           <div className="field" style={{ marginBottom: 10 }}>
             <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
-              <option value="">Yote</option>
-              <option value="WAITING_MEMBERS">Subiri Wanachama</option>
-              <option value="ACTIVE">Inayoendelea</option>
-              <option value="COMPLETED">Imekamilika</option>
+              <option value="">{t('rosca.filter_all')}</option>
+              <option value="WAITING_MEMBERS">{t('rosca.filter_waiting')}</option>
+              <option value="ACTIVE">{t('rosca.filter_active')}</option>
+              <option value="COMPLETED">{t('rosca.filter_completed')}</option>
             </select>
           </div>
+          {pools.length === 0 && <p className="roles-tag">{t('rosca.no_pools')}</p>}
           {pools.map((p) => (
             <div key={p.id} className="inline-actions" style={{ justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--border)' }}>
               <div>
@@ -100,7 +101,7 @@ export default function Rosca() {
               </div>
               <div className="inline-actions">
                 <StatusBadge status={p.status} />
-                <button className="btn ghost" onClick={() => openPool(p.id)}>Fungua</button>
+                <button className="btn ghost" onClick={() => openPool(p.id)}>{t('rosca.open')}</button>
               </div>
             </div>
           ))}
@@ -115,14 +116,14 @@ export default function Rosca() {
               <button className="btn" onClick={() => joinPool(selected.id)}>{t('rosca.join_cycle')}</button>
               <label className="roles-tag" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 <input type="checkbox" checked={wantEarly} onChange={(e) => setWantEarly(e.target.checked)} />
-                Nataka Namba ya Mwanzo (1/2) - inahitaji Collateral
+                {t('rosca.early_slot')}
               </label>
             </div>
           )}
 
-          <h3 style={{ marginBottom: 8 }}>Wanachama na Namba</h3>
+          <h3 style={{ marginBottom: 8 }}>{t('rosca.members_title')}</h3>
           <table>
-            <thead><tr><th>Namba</th><th>Jina</th><th>Namba ya Simu</th><th>Trust Score</th><th>Amepokea?</th></tr></thead>
+            <thead><tr><th>{t('rosca.m_th_num')}</th><th>{t('rosca.m_th_name')}</th><th>{t('rosca.m_th_phone')}</th><th>{t('rosca.m_th_trust')}</th><th>{t('rosca.m_th_received')}</th></tr></thead>
             <tbody>
               {selected.members.map((m) => (
                 <tr key={m.assigned_queue_number}>
@@ -130,16 +131,16 @@ export default function Rosca() {
                   <td>{m.full_name}</td>
                   <td>{m.phone_number}</td>
                   <td>{m.trust_score}</td>
-                  <td>{m.has_received_payout ? 'Ndiyo' : 'Hapana'}</td>
+                  <td>{m.has_received_payout ? t('rosca.yes') : t('rosca.no')}</td>
                 </tr>
               ))}
-              {selected.members.length === 0 && <tr><td colSpan="5" className="roles-tag">Hakuna wanachama bado.</td></tr>}
+              {selected.members.length === 0 && <tr><td colSpan="5" className="roles-tag">{t('rosca.no_members')}</td></tr>}
             </tbody>
           </table>
 
-          <h3 style={{ margin: '22px 0 8px' }}>Ratiba ya Malipo (Schedules)</h3>
+          <h3 style={{ margin: '22px 0 8px' }}>{t('rosca.schedules')}</h3>
           <table>
-            <thead><tr><th>Mzunguko</th><th>Mnufaika (User ID)</th><th>Tarehe</th><th>Jumla ya Payout</th><th>Ada</th><th>Hali</th></tr></thead>
+            <thead><tr><th>{t('rosca.s_th_cycle')}</th><th>{t('rosca.s_th_recipient')}</th><th>{t('rosca.s_th_date')}</th><th>{t('rosca.s_th_total')}</th><th>{t('rosca.s_th_fee')}</th><th>{t('rosca.s_th_status')}</th></tr></thead>
             <tbody>
               {selected.schedules.map((s) => (
                 <tr key={s.id}>
@@ -151,7 +152,7 @@ export default function Rosca() {
                   <td><StatusBadge status={s.status} /></td>
                 </tr>
               ))}
-              {selected.schedules.length === 0 && <tr><td colSpan="6" className="roles-tag">Ratiba haijazalishwa bado (pool ikijaa, ratiba inajitengeneza).</td></tr>}
+              {selected.schedules.length === 0 && <tr><td colSpan="6" className="roles-tag">{t('rosca.no_schedules')}</td></tr>}
             </tbody>
           </table>
         </div>

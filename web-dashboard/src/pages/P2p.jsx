@@ -48,10 +48,10 @@ export default function P2p() {
         title, sector, description: desc, targetAmount: target, sharePrice,
         roiPercentage: roi, tenureMonths: tenure, paybackStartMonths: payback,
       });
-      show('ok', 'Mradi umeundwa (unahitaji uhakiki wa Admin).');
+      show('ok', t('p2p.created_msg'));
       setTitle(''); setDesc(''); setTarget(''); setSharePrice(''); setRoi(''); setTenure(''); setPayback('');
       load();
-    } catch (err) { show('err', err.response?.data?.message || 'Hitilafu.'); }
+    } catch (err) { show('err', err.response?.data?.message || t('p2p.error')); }
   };
 
   const invest = async (e) => {
@@ -60,7 +60,7 @@ export default function P2p() {
       const res = await api.post(`/p2p/projects/${selected.id}/invest`, { shares });
       show('ok', `${res.data.message} Mkataba: ${res.data.contractPdfUrl || 'unajalishwa'}`);
       openProject(selected.id);
-    } catch (err) { show('err', err.response?.data?.message || 'Hitilafu. (Angalia KYC Level 2)'); }
+    } catch (err) { show('err', err.response?.data?.message || t('p2p.invest_error')); }
   };
 
   const auditStep = async (stepName, passed) => {
@@ -68,7 +68,7 @@ export default function P2p() {
       await api.post(`/admin/projects/${selected.id}/audit`, { stepName, passed, notes: passed ? 'Imepita.' : 'Imekataliwa.' });
       show('ok', `${stepName} imewekwa.`);
       openProject(selected.id);
-    } catch (err) { show('err', err.response?.data?.message || 'Hitilafu.'); }
+    } catch (err) { show('err', err.response?.data?.message || t('p2p.error')); }
   };
 
   const createMilestones = async () => {
@@ -78,10 +78,10 @@ export default function P2p() {
         return { title: rest.join(' '), amount: amt };
       });
       await api.post(`/admin/projects/${selected.id}/milestones`, { milestones });
-      show('ok', 'Milestones zimehifadhiwa.');
+      show('ok', t('p2p.milestones_saved'));
       setMilestonesText('');
       openProject(selected.id);
-    } catch (err) { show('err', err.response?.data?.message || 'Hitilafu.'); }
+    } catch (err) { show('err', err.response?.data?.message || t('p2p.error')); }
   };
 
   const releaseMilestone = async (mid) => {
@@ -89,17 +89,17 @@ export default function P2p() {
       const res = await api.post(`/admin/milestones/${mid}/release`);
       show('ok', res.data.message);
       openProject(selected.id);
-    } catch (err) { show('err', err.response?.data?.message || 'Hitilafu.'); }
+    } catch (err) { show('err', err.response?.data?.message || t('p2p.error')); }
   };
 
   const recordRevenue = async (e) => {
     e.preventDefault();
     try {
       await api.post(`/admin/projects/${selected.id}/revenue`, { amount: revenueAmount, description: 'Mapato ya mwezi' });
-      show('ok', 'Mapato yamerekodiwa.');
+      show('ok', t('p2p.revenue_recorded'));
       setRevenueAmount('');
       openProject(selected.id);
-    } catch (err) { show('err', err.response?.data?.message || 'Hitilafu.'); }
+    } catch (err) { show('err', err.response?.data?.message || t('p2p.error')); }
   };
 
   const runSplit = async () => {
@@ -107,7 +107,7 @@ export default function P2p() {
       const res = await api.post(`/admin/projects/${selected.id}/split`);
       show('ok', `Split: Mjasiriamali ${formatMoney(res.data.operationalShare)}, Wawekezaji ${formatMoney(res.data.investorShare)}, Jukwaa ${formatMoney(res.data.platformShare)}`);
       openProject(selected.id);
-    } catch (err) { show('err', err.response?.data?.message || 'Hitilafu.'); }
+    } catch (err) { show('err', err.response?.data?.message || t('p2p.error')); }
   };
 
   return (
@@ -121,17 +121,18 @@ export default function P2p() {
 
       <div className="grid grid-2">
         <div className="card">
-          <h3>Miradi Iliyopo</h3>
+          <h3>{t('p2p.projects')}</h3>
+          {projects.length === 0 && <p className="roles-tag">{t('p2p.no_projects')}</p>}
           {projects.map((p) => (
             <div key={p.id} className="inline-actions" style={{ justifyContent: 'space-between', padding: '10px 0', borderBottom: '1px solid var(--border)' }}>
               <div>
                 <strong>{p.title}</strong>
-                <div className="roles-tag">{p.sector} · Lengo {formatMoney(p.target_amount)} · Imekusanywa {formatMoney(p.raised_amount)}</div>
-                <div className="roles-tag">ROI {p.roi_percentage}% · Hisa {formatMoney(p.share_price)} · {p.tenure_months} miezi</div>
+                <div className="roles-tag">{p.sector} · {t('p2p.goal')} {formatMoney(p.target_amount)} · {t('p2p.raised')} {formatMoney(p.raised_amount)}</div>
+                <div className="roles-tag">ROI {p.roi_percentage}% · {t('p2p.share_price')} {formatMoney(p.share_price)} · {p.tenure_months} miezi</div>
               </div>
               <div className="inline-actions">
                 <StatusBadge status={p.status} />
-                <button className="btn ghost" onClick={() => openProject(p.id)}>Fungua</button>
+                <button className="btn ghost" onClick={() => openProject(p.id)}>{t('p2p.open')}</button>
               </div>
             </div>
           ))}
@@ -139,11 +140,11 @@ export default function P2p() {
 
         {isIssuer && (
           <div className="card">
-            <h3>Wasilisha Mradi</h3>
+            <h3>{t('p2p.submit')}</h3>
             <form onSubmit={createProject}>
-              <div className="field" style={{ marginBottom: 10 }}><label>Jina la Mradi</label><input value={title} onChange={(e) => setTitle(e.target.value)} required /></div>
+              <div className="field" style={{ marginBottom: 10 }}><label>{t('p2p.title_field')}</label><input value={title} onChange={(e) => setTitle(e.target.value)} required /></div>
               <div className="form-row">
-                <div className="field"><label>Sekta</label>
+                <div className="field"><label>{t('p2p.sector')}</label>
                   <select value={sector} onChange={(e) => setSector(e.target.value)}>
                     <option value="KILIMO">Kilimo</option>
                     <option value="LOGISTICS">Logistics</option>
@@ -151,16 +152,16 @@ export default function P2p() {
                     <option value="SMES">Biashara Ndogo</option>
                   </select>
                 </div>
-                <div className="field"><label>Lengo (TZS)</label><input type="number" value={target} onChange={(e) => setTarget(e.target.value)} required /></div>
-                <div className="field"><label>Bei ya Hisa</label><input type="number" value={sharePrice} onChange={(e) => setSharePrice(e.target.value)} required /></div>
+                <div className="field"><label>{t('p2p.target')}</label><input type="number" value={target} onChange={(e) => setTarget(e.target.value)} required /></div>
+                <div className="field"><label>{t('p2p.share_price')}</label><input type="number" value={sharePrice} onChange={(e) => setSharePrice(e.target.value)} required /></div>
               </div>
               <div className="form-row">
-                <div className="field"><label>ROI %</label><input type="number" value={roi} onChange={(e) => setRoi(e.target.value)} required /></div>
-                <div className="field"><label>Muda (Miezi)</label><input type="number" value={tenure} onChange={(e) => setTenure(e.target.value)} required /></div>
-                <div className="field"><label>Faida bada ya (miezi)</label><input type="number" value={payback} onChange={(e) => setPayback(e.target.value)} required /></div>
+                <div className="field"><label>{t('p2p.roi')}</label><input type="number" value={roi} onChange={(e) => setRoi(e.target.value)} required /></div>
+                <div className="field"><label>{t('p2p.tenure')}</label><input type="number" value={tenure} onChange={(e) => setTenure(e.target.value)} required /></div>
+                <div className="field"><label>{t('p2p.payback')}</label><input type="number" value={payback} onChange={(e) => setPayback(e.target.value)} required /></div>
               </div>
-              <div className="field" style={{ marginBottom: 10 }}><label>Maelezo</label><textarea value={desc} onChange={(e) => setDesc(e.target.value)} required /></div>
-              <button className="btn" type="submit">Wasilisha</button>
+              <div className="field" style={{ marginBottom: 10 }}><label>{t('p2p.desc')}</label><textarea value={desc} onChange={(e) => setDesc(e.target.value)} required /></div>
+              <button className="btn" type="submit">{t('p2p.submit_btn')}</button>
             </form>
           </div>
         )}
@@ -174,26 +175,26 @@ export default function P2p() {
           <p className="roles-tag" style={{ marginBottom: 14 }}>{selected.description}</p>
 
           <div className="grid grid-4" style={{ marginBottom: 16 }}>
-            <div className="card stat"><div className="value">{formatMoney(selected.raised_amount)}</div><div className="label">Imekusanywa</div></div>
-            <div className="card stat"><div className="value">{formatMoney(selected.target_amount)}</div><div className="label">Lengo</div></div>
+            <div className="card stat"><div className="value">{formatMoney(selected.raised_amount)}</div><div className="label">{t('p2p.raised')}</div></div>
+            <div className="card stat"><div className="value">{formatMoney(selected.target_amount)}</div><div className="label">{t('p2p.goal')}</div></div>
             <div className="card stat"><div className="value">{selected.roi_percentage}%</div><div className="label">ROI</div></div>
-            <div className="card stat"><div className="value">{selected.investor_count || selected.investors?.length || 0}</div><div className="label">Wawekezaji</div></div>
+            <div className="card stat"><div className="value">{selected.investor_count || selected.investors?.length || 0}</div><div className="label">{t('p2p.investors_count')}</div></div>
           </div>
 
           {selected.status === 'VERIFIED_ACTIVE' && (
             <form className="form-row" onSubmit={invest}>
-              <div className="field"><label>Idadi ya Hisa</label><input type="number" min="1" value={shares} onChange={(e) => setShares(e.target.value)} required /></div>
-              <button className="btn" type="submit">Wekeza</button>
-              <span className="roles-tag">Inahitaji KYC Level 2 (NIDA). Mkataba wa PDF utazalishwa papo hapo.</span>
+              <div className="field"><label>{t('p2p.shares')}</label><input type="number" min="1" value={shares} onChange={(e) => setShares(e.target.value)} required /></div>
+              <button className="btn" type="submit">{t('p2p.invest_btn')}</button>
+              <span className="roles-tag">{t('p2p.kyc_note')}</span>
             </form>
           )}
 
           {isAdmin && (
             <div className="grid grid-2 section">
               <div className="card">
-                <h3>Uhakiki (Due Diligence - Hatua 4)</h3>
+                <h3>{t('p2p.audit')}</h3>
                 <table>
-                  <thead><tr><th>Hatua</th><th>Hali</th><th>Vitendo</th></tr></thead>
+                  <thead><tr><th>{t('p2p.th_step')}</th><th>{t('p2p.th_status')}</th><th>{t('p2p.th_actions')}</th></tr></thead>
                   <tbody>
                     {selected.auditSteps?.map((s) => (
                       <tr key={s.id}>
@@ -202,8 +203,8 @@ export default function P2p() {
                         <td>
                           {s.status !== 'PASSED' && (
                             <div className="inline-actions">
-                              <button className="btn" onClick={() => auditStep(s.step_name, true)}>Pitisha</button>
-                              <button className="btn danger" onClick={() => auditStep(s.step_name, false)}>Kataa</button>
+                              <button className="btn" onClick={() => auditStep(s.step_name, true)}>{t('p2p.pass')}</button>
+                              <button className="btn danger" onClick={() => auditStep(s.step_name, false)}>{t('p2p.reject')}</button>
                             </div>
                           )}
                         </td>
@@ -212,13 +213,13 @@ export default function P2p() {
                   </tbody>
                 </table>
 
-                <h3 style={{ marginTop: 18 }}>Escrow Milestones</h3>
+                <h3 style={{ marginTop: 18 }}>{t('p2p.milestones')}</h3>
                 <div className="inline-actions" style={{ marginBottom: 10 }}>
-                  <textarea placeholder="Kiasi Jina...&#10;2000000 Awamu ya 1 - Malighafi" value={milestonesText} onChange={(e) => setMilestonesText(e.target.value)} style={{ flex: 1, minHeight: 60 }} />
-                  <button className="btn ghost" onClick={createMilestones}>Hifadhi Milestones</button>
+                  <textarea placeholder={`${t('p2p.milestones_hint')}...`} value={milestonesText} onChange={(e) => setMilestonesText(e.target.value)} style={{ flex: 1, minHeight: 60 }} />
+                  <button className="btn ghost" onClick={createMilestones}>{t('p2p.save_milestones')}</button>
                 </div>
                 <table>
-                  <thead><tr><th>#</th><th>Jina</th><th>Kiasi</th><th>Hali</th><th></th></tr></thead>
+                  <thead><tr><th>{t('p2p.th_num')}</th><th>{t('p2p.th_name')}</th><th>{t('p2p.th_amount')}</th><th>{t('p2p.th_status')}</th><th></th></tr></thead>
                   <tbody>
                     {selected.milestones.map((m) => (
                       <tr key={m.id}>
@@ -226,7 +227,7 @@ export default function P2p() {
                         <td>{m.title}</td>
                         <td>{formatMoney(m.amount)}</td>
                         <td><StatusBadge status={m.status} /></td>
-                        <td>{m.status === 'LOCKED' && <button className="btn" onClick={() => releaseMilestone(m.id)}>Toa Fedha</button>}</td>
+                        <td>{m.status === 'LOCKED' && <button className="btn" onClick={() => releaseMilestone(m.id)}>{t('p2p.release')}</button>}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -234,21 +235,21 @@ export default function P2p() {
               </div>
 
               <div className="card">
-                <h3>Business Wallet & Split Payment (70/28/2)</h3>
+                <h3>{t('p2p.biz_wallet')}</h3>
                 {selected.businessWallet && (
                   <>
                     <table>
                       <tbody>
-                        <tr><td>Mapato ya Kugawanya</td><td><strong>{formatMoney(selected.businessWallet.total_revenue_collected)}</strong></td></tr>
-                        <tr><td>Mjasiriamali (70%)</td><td>{formatMoney(selected.businessWallet.operational_balance)}</td></tr>
-                        <tr><td>Wawekezaji (28%)</td><td>{formatMoney(selected.businessWallet.investor_reserved_balance)}</td></tr>
-                        <tr><td>Jukwaa (2%)</td><td>{formatMoney(selected.businessWallet.platform_commission_balance)}</td></tr>
+                        <tr><td>{t('p2p.th_rev')}</td><td><strong>{formatMoney(selected.businessWallet.total_revenue_collected)}</strong></td></tr>
+                        <tr><td>{t('p2p.entrepreneur')}</td><td>{formatMoney(selected.businessWallet.operational_balance)}</td></tr>
+                        <tr><td>{t('p2p.investors')}</td><td>{formatMoney(selected.businessWallet.investor_reserved_balance)}</td></tr>
+                        <tr><td>{t('p2p.platform')}</td><td>{formatMoney(selected.businessWallet.platform_commission_balance)}</td></tr>
                       </tbody>
                     </table>
                     <form className="form-row" onSubmit={recordRevenue}>
-                      <div className="field"><label>Rekodi Mapato (TZS)</label><input type="number" value={revenueAmount} onChange={(e) => setRevenueAmount(e.target.value)} required /></div>
-                      <button className="btn" type="submit">Rekodi</button>
-                      <button className="btn warn" type="button" onClick={runSplit}>Gawa Mapato (Split)</button>
+                      <div className="field"><label>{t('p2p.record_rev')}</label><input type="number" value={revenueAmount} onChange={(e) => setRevenueAmount(e.target.value)} required /></div>
+                      <button className="btn" type="submit">{t('p2p.record')}</button>
+                      <button className="btn warn" type="button" onClick={runSplit}>{t('p2p.split')}</button>
                     </form>
                   </>
                 )}
@@ -256,9 +257,9 @@ export default function P2p() {
             </div>
           )}
 
-          <h3 style={{ margin: '22px 0 8px' }}>Wawekezaji</h3>
+          <h3 style={{ margin: '22px 0 8px' }}>{t('p2p.investors_title')}</h3>
           <table>
-            <thead><tr><th>Mwekezaji</th><th>Hisa</th><th>Kiasi</th><th>Mkataba</th><th>Hali</th></tr></thead>
+            <thead><tr><th>{t('p2p.th_investor')}</th><th>{t('p2p.th_shares')}</th><th>{t('p2p.th_amount')}</th><th>{t('p2p.th_contract')}</th><th>{t('p2p.th_status')}</th></tr></thead>
             <tbody>
               {selected.investors?.map((i) => (
                 <tr key={i.id}>
@@ -269,7 +270,7 @@ export default function P2p() {
                   <td><StatusBadge status={i.status} /></td>
                 </tr>
               ))}
-              {(!selected.investors || selected.investors.length === 0) && <tr><td colSpan="5" className="roles-tag">Hakuna wawekezaji bado.</td></tr>}
+              {(!selected.investors || selected.investors.length === 0) && <tr><td colSpan="5" className="roles-tag">{t('p2p.no_investors')}</td></tr>}
             </tbody>
           </table>
         </div>

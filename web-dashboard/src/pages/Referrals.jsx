@@ -24,17 +24,17 @@ export default function Referrals() {
   const generateCode = async () => {
     try {
       const res = await api.post('/referrals/generate-code');
-      show('ok', `Msimbo wako: ${res.data.code}`);
+      show('ok', t('referrals.code_new', { code: res.data.code }));
       load();
     } catch (err) {
-      show('err', err.response?.data?.message || 'Hitilafu.');
+      show('err', err.response?.data?.message || t('referrals.error'));
     }
   };
 
   const copyCode = () => {
     if (stats?.code) {
       navigator.clipboard.writeText(stats.code);
-      show('ok', 'Msimbo umenakiliwa!');
+      show('ok', t('referrals.code_copy'));
     }
   };
 
@@ -50,37 +50,37 @@ export default function Referrals() {
       <div className="grid grid-3" style={{ marginBottom: 20 }}>
         <div className="card stat">
           <div className="value">{stats?.code || '...'}</div>
-          <div className="label">Msimbo Wako</div>
+          <div className="label">{t('referrals.code')}</div>
           <div className="inline-actions" style={{ justifyContent: 'center', marginTop: 8 }}>
-            <button className="btn ghost" style={{ fontSize: 11 }} onClick={copyCode}>Nakili</button>
-            <button className="btn ghost" style={{ fontSize: 11 }} onClick={generateCode}>Mpya</button>
+            <button className="btn ghost" style={{ fontSize: 11 }} onClick={copyCode}>{t('referrals.copy')}</button>
+            <button className="btn ghost" style={{ fontSize: 11 }} onClick={generateCode}>{t('referrals.new')}</button>
           </div>
         </div>
         <div className="card stat">
           <div className="value">{stats?.totalReferrals || 0}</div>
-          <div className="label">Rafiki Walioalitwa</div>
+          <div className="label">{t('referrals.total')}</div>
         </div>
         <div className="card stat">
           <div className="value">{formatMoney(stats?.totalEarned || 0)}</div>
-          <div className="label">Zawadi Ulizopata</div>
+          <div className="label">{t('referrals.earned')}</div>
         </div>
       </div>
 
       <div className="card">
-        <h3>Jinsi ya Kufanya Kazi</h3>
+        <h3>{t('referrals.howto')}</h3>
         <ol style={{ fontSize: 13, color: 'var(--muted)', lineHeight: 1.8 }}>
-          <li>Shiriki msimbo wako na rafiki</li>
-          <li>Rafiki ajiunge na Afrikoba Global kwa msimbo wako</li>
-          <li>Rafiki aweka fedha kwenye wallet (kiwango cha chini: TSh 10,000)</li>
-          <li>Unapata TSh 5,000 zawadi moja kwa moja kwenye wallet yako!</li>
+          <li>{t('referrals.howto_step1')}</li>
+          <li>{t('referrals.howto_step2')}</li>
+          <li>{t('referrals.howto_step3', { min: formatMoney(10000) })}</li>
+          <li>{t('referrals.howto_step4', { reward: formatMoney(5000) })}</li>
         </ol>
       </div>
 
       <div className="card section">
-        <h3>Rafiki Waliyoalitwa</h3>
+        <h3>{t('referrals.my')}</h3>
         <table>
           <thead>
-            <tr><th>Rafiki</th><th>Hali</th><th>Zawadi</th><th>Tarehe</th></tr>
+            <tr><th>{t('referrals.th_friend')}</th><th>{t('referrals.th_status')}</th><th>{t('referrals.th_reward')}</th><th>{t('referrals.th_date')}</th></tr>
           </thead>
           <tbody>
             {stats?.referrals?.map((r) => (
@@ -92,7 +92,7 @@ export default function Referrals() {
               </tr>
             ))}
             {(!stats?.referrals || stats.referrals.length === 0) && (
-              <tr><td colSpan="4" className="roles-tag">Hujafanikiwa kualta rafiki bado.</td></tr>
+              <tr><td colSpan="4" className="roles-tag">{t('referrals.empty')}</td></tr>
             )}
           </tbody>
         </table>

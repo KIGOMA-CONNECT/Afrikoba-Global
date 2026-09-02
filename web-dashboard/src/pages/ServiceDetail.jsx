@@ -72,21 +72,21 @@ export default function ServiceDetail() {
     try {
       await api.post('/services/subscribe', { serviceKey: key });
       setSvc((prev) => ({ ...prev, active: true }));
-      setMsg('Umejiunga na huduma hii. Karibu!');
+      setMsg(t('servicedetail.joined_msg'));
       const user = JSON.parse(localStorage.getItem('afrikoba_user') || '{}');
       user.services = [...(user.services || []), key];
       localStorage.setItem('afrikoba_user', JSON.stringify(user));
     } catch (e) {
-      setMsg(e.response?.data?.message || 'Hitilafu.');
+      setMsg(e.response?.data?.message || t('servicedetail.join_error'));
     } finally {
       setSubscribing(false);
     }
   };
 
-  if (loading) return <div className="page-head"><p>Inapakia...</p></div>;
+  if (loading) return <div className="page-head"><p>{t('servicedetail.loading')}</p></div>;
   if (!svc) return (
     <div className="page-head">
-      <p>Huduma haipatikani.</p>
+      <p>{t('servicedetail.notfound')}</p>
       <Link to="/dashboard/services" className="btn ghost" style={{ marginTop: 12, display: 'inline-block' }}>{t('services.back')}</Link>
     </div>
   );
@@ -110,13 +110,13 @@ export default function ServiceDetail() {
 
         <div className="svc-detail-body">
           <div className="svc-detail-desc">
-            <h3>Maelezo</h3>
+            <h3>{t('servicedetail.desc')}</h3>
             <p>{svc.description}</p>
           </div>
 
           {svc.perks && svc.perks.length > 0 && (
             <div className="svc-detail-perks">
-              <h3>Faida za Huduma</h3>
+              <h3>{t('servicedetail.perks')}</h3>
               <ul>
                 {svc.perks.map((perk, i) => <li key={i}>{perk}</li>)}
               </ul>
@@ -125,13 +125,13 @@ export default function ServiceDetail() {
 
           <div className="svc-detail-meta">
             <div className="svc-meta-item">
-              <span className="svc-meta-label">Kiwango cha KYC</span>
-              <span className="svc-meta-value">{svc.baseService ? 'Huduma ya msingi' : `Level ${svc.requiresKyc}`}</span>
+              <span className="svc-meta-label">{t('servicedetail.kyc')}</span>
+              <span className="svc-meta-value">{svc.baseService ? t('servicedetail.base') : `Level ${svc.requiresKyc}`}</span>
             </div>
             <div className="svc-meta-item">
-              <span className="svc-meta-label">Hali</span>
+              <span className="svc-meta-label">{t('servicedetail.status')}</span>
               <span className={`badge ${svc.active ? 'success' : svc.comingSoon ? 'pending' : 'info'}`}>
-                {svc.active ? 'IMEWASHWA' : svc.comingSoon ? 'Inakuja hivi karibuni' : 'HAIJAWASHWA'}
+                {svc.active ? t('servicedetail.active') : svc.comingSoon ? t('servicedetail.coming') : t('servicedetail.inactive')}
               </span>
             </div>
           </div>
@@ -140,19 +140,19 @@ export default function ServiceDetail() {
 
           <div className="svc-detail-actions">
             {svc.comingSoon ? (
-              <button className="btn" disabled>Inakuja hivi karibuni</button>
+              <button className="btn" disabled>{t('servicedetail.coming')}</button>
             ) : svc.active ? (
               <div className="svc-active-row">
-                <span className="badge success" style={{ fontSize: 13, padding: '6px 14px' }}>✓ Huduma hii imeashwa</span>
+                <span className="badge success" style={{ fontSize: 13, padding: '6px 14px' }}>{t('servicedetail.enabled')}</span>
                 {svc.key !== 'WALLET' && (
                   <Link to={`/dashboard/${svc.key.toLowerCase()}`} className="btn">
-                    Fungua {svc.swahili || svc.name}
+                    {t('servicedetail.open', { name: svc.swahili || svc.name })}
                   </Link>
                 )}
               </div>
             ) : (
               <button className="btn" onClick={subscribe} disabled={subscribing}>
-                {subscribing ? 'Inajiunga...' : svc.cta || 'Jiunge Sasa'}
+                {subscribing ? t('servicedetail.joining') : svc.cta || t('servicedetail.join_now')}
               </button>
             )}
           </div>
