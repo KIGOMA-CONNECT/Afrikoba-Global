@@ -41,6 +41,10 @@ export default function Financing() {
     return p > 0 ? Math.min(100, Math.round((Number(row.paid_amount) / p) * 100)) : 0;
   };
 
+  const active = rows.filter((r) => r.status === 'ACTIVE');
+  const outStanding = active.reduce((s, r) => s + Math.max(0, total(r) - Number(r.paid_amount)), 0);
+  const paidTotal = rows.reduce((s, r) => s + Number(r.paid_amount), 0);
+
   return (
     <>
       <div className="page-head">
@@ -49,6 +53,21 @@ export default function Financing() {
       </div>
 
       {msg.text && <div className={`msg ${msg.type}`}>{msg.text}</div>}
+
+      <div className="grid grid-3" style={{ marginBottom: 16 }}>
+        <div className="card stat">
+          <div className="value">{active.length}</div>
+          <div className="label">{t('fin.actives')}</div>
+        </div>
+        <div className="card stat">
+          <div className="value" style={{ fontSize: 20 }}>{formatMoney(outStanding)}</div>
+          <div className="label">{t('fin.outstanding')}</div>
+        </div>
+        <div className="card stat">
+          <div className="value" style={{ fontSize: 20 }}>{formatMoney(paidTotal)}</div>
+          <div className="label">{t('fin.paid_total')}</div>
+        </div>
+      </div>
 
       <div className="card section">
         <h3>{t('fin.agreements')}</h3>

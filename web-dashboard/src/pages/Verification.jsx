@@ -47,7 +47,7 @@ export default function Verification() {
           <h3>{t('ver.check_btn')}</h3>
           <div className="form-row">
             <div className="field">
-              <label>Seller ID</label>
+              <label>{t('ver.seller_id')}</label>
               <input type="number" value={sellerId} onChange={(e) => setSellerId(e.target.value)} />
             </div>
             <button className="btn" onClick={() => check(null)}>{t('ver.check_btn')}</button>
@@ -79,15 +79,24 @@ export default function Verification() {
         <div className="card">
           <h3>{t('ver.summary')}</h3>
           {profile && profile.summary ? (
-            <table>
-              <tbody>
-                <tr><td>{t('ver.confirmed')}</td><td>{profile.summary.confirmed_orders}</td></tr>
-                <tr><td>{t('ver.avg_rating')}</td><td>{profile.summary.avg_rating != null ? Number(profile.summary.avg_rating).toFixed(1) : '—'}</td></tr>
-                <tr><td>{t('ver.reviews')}</td><td>{profile.summary.review_count}</td></tr>
-                <tr><td>{t('ver.disputes')}</td><td>{profile.summary.open_disputes}</td></tr>
-                <tr><td>{t('ver.days')}</td><td>{profile.summary.account_age_days}</td></tr>
-              </tbody>
-            </table>
+            <>
+              <table>
+                <tbody>
+                  <tr><td>{t('ver.confirmed')}</td><td>{profile.summary.confirmed_orders}</td></tr>
+                  <tr><td>{t('ver.avg_rating')}</td><td>{profile.summary.avg_rating != null ? Number(profile.summary.avg_rating).toFixed(1) : '—'}</td></tr>
+                  <tr><td>{t('ver.reviews')}</td><td>{profile.summary.review_count}</td></tr>
+                  <tr>
+                    <td>{t('ver.disputes')}</td>
+                    <td>{(profile.summary.open_disputes || 0) > 0
+                      ? <span style={{ color: 'var(--danger)', fontWeight: 700 }}>{profile.summary.open_disputes}</span>
+                      : <span style={{ color: 'var(--green)', fontWeight: 600 }}>0</span>}
+                    </td>
+                  </tr>
+                  <tr><td>{t('ver.days')}</td><td>{profile.summary.account_age_days}</td></tr>
+                </tbody>
+              </table>
+              <p className="roles-tag" style={{ marginTop: 12, lineHeight: 1.6 }}>{t('ver.tier_note')}</p>
+            </>
           ) : (
             <p className="roles-tag">{t('ver.hint')}</p>
           )}

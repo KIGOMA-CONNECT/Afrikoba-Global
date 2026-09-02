@@ -8,11 +8,17 @@ export function formatMoney(n, currency) {
 
 export function StatusBadge({ status }) {
   const s = String(status || '').toUpperCase();
-  const cls = ['SUCCESS', 'VERIFIED_ACTIVE', 'ACTIVE', 'DISBURSED', 'PASSED', 'RELEASED'].includes(s)
+  const cls = [
+    'SUCCESS', 'VERIFIED_ACTIVE', 'ACTIVE', 'DISBURSED', 'PASSED', 'RELEASED',
+    'CONFIRMED', 'PAID', 'RESOLVED', 'COMPLETED',
+  ].includes(s)
     ? 'success'
-    : ['PENDING', 'WAITING_MEMBERS', 'PENDING_AUDIT', 'LOCKED'].includes(s)
+    : [
+      'PENDING', 'WAITING_MEMBERS', 'PENDING_AUDIT', 'LOCKED', 'ESCROW_HELD',
+      'OPEN', 'UNDER_REVIEW', 'PARTIAL',
+    ].includes(s)
       ? 'pending'
-      : ['FAILED', 'REJECTED', 'SKIPPED', 'DEFAULTED'].includes(s)
+      : ['FAILED', 'REJECTED', 'SKIPPED', 'DEFAULTED', 'CANCELLED'].includes(s)
         ? 'failed'
         : 'info';
   return <span className={`badge ${cls}`}>{status}</span>;

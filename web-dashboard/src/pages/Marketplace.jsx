@@ -77,6 +77,18 @@ export default function Marketplace() {
   const byStock = (l) => Number(l.stock_quantity);
   const remaining = selected ? ` — ${t('mkt.stock_left', { n: byStock(selected) })}` : '';
 
+  const estimate = !selected ? null : (() => {
+    const q = parseInt(qty, 10) || 0;
+    const unit = Number(selected.unit_price) || 0;
+    const total = unit * q;
+    const d = Math.min(parseFloat(down) || 0, total);
+    const financed = Math.max(0, total - d);
+    const termN = parseInt(term, 10) || 1;
+    const fee = financed * 0.15 * (termN / 12);
+    const monthly = termN > 0 ? (financed + fee) / termN : 0;
+    return { total, down: d, financed, fee, monthly, toRepay: financed + fee, term: termN, full: d >= total };
+  })();
+
   const tierBadge = (l) => {
     if (l.seller_verified) return <span className="badge success">{t('mkt.verified')}</span>;
     const cls = TIER_CLS[l.seller_tier] || 'info';
@@ -109,7 +121,8 @@ export default function Marketplace() {
         term_months: parseInt(term, 10),
         down_payment: parseFloat(down) || 0,
       });
-      show('ok', `${t('mkt.order_ok')} ${formatMoney(res.data.total_to_repay)} — ${t('mkt.monthly')} ${formatMoney(res.data.financing.monthly_installment)} x${term}`);
+      const f = res.data.financing || {};
+      show('ok', `${t('mkt.order_ok')} ${formatMoney(res.data.total_to_repay)} — ${t('mkt.monthly')} ${formatMoney(res.data.financing.monthly_installment)} x${term}${f.fee_total ? ` · ${t('mkt.est_fee')} ${formatMoney(f.fee_total)}` : ''}`);
       setSelected(null); setFinOpen(false); setQty(1); setDown(''); setTerm(6);
       loadListings(category);
       loadOrders();
@@ -269,7 +282,7 @@ export default function Marketplace() {
               )}
             </div>
 
-            {selected && (
+            {selected ? (
               <div className="card">
                 <h3>{selected.title}{remaining}</h3>
                 <p>{selected.description || '—'}</p>
@@ -291,20 +304,50 @@ export default function Marketplace() {
                 <button className="btn ghost" onClick={() => setFinOpen(!finOpen)}>{t('mkt.buy_fin')}</button>
 
                 {finOpen && (
-                  <form className="form-row" style={{ marginTop: 12 }} onSubmit={buyFinanced}>
-                    <div className="field">
-                      <label>{t('mkt.term')}</label>
-                      <select value={term} onChange={(e) => setTerm(e.target.value)}>
-                        {TERMS.map((m) => <option key={m} value={m}>{m}</option>)}
-                      </select>
+                  <form style={{ marginTop: 12 }} onSubmit={buyFinanced}>
+                    <div className="form-row">
+                      <div className="field">
+                        <label>{t('mkt.term')}</label>
+                        <select value={term} onChange={(e) => setTerm(e.target.value)}>
+                          {TERMS.map((m) => <option key={m} value={m}>{m}</option>)}
+                        </select>
+                      </div>
+                      <div className="field" style={{ flex: 1 }}>
+                        <label>{t('mkt.down')}</label>
+                        <input type="number" min="0" value={down} onChange={(e) => setDown(e.target.value)} placeholder="0" />
+                      </div>
                     </div>
-                    <div className="field">
-                      <label>{t('mkt.down')}</label>
-                      <input type="number" min="0" value={down} onChange={(e) => setDown(e.target.value)} placeholder="0" />
-                    </div>
-                    <button className="btn" type="submit">{t('mkt.estimate')}</button>
+                    {estimate && (
+                      <div className="grid grid-2" style={{ gap: 8, marginBottom: 12 }}>
+                        <div className="stat">
+                          <div className="value" style={{ fontSize: 16 }}>{formatMoney(estimate.financed)}</div>
+                          <div className="label">{t('mkt.est_financed')}</div>
+                        </div>
+                        <div className="stat">
+                          <div className="value" style={{ fontSize: 16 }}>{formatMoney(estimate.fee)}</div>
+                          <div className="label">{t('mkt.est_fee')}</div>
+                        </div>
+                        <div className="stat">
+                          <div className="value" style={{ fontSize: 16 }}>{formatMoney(estimate.monthly)}</div>
+                          <div className="label">{t('mkt.est_monthly')}</div>
+                        </div>
+                        <div className="stat">
+                          <div className="value" style={{ fontSize: 16 }}>{formatMoney(estimate.toRepay)}</div>
+                          <div className="label">{t('mkt.est_to_repay')}</div>
+                        </div>
+                      </div>
+                    )}
+                    {estimate && estimate.full && (
+                      <p className="roles-tag" style={{ marginBottom: 10, color: 'var(--warn)' }}>{t('mkt.est_full')}</p>
+                    )}
+                    <button className="btn" type="submit">{t('mkt.buy_fin_place')}</button>
                   </form>
                 )}
+              </div>
+            ) : (
+              <div className="card" style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', minHeight: 180, color: 'var(--muted)' }}>
+                <div style={{ fontSize: 34, marginBottom: 8 }}>🛍️</div>
+                <p>{t('mkt.select_hint')}</p>
               </div>
             )}
 
@@ -413,7 +456,7 @@ export default function Marketplace() {
                           <div className="field">
                             <label>{t('mkt.dispute_reason')}</label>
                             <select value={disputeReason} onChange={(e) => setDisputeReason(e.target.value)}>
-                              {DISPUTE_REASONS.map((r) => <option key={r} value={r}>{r}</option>)}
+                              {DISPUTE_REASONS.map((r) => <option key={r} value={r}>{t(`mkt.reason.${r}`)}</option>)}
                             </select>
                           </div>
                           <div className="field" style={{ flex: 3 }}>
