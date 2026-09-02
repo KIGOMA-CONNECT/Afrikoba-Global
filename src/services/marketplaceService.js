@@ -35,6 +35,10 @@ const FINANCING_MIN_SCORE = 400;         // passport minimum for installment fin
 const FINANCING_MAX_TERM = 24;           // months
 const FINANCING_DISPOSABLE_CAP = 0.5;    // installment must be <= 50% of disposable capacity
 
+// Escrow dispute reasons (marketplace-specific).
+const DISPUTE_REASONS = ['NOT_DELIVERED', 'NOT_AS_DESCRIBED', 'DAMAGED', 'WRONG_ITEM', 'OTHER'];
+const DISPUTE_OPEN_STATUSES = `('OPEN','UNDER_REVIEW')`;
+
 async function logTx(client, userId, amount, type, meta) {
   await client.query(
     `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
@@ -259,6 +263,7 @@ async function confirmDelivery(buyerId, orderId) {
       `SELECT * FROM marketplace_orders WHERE id=$1 AND buyer_user_id=$2 AND status='ESCROW_HELD' FOR UPDATE`, [orderId, buyerId]);
     if (!o.rows.length) throw badge('Agizo halipatikani au hali ya malipo ni isiyo sahihi.', 404);
     const order = o.rows[0];
+    if ((await hasOpenDispute(client, orderId))) throw badge('Escrow iko kwenye mjadala; subiri uamuzi wa admin.', 409);
     const escrowAmt = Number(order.escrow_held_amount || order.total_amount);
 
     // 1) settle the held escrow to the seller.
@@ -305,6 +310,7 @@ async function cancelOrder(buyerId, orderId) {
       `SELECT * FROM marketplace_orders WHERE id=$1 AND buyer_user_id=$2 AND status='ESCROW_HELD' FOR UPDATE`, [orderId, buyerId]);
     if (!o.rows.length) throw badge('Agizo haliwezi kufutwa (halipo, si lako, ama limetoka escrow).', 404);
     const order = o.rows[0];
+    if ((await hasOpenDispute(client, orderId))) throw badge('Escrow iko kwenye mjadala; subiri uamuzi wa admin.', 409);
     const held = Number(order.escrow_held_amount || order.total_amount);
     const refundRef = `${order.reference}:REF`;
     if (held > 0) {
@@ -495,6 +501,169 @@ async function listFinancings(buyerId) {
 }
 
 // ====================================================================
+// DELIVERY EVIDENCE & ESCROW DISPUTE RESOLUTION (trust loop)
+// Buyer word alone no longer settles escrow: sellers attach evidence,
+// buyers can freeze with a dispute, and an ADMIN ruling moves the money.
+// ====================================================================
+
+async function hasOpenDispute(client, orderId) {
+  const d = await client.query(
+    `SELECT id FROM disputes WHERE marketplace_order_id=$1 AND status IN ${DISPUTE_OPEN_STATUSES} LIMIT 1`, [orderId]);
+  return d.rows.length > 0;
+}
+
+/** Seller attaches delivery evidence to an escrowed order (visible to buyer). */
+async function submitDeliveryEvidence(userId, orderId, data = {}) {
+  const urls = (Array.isArray(data.urls) ? data.urls : [])
+    .filter((u) => typeof u === 'string' && u.trim())
+    .slice(0, 5)
+    .map((u) => u.trim().slice(0, 300));
+  if (!urls.length) throw badge('Angalau URL moja ya ushahidi inahitajika.', 400);
+  const note = data.note ? String(data.note).slice(0, 500) : null;
+
+  const res = await pool.query(
+    `UPDATE marketplace_orders
+        SET evidence_urls=$1, evidence_note=$2, evidence_at=NOW(), updated_at=NOW()
+      WHERE id=$3 AND seller_user_id=$4 AND status='ESCROW_HELD'
+      RETURNING *`, [urls, note, orderId, userId]);
+  if (!res.rows.length) throw badge('Agizo halipatikani, si lako, au escrow yako bado imefunguliwa.', 404);
+  await logAction(userId, 'MARKETPLACE_EVIDENCE_SUBMITTED', 'MARKETPLACE_ORDER', orderId, `Delivery evidence: ${urls.length} url(s)`);
+  return res.rows[0];
+}
+
+/** Buyer freezes escrow with a dispute. Order stays ESCROW_HELD (ledger-safe). */
+async function openMarketplaceDispute(buyerId, orderId, data = {}) {
+  const reason = data.reason;
+  if (!DISPUTE_REASONS.includes(reason)) throw badge(`Sababu batili: ${DISPUTE_REASONS.join(', ')}.`, 400);
+  const description = data.description ? String(data.description).slice(0, 800) : null;
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const o = await client.query(
+      `SELECT * FROM marketplace_orders WHERE id=$1 AND buyer_user_id=$2 AND status='ESCROW_HELD' FOR UPDATE`, [orderId, buyerId]);
+    if (!o.rows.length) throw badge('Agizo halipatikani, si lako, au escrow yako bado haipo.', 404);
+    if ((await hasOpenDispute(client, orderId))) throw badge('Mjadala kwa agizo hili tayari umefunguliwa.', 409);
+    const held = Number(o.rows[0].escrow_held_amount || o.rows[0].total_amount);
+    const d = await client.query(
+      `INSERT INTO disputes (user_id, marketplace_order_id, reason, description, amount_disputed, status)
+       VALUES ($1,$2,$3,$4,$5,'OPEN') RETURNING *`,
+      [buyerId, orderId, reason, description, held]);
+    await client.query('COMMIT');
+    await logAction(buyerId, 'MARKETPLACE_DISPUTE_OPENED', 'MARKETPLACE_ORDER', orderId, `Dispute #${d.rows[0].id}: ${reason} (${held})`);
+    return d.rows[0];
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally { client.release(); }
+}
+
+/** Disputes on marketplace orders where the caller is buyer or seller. */
+async function listMarketplaceDisputes(userId) {
+  const res = await pool.query(
+    `SELECT d.*, o.reference AS order_reference, o.title, o.status AS order_status,
+            u.full_name AS counterparty
+       FROM disputes d
+       JOIN marketplace_orders o ON o.id = d.marketplace_order_id
+       JOIN users u ON u.id = CASE WHEN o.buyer_user_id=$1 THEN o.seller_user_id ELSE o.buyer_user_id END
+      WHERE d.marketplace_order_id IS NOT NULL AND (o.buyer_user_id=$1 OR o.seller_user_id=$1)
+      ORDER BY d.created_at DESC LIMIT 100`, [userId]);
+  return res.rows;
+}
+
+/**
+ * ADMIN ruling on an escrow dispute. All money moves are balanced double-entry
+ * through the ledger so reconciliation and the 24h seller cache stay truthful.
+ */
+async function resolveMarketplaceDispute(adminId, disputeId, opts = {}) {
+  const ruling = opts.ruling;
+  if (!['BUYER_REFUND', 'SELLER_PAYOUT', 'SPLIT'].includes(ruling)) throw badge('Uamuzi batili: BUYER_REFUND | SELLER_PAYOUT | SPLIT.', 400);
+  const pct = Number(opts.split_buyer_percent ?? 50);
+  if (!Number.isFinite(pct) || pct < 0 || pct > 100) throw badge('Asilimia ya SPLIT inatakiwa kati ya 0 na 100.', 400);
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const d = await client.query(
+      `SELECT * FROM disputes WHERE id=$1 AND marketplace_order_id IS NOT NULL AND status IN ${DISPUTE_OPEN_STATUSES} FOR UPDATE`, [disputeId]);
+    if (!d.rows.length) throw badge('Mjadala wa escrow haupatikani au tayari umeamuliwa.', 404);
+    const dispute = d.rows[0];
+    const o = await client.query(
+      `SELECT * FROM marketplace_orders WHERE id=$1 FOR UPDATE`, [dispute.marketplace_order_id]);
+    const order = o.rows[0];
+    const held = Number(order.escrow_held_amount || 0);
+
+    const finRow = await client.query(
+      `SELECT * FROM marketplace_financing WHERE order_id=$1 AND status='ACTIVE' FOR UPDATE`, [order.id]);
+    const financing = finRow.rows[0] || null;
+    const finAmt = financing ? Number(financing.financed_amount) : 0;
+
+    let buyerRefund = 0;
+    let sellerPayout = 0;
+    let orderStatus = 'CANCELLED';
+
+    if (ruling === 'BUYER_REFUND') {
+      buyerRefund = held;
+      if (held > 0) {
+        const ref = `${order.reference}:DSP`;
+        await fin.creditWallet({ client, userId: order.buyer_user_id, amount: held, reference: ref, fromAccount: 'MARKETPLACE_ESCROW', description: `Marketplace dispute refund for order ${order.reference}` });
+        await logTx(client, order.buyer_user_id, held, 'TRANSFER', { feature: 'marketplace_dispute_refund', order_id: order.id, dispute_id: dispute.id, reference: order.reference });
+      }
+      if (financing) {
+        await client.query(`UPDATE marketplace_financing SET status='CANCELLED', updated_at=NOW() WHERE id=$1`, [financing.id]);
+      }
+    } else if (ruling === 'SELLER_PAYOUT') {
+      orderStatus = 'CONFIRMED';
+      if (held > 0) {
+        const ref = `${order.reference}:DSP`;
+        await fin.creditWallet({ client, userId: order.seller_user_id, amount: held, reference: ref, fromAccount: 'MARKETPLACE_ESCROW', description: `Marketplace settlement (dispute) for order ${order.reference}` });
+      }
+      sellerPayout = held;
+      if (financing && finAmt > 0) {
+        await fin.creditWallet({ client, userId: order.seller_user_id, amount: finAmt, reference: `${order.reference}:FND`, fromAccount: 'MARKETPLACE_FINANCING', description: `Marketplace financing fronted (dispute) for order ${order.reference}` });
+      }
+      if (financing) await client.query(`UPDATE marketplace_financing SET disbursed_at=NOW(), updated_at=NOW() WHERE id=$1`, [financing.id]);
+      sellerPayout += finAmt;
+      await logTx(client, order.seller_user_id, sellerPayout, 'TRANSFER', { feature: 'marketplace_settlement', order_id: order.id, reference: order.reference, financed: !!financing, dispute_id: dispute.id });
+    } else {
+      orderStatus = 'CONFIRMED';
+      buyerRefund = round2(held * (pct / 100));
+      sellerPayout = round2(held - buyerRefund);
+      if (buyerRefund > 0) {
+        await fin.creditWallet({ client, userId: order.buyer_user_id, amount: buyerRefund, reference: `${order.reference}:DSPB`, fromAccount: 'MARKETPLACE_ESCROW', description: `Marketplace dispute split refund for order ${order.reference}` });
+        await logTx(client, order.buyer_user_id, buyerRefund, 'TRANSFER', { feature: 'marketplace_dispute_refund', order_id: order.id, dispute_id: dispute.id, reference: order.reference });
+      }
+      if (sellerPayout > 0) {
+        await fin.creditWallet({ client, userId: order.seller_user_id, amount: sellerPayout, reference: `${order.reference}:DSPS`, fromAccount: 'MARKETPLACE_ESCROW', description: `Marketplace dispute split payout for order ${order.reference}` });
+      }
+      if (financing && finAmt > 0) {
+        await fin.creditWallet({ client, userId: order.seller_user_id, amount: finAmt, reference: `${order.reference}:FND`, fromAccount: 'MARKETPLACE_FINANCING', description: `Marketplace financing fronted (dispute) for order ${order.reference}` });
+      }
+      if (financing) await client.query(`UPDATE marketplace_financing SET disbursed_at=NOW(), updated_at=NOW() WHERE id=$1`, [financing.id]);
+      sellerPayout += finAmt;
+      await logTx(client, order.seller_user_id, sellerPayout, 'TRANSFER', { feature: 'marketplace_settlement', order_id: order.id, reference: order.reference, financed: !!financing, dispute_id: dispute.id });
+    }
+
+    const releaseRef = `${order.reference}:DSP`;
+    await client.query(
+      `UPDATE marketplace_orders SET escrow_held_amount=0, status=$1, escrow_release_ref=$2, escrow_released_at=NOW(), updated_at=NOW() WHERE id=$3`,
+      [orderStatus, releaseRef, order.id]);
+
+    const resolution = `Ruling ${ruling}: buyer refund ${buyerRefund}, seller payout ${sellerPayout}${financing ? ', financing fronted' : ''}`;
+    await client.query(
+      `UPDATE disputes SET status='RESOLVED', resolution=$1, resolved_by=$2, resolved_at=NOW(), updated_at=NOW() WHERE id=$3`,
+      [resolution, adminId, dispute.id]);
+    await client.query('COMMIT');
+
+    await logAction(adminId, 'MARKETPLACE_DISPUTE_RESOLVED', 'MARKETPLACE_DISPUTE', dispute.id, resolution);
+    return { success: true, dispute_id: dispute.id, ruling, buyer_refund: buyerRefund, seller_payout: sellerPayout, order_id: order.id, order_status: orderStatus, financed: !!financing };
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally { client.release(); }
+}
+
+// ====================================================================
 // REVIEWS
 // ====================================================================
 
@@ -520,4 +689,5 @@ module.exports = {
   createListing, listListings, getListing, priceGuide,
   buyListing, listOrders, confirmDelivery, cancelOrder, reviewOrder,
   buyListingFinanced, payFinancingInstallment, listFinancings,
+  submitDeliveryEvidence, openMarketplaceDispute, listMarketplaceDisputes, resolveMarketplaceDispute,
 };

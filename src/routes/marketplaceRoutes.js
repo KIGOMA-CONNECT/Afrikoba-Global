@@ -4,7 +4,7 @@
  */
 
 const express = require('express');
-const { authRequired } = require('../middleware/auth');
+const { authRequired, requireRoles } = require('../middleware/auth');
 const mkt = require('../services/marketplaceService');
 const verifySvc = require('../services/sellerVerificationService');
 
@@ -109,6 +109,34 @@ router.post('/orders/:id/review', authRequired, async (req, res, next) => {
   try {
     const review = await mkt.reviewOrder(req.user.id, parseInt(req.params.id, 10), req.body);
     res.status(201).json({ success: true, review });
+  } catch (e) { next(e); }
+});
+
+// ===== DELIVERY EVIDENCE & ESCROW DISPUTES =====
+router.post('/orders/:id/evidence', authRequired, async (req, res, next) => {
+  try {
+    const order = await mkt.submitDeliveryEvidence(req.user.id, parseInt(req.params.id, 10), req.body);
+    res.json({ success: true, order });
+  } catch (e) { next(e); }
+});
+
+router.post('/orders/:id/dispute', authRequired, async (req, res, next) => {
+  try {
+    const dispute = await mkt.openMarketplaceDispute(req.user.id, parseInt(req.params.id, 10), req.body);
+    res.status(201).json({ success: true, dispute });
+  } catch (e) { next(e); }
+});
+
+router.get('/disputes', authRequired, async (req, res, next) => {
+  try {
+    res.json({ success: true, disputes: await mkt.listMarketplaceDisputes(req.user.id) });
+  } catch (e) { next(e); }
+});
+
+router.post('/disputes/:id/resolve', authRequired, requireRoles('ADMIN'), async (req, res, next) => {
+  try {
+    const result = await mkt.resolveMarketplaceDispute(req.user.id, parseInt(req.params.id, 10), req.body);
+    res.json({ success: true, ...result });
   } catch (e) { next(e); }
 });
 

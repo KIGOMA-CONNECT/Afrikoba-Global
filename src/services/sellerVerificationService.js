@@ -9,7 +9,7 @@
  *   2. FINANCIAL_HEALTH- passport afrikobaScore >= 300
  *   3. ACCOUNT_AGE     - account >= 30 days old
  *   4. SALES_HISTORY   - at least 1 confirmed order sold
- *   5. REPUTATION      - no open dispute against marketplace settlements AND
+ *   5. REPUTATION      - no open escrow dispute on an order they sold AND
  *                        (no reviews yet OR average rating >= 3.5)
  *
  * All five  -> AFRIKOBA_VERIFIED (display badge: "Afrikoba Verified Seller")
@@ -53,11 +53,11 @@ async function computeSellerVerification(userId) {
   const avgRating = Number(rev.rows[0].avg_rating || 0);
   const reviewCount = rev.rows[0].review_count || 0;
 
+  // Open marketplace escrow disputes against this seller (any order they sold).
   const disp = await pool.query(
     `SELECT COUNT(*)::int AS c
-       FROM disputes d
-       JOIN transactions t ON t.id = d.transaction_id
-      WHERE t.user_id=$1 AND t.meta->>'feature'='marketplace_settlement'
+       FROM disputes d JOIN marketplace_orders o ON o.id = d.marketplace_order_id
+      WHERE o.seller_user_id=$1 AND d.marketplace_order_id IS NOT NULL
         AND d.status NOT IN ('REJECTED','RESOLVED')`, [userId]);
   const openDisputes = disp.rows[0].c || 0;
 
