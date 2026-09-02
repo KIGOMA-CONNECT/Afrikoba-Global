@@ -105,7 +105,7 @@ Everything we build must pass the "international standards" bar:
 - [x] Trust → **AFRIKOBA Credit Score** dashboard — done: 0-850 gauge, pillars, capacity, explained dimensions
 - [x] Multi-currency wallets + FX (Revolut) — TZS, KES, UGX, USD, EUR, GBP ... — done: dynamic currencies, live FX, holdings portfolio
 - [ ] Vaults/Spaces (targeted saving goals) (Monzo/Revolut)
-- [ ] Budgeting & spending insights (Monzo)
+- [x] Budgeting & spending insights (Monzo) — done: per-category monthly budgets, spend vs budget progress, over-budget alerts, savings-rate (migration 043, /api/budget)
 
 ### Phase 4 — Marketplace & Kiva-style
 - [ ] P2P secondary market (LendingClub)

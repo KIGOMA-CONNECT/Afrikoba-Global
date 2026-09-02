@@ -54,6 +54,7 @@ const networkRoutes = require('./routes/networkRoutes');
 const familyRoutes = require('./routes/familyRoutes');
 const businessRoutes = require('./routes/businessRoutes');
 const savingsRoutes = require('./routes/savingsRoutes');
+const budgetRoutes = require('./routes/budgetRoutes');
 const creditRoutes = require('./routes/creditRoutes');
 const cardRoutes = require('./routes/cardRoutes');
 const bapRoutes = require('./routes/bapRoutes');
@@ -244,6 +245,7 @@ for (const prefix of versionPrefixes) {
   app.use(`${prefix}/family`, walletLimiter, familyRoutes);
   app.use(`${prefix}/business`, walletLimiter, businessRoutes);
   app.use(`${prefix}/savings`, walletLimiter, savingsRoutes);
+  app.use(`${prefix}/budget`, walletLimiter, budgetRoutes);
   app.use(`${prefix}/credit`, walletLimiter, creditRoutes);
   app.use(`${prefix}/cards`, walletLimiter, cardRoutes);
   app.use(`${prefix}/bap`, walletLimiter, bapRoutes);

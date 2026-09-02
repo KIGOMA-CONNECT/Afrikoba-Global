@@ -44,6 +44,7 @@ const Marketplace = lazy(() => import('./pages/Marketplace.jsx'));
 const Financing = lazy(() => import('./pages/Financing.jsx'));
 const Verification = lazy(() => import('./pages/Verification.jsx'));
 const CreditScore = lazy(() => import('./pages/CreditScore.jsx'));
+const Budget = lazy(() => import('./pages/Budget.jsx'));
 
 function RequireAuth({ children }) {
   const token = localStorage.getItem('afrikoba_token');
@@ -94,6 +95,7 @@ export default function App() {
         <Route path="financing" element={<Page><Financing /></Page>} />
         <Route path="verification" element={<Page><Verification /></Page>} />
         <Route path="credit" element={<Page><CreditScore /></Page>} />
+        <Route path="budget" element={<Page><Budget /></Page>} />
         <Route path="settings" element={<Page><Settings /></Page>} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
