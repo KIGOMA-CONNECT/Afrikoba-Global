@@ -227,8 +227,52 @@ earns a passport-governed **"Afrikoba Verified Seller"** trust badge:
 - Verified sellers surface the badge (and tier) on every listing card, so
   buyers can weigh trust at the same glance as price.
 
-Roadmap (not yet built): business-buyer procurement & bulk RFQs,
-delivery-evidence/dispute resolution inside the marketplace loop, and verified
+#### 4.2.3 Delivery evidence & escrow dispute resolution — IMPLEMENTED (Phase 18, v1)
+
+Escrow never self-settles on trust: a seller proves delivery with evidence, a
+buyer can hold money in escrow with a governed dispute, and an **admin ruling
+moves funds on the ledger** — never outside it.
+
+- **Migration `041_marketplace_escrow_disputes.sql`** — `marketplace_orders`
+  gains a delivery-evidence block (`evidence_urls TEXT[]`, `evidence_note`,
+  `evidence_at`); the existing `disputes` table (Phase 8 banking) gains an
+  optional `marketplace_order_id` FK with an index plus a **unique partial index
+  on open marketplace disputes** (`OPEN`/`UNDER_REVIEW`), so an order can have at
+  most one live dispute.
+- **Seller evidence** — `submitDeliveryEvidence()` (≤5 URLs, notes ≤500 chars)
+  attaches proof to an `ESCROW_HELD` order; persisted on the order, not in
+  chat/comments.
+- **Buyer dispute** — `openMarketplaceDispute()` locks the order (`SELECT …
+  FOR UPDATE`), records the escrow-held amount as the disputed amount, and
+  enforces the one-open-dispute constraint (409 otherwise). Reasons:
+  `NOT_DELIVERED`, `NOT_AS_DESCRIBED`, `DAMAGED`, `WRONG_ITEM`, `OTHER`.
+- **Deadlock prevention** — while a dispute is `OPEN`/`UNDER_REVIEW`, both
+  `confirmDelivery()` and `cancelOrder()` are blocked (409 `Escrow iko kwenye
+  mjadala; subiri uamuzi wa admin`). Only an admin ruling can move the money.
+- **Admin rulings** (`resolveMarketplaceDispute()`, ADMIN-only) — all journaled
+  through the engine with per-order idempotent `:DSP`-references:
+  - `BUYER_REFUND` — escrow returned to the buyer in full, order **CANCELLED**,
+    and any financed agreement is voided (the buyer of a refunded good is not
+    pursued for the balance).
+  - `SELLER_PAYOUT` — escrow settled to the seller (`DR MARKETPLACE_ESCROW / CR
+    CUSTOMER_WALLET`), order **CONFIRMED**; on a financed order the financed
+    portion is fronted to the seller (`DR MARKETPLACE_FINANCING / CR
+    CUSTOMER_WALLET`) and the agreement marked disbursed — the buyer keeps their
+    installment obligation.
+  - `SPLIT` — `split_buyer_percent` splits the escrow between buyer and seller
+    (buyer refund `held × pct%`, seller the remainder), order **CONFIRMED**,
+    financed fronting as per SELLER_PAYOUT.
+  - Every ruling transparently records a `resolution` string + `resolved_by`/
+    `resolved_at`, and emits a `MARKETPLACE_DISPUTE_RESOLVED` audit event.
+- **RP2/R3 escalation** — a buyer dispute is remitted to `listMarketplaceDisputes()`
+  / `POST /disputes/:id/resolve`, both auth-gated (`requireRoles('ADMIN')` for
+  resolve); the front-end surfaces evidence chips + dispute form + resolution
+  status inside the buyer/seller order views.
+- Recon impact: **none** — funding, split, refund and settlement all move through
+  `MARKETPLACE_ESCROW` / `MARKETPLACE_FINANCING`, already-reconciled accounts;
+  the matrix stays at 12 line items, 0-diff (verified run #20).
+
+Roadmap (not yet built): business-buyer procurement & bulk RFQs and verified
 seller onboarding flows.
 
 ### 4.3 Long-term product shape
@@ -267,3 +311,9 @@ seller onboarding flows.
 - Seller verification is **derived, not asserted**: it recomputes from live
   identity + behaviour on a 24h cadence, so a badge can never be bought — it has
   to be earned and maintained.
+- Marketplace escrow disputes are **governed, not trust-based**: an open dispute
+  freezes both confirm and cancel side effects (only an ADMIN ruling moves the
+  funds), and every ruling is a normal engine journaling against
+  `MARKETPLACE_ESCROW`/`MARKETPLACE_FINANCING`, so the reconciliation matrix
+  stays at 0-diff. Delivery evidence is attached to the order row itself, giving
+  the admin ruling durable, auditable context.
