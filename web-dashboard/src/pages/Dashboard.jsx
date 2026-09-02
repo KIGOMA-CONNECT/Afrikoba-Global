@@ -12,6 +12,7 @@ export default function Dashboard() {
   const [balance, setBalance] = useState(null);
   const [showBalance, setShowBalance] = useState(localStorage.getItem('afrikoba_show_balance') !== 'false');
   const [holdings, setHoldings] = useState(null);
+  const [health, setHealth] = useState(null);
 
   const toggleBalance = () => {
     const newVal = !showBalance;
@@ -27,6 +28,7 @@ export default function Dashboard() {
       api.get('/wallet/balance').then((r) => setBalance(r.data.balance)).catch(() => {});
       api.get('/currency/my-holdings').then((r) => setHoldings(r.data)).catch(() => {});
       api.get('/services/catalog').then((r) => setServices(r.data.catalog)).catch(() => {});
+      api.get('/banking/analytics/health').then((r) => setHealth(r.data.health)).catch(() => {});
     }
   }, [isAdmin]);
 
@@ -140,6 +142,48 @@ export default function Dashboard() {
               </span>
             ))}
           </div>
+        </div>
+      )}
+
+      {!isAdmin && health && (
+        <div className="card section" style={{ marginTop: 24 }}>
+          <h3>{t('health.title')}</h3>
+          <div className="grid grid-4" style={{ marginTop: 12, marginBottom: 18, gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))' }}>
+            <div className="card stat" style={{ padding: 12, textAlign: 'center' }}>
+              <span className="label" style={{ fontSize: 11 }}>{t('health.income')}</span>
+              <strong style={{ display: 'block', fontSize: 16, marginTop: 4 }}>{formatMoney(health.total_income)}</strong>
+            </div>
+            <div className="card stat" style={{ padding: 12, textAlign: 'center' }}>
+              <span className="label" style={{ fontSize: 11 }}>{t('health.expenses')}</span>
+              <strong style={{ display: 'block', fontSize: 16, marginTop: 4, color: '#dc2626' }}>{formatMoney(health.total_expenses)}</strong>
+            </div>
+            <div className="card stat" style={{ padding: 12, textAlign: 'center' }}>
+              <span className="label" style={{ fontSize: 11 }}>{t('health.net_flow')}</span>
+              <strong style={{ display: 'block', fontSize: 16, marginTop: 4, color: Number(health.net_flow) >= 0 ? 'var(--green)' : '#dc2626' }}>{formatMoney(health.net_flow)}</strong>
+            </div>
+            <div className="card stat" style={{ padding: 12, textAlign: 'center' }}>
+              <span className="label" style={{ fontSize: 11 }}>{t('health.savings_rate')}</span>
+              <strong style={{ display: 'block', fontSize: 16, marginTop: 4, color: Number(health.savings_rate) >= 20 ? 'var(--green)' : '#d97706' }}>{health.savings_rate}%</strong>
+            </div>
+          </div>
+
+          {Number(health.net_flow) < 0 ? (
+            <div className="alert" style={{ background: '#fef2f2', border: '1px solid #fecaca', padding: '12px 16px', borderRadius: 10, color: '#991b1b' }}>
+              <strong>{t('health.recommend')}:</strong> {t('health.rec_negative', { expenses: formatMoney(health.total_expenses), income: formatMoney(health.total_income) })}
+            </div>
+          ) : Number(health.savings_rate) >= 20 ? (
+            <div className="alert" style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', padding: '12px 16px', borderRadius: 10, color: '#166534' }}>
+              <strong>{t('health.recommend')}:</strong> {t('health.rec_excellent', { rate: health.savings_rate })}
+            </div>
+          ) : Number(health.savings_rate) >= 5 ? (
+            <div className="alert" style={{ background: '#fffbeb', border: '1px solid #fde68a', padding: '12px 16px', borderRadius: 10, color: '#92400e' }}>
+              <strong>{t('health.recommend')}:</strong> {t('health.rec_good', { rate: health.savings_rate })}
+            </div>
+          ) : (
+            <div className="alert" style={{ background: '#fef2f2', border: '1px solid #fecaca', padding: '12px 16px', borderRadius: 10, color: '#991b1b' }}>
+              <strong>{t('health.recommend')}:</strong> {t('health.rec_poor', { rate: health.savings_rate })}
+            </div>
+          )}
         </div>
       )}
     </>
