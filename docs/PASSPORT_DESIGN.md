@@ -175,6 +175,37 @@ loop is wired, built on the hardened ledger rather than replacing it:
   engines the marketplace can call into; financing is via passport-governed
   eligibility (`creditScoreService.checkEligibility`).
 
+#### 4.2.1 Order financing — IMPLEMENTED (Phase 16, v1)
+
+**buy now → repay in installments**, fully ledger-honest and passport-gated:
+
+- **Migration `039_marketplace_financing.sql`** — `marketplace_financing`
+  agreements plus two new ledger accounts: **`MARKETPLACE_FINANCING`** (ASSET,
+  the receivable we book when we front the seller) and **`FINANCE_INCOME`**
+  (REVENUE, the financing fee, recognized as installed payments arrive).
+  `marketplace_orders` gains `escrow_held_amount`, so escrow now holds *only*
+  what is actually held (the down payment for financed orders).
+- **`buyListingFinanced(buyer, listing, qty, {term_months, down_payment})`**:
+  down payment → escrow; the remainder is financed over 1–24 months at a flat
+  15% annual fee. **Hard governance**: passport `afrikobaScore >= 400` AND
+  monthly installment ≤ 50% of passport disposable capacity — rejected with
+  the underlying reasons otherwise. A full-prepay order (down = total) is
+  allowed even without a qualifying profile.
+- **Confirm** settles the down payment from escrow AND fronts the financed
+  portion to the seller (`DR MARKETPLACE_FINANCING / CR CUSTOMER_WALLET`),
+  so the seller is paid in full at delivery while the platform holds a
+  receivable against the buyer.
+- **Cancel** (pre-confirm only) refunds the held amount and voids the
+  agreement — nothing has been disbursed, so the seller is never paid.
+- **`payFinancingInstallment`** debits one installment from the buyer wallet:
+  the principal share pays down the receivable
+  (`DR CUSTOMER_WALLET / CR MARKETPLACE_FINANCING`), the fee share is booked
+  to `FINANCE_INCOME`. The final payment absorbs rounding so the agreement
+  closes at exactly principal + fee.
+- Recon gains a **`MARKETPLACE_FINANCING`** projection — it must equal
+  `SUM(financed_amount - principal_paid) WHERE status='ACTIVE'` — verified at
+  0-diff (recon matrix is now 12 line items).
+
 Roadmap (not yet built): business-buyer procurement & bulk RFQs, financing
 installments on orders, delivery-evidence/dispute resolution inside the loop,
 and seller onboarding/KYC verification badges.
