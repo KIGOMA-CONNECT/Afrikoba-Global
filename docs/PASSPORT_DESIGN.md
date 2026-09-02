@@ -206,9 +206,30 @@ loop is wired, built on the hardened ledger rather than replacing it:
   `SUM(financed_amount - principal_paid) WHERE status='ACTIVE'` — verified at
   0-diff (recon matrix is now 12 line items).
 
-Roadmap (not yet built): business-buyer procurement & bulk RFQs, financing
-installments on orders, delivery-evidence/dispute resolution inside the loop,
-and seller onboarding/KYC verification badges.
+#### 4.2.2 Seller verification — IMPLEMENTED (Phase 17, v1)
+
+The marketplace stays **open** (no listing permission wall), but every seller
+earns a passport-governed **"Afrikoba Verified Seller"** trust badge:
+
+- **5 governance factors** drawn from the AFRIKOBA ID + real marketplace
+  behaviour:
+  1. IDENTITY — passport KYC level ≥ 2 and phone verified
+  2. FINANCIAL_HEALTH — passport `afrikobaScore ≥ 300`
+  3. ACCOUNT_AGE — account ≥ 30 days
+  4. SALES_HISTORY — ≥ 1 confirmed order sold
+  5. REPUTATION — no open dispute against marketplace settlements and
+     (no reviews yet OR average rating ≥ 3.5)
+- All 5 → **AFRIKOBA_VERIFIED**; 3–4 → **ESTABLISHED**; else **UNVERIFIED**.
+- **`sellerVerificationService`**: on-demand compute + 24h cache
+  (`seller_verification` table, migration 040), refreshed daily at 00:30 by a
+  cron (`recomputeAll`). Listing read paths `LEFT JOIN` the cache — they never
+  recompute on view. Earns a `SELLER_VERIFIED` audit event.
+- Verified sellers surface the badge (and tier) on every listing card, so
+  buyers can weigh trust at the same glance as price.
+
+Roadmap (not yet built): business-buyer procurement & bulk RFQs,
+delivery-evidence/dispute resolution inside the marketplace loop, and verified
+seller onboarding flows.
 
 ### 4.3 Long-term product shape
 ```
@@ -240,6 +261,9 @@ and seller onboarding/KYC verification badges.
 - Autopilot auto-execution is **opt-in only** and **snapshots** the allocation at
   activation; it cannot silently change the amount or bypass affordability.
 - Marketplace escrow holds buyer funds in a dedicated **liability** ledger account
-  (`MARKETPLACE_ESCROW`), reconciled against `SUM(orders.total_amount WHERE
+  (`MARKETPLACE_ESCROW`), reconciled against `SUM(orders.escrow_held_amount WHERE
   ESCROW_HELD)`; settlement/refund are journaled atomically with order-status
   changes, so money can never appear or vanish outside the double-entry book.
+- Seller verification is **derived, not asserted**: it recomputes from live
+  identity + behaviour on a 24h cadence, so a badge can never be bought — it has
+  to be earned and maintained.
