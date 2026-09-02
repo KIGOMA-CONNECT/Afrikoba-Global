@@ -245,3 +245,133 @@
 @media (max-width: 768px) {
   .landing-footer-container { grid-template-columns: 1fr; gap: 35px; }
 }
+
+/* ===== NEW LANDING REDESIGN (AFRIKOBA GLOBAL FINTECH) ===== */
+/* Light header */
+.landing-header-light {
+  background: rgba(255, 255, 255, 0.92);
+  border-bottom: 1px solid #e2e8f0;
+}
+.landing-header-light .logo-text { color: #0f172a; }
+.landing-header-light .logo-highlight { color: #059669; }
+.landing-header-light .landing-desktop-nav a { color: #475569; }
+.landing-header-light .landing-desktop-nav a:hover { color: #059669; }
+.landing-header-light .landing-btn-outline { border-color: #cbd5e1; color: #0f172a; }
+.landing-header-light .landing-btn-outline:hover { border-color: #059669; color: #059669; }
+.landing-header-light .landing-lang-select { background: #fff; border-color: #cbd5e1; color: #0f172a; }
+.landing-header-light .landing-hamburger span { background: #0f172a; }
+.landing-header-light .landing-mobile-drawer,
+.landing-mobile-drawer { background: #ffffff; border-bottom: 1px solid #e2e8f0; }
+.landing-mobile-drawer a { color: #475569; border-bottom-color: #e2e8f0; }
+
+/* Container */
+.landing-container-narrow { max-width: 860px; margin: 0 auto; }
+
+.landing-section-sub { margin-top: 4px; font-size: 14px; }
+
+/* Yield Calculator */
+.landing-calc-section { padding: 90px 24px; background: #f1f5f9; }
+.yield-calc-card {
+  position: relative; background: #fff; border: 1px solid #e2e8f0;
+  border-radius: 24px; padding: 48px; box-shadow: 0 20px 40px rgba(0,0,0,0.06);
+  text-align: left;
+}
+.calc-rate-badge {
+  position: absolute; top: 22px; right: 22px;
+  background: #059669; color: #fff; font-size: 14px; font-weight: 800;
+  padding: 8px 16px; border-radius: 12px;
+}
+.calc-row { display: flex; justify-content: space-between; align-items: center; font-size: 15px; font-weight: 600; color: #334155; margin-bottom: 16px; }
+.calc-value { color: #059669; font-size: 22px; font-weight: 900; }
+.calc-outputs { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin: 26px 0 26px; }
+.calc-output {
+  background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 16px;
+  padding: 18px; text-align: center;
+}
+.calc-output-label { display: block; font-size: 12px; font-weight: 700; color: #166534; margin-bottom: 8px; }
+.calc-output-value { font-size: 22px; font-weight: 900; color: #059669; }
+.calc-cta { justify-content: center; width: 100%; }
+@media (max-width: 640px) {
+  .calc-outputs { grid-template-columns: 1fr; }
+  .yield-calc-card { padding: 40px 24px; }
+}
+
+/* Services */
+.landing-services-section { padding: 100px 24px; background: #fff; }
+.landing-services-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 28px; margin-top: 44px; }
+.service-card {
+  background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 20px;
+  padding: 34px; box-shadow: 0 4px 15px rgba(0,0,0,0.02);
+  transition: transform 0.2s, box-shadow 0.2s; text-align: left;
+}
+.service-card:hover { transform: translateY(-4px); box-shadow: 0 14px 34px rgba(0,0,0,0.08); }
+.service-icon { font-size: 36px; margin-bottom: 16px; }
+.service-card h3 { font-size: 20px; font-weight: 800; color: #022c22; margin-bottom: 10px; }
+.service-card p { font-size: 14px; color: #64748b; line-height: 1.6; margin-bottom: 18px; }
+.service-cta { font-size: 14px; font-weight: 800; color: #059669; text-decoration: none; }
+.service-cta:hover { color: #047857; }
+@media (max-width: 768px) {
+  .landing-services-grid { grid-template-columns: 1fr; }
+}
+
+/* Yield Pool features */
+.landing-yieldpool-section { padding: 100px 24px; background: linear-gradient(135deg, #f0fdf4, #ffffff); }
+.yield-feature-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 28px; margin-top: 44px; }
+.yield-feature-card {
+  background: #fff; border: 1px solid #e2e8f0; border-radius: 20px;
+  padding: 32px; text-align: center; box-shadow: 0 6px 18px rgba(0,0,0,0.04);
+}
+.yield-feature-icon { font-size: 34px; margin-bottom: 14px; }
+.yield-feature-card h3 { font-size: 18px; font-weight: 800; color: #022c22; margin-bottom: 10px; }
+.yield-feature-card p { font-size: 13px; color: #64748b; line-height: 1.6; }
+.yieldpool-cta { text-align: center; margin-top: 40px; }
+@media (max-width: 768px) {
+  .yield-feature-grid { grid-template-columns: 1fr; }
+}
+
+/* 4-step grid */
+.landing-steps-grid-4 { grid-template-columns: repeat(4, 1fr); }
+@media (max-width: 900px) {
+  .landing-steps-grid-4 { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 560px) {
+  .landing-steps-grid-4 { grid-template-columns: 1fr; }
+}
+
+/* Market / Projects */
+.landing-market-section { padding: 100px 24px; background: #f1f5f9; }
+.market-join-btn { margin-top: 20px; }
+.project-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 28px; margin-top: 44px; }
+.project-card {
+  background: #fff; border: 1px solid #e2e8f0; border-radius: 20px;
+  padding: 34px; text-align: left; box-shadow: 0 6px 18px rgba(0,0,0,0.04);
+  display: flex; flex-direction: column; gap: 12px;
+}
+.project-tier {
+  align-self: flex-start; background: #fef3c7; color: #92400e;
+  padding: 6px 12px; border-radius: 10px; font-size: 11px; font-weight: 800; text-transform: uppercase;
+}
+.project-card h3 { font-size: 20px; font-weight: 800; color: #022c22; }
+.project-roi { color: #059669; font-size: 15px; font-weight: 800; }
+.project-desc { font-size: 13.5px; color: #64748b; line-height: 1.6; }
+.project-progress-head { display: flex; justify-content: space-between; font-size: 12.5px; font-weight: 700; color: #334155; margin-top: 6px; }
+.project-invest-btn {
+  margin-top: 6px; text-align: center; background: #022c22; color: #fff;
+  padding: 14px; border-radius: 12px; font-size: 14px; font-weight: 700; text-decoration: none;
+  transition: background 0.2s;
+}
+.project-invest-btn:hover { background: #059669; }
+@media (max-width: 768px) {
+  .project-grid { grid-template-columns: 1fr; }
+}
+
+/* CTA */
+.landing-cta-section { padding: 90px 24px; background: #022c22; color: #fff; text-align: center; }
+.landing-cta-inner { max-width: 680px; margin: 0 auto; }
+.landing-cta-inner h2 { font-size: 34px; font-weight: 900; margin-bottom: 16px; }
+.landing-cta-inner p { font-size: 15px; opacity: 0.8; line-height: 1.6; margin-bottom: 32px; }
+.landing-cta-buttons { display: flex; gap: 16px; justify-content: center; flex-wrap: wrap; }
+.landing-btn-dark {
+  border-color: #334155; color: #cbd5e1;
+}
+.landing-btn-dark:hover { border-color: #34d399; color: #34d399; }
