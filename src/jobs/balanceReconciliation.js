@@ -50,8 +50,12 @@ const PROJECTIONS = {
     sql: `SELECT COALESCE(SUM(balance),0)::numeric AS v FROM business_accounts`,
   },
   MARKETPLACE_ESCROW: {
-    label: 'Sum marketplace_orders.total_amount held in escrow',
-    sql: `SELECT COALESCE(SUM(total_amount),0)::numeric AS v FROM marketplace_orders WHERE status='ESCROW_HELD'`,
+    label: 'Sum marketplace_orders.escrow_held_amount held in escrow',
+    sql: `SELECT COALESCE(SUM(escrow_held_amount),0)::numeric AS v FROM marketplace_orders WHERE status='ESCROW_HELD'`,
+  },
+  MARKETPLACE_FINANCING: {
+    label: 'Outstanding marketplace financing principal (receivable)',
+    sql: `SELECT COALESCE(SUM(financed_amount - principal_paid),0)::numeric AS v FROM marketplace_financing WHERE status='ACTIVE'`,
   },
 };
 

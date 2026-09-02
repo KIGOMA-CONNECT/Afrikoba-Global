@@ -53,6 +53,27 @@ router.post('/orders', authRequired, async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+router.post('/orders/financed', authRequired, async (req, res, next) => {
+  try {
+    const { listing_id, quantity, term_months, down_payment } = req.body;
+    const result = await mkt.buyListingFinanced(req.user.id, listing_id, quantity, { term_months, down_payment });
+    res.status(201).json({ success: true, ...result });
+  } catch (e) { next(e); }
+});
+
+router.get('/financing', authRequired, async (req, res, next) => {
+  try {
+    res.json({ success: true, financing: await mkt.listFinancings(req.user.id) });
+  } catch (e) { next(e); }
+});
+
+router.post('/financing/:id/pay', authRequired, async (req, res, next) => {
+  try {
+    const result = await mkt.payFinancingInstallment(req.user.id, parseInt(req.params.id, 10));
+    res.json({ success: true, ...result });
+  } catch (e) { next(e); }
+});
+
 router.get('/orders', authRequired, async (req, res, next) => {
   try {
     const orders = await mkt.listOrders(req.user.id, { role: req.query.role });
