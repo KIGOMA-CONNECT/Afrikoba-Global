@@ -6,6 +6,7 @@ import { useT } from '../i18n/LangProvider.jsx';
 const CATEGORIES = ['PRODUCE', 'GOODS', 'FARM_INPUT', 'ENERGY'];
 const TIER_CLS = { AFRIKOBA_VERIFIED: 'success', ESTABLISHED: 'pending' };
 const TERMS = [3, 6, 9, 12, 18, 24];
+const DISPUTE_REASONS = ['NOT_DELIVERED', 'NOT_AS_DESCRIBED', 'DAMAGED', 'WRONG_ITEM', 'OTHER'];
 
 export default function Marketplace() {
   const { t } = useT();
@@ -23,6 +24,12 @@ export default function Marketplace() {
   const [reviewId, setReviewId] = useState(null);
   const [rating, setRating] = useState(5);
   const [comment, setComment] = useState('');
+  const [disputeOn, setDisputeOn] = useState(null);
+  const [disputeReason, setDisputeReason] = useState('NOT_DELIVERED');
+  const [disputeDesc, setDisputeDesc] = useState('');
+  const [evidenceOn, setEvidenceOn] = useState(null);
+  const [evidenceUrls, setEvidenceUrls] = useState('');
+  const [evidenceNote, setEvidenceNote] = useState('');
   const [create, setCreate] = useState({ category: 'PRODUCE', title: '', description: '', unit_price: '', stock_quantity: '' });
   const [loading, setLoading] = useState(false);
   const [msg, setMsg] = useState({ type: '', text: '' });
@@ -155,6 +162,33 @@ export default function Marketplace() {
       await api.post(`/v1/marketplace/orders/${id}/review`, { rating: parseInt(rating, 10), comment });
       show('ok', t('mkt.reviewed'));
       setReviewId(null); setComment(''); setRating(5);
+    } catch (err) {
+      show('err', err.response?.data?.message || t('mkt.err_generic'));
+    }
+  };
+
+  const openDispute = async (e, id) => {
+    e.preventDefault();
+    try {
+      const res = await api.post(`/v1/marketplace/orders/${id}/dispute`, { reason: disputeReason, description: disputeDesc });
+      show('ok', `${t('mkt.dispute_opened')} #${res.data.dispute.id}`);
+      setDisputeOn(null); setDisputeDesc(''); setDisputeReason('NOT_DELIVERED');
+      loadOrders();
+    } catch (err) {
+      show('err', err.response?.data?.message || t('mkt.err_generic'));
+    }
+  };
+
+  const submitEvidence = async (e, id) => {
+    e.preventDefault();
+    try {
+      await api.post(`/v1/marketplace/orders/${id}/evidence`, {
+        urls: evidenceUrls.split(',').map((u) => u.trim()).filter(Boolean),
+        note: evidenceNote,
+      });
+      show('ok', t('mkt.evidence_sent'));
+      setEvidenceOn(null); setEvidenceUrls(''); setEvidenceNote('');
+      loadOrders();
     } catch (err) {
       show('err', err.response?.data?.message || t('mkt.err_generic'));
     }
@@ -343,14 +377,65 @@ export default function Marketplace() {
                       {orderRole === 'buyer' && o.status === 'ESCROW_HELD' && (
                         <>
                           <button className="btn" style={{ padding: '4px 8px', fontSize: 12 }} onClick={() => confirmOrder(o.id)}>{t('mkt.confirm')}</button>{' '}
+                          <button className="btn danger" style={{ padding: '4px 8px', fontSize: 12 }} onClick={() => setDisputeOn(disputeOn === o.id ? null : o.id)}>{t('mkt.dispute')}</button>{' '}
                           <button className="btn warn" style={{ padding: '4px 8px', fontSize: 12 }} onClick={() => cancelOrder(o.id)}>{t('mkt.cancel')}</button>
                         </>
+                      )}
+                      {orderRole === 'seller' && o.status === 'ESCROW_HELD' && (
+                        <button className="btn ghost" style={{ padding: '4px 8px', fontSize: 12 }} onClick={() => setEvidenceOn(evidenceOn === o.id ? null : o.id)}>{t('mkt.evidence_btn')}</button>
                       )}
                       {orderRole === 'buyer' && o.status === 'CONFIRMED' && (
                         <button className="btn ghost" style={{ padding: '4px 8px', fontSize: 12 }} onClick={() => setReviewId(reviewId === o.id ? null : o.id)}>{t('mkt.review')}</button>
                       )}
                     </td>
                   </tr>
+                  {evidenceOn === o.id && orderRole === 'seller' && (
+                    <tr key={`${o.id}-ev`}>
+                      <td colSpan="6">
+                        <form className="form-row" onSubmit={(e) => submitEvidence(e, o.id)}>
+                          <div className="field" style={{ flex: 3 }}>
+                            <label>{t('mkt.evidence_urls')}</label>
+                            <input value={evidenceUrls} onChange={(e) => setEvidenceUrls(e.target.value)} placeholder="https://…, https://…" required />
+                          </div>
+                          <div className="field" style={{ flex: 3 }}>
+                            <label>{t('mkt.evidence_note')}</label>
+                            <input value={evidenceNote} onChange={(e) => setEvidenceNote(e.target.value)} />
+                          </div>
+                          <button className="btn" type="submit">{t('mkt.evidence_submit')}</button>
+                        </form>
+                      </td>
+                    </tr>
+                  )}
+                  {disputeOn === o.id && orderRole === 'buyer' && (
+                    <tr key={`${o.id}-dp`}>
+                      <td colSpan="7">
+                        <form className="form-row" onSubmit={(e) => openDispute(e, o.id)}>
+                          <div className="field">
+                            <label>{t('mkt.dispute_reason')}</label>
+                            <select value={disputeReason} onChange={(e) => setDisputeReason(e.target.value)}>
+                              {DISPUTE_REASONS.map((r) => <option key={r} value={r}>{r}</option>)}
+                            </select>
+                          </div>
+                          <div className="field" style={{ flex: 3 }}>
+                            <label>{t('mkt.dispute_desc')}</label>
+                            <input value={disputeDesc} onChange={(e) => setDisputeDesc(e.target.value)} />
+                          </div>
+                          <button className="btn danger" type="submit">{t('mkt.dispute_open')}</button>
+                        </form>
+                      </td>
+                    </tr>
+                  )}
+                  {o.evidence_urls && o.evidence_urls.length > 0 && (
+                    <tr key={`${o.id}-echips`}>
+                      <td colSpan={orderRole === 'buyer' ? 7 : 6} className="roles-tag">
+                        <span>{t('mkt.evidence')}: </span>
+                        {o.evidence_urls.map((u, i) => (
+                          <a key={i} href={u} target="_blank" rel="noreferrer" style={{ marginRight: 8 }}>#{i + 1}</a>
+                        ))}
+                        {o.evidence_note ? ` — ${o.evidence_note}` : ''}
+                      </td>
+                    </tr>
+                  )}
                   {reviewId === o.id && (
                     <tr key={`${o.id}-rev`}>
                       <td colSpan="7">
