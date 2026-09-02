@@ -365,11 +365,11 @@ function computeCompositeScore({ identity, savings, repayment, groups, regularit
   return Math.max(0, Math.min(850, Math.round(score)));
 }
 
-/** Compute the change-triggers against the previous current passport, if any. */
+/** Compute the change-triggers against the previous passport snapshot, if any. */
 async function computeTriggers(userId, current) {
   const prev = await pool.query(
     `SELECT afrikoba_score FROM financial_passports
-      WHERE user_id=$1 AND is_current=FALSE
+      WHERE user_id=$1
       ORDER BY version DESC LIMIT 1`, [userId]
   );
   if (!prev.rows.length) return ['First passport issued'];
