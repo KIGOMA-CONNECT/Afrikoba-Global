@@ -37,6 +37,7 @@ export default function Layout() {
     { to: '/dashboard/subscriptions', key: 'nav.subscriptions', always: true },
     { to: '/dashboard/family', key: 'nav.family', always: true },
     { to: '/dashboard/passport', key: 'nav.passport', always: true },
+    { to: '/dashboard/support', key: 'nav.support', always: true },
     { to: '/dashboard/notifications', key: 'nav.notifications', always: true },
     { to: '/dashboard/admin', key: 'nav.admin', admin: true },
     { to: '/dashboard/settings', key: 'nav.settings', always: true },

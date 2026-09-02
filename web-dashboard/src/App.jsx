@@ -51,6 +51,7 @@ const Cards = lazy(() => import('./pages/Cards.jsx'));
 const Subscriptions = lazy(() => import('./pages/Subscriptions.jsx'));
 const Family = lazy(() => import('./pages/Family.jsx'));
 const Passport = lazy(() => import('./pages/Passport.jsx'));
+const Support = lazy(() => import('./pages/Support.jsx'));
 
 function RequireAuth({ children }) {
   const token = localStorage.getItem('afrikoba_token');
@@ -108,6 +109,7 @@ export default function App() {
         <Route path="subscriptions" element={<Page><Subscriptions /></Page>} />
         <Route path="family" element={<Page><Family /></Page>} />
         <Route path="passport" element={<Page><Passport /></Page>} />
+        <Route path="support" element={<Page><Support /></Page>} />
         <Route path="settings" element={<Page><Settings /></Page>} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
