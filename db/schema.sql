@@ -188,6 +188,9 @@ CREATE TABLE IF NOT EXISTS rosca_members (
     assigned_queue_number INT,
     has_received_payout BOOLEAN DEFAULT FALSE,
     received_payout_amount NUMERIC(15, 2) DEFAULT 0.00,
+    contributions_ok INT DEFAULT 0,
+    contributions_missed INT DEFAULT 0,
+    on_time_streak INT DEFAULT 0,
     joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(pool_id, user_id)
 );
@@ -204,6 +207,18 @@ CREATE TABLE IF NOT EXISTS rosca_schedules (
     status VARCHAR(20) DEFAULT 'PENDING', -- PENDING, COLLECTED, DISBURSED, SKIPPED
     disbursed_at TIMESTAMP,
     UNIQUE(pool_id, cycle_number)
+);
+
+-- ROSCA Trust History (trust_score derived from contribution reliability)
+CREATE TABLE IF NOT EXISTS rosca_trust_history (
+    id SERIAL PRIMARY KEY,
+    user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    pool_id INT REFERENCES rosca_pools(id) ON DELETE CASCADE,
+    cycle_number INT,
+    delta NUMERIC(5, 1) NOT NULL,
+    score_after NUMERIC(6, 2) NOT NULL,
+    reason VARCHAR(40) NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 
 -- ==========================================

@@ -60,4 +60,14 @@ router.get('/pools/:poolId', async (req, res, next) => {
   }
 });
 
+// ROSCA trust/history summary for the logged-in member (trust_score from history)
+router.get('/trust/summary', async (req, res, next) => {
+  try {
+    const summary = await roscaService.getMemberRoscaSummary(req.user.id);
+    return res.json({ success: true, ...summary });
+  } catch (error) {
+    next(error);
+  }
+});
+
 module.exports = router;

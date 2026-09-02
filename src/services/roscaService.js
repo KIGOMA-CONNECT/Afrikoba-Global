@@ -7,6 +7,32 @@ const { logAudit } = require('./auditService');
 const logger = require('../utils/logger');
 const fin = require('./financialEngine');
 
+/**
+ * Adjust a user's trust_score from ROSCA activity (0-100) and record
+ * the exact delta/reason so members & auditors can see WHY it changed.
+ * Trust history from contribution reliability mirrors eRosca's
+ * "credit score from contribution history" behaviour.
+ */
+async function applyTrustDelta(client, { userId, poolId, cycleNumber, delta, reason }) {
+  const userRes = await client.query(
+    'SELECT trust_score FROM users WHERE id = $1 FOR UPDATE',
+    [userId]
+  );
+  if (userRes.rows.length === 0) return;
+  const before = Number(userRes.rows[0].trust_score) || 0;
+  const scoreAfter = Math.max(0, Math.min(100, before + delta));
+  await client.query(
+    'UPDATE users SET trust_score = $1 WHERE id = $2',
+    [scoreAfter, userId]
+  );
+  await client.query(
+    `INSERT INTO rosca_trust_history (user_id, pool_id, cycle_number, delta, score_after, reason)
+     VALUES ($1, $2, $3, $4, $5, $6)`,
+    [userId, poolId, cycleNumber, delta, scoreAfter, reason]
+  );
+  return { before, after: scoreAfter, delta };
+}
+
 async function createPool(userId, { poolName, contributionAmount, cycleFrequency, totalMembers, poolType }) {
   if (parseInt(totalMembers, 10) < 3) {
     throw Object.assign(new Error('Kikoba kinahitaji angalau wanachama 3.'), { statusCode: 400 });
@@ -199,11 +225,12 @@ async function disburseDuePayouts() {
       );
 
       let insufficient = false;
+      const shortMembers = [];
       const collected = [];
       for (const member of contributors.rows) {
         if (Number(member.wallet_balance) < Number(sched.contribution_amount)) {
           insufficient = true;
-          break;
+          shortMembers.push(member.user_id);
         }
       }
 
@@ -212,6 +239,19 @@ async function disburseDuePayouts() {
           'UPDATE rosca_schedules SET status = $1 WHERE id = $2',
           ['SKIPPED', sched.id]
         );
+        // Record misses for the members who actually fell short and apply a
+        // small trust_score penalty (they disrupted the payout cycle).
+        if (shortMembers.length > 0) {
+          await client.query(
+            `UPDATE rosca_members SET contributions_missed = contributions_missed + 1, on_time_streak = 0
+             WHERE pool_id = $1 AND user_id = ANY($2::int[])`,
+            [sched.pool_id, shortMembers]
+          );
+          for (const shortId of shortMembers) {
+            const chg = await applyTrustDelta(client, { userId: shortId, poolId: sched.pool_id, cycleNumber: sched.cycle_number, delta: -3, reason: 'MISSED_CONTRIBUTION' });
+            logger.warn('ROSCA', `Member ${shortId} trust ${chg.before}->${chg.after} (missed cycle #${sched.cycle_number})`);
+          }
+        }
         logger.warn('ROSCA', `Mzunguko #${sched.cycle_number} umerukwa - michango haitoshi (pool ${sched.pool_id})`);
         continue;
       }
@@ -223,6 +263,21 @@ async function disburseDuePayouts() {
           `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
            VALUES ($1, $2, $3, 0, $3, 'SUCCESS', 'ROSCA_CONTRIBUTION', $4)`,
           [memberRef, member.user_id, sched.contribution_amount, JSON.stringify({ pool_id: sched.pool_id, cycle_number: sched.cycle_number })]
+        );
+        // Reliability: on-time contributor gains trust (capped 100).
+        await client.query(
+          `UPDATE rosca_members SET contributions_ok = contributions_ok + 1, on_time_streak = on_time_streak + 1
+           WHERE pool_id = $1 AND user_id = $2`,
+          [sched.pool_id, member.user_id]
+        );
+        await client.query(
+          `UPDATE users SET trust_score = LEAST(100, (COALESCE(trust_score,0) + 1)) WHERE id = $1`,
+          [member.user_id]
+        );
+        await client.query(
+          `INSERT INTO rosca_trust_history (user_id, pool_id, cycle_number, delta, score_after, reason)
+           SELECT $1, $2, $3, 1, trust_score, 'ON_TIME_CONTRIBUTION' FROM users WHERE id = $1`,
+          [member.user_id, sched.pool_id, sched.cycle_number]
         );
         collected.push(member.user_id);
       }
@@ -301,4 +356,32 @@ async function getPoolDetails(poolId) {
   return { ...poolRes.rows[0], members: members.rows, schedules: schedules.rows };
 }
 
-module.exports = { createPool, joinPool, listPools, disburseDuePayouts, getPoolDetails };
+/**
+ * Sum a member's ROSCA contribution reliability + trust history across all
+ * pools, and return the per-pool counters. Used to render the "trust from
+ * history" view on the dashboard.
+ */
+async function getMemberRoscaSummary(userId) {
+  const totals = await pool.query(
+    `SELECT COALESCE(SUM(contributions_ok)::int,0) AS contributions_ok,
+            COALESCE(SUM(contributions_missed)::int,0) AS contributions_missed,
+            COALESCE(MAX(on_time_streak)::int,0) AS best_streak
+     FROM rosca_members WHERE user_id = $1`,
+    [userId]
+  );
+  const history = await pool.query(
+    `SELECT rth.pool_id, p.pool_name, rth.cycle_number, rth.delta, rth.score_after, rth.reason, rth.created_at
+     FROM rosca_trust_history rth
+     LEFT JOIN rosca_pools p ON p.id = rth.pool_id
+     WHERE rth.user_id = $1
+     ORDER BY rth.created_at DESC
+     LIMIT 50`,
+    [userId]
+  );
+  return {
+    totals: totals.rows[0],
+    history: history.rows,
+  };
+}
+
+module.exports = { createPool, joinPool, listPools, disburseDuePayouts, getPoolDetails, getMemberRoscaSummary, applyTrustDelta };
