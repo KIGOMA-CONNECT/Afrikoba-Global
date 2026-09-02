@@ -77,14 +77,22 @@ async function calculateScore(userId) {
   totalScore += balanceScore;
 
   // 6. Loan repayment (-200 to 200 points)
-  const loans = await pool.query(
+  // NOTE: previously queried a non-existent 'vicoba_loans' table (latent bug).
+  // Rewritten against the real repayment sources (micro_loans + VICOBA schedules).
+  const ml = await pool.query(
     `SELECT COUNT(*)::int AS total,
-       COUNT(CASE WHEN status = 'COMPLETED' THEN 1 END)::int AS repaid
-     FROM vicoba_loans WHERE borrower_id = $1`,
-    [userId]
+            COUNT(*) FILTER (WHERE status IN ('COMPLETED','REPAID','PAID'))::int AS repaid
+       FROM micro_loans WHERE user_id = $1`, [userId]
   );
-  const loanTotal = loans.rows[0]?.total || 0;
-  const loanRepaid = loans.rows[0]?.repaid || 0;
+  const vs = await pool.query(
+    `SELECT COUNT(*)::int AS total,
+            COUNT(*) FILTER (WHERE s.status IN ('PAID','COMPLETED'))::int AS paid
+       FROM vicoba_loan_schedules s
+       JOIN vicoba_loan_requests r ON r.id = s.loan_id
+      WHERE r.applicant_user_id = $1`, [userId]
+  );
+  const loanTotal = (ml.rows[0]?.total || 0) + (vs.rows[0]?.total || 0);
+  const loanRepaid = (ml.rows[0]?.repaid || 0) + (vs.rows[0]?.paid || 0);
   const loanScore = loanTotal > 0 ? Math.floor((loanRepaid / loanTotal) * 200) : 100;
   factors.push({ factor: 'LOAN_REPAYMENT', score: loanScore, detail: `${loanRepaid}/${loanTotal} repaid` });
   totalScore += loanScore;
@@ -167,26 +175,83 @@ async function getScore(userId) {
 }
 
 /**
- * Check loan eligibility.
+ * Check loan eligibility (governed by the Financial Passport).
+ * Uses the explainable AFRIKOBA Score plus a capacity/affordability decision:
+ * a user is eligible for a requested amount only if they can plausibly afford
+ * it (monthly repayment <= disposable capacity) AND their score clears the
+ * product threshold. Reasons are surfaced so the outcome is explainable.
  */
 async function checkEligibility(userId, amount, termMonths) {
-  const scoreData = await getScore(userId);
+  const passportService = require('./financialPassportService');
+  const passport = await passportService.getPassport(userId);
+  const scoreData = passport; // explainable score + capacity
+
   const products = await pool.query(
     `SELECT * FROM loan_products WHERE is_active = TRUE AND min_amount <= $1 AND max_amount >= $1 AND min_term_months <= $2 AND max_term_months >= $2`,
     [amount, termMonths]
   );
 
-  const eligibleProducts = products.rows.filter((p) => scoreData.score >= p.eligibility_min_score);
+  const score = scoreData.afrikobaScore;
+  const disposable = scoreData.capacity?.disposable || 0;
+  const obligations = scoreData.capacity?.obligations || 0;
+
+  // Affordability: the monthly repayment must fit within disposable capacity,
+  // with a broad safety margin (repayment <= 50% of disposable + obligations held).
+  const monthlyPayment = products.rows.length > 0
+    ? calculateMonthlyPayment(amount, products.rows[0].interest_rate, termMonths)
+    : calculateMonthlyPayment(amount, 10, termMonths);
+
+  const scoreMapping = (eligibility_min_score) => {
+    // The legacy score was 0-800; the passport is 0-850. Keep product thresholds
+    // meaningful by mapping the passport onto the same band as the legacy score.
+    const legacyBand = Math.round((eligibility_min_score / 800) * 850);
+    return score >= legacyBand;
+  };
+
+  const reasons = [];
+  const eligibleProducts = [];
+  for (const p of products.rows) {
+    const meetsScore = scoreMapping(p.eligibility_min_score);
+    if (!meetsScore) {
+      reasons.push(`Score ${score} below the ${p.eligibility_min_score} minimum for ${p.name}.`);
+      continue;
+    }
+    const affordable = monthlyPayment <= Math.max(disposable, 0) * 0.5;
+    if (!affordable) {
+      reasons.push(`Estimated monthly repayment of ${Math.round(monthlyPayment).toLocaleString()} would exceed 50% of disposable capacity (${Math.round(disposable).toLocaleString()}).`);
+      continue;
+    }
+    eligibleProducts.push({
+      ...p,
+      monthlyPayment,
+      totalPayable: monthlyPayment * termMonths,
+      affordability: {
+        monthlyPayment: Math.round(monthlyPayment),
+        disposableCapacity: Math.round(disposable),
+        currentObligations: Math.round(obligations),
+      },
+    });
+  }
 
   return {
-    creditScore: scoreData.score,
-    rating: scoreData.rating,
+    creditScore: score,
+    rating: {
+      label: scoreData.label,
+      label_sw: scoreData.label_sw,
+      color: scoreData.color,
+    },
     eligible: eligibleProducts.length > 0,
-    products: eligibleProducts.map((p) => ({
-      ...p,
-      monthlyPayment: calculateMonthlyPayment(amount, p.interest_rate, termMonths),
-      totalPayable: calculateMonthlyPayment(amount, p.interest_rate, termMonths) * termMonths,
-    })),
+    products: eligibleProducts,
+    reasons: reasons.length > 0
+      ? reasons
+      : ['No eligible product matched the requested amount and term.'],
+    passport: {
+      version: scoreData.version,
+      dimensions: scoreData.dimensions,
+      capacity: scoreData.capacity,
+      identity: scoreData.identity,
+      behaviour: scoreData.behaviour,
+    },
   };
 }
 
