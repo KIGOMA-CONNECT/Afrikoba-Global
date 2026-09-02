@@ -5,7 +5,7 @@ import { useT } from '../i18n/LangProvider.jsx';
 
 const PROVIDERS = ['Mpesa', 'Tigo', 'Airtel', 'Halopesa'];
 
-const CURRENCY_OPTIONS = ['TZS', 'USD', 'KES', 'EUR', 'GBP', 'UGX', 'RWF'];
+const FALLBACK_CURRENCIES = ['TZS', 'USD', 'KES', 'EUR', 'GBP', 'UGX', 'RWF'];
 
 export default function Wallet() {
   const { t } = useT();
@@ -20,6 +20,8 @@ export default function Wallet() {
   const [convTo, setConvTo] = useState('USD');
   const [convAmount, setConvAmount] = useState('');
   const [msg, setMsg] = useState({ type: '', text: '' });
+  const [currencies, setCurrencies] = useState(FALLBACK_CURRENCIES);
+  const [fxPreview, setFxPreview] = useState(null);
 
   const refresh = () => {
     api.get('/wallet/balance').then((r) => setBalance(r.data.balance)).catch(() => {});
@@ -28,6 +30,27 @@ export default function Wallet() {
   };
 
   useEffect(refresh, []);
+
+  useEffect(() => {
+    api.get('/currency/currencies').then((r) => {
+      const list = (r.data.currencies || []).map((c) => c.code).filter(Boolean);
+      if (list.length > 0) setCurrencies(list);
+    }).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (!convFrom || !convTo || convFrom === convTo || !convAmount || Number(convAmount) <= 0) {
+      setFxPreview(null);
+      return;
+    }
+    api.get(`/currency/rates/${convFrom}/${convTo}`).then((r) => {
+      setFxPreview({
+        rate: r.data.rate,
+        source: r.data.source,
+        converted: Number(convAmount) * Number(r.data.rate),
+      });
+    }).catch(() => setFxPreview(null));
+  }, [convFrom, convTo, convAmount]);
 
   const show = (type, text) => {
     setMsg({ type, text });
@@ -61,8 +84,10 @@ export default function Wallet() {
     e.preventDefault();
     try {
       const res = await api.post('/currency/convert', { from: convFrom, to: convTo, amount: parseFloat(convAmount) });
-      show('ok', `${res.data.name || res.data.message || res.data.converted} ${res.data.converted ? convTo + ' @ ' + Number(res.data.rate).toFixed(4) : ''}`);
+      const converted = res.data.converted != null ? `${formatMoney(res.data.converted)} ${convTo}` : (res.data.message || '');
+      show('ok', `${t('wallet.convert_done')} ${converted}`);
       setConvAmount('');
+      setFxPreview(null);
       refresh();
     } catch (err) {
       show('err', err.response?.data?.message || t('wallet.error_generic'));
@@ -137,22 +162,40 @@ export default function Wallet() {
       <div className="grid grid-2 section">
         <div className="card">
           <h3>{t('wallet.my_holdings')}</h3>
-          {holdings && holdings.currencies && holdings.currencies.length > 0 ? (
-            <table>
-              <tbody>
-                {holdings.currencies.map((row) => (
-                  <tr key={row.currency}>
-                    <td><strong>{row.currency}</strong></td>
-                    <td>{formatMoney(row.balance)}</td>
-                    <td>{t('wallet.tzs_rate', { rate: row.rateToTzs ? Number(row.rateToTzs).toFixed(4) : '—' })}</td>
-                    <td>{row.tzsValue ? formatMoney(row.tzsValue) : '—'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          ) : (
-            <p className="roles-tag">{t('wallet.holders_empty')}</p>
-          )}
+          <table>
+            <thead>
+              <tr><th>{t('wallet.convert_shape_currency')}</th><th>{t('wallet.convert_shape_balance')}</th><th>{t('wallet.convert_shape_rate')}</th><th>{t('wallet.convert_shape_value')}</th></tr>
+            </thead>
+            <tbody>
+              {holdings && (
+                <tr>
+                  <td><strong>{t('wallet.primary')}</strong></td>
+                  <td>{formatMoney(holdings.tzs)}</td>
+                  <td>1.0000</td>
+                  <td>{formatMoney(holdings.tzs)}</td>
+                </tr>
+              )}
+              {holdings && holdings.currencies && holdings.currencies.map((row) => (
+                <tr key={row.currency}>
+                  <td><strong>{row.currency}</strong></td>
+                  <td>{formatMoney(row.balance)}</td>
+                  <td>{row.rateToTzs ? Number(row.rateToTzs).toFixed(4) : '—'}</td>
+                  <td>{row.tzsValue != null ? formatMoney(row.tzsValue) : '—'}</td>
+                </tr>
+              ))}
+              {!holdings || !holdings.currencies || holdings.currencies.length === 0 ? (
+                <tr><td colSpan="4" className="roles-tag">{t('wallet.holders_empty')}</td></tr>
+              ) : null}
+            </tbody>
+            {holdings && (
+              <tfoot>
+                <tr>
+                  <td colSpan="3"><strong>{t('wallet.convert_shape_total')}</strong></td>
+                  <td><strong>{formatMoney(holdings.tzsTotal)}</strong></td>
+                </tr>
+              </tfoot>
+            )}
+          </table>
         </div>
 
         <div className="card">
@@ -161,13 +204,13 @@ export default function Wallet() {
             <div className="field">
               <label>{t('wallet.convert_from')}</label>
               <select value={convFrom} onChange={(e) => setConvFrom(e.target.value)}>
-                {CURRENCY_OPTIONS.map((c) => <option key={c} value={c}>{c}</option>)}
+                {currencies.map((c) => <option key={c} value={c}>{c}</option>)}
               </select>
             </div>
             <div className="field">
               <label>{t('wallet.convert_to')}</label>
               <select value={convTo} onChange={(e) => setConvTo(e.target.value)}>
-                {CURRENCY_OPTIONS.map((c) => <option key={c} value={c}>{c}</option>)}
+                {currencies.map((c) => <option key={c} value={c}>{c}</option>)}
               </select>
             </div>
             <div className="field">
@@ -176,6 +219,13 @@ export default function Wallet() {
             </div>
             <button className="btn" type="submit">{t('wallet.convert_btn')}</button>
           </form>
+          {fxPreview && (
+            <div className="roles-tag" style={{ marginTop: 12 }}>
+              {t('wallet.fx_preview', {
+                from: convFrom, to: convTo, rate: Number(fxPreview.rate).toFixed(4), amount: formatMoney(Number(fxPreview.converted).toFixed(2)),
+              })} <span style={{ opacity: 0.7 }}>({fxPreview.source})</span>
+            </div>
+          )}
         </div>
       </div>
 
