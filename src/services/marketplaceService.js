@@ -431,7 +431,8 @@ async function payFinancingInstallment(buyerId, financingId) {
     const principalShare = round2(financed / term);
     const feeShare = round2(feeTotal / term);
     const installment = round2(principalShare + feeShare);
-    const amount = Math.min(remaining, installment); // final payment clears any rounding remainder
+    // Final payment absorbs any rounding remainder (<=0.02 drift from round2).
+    const amount = (remaining <= installment + 0.02) ? remaining : installment;
     const fPart = Math.min(feeShare, amount);
     const pPart = round2(amount - fPart);
 
