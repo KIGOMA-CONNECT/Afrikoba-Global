@@ -536,6 +536,7 @@ async function openMarketplaceDispute(buyerId, orderId, data = {}) {
   const reason = data.reason;
   if (!DISPUTE_REASONS.includes(reason)) throw badge(`Sababu batili: ${DISPUTE_REASONS.join(', ')}.`, 400);
   const description = data.description ? String(data.description).slice(0, 800) : null;
+  const note = description || reason;
 
   const client = await pool.connect();
   try {
@@ -548,7 +549,7 @@ async function openMarketplaceDispute(buyerId, orderId, data = {}) {
     const d = await client.query(
       `INSERT INTO disputes (user_id, marketplace_order_id, reason, description, amount_disputed, status)
        VALUES ($1,$2,$3,$4,$5,'OPEN') RETURNING *`,
-      [buyerId, orderId, reason, description, held]);
+      [buyerId, orderId, reason, note, held]);
     await client.query('COMMIT');
     await logAction(buyerId, 'MARKETPLACE_DISPUTE_OPENED', 'MARKETPLACE_ORDER', orderId, `Dispute #${d.rows[0].id}: ${reason} (${held})`);
     return d.rows[0];
