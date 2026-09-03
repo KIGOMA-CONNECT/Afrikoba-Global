@@ -69,10 +69,6 @@ export default function Projects() {
     } catch (err) { error(err); }
   };
 
-  const collectProject = (id) => {
-    if (selected && selected.financials) return; // already a financials view
-  };
-
   const disburse = async (id) => {
     const amount = prompt(t('projects.amount'));
     if (!amount) return;
