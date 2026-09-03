@@ -70,6 +70,8 @@ const BillSplits = lazy(() => import('./pages/BillSplits.jsx'));
 const Reports = lazy(() => import('./pages/Reports.jsx'));
 const Projects = lazy(() => import('./pages/Projects.jsx'));
 const Procurement = lazy(() => import('./pages/Procurement.jsx'));
+const PaymentLinkPage = lazy(() => import('./pages/PaymentLink.jsx'));
+const Developer = lazy(() => import('./pages/Developer.jsx'));
 
 function RequireAuth({ children }) {
   const token = localStorage.getItem('afrikoba_token');
@@ -146,8 +148,10 @@ export default function App() {
         <Route path="reports" element={<Page><Reports /></Page>} />
         <Route path="projects" element={<Page><Projects /></Page>} />
             <Route path="procurement" element={<Page><Procurement /></Page>} />
+            <Route path="developer" element={<Page><Developer /></Page>} />
         <Route path="settings" element={<Page><Settings /></Page>} />
       </Route>
+        <Route path="/pay/:code" element={<Page><PaymentLinkPage /></Page>} />
       <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </>

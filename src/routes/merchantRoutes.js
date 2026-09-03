@@ -11,6 +11,7 @@ const pool = require('../config/db');
 const { authRequired } = require('../middleware/auth');
 const merchantService = require('../services/merchantService');
 const qrCodeService = require('../services/qrCodeService');
+const paymentLinkService = require('../services/paymentLinkService');
 
 const router = express.Router();
 
@@ -76,6 +77,39 @@ router.post('/qr/pay', authRequired, async (req, res, next) => {
     const result = await qrCodeService.payQrCode(qr_code_id, req.user.id, parseFloat(amount));
     res.json(result);
   } catch (e) { next(e); }
+});
+
+// My payment links
+router.get('/payment-links', authRequired, async (req, res, next) => {
+  try { res.json({ success: true, links: await paymentLinkService.getPaymentLinks(req.user.id) }); }
+  catch (e) { next(e); }
+});
+
+// Create a payment link
+router.post('/payment-links', authRequired, async (req, res, next) => {
+  try { res.json({ success: true, link: await paymentLinkService.createPaymentLink(req.user.id, req.body) }); }
+  catch (e) { next(e); }
+});
+
+// Resolve a payment link by code (public-resolvable, auth not required)
+router.get('/payment-links/:code', async (req, res, next) => {
+  try { res.json({ success: true, link: await paymentLinkService.getPaymentLinkByCode(req.params.code) }); }
+  catch (e) { next(e); }
+});
+
+// Pay a payment link by code
+router.post('/payment-links/:code/pay', authRequired, async (req, res, next) => {
+  try {
+    const { amount } = req.body;
+    const result = await paymentLinkService.payPaymentLink(req.params.code, req.user.id, amount ? parseFloat(amount) : null);
+    res.json(result);
+  } catch (e) { next(e); }
+});
+
+// Deactivate a payment link
+router.delete('/payment-links/:id', authRequired, async (req, res, next) => {
+  try { res.json({ success: true, deleted: await paymentLinkService.deactivatePaymentLink(req.user.id, parseInt(req.params.id, 10)) }); }
+  catch (e) { next(e); }
 });
 
 module.exports = router;

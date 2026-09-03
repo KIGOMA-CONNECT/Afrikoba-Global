@@ -20,6 +20,7 @@ export default function Dashboard() {
     localStorage.setItem('afrikoba_show_balance', newVal);
   };
   const [services, setServices] = useState([]);
+  const [aiInsights, setAiInsights] = useState([]);
 
   useEffect(() => {
     if (isAdmin) {
@@ -29,6 +30,7 @@ export default function Dashboard() {
       api.get('/currency/my-holdings').then((r) => setHoldings(r.data)).catch(() => {});
       api.get('/services/catalog').then((r) => setServices(r.data.catalog)).catch(() => {});
       api.get('/banking/analytics/health').then((r) => setHealth(r.data.health)).catch(() => {});
+      api.get('/ai/insights').then((r) => setAiInsights(r.data.insights || [])).catch(() => {});
     }
   }, [isAdmin]);
 
@@ -184,6 +186,23 @@ export default function Dashboard() {
               <strong>{t('health.recommend')}:</strong> {t('health.rec_poor', { rate: health.savings_rate })}
             </div>
           )}
+        </div>
+      )}
+
+      {!isAdmin && aiInsights.length > 0 && (
+        <div className="card section" style={{ marginTop: 24 }}>
+          <h3>{t('dashboard.ai_insights')} <Link to="/dashboard/insights" className="roles-tag" style={{ float: 'right' }}>{t('dashboard.view_all')}</Link></h3>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 12 }}>
+            {aiInsights.slice(0, 3).map((ins) => (
+              <div key={ins.id} style={{ padding: '12px 16px', borderRadius: 10, borderLeft: `4px solid ${ins.severity === 'alert' ? '#dc2626' : ins.severity === 'warning' ? '#d97706' : ins.severity === 'info' ? '#2563eb' : '#059669'}`, background: '#f8faf9' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <strong style={{ fontSize: 14 }}>{ins.title}</strong>
+                  <span className={`badge ${ins.severity === 'alert' ? 'danger' : ins.severity === 'warning' ? 'info' : 'success'}`} style={{ fontSize: 11 }}>{ins.severity}</span>
+                </div>
+                <p style={{ margin: '4px 0 0', fontSize: 13, color: '#6b7a70' }}>{ins.body}</p>
+              </div>
+            ))}
+          </div>
         </div>
       )}
     </>

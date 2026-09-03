@@ -20,12 +20,17 @@ export default function Merchant() {
   const [payQrForm, setPayQrForm] = useState({ qr_code_id: '', amount: '' });
   const [qrDataUri, setQrDataUri] = useState(null);
   const [qrCode, setQrCode] = useState(null);
+  const [links, setLinks] = useState([]);
+  const [showLink, setShowLink] = useState(false);
+  const [linkForm, setLinkForm] = useState({ amount: '', description: '' });
+  const [copiedLink, setCopiedLink] = useState('');
   const error = (err) => setMsg({ type: 'err', text: err.response?.data?.message || t('merchant.error') });
 
   const load = () => {
     api.get('/merchant/my').then((r) => setMerchant(r.data.merchant)).catch(() => {});
     api.get('/merchant/qr').then((r) => setCodes(r.data.codes)).catch(() => {});
     api.get('/merchant/payments').then((r) => setPayments(r.data.payments)).catch(() => {});
+    api.get('/merchant/payment-links').then((r) => setLinks(r.data.links)).catch(() => {});
   };
   useEffect(() => { load(); }, []);
 
@@ -62,6 +67,35 @@ export default function Merchant() {
       await api.delete(`/merchant/qr/${id}`);
       load();
     } catch (err) { error(err); }
+  };
+
+  const createLink = async (e) => {
+    e.preventDefault();
+    try {
+      await api.post('/merchant/payment-links', {
+        ...(linkForm.amount ? { amount: Number(linkForm.amount) } : {}),
+        description: linkForm.description || undefined,
+      });
+      setMsg({ type: 'ok', text: t('merchant.link_created') });
+      setShowLink(false);
+      setLinkForm({ amount: '', description: '' });
+      load();
+    } catch (err) { error(err); }
+  };
+
+  const deactivateLink = async (id) => {
+    try {
+      await api.delete(`/merchant/payment-links/${id}`);
+      load();
+    } catch (err) { error(err); }
+  };
+
+  const copyLink = (code) => {
+    const url = `${window.location.origin}/pay/${code}`;
+    navigator.clipboard.writeText(url).then(() => {
+      setCopiedLink(code);
+      setTimeout(() => setCopiedLink(''), 2000);
+    });
   };
 
   const payMerchant = async (e) => {
@@ -165,7 +199,10 @@ export default function Merchant() {
 
       {/* My QR codes */}
       <div className="card" style={{ marginBottom: 24 }}>
-        <h3 style={{ marginBottom: 14 }}>{t('merchant.my_qrs')}</h3>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+          <h3 style={{ margin: 0 }}>{t('merchant.my_qrs')}</h3>
+          <button className="btn" onClick={() => setShowLink(true)}>＋ {t('merchant.new_link')}</button>
+        </div>
         {codes.length === 0 ? (
           <p className="roles-tag">{t('merchant.no_qrs')}</p>
         ) : (
@@ -201,6 +238,58 @@ export default function Merchant() {
           </div>
         )}
       </div>
+
+      {showLink && (
+        <div className="card" style={{ marginBottom: 24 }}>
+          <h3 style={{ marginBottom: 12 }}>{t('merchant.new_link')}</h3>
+          <p className="roles-tag" style={{ marginBottom: 14 }}>{t('merchant.link_hint')}</p>
+          <form onSubmit={createLink} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <label>{t('merchant.amount_optional')}<input type="number" min="0" value={linkForm.amount} onChange={(e) => setLinkForm({ ...linkForm, amount: e.target.value })} /></label>
+            <label>{t('merchant.description')}<input type="text" value={linkForm.description} onChange={(e) => setLinkForm({ ...linkForm, description: e.target.value })} /></label>
+            <div style={{ display: 'flex', gap: 10 }}>
+              <button className="btn" type="submit">{t('merchant.create_link')}</button>
+              <button className="btn btn-secondary" type="button" onClick={() => setShowLink(false)}>✕</button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {links.length > 0 && (
+        <div className="card" style={{ marginBottom: 24 }}>
+          <h3 style={{ marginBottom: 14 }}>{t('merchant.my_links')}</h3>
+          <div style={{ overflowX: 'auto' }}>
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>{t('merchant.amount')}</th>
+                  <th>{t('merchant.description')}</th>
+                  <th>{t('merchant.visits')}</th>
+                  <th>{t('merchant.status')}</th>
+                  <th>{t('merchant.actions')}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {links.map((l) => (
+                  <tr key={l.id}>
+                    <td>{l.amount ? formatMoney(l.amount) : t('merchant.open_amount')}</td>
+                    <td>{l.description || '—'}</td>
+                    <td>{l.scan_count}</td>
+                    <td><span className={`badge ${l.is_active ? 'success' : 'danger'}`}>{l.is_active ? t('merchant.active') : t('merchant.inactive')}</span></td>
+                    <td style={{ display: 'flex', gap: 6 }}>
+                      {l.is_active && (
+                        <>
+                          <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => copyLink(l.code)}>{copiedLink === l.code ? t('merchant.copied') : t('merchant.copy_link')}</button>
+                          <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12, color: '#dc2626' }} onClick={() => deactivateLink(l.id)}>{t('merchant.disable')}</button>
+                        </>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {/* Pay merchant */}
       <div style={{ display: 'flex', gap: 10, marginBottom: 24, flexWrap: 'wrap' }}>

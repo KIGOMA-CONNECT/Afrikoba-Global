@@ -18,6 +18,8 @@ export default function Vaults() {
   const [depForm, setDepForm] = useState({ amount: '', term_months: '6' });
   const [fundVault, setFundVault] = useState(null);
   const [fundAmt, setFundAmt] = useState('');
+  const [autoSaveGoal, setAutoSaveGoal] = useState(null);
+  const [autoSaveForm, setAutoSaveForm] = useState({ amount: '', frequency: 'WEEKLY' });
   const error = (err) => setMsg({ type: 'err', text: err.response?.data?.message || t('vaults.error') });
 
   const load = () => {
@@ -70,6 +72,19 @@ export default function Vaults() {
     if (!amt) return;
     try {
       await api.post(`/vaults/${id}/withdraw`, { amount: Number(amt) });
+      load();
+    } catch (err) { error(err); }
+  };
+
+  const enableAutoSave = async () => {
+    try {
+      await api.post(`/savings/goals/${autoSaveGoal}/auto-save`, {
+        amount: Number(autoSaveForm.amount),
+        frequency: autoSaveForm.frequency,
+      });
+      setMsg({ type: 'ok', text: t('vaults.auto_save_on') });
+      setAutoSaveGoal(null);
+      setAutoSaveForm({ amount: '', frequency: 'WEEKLY' });
       load();
     } catch (err) { error(err); }
   };
@@ -142,9 +157,12 @@ export default function Vaults() {
                 </div>
                 <small className="roles-tag" style={{ color: '#6b7a70' }}>{pct(v)}%</small>
               </div>
-              <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+              <div style={{ display: 'flex', gap: 8, marginTop: 4, flexWrap: 'wrap' }}>
                 <button className="btn" style={{ padding: '5px 10px', fontSize: 12 }} onClick={() => { setFundVault(v.id); setFundAmt(''); }}>{t('vaults.fund')}</button>
                 <button className="btn btn-secondary" style={{ padding: '5px 10px', fontSize: 12 }} onClick={() => withdrawFrom(v.id)}>{t('vaults.withdraw')}</button>
+                <button className="btn btn-secondary" style={{ padding: '5px 10px', fontSize: 12, color: v.auto_save_amount ? '#059669' : undefined }} onClick={() => { setAutoSaveGoal(v.id); setAutoSaveForm({ amount: v.auto_save_amount || '', frequency: v.auto_save_frequency || 'WEEKLY' }); }}>
+                  {v.auto_save_amount ? `🔄 ${t('vaults.auto_save')}: ${formatMoney(v.auto_save_amount)}` : `🔄 ${t('vaults.auto_save')}`}
+                </button>
               </div>
             </div>
           ))}
@@ -158,6 +176,23 @@ export default function Vaults() {
             <input type="number" min="0" placeholder={t('vaults.amount_ph')} value={fundAmt} onChange={(e) => setFundAmt(e.target.value)} style={{ flex: 1 }} />
             <button className="btn" onClick={() => depositInto(fundVault)}>{t('vaults.fund')}</button>
             <button className="btn btn-secondary" onClick={() => setFundVault(null)}>✕</button>
+          </div>
+        </div>
+      )}
+
+      {autoSaveGoal && (
+        <div className="card" style={{ marginBottom: 24 }}>
+          <h3 style={{ marginBottom: 12 }}>{t('vaults.auto_save')}</h3>
+          <p className="roles-tag" style={{ marginBottom: 14 }}>{t('vaults.auto_save_hint')}</p>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+            <input type="number" min="1" placeholder={t('vaults.amount_ph')} value={autoSaveForm.amount} onChange={(e) => setAutoSaveForm({ ...autoSaveForm, amount: e.target.value })} style={{ flex: 1, minWidth: 140 }} />
+            <select value={autoSaveForm.frequency} onChange={(e) => setAutoSaveForm({ ...autoSaveForm, frequency: e.target.value })} style={{ padding: '8px 10px', borderRadius: 8 }}>
+              <option value="DAILY">{t('vaults.freq_daily')}</option>
+              <option value="WEEKLY">{t('vaults.freq_weekly')}</option>
+              <option value="MONTHLY">{t('vaults.freq_monthly')}</option>
+            </select>
+            <button className="btn" onClick={enableAutoSave}>{t('vaults.auto_save')}</button>
+            <button className="btn btn-secondary" onClick={() => setAutoSaveGoal(null)}>✕</button>
           </div>
         </div>
       )}

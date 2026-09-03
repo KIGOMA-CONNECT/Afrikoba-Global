@@ -44,6 +44,7 @@ Status legend: ✅ **built** · 🔶 **partial** · ⬜ **not built / next**.
 - ✅ Deposit, withdrawal, transfer, transaction history, balance, locked funds,
   P2P, statements, multi-currency balances, cards (virtual+physical model), savings.
 - 🔶 Merchant/QR, scheduled transactions, beneficiaries, payment requests = partial.
+  ✅ Merchant QR + payment links now surfaced (see Sec 7).
 - ✅ FX / multi-currency (`currencyService`): TZS primary + dynamic currencies +
   live FX preview (`/currency/rates/:from/:to`, `/currency/currencies`). (Sec 45)
 - ✅ Yield pool separated from wallet money (`YIELD_LIABILITY`). (Sec 44)
@@ -57,8 +58,9 @@ Status legend: ✅ **built** · 🔶 **partial** · ⬜ **not built / next**.
   challenge — all through the financial engine.
 - ✅ **Budgeting & spend control (new, Phase 3)**: per-category monthly budgets,
   spend-vs-budget progress, over-budget alerts, savings rate — migration 043.
-- ⬜ Vaults/Spaces as a dedicated UI page/feature (goal savings exist in service
-  model but no surfaced "Vaults" product page yet).
+- ✅ **Vaults/Spaces product page**: branded goal-savings + fixed-deposits
+  experience (`Vaults.jsx`) with per-vault auto-save toggle wired to
+  `/savings/goals/:id/auto-save`. (sw/en i18n, deployed).
 
 ## 6. Credit / Trust / AI Financial Intelligence (Sec 18–21, 38)
 - ✅ Business & user **credit engine**: `creditScoreService`, `financialPassportService`,
@@ -74,12 +76,20 @@ Status legend: ✅ **built** · 🔶 **partial** · ⬜ **not built / next**.
   model/AI governance register now tracked (improves the "partial" fraud-engine
   posture — `fraudDetectionService`, `financialMonitoring`, `smartAlertService`,
   `spendingAnalyticsService` continue to feed heuristics).
+- ✅ **Financial Health + AI recommendations on Dashboard**: Dashboard.jsx pulls
+  `/api/ai/insights` and surfaces top 3 AI-powered insights inline alongside the
+  existing health stats card. (sw/en i18n, deployed).
 
 ## 7. Payments / Merchant / Business (Sec 11–13)
 - ✅ P2P, deposits, withdrawals, settlements, mobile-money callbacks (idempotent,
   HMAC-verified), provider abstraction (`azampayService`).
 - 🔶 Merchant platform: `merchantService`, `businessService`, cards exist; QR,
   invoices, payroll, procurement = partial/not surfaced.
+- ✅ **Merchant QR + shareable payment links**: `qrCodeService` (create, scan,
+  pay, deactivate) + `paymentLinkService` (create, list, resolve by code, pay,
+  deactivate) wired to `/api/merchant`. Shareable payment link URLs at
+  `/pay/:code` with a public `PaymentLink.jsx` page. Merchant.jsx surfaces both
+  QR codes and payment links with copy-to-clipboard. (sw/en i18n, deployed).<span style="display:none">4
 - 🟡 Marketplace + escrow + disputes + seller verification exist (Phase 4/6 partial):
   marketplace orders, escrow milestones, delivery evidence, admin-ruled escrow
   disputes (migrations 038–041).
@@ -105,8 +115,12 @@ Status legend: ✅ **built** · 🔶 **partial** · ⬜ **not built / next**.
 - 🔶 Formal backup/DR runbooks = not built (DB container backup exists).
 
 ## 11. API / Developer Platform / Cross-Border (Sec 46–48, 81)
-- 🔶 Public API surface exists (many `/api/*`), Swagger docs in non-prod.
-- ⬜ OAuth2/API-key developer portal, sandbox, SDKs, webhook simulator = not built.
+- ✅ Public API surface exists (many `/api/*`), Swagger docs in non-prod.
+- ✅ **Developer portal / API keys / sandbox / webhook simulator** (migration 049):
+  `developerService` (create/list/revoke/delete API keys, webhook simulator,
+  delivery log, sandbox ping) + `developerRoutes` mounted at `/api/developer`.
+  `Developer.jsx` page with 3 tabs: API Keys, Sandbox, Webhooks. Key format
+  `ak_live_*`, SHA-256 hashed. (sw/en i18n, deployed).
 - 🔶 Multi-currency + FX built (regional groundwork); country/regulator abstraction
   = not built.
 
@@ -136,8 +150,13 @@ ledger → account abstraction → migrate services sequentially → reconciliat
 - ✅ Chart of accounts + double-entry journal + balanced-group DB trigger.
 - ✅ Idempotency registry + financial engine primitives.
 - ✅ ~28 services already move money through the engine.
-- 🔶 Remaining audit: enumerate any legacy direct `wallet_balance` mutations not yet
-  routed through `financialEngine` and migrate them (ongoing hardening).
+- ✅ **Financial-core audit (complete)**: grepped every `wallet_balance` write across
+  `src/` — all 26 `users.wallet_balance` mutations live inside `financialEngine.js`
+  (its own `creditWallet`/`debitWallet`/group/wallet/hold/internal-transfer
+  primitives). No production service sets `users.wallet_balance` directly; VICOBA/
+  ROSCA/Savings/P2P/cards/family all route through the engine, and group projections
+  (`group_wallet_balance`) are paired via `fin.walletToGroup`/`fin.groupToWallet`.
+  Only non-engine write is `scripts/test-all.js` (a standalone test harness).
 
 ---
 
@@ -148,11 +167,24 @@ ledger → account abstraction → migrate services sequentially → reconciliat
 - ✅ **Budgeting & spend control** (Phase 3): migration 043, `/api/budget`
   (routes + `budgetService`), `web-dashboard/src/pages/Budget.jsx`, nav + i18n
   (sw/en). Deployed & verified (routes 401-gated, bundle served).
+- ✅ **Vaults/Spaces product page**: `Vaults.jsx` enhanced with per-vault
+  auto-save toggle (`/savings/goals/:id/auto-save`), sw/en i18n keys for
+  auto-save and frequency options.
+- ✅ **Merchant QR + shareable payment links**: migration 048 (`payment_links`
+  table), `paymentLinkService.js` (create/list/resolve/pay/deactivate),
+  new routes in `merchantRoutes.js`, `Merchant.jsx` payment-links section,
+  public `/pay/:code` page (`PaymentLink.jsx`), sw/en i18n.
+- ✅ **Dashboard Financial Health + AI insights**: `Dashboard.jsx` now pulls
+  `/api/ai/insights` and surfaces top 3 AI-powered insights inline below the
+  existing health stats card; `dashboard.ai_insights` i18n keys.
+- ✅ **Developer portal / API keys / sandbox / webhook simulator**: migration 049
+  (`api_keys` + `webhook_deliveries`), `developerService.js`,
+  `developerRoutes.js` at `/api/developer`, `Developer.jsx` (3-tab page),
+  `nav.developer` + full `dev.*` i18n sw/en.
 
 ## Suggested next candidates
-1. **Vaults/Spaces** product page (surfaces existing goal-savings engine as a
-   branded "Vaults/Spaces" experience — Monzo/Revolut parity).
-2. **Merchant QR + payment links** (surface existing merchant/card infrastructure).
-3. **Financial Health engine** recommendations surfaced in Dashboard (uses
-   `spendingAnalyticsService` + new `budgetService` overview).
-4. Remaining **financial-core audit** of any non-ledger balance mutations.
+1. **Four-eyes RBAC** (maker-checker approvals for high-value operations).
+2. **Observability / OpenTelemetry / data warehouse / BI dashboards**.
+3. **Formal backup/DR runbooks** and automated backup verification.
+4. **Fraud operations centre dashboards** + full AML case management.
+5. **Country/regulator abstraction** for true cross-border payments.
