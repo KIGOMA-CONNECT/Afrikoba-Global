@@ -6,8 +6,21 @@
 const express = require('express');
 const { authRequired, requireRoles } = require('../middleware/auth');
 const credit = require('../services/savingsCreditService');
+const governanceService = require('../services/governanceService');
 
 const router = express.Router();
+
+// Register executor for four-eyes micro loan disbursement.
+governanceService.registerExecutor('CREDIT_LOAN_DISBURSE', async (payload) => {
+  return await credit.adminDisburseMicroLoan(payload.loanId, payload.requesterId);
+});
+
+// Helper for high-value threshold
+async function getHighValueThreshold() {
+  const stored = await governanceService.getSetting('HIGH_VALUE_TRANSFER_THRESHOLD');
+  const parsed = parseFloat(stored);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 5000000;
+}
 
 // ===== I6: CREDIT SCORE =====
 router.get('/score', authRequired, async (req, res, next) => {
@@ -76,7 +89,34 @@ router.post('/admin/loans/:id/approve', authRequired, requireRoles('ADMIN'), asy
 });
 
 router.post('/admin/loans/:id/disburse', authRequired, requireRoles('ADMIN'), async (req, res, next) => {
-  try { res.json({ success: true, result: await credit.adminDisburseMicroLoan(req.params.id, req.user.id) }); }
+  try {
+    const loanId = parseInt(req.params.id, 10);
+    const pool = require('../config/db');
+    const loan = await pool.query("SELECT amount FROM micro_loans WHERE id = $1", [loanId]);
+    if (!loan.rows.length) return res.status(404).json({ success: false, message: 'Mkopo haupatikani.' });
+
+    const amount = parseFloat(loan.rows[0].amount);
+    const threshold = await getHighValueThreshold();
+
+    if (amount >= threshold) {
+      const flow = await governanceService.createApprovalFlow({
+        requesterId: req.user.id,
+        actionType: 'CREDIT_LOAN_DISBURSE',
+        refType: 'MICRO_LOAN',
+        refId: loanId,
+        data: { loanId, requesterId: req.user.id, amount },
+      });
+      return res.json({
+        success: true,
+        requiresApproval: true,
+        approvalFlowId: flow.id,
+        status: 'PENDING_APPROVAL',
+        message: 'Utoaji wa mkopo wa kiasi kikubwa unahitaji idhini ya msimamizi wa pili (four-eyes).',
+      });
+    }
+
+    res.json({ success: true, result: await credit.adminDisburseMicroLoan(loanId, req.user.id) });
+  }
   catch (e) { next(e); }
 });
 
