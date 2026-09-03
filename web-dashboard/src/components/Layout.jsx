@@ -42,6 +42,7 @@ export default function Layout() {
     { to: '/dashboard/business', key: 'nav.business', always: true },
     { to: '/dashboard/fx', key: 'nav.fx', always: true },
     { to: '/dashboard/offline', key: 'nav.offline', always: true },
+    { to: '/dashboard/rewards', key: 'nav.rewards', always: true },
     { to: '/dashboard/notifications', key: 'nav.notifications', always: true },
     { to: '/dashboard/admin', key: 'nav.admin', admin: true },
     { to: '/dashboard/settings', key: 'nav.settings', always: true },
