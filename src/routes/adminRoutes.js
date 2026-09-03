@@ -476,4 +476,21 @@ router.put('/config/:key', async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
+// ===== ANALYTICS DATA WAREHOUSE =====
+router.get('/warehouse/metrics', async (req, res, next) => {
+  try {
+    const warehouse = require('../services/analyticsWarehouseService');
+    const metrics = await warehouse.getWarehouseMetrics(Number(req.query.limit) || 30);
+    res.json({ success: true, metrics });
+  } catch (error) { next(error); }
+});
+
+router.post('/warehouse/aggregate', async (req, res, next) => {
+  try {
+    const warehouse = require('../services/analyticsWarehouseService');
+    const result = await warehouse.runDailyAggregation(req.body.date);
+    res.json(result);
+  } catch (error) { next(error); }
+});
+
 module.exports = router;
