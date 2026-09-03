@@ -67,6 +67,7 @@ const projectRoutes = require('./routes/projectRoutes');
 const aiRoutes = require('./routes/aiRoutes');
 const procurementRoutes = require('./routes/procurementRoutes');
 const developerRoutes = require('./routes/developerRoutes');
+const socialFundRoutes = require('./routes/socialFundRoutes');
 const swaggerUi = require('swagger-ui-express');
 const { swaggerSpec } = require('./config/swagger');
 
@@ -263,7 +264,8 @@ for (const prefix of versionPrefixes) {
   app.use(prefix, projectRoutes);
   app.use(`${prefix}/ai`, aiRoutes);
   app.use(`${prefix}/procurement`, procurementRoutes);
-app.use(`${prefix}/developer`, developerRoutes);
+  app.use(`${prefix}/developer`, developerRoutes);
+  app.use(`${prefix}/social`, walletLimiter, socialFundRoutes);
 }
 
 // Swagger UI - API documentation (production off - usitangaze API surface)
