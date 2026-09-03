@@ -103,15 +103,19 @@ Status legend: ✅ **built** · 🔶 **partial** · ⬜ **not built / next**.
 - 🔶 KYC lifecycle partial (`kycDocumentService`, `kyc_documents`, seller
   verification, identity verification).
 - 🔶 AML/sanctions monitoring = heuristics (`fraudDetectionService`); full case
-  management / regulatory reporting = not built.
-- 🔶 RBAC partial (admin role exists; full ABAC / four-eyes maker-checker =
-  not built). Security middleware: XSS, SQLi, CSRF, input-length guards, OTP/TOTP,
-  rate limits — ✅ tested.
+  management / regulatory reporting = **built** (migration 050: `aml_cases` +
+  `aml_case_notes` on top of `fraud_alerts`; assign/investigate/resolve + notes).
+- 🔶 RBAC partial (admin role exists); **four-eyes maker-checker built** (migration
+  050: `approval_flows` + `approval_actions`; high-value ops require a second,
+  distinct approver — self-approval blocked). Security middleware: XSS, SQLi, CSRF,
+  input-length guards, OTP/TOTP, rate limits — ✅ tested.
 
 ## 10. Reconciliation / Observability / Backup-DR / Testing (Sec 29–34, 51–54, 63–64)
 - ✅ Reconciliation cron + exceptions + `reconciliation_exceptions` table.
 - ✅ Concurrency-critical financial tests: idempotency + debit=credit enforced.
-- 🔶 Structured observability / OpenTelemetry / data warehouse / BI = not built.
+- 🔶 Structured observability / BI **built** (migration-free `observabilityService`:
+  business KPIs, transaction-by-type breakdown, fraud-severity rollups; surfaced in
+  admin RiskOps BI tab). OpenTelemetry/trace-level = still open.
 - 🔶 Formal backup/DR runbooks = not built (DB container backup exists).
 
 ## 11. API / Developer Platform / Cross-Border (Sec 46–48, 81)
@@ -122,7 +126,9 @@ Status legend: ✅ **built** · 🔶 **partial** · ⬜ **not built / next**.
   `Developer.jsx` page with 3 tabs: API Keys, Sandbox, Webhooks. Key format
   `ak_live_*`, SHA-256 hashed. (sw/en i18n, deployed).
 - 🔶 Multi-currency + FX built (regional groundwork); country/regulator abstraction
-  = not built.
+  **built** (migration 051: `supported_countries` with currency/region/fee schedule;
+  `countryService.quoteTransfer` — FX + fee quote for cross-border corridors;
+  seeded TZ/KE/UG/RW/BI/ZM/NG/GH; admin RiskOps Countries tab).
 
 ## 12. Commerce / Procurement / Escrow / Marketplace (Sec 39–41, 80)
 - 🔶 Marketplace + escrow + disputes built (migrations 038–041).
@@ -183,8 +189,11 @@ ledger → account abstraction → migrate services sequentially → reconciliat
   `nav.developer` + full `dev.*` i18n sw/en.
 
 ## Suggested next candidates
-1. **Four-eyes RBAC** (maker-checker approvals for high-value operations).
-2. **Observability / OpenTelemetry / data warehouse / BI dashboards**.
-3. **Formal backup/DR runbooks** and automated backup verification.
-4. **Fraud operations centre dashboards** + full AML case management.
-5. **Country/regulator abstraction** for true cross-border payments.
+- ✅ **Four-eyes RBAC** (migration 050 `approval_flows`/`approval_actions`; self-approval blocked).
+- ✅ **Observability / BI** (`observabilityService` KPIs; admin RiskOps BI tab).
+- ✅ **Fraud ops + AML case management** (migration 050 `aml_cases`/`aml_case_notes` + alert workbench).
+- ✅ **Country/regulator abstraction** (migration 051 `supported_countries` + FX quote).
+- 🔶 **Formal backup/DR runbooks** and automated backup verification.
+- 🔶 Public cross-border transfer execution (quote built; execution/regulator reporting = open).
+- 🔶 OpenTelemetry / trace-level observability + data warehouse.
+- 🔶 Wire maker-checker gate into live high-value operations (transfers, disbursements) end-to-end.
