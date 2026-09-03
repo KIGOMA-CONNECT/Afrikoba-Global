@@ -93,8 +93,14 @@ router.post('/payment-links', authRequired, async (req, res, next) => {
 
 // Resolve a payment link by code (public-resolvable, auth not required)
 router.get('/payment-links/:code', async (req, res, next) => {
-  try { res.json({ success: true, link: await paymentLinkService.getPaymentLinkByCode(req.params.code) }); }
-  catch (e) { next(e); }
+  try {
+    const link = await paymentLinkService.getPaymentLinkByCode(req.params.code);
+    if (!link) return res.status(404).json({ success: false, message: 'Kiungo cha malipo hakipatikani.' });
+    res.json({ success: true, link });
+  } catch (e) {
+    if (e.message && e.message.includes('hakipatikani')) return res.status(404).json({ success: false, message: e.message });
+    next(e);
+  }
 });
 
 // Pay a payment link by code
@@ -103,7 +109,10 @@ router.post('/payment-links/:code/pay', authRequired, async (req, res, next) => 
     const { amount } = req.body;
     const result = await paymentLinkService.payPaymentLink(req.params.code, req.user.id, amount ? parseFloat(amount) : null);
     res.json(result);
-  } catch (e) { next(e); }
+  } catch (e) {
+    if (e.message && e.message.includes('hakipatikani')) return res.status(404).json({ success: false, message: e.message });
+    next(e);
+  }
 });
 
 // Deactivate a payment link
