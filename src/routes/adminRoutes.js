@@ -493,4 +493,37 @@ router.post('/warehouse/aggregate', async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
+// ===== AI CASH-FLOW FORECAST & ANOMALIES =====
+router.get('/ai/forecasts', async (req, res, next) => {
+  try {
+    const aiCashFlow = require('../services/aiCashFlowService');
+    const forecasts = await aiCashFlow.getForecasts();
+    res.json({ success: true, forecasts });
+  } catch (error) { next(error); }
+});
+
+router.post('/ai/forecasts/generate', async (req, res, next) => {
+  try {
+    const aiCashFlow = require('../services/aiCashFlowService');
+    const result = await aiCashFlow.generateCashFlowForecast();
+    res.json(result);
+  } catch (error) { next(error); }
+});
+
+router.get('/ai/anomalies', async (req, res, next) => {
+  try {
+    const aiCashFlow = require('../services/aiCashFlowService');
+    const anomalies = await aiCashFlow.getAnomalies();
+    res.json({ success: true, anomalies });
+  } catch (error) { next(error); }
+});
+
+router.post('/ai/anomalies/detect', async (req, res, next) => {
+  try {
+    const aiCashFlow = require('../services/aiCashFlowService');
+    const result = await aiCashFlow.detectAnomalies();
+    res.json(result);
+  } catch (error) { next(error); }
+});
+
 module.exports = router;
