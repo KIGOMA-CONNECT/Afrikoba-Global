@@ -12,7 +12,7 @@ const http = require('http');
 const https = require('https');
 const config = require('./config');
 const { notFound, errorHandler } = require('./middleware/errorHandler');
-const { requestLog } = require('./middleware/requestLog');
+const { requestTelemetry } = require('./middleware/telemetry');
 const { apiLimiter } = require('./middleware/rateLimiter');
 const { securityHeaders, requestValidation, trackSuspiciousActivity, strictCors, secureErrorHandler } = require('./middleware/securityHardening');
 const { validateSession } = require('./middleware/sessionManager');
@@ -218,6 +218,7 @@ app.get('/health/ready', async (req, res) => {
 
 // API Routes - rate limited kwa jumla
 app.use('/api', apiLimiter);
+app.use('/api', requestTelemetry);
 app.use('/api', sqlInjectionGuard);
 app.use('/api', verifyCsrfToken);
 app.use('/api', xssProtection);
