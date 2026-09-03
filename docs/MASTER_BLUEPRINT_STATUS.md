@@ -65,9 +65,15 @@ Status legend: ✅ **built** · 🔶 **partial** · ⬜ **not built / next**.
   `creditScoreService` → `/api/credit`, and the Credit Score dashboard (0–850 gauge,
   pillars, capacity, explained dimensions, triggers, recalc).
 - ✅ **AFRIKOBA Trust Score** from contribution/history behaviour (ROSCA scoring).
-- 🔶 AI financial intelligence / fraud engine = partial
-  (`fraudDetectionService`, `financialMonitoring`, `smartAlertService`, `spendingAnalyticsService`
-  exist and feed insights/heuristics), not a full model-governed ML layer.
+- ✅ **AI Financial Intelligence (Phase 8, migrations 046)**: self-hosted
+  `aiInsightService` produces bank-grade insights (spending concentration, cashflow
+  forecast, savings rate, budget health, anomaly detection, credit readiness, loan
+  relief, monthly digest) + aggregate Financial Health Score, persisted to an
+  auditable `ai_insights` table and scored per a `ai_model_register` governance
+  ledger (`afri-ai-1.0`); exposed via `/api/ai` and the "AI Insights" dashboard tab;
+  model/AI governance register now tracked (improves the "partial" fraud-engine
+  posture — `fraudDetectionService`, `financialMonitoring`, `smartAlertService`,
+  `spendingAnalyticsService` continue to feed heuristics).
 
 ## 7. Payments / Merchant / Business (Sec 11–13)
 - ✅ P2P, deposits, withdrawals, settlements, mobile-money callbacks (idempotent,
@@ -106,14 +112,20 @@ Status legend: ✅ **built** · 🔶 **partial** · ⬜ **not built / next**.
 
 ## 12. Commerce / Procurement / Escrow / Marketplace (Sec 39–41, 80)
 - 🔶 Marketplace + escrow + disputes built (migrations 038–041).
-- ⬜ AI procurement, supplier network, supplier financing = not built.
+- ✅ Procurement & supplier network (Phase 9, migration 047): supplier onboarding
+  (`suppliers`), RFQ requests + open bids (`procurement_requests`/`procurement_bids`)
+  with publish→award workflow, and **supplier working-capital financing**
+  (`supplier_financing`) disbursed idempotently through the financial engine
+  (`SUSPENSE` DR / `CUSTOMER_WALLET` CR, `SUPPLIER_FINANCING` txn) — `/api/procurement`
+  + "Procurement & Goods" page. Frontend procurement UI previously absent → now surfaced.
 
 ## 13. Governance / Risk / Docs (Sec 55–62, 83–90)
 - 🔶 Dispute lifecycle (`disputeService`), support cases partial.
 - 🔶 Risk register / compliance matrix / formal docs set = partially documented
   in `docs/PLATFORM_ROADMAP.md`; a full 27-doc set is not yet written.
 - ⬜ Role-based four-eyes, fraud operations centre dashboards, feature flags,
-  experimentation framework, model/AI governance register = not built.
+  experimentation framework = not built. Model/AI governance register now tracked via
+  `ai_model_register` (Phase 8).
 
 ---
 

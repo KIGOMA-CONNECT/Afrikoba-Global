@@ -22,6 +22,9 @@ export default function Insights() {
   const [msg, setMsg] = useState({ type: '', text: '' });
   const [dForm, setDForm] = useState({ direction: 'OWED', counterparty_name: '', counterparty_phone: '', amount: '', description: '', due_date: '' });
   const [payAmt, setPayAmt] = useState({});
+  const [ai, setAi] = useState({ insights: [], healthScore: 0 });
+  const [cf, setCf] = useState({ forecast: [], balance: 0 });
+  const [aiLoading, setAiLoading] = useState(true);
 
   const error = (err) => setMsg({ type: 'err', text: err.response?.data?.message || t('insights.error') });
   const ok = (text) => { setMsg({ type: 'ok', text }); };
@@ -44,10 +47,37 @@ export default function Insights() {
     api.get('/smart/debts/summary').then((r) => setDebtSummary(r.data.summary || null)).catch(() => {});
   };
 
+  const loadAI = () => {
+    setAiLoading(true);
+    api.get('/ai/insights').then((r) => setAi({ insights: r.data.insights || [], healthScore: r.data.healthScore || 0 })).catch(() => {});
+    api.get('/ai/cashflow', { params: { months: 3 } }).then((r) => setCf(r.data || { forecast: [], balance: 0 })).catch(() => {});
+    setAiLoading(false);
+  };
+
+  const refreshAI = async () => {
+    setAiLoading(true);
+    try {
+      const r = await api.post('/ai/insights/refresh');
+      setAi({ insights: r.data.insights || [], healthScore: r.data.healthScore || 0 });
+      ok(t('insights.ai_refreshed'));
+    } catch (err) { error(err); }
+    api.get('/ai/cashflow', { params: { months: 3 } }).then((r) => setCf(r.data || { forecast: [], balance: 0 })).catch(() => {});
+    setAiLoading(false);
+  };
+
+  const dismissAI = async (id) => {
+    try {
+      await api.post(`/ai/insights/${id}/dismiss`);
+      ok(t('insights.ai_dismissed'));
+      loadAI();
+    } catch (err) { error(err); }
+  };
+
   useEffect(() => {
     loadAnalytics();
     loadStmt();
     loadDebts();
+    loadAI();
     // eslint-disable-next-line
   }, []);
 
@@ -84,6 +114,7 @@ export default function Insights() {
 
   const tabs = [
     { id: 'analytics', label: t('insights.analytics_tab') },
+    { id: 'ai', label: t('insights.ai_tab') },
     { id: 'statements', label: t('insights.stmt_tab') },
     { id: 'debts', label: t('insights.debts_tab') },
   ];
@@ -178,6 +209,66 @@ export default function Insights() {
                 ))}
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {tab === 'ai' && (
+        <div>
+          <div className="card" style={{ marginBottom: 24, padding: 20 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
+              <div>
+                <h3 style={{ margin: 0 }}>{t('insights.ai_tab')} · {t('insights.ai_engine')}</h3>
+                <p className="roles-tag" style={{ margin: '6px 0 0' }}>{t('insights.ai_model')} <strong>afri-ai-1.0</strong> — {t('insights.ai_selfhosted')}</p>
+              </div>
+              <button className="btn" onClick={refreshAI} disabled={aiLoading}>{aiLoading ? t('insights.ai_loading') : t('insights.ai_refresh')}</button>
+            </div>
+            <div className="stats" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(200px,1fr))', gap: 14, marginTop: 18 }}>
+              <div className="card" style={{ padding: 18, textAlign: 'center', background: ai.healthScore >= 70 ? '#f0fdf4' : ai.healthScore >= 45 ? '#fffbeb' : '#fef2f2', border: `2px solid ${ai.healthScore >= 70 ? '#22c55e' : ai.healthScore >= 45 ? '#f59e0b' : '#ef4444'}` }}>
+                <p className="roles-tag" style={{ margin: 0 }}>{t('insights.ai_health')}</p>
+                <h2 style={{ margin: '4px 0 0', fontSize: 40 }}>{ai.healthScore}%</h2>
+              </div>
+            </div>
+          </div>
+
+          {/* Cashflow forecast */}
+          <div className="card" style={{ marginBottom: 24 }}>
+            <h3 style={{ margin: '0 0 6px' }}>{t('insights.ai_cashflow')}</h3>
+            <p className="roles-tag" style={{ margin: '0 0 10px' }}>{t('insights.ai_balance')}: <strong>{money(cf.balance)}</strong></p>
+            {cf.forecast && cf.forecast.length > 0 ? (
+              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                {cf.forecast.map((f) => (
+                  <div key={f.month} className="card" style={{ padding: 14, textAlign: 'center', minWidth: 120 }}>
+                    <p className="roles-tag" style={{ margin: 0 }}>{t('insights.ai_month')} {f.month}</p>
+                    <strong style={{ color: f.projected_balance < 0 ? '#dc2626' : '#16a34a' }}>{money(f.projected_balance)}</strong>
+                    <p className="roles-tag" style={{ margin: '6px 0 0' }}>{t('insights.ai_net')} {money(f.net_flow)}</p>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="roles-tag">{t('insights.empty')}</p>
+            )}
+          </div>
+
+          {/* Insights list */}
+          <div className="card">
+            <h3 style={{ margin: '0 0 12px' }}>{t('insights.ai_insights')}</h3>
+            {!aiLoading && ai.insights.length === 0 && <p className="roles-tag">{t('insights.ai_empty')}</p>}
+            {ai.insights.map((ins) => (
+              <div key={ins.id} className="card" style={{ marginBottom: 12, border: '1px solid #e2e8f0', borderLeft: `4px solid ${ins.severity === 'alert' ? '#ef4444' : ins.severity === 'warning' ? '#f59e0b' : ins.severity === 'good' ? '#22c55e' : '#0ea5e9'}` }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10 }}>
+                  <div>
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                      <span className={`badge ${ins.severity === 'good' ? 'success' : ins.severity === 'alert' ? 'danger' : ins.severity === 'warning' ? 'warning' : 'info'}`}>{ins.severity}</span>
+                      <strong>{ins.title}</strong>
+                    </div>
+                    <p style={{ margin: '8px 0 0', fontSize: 13 }}>{ins.body}</p>
+                    <p className="roles-tag" style={{ margin: '6px 0 0' }}>{ins.insight_type} · {ins.model_version} · {new Date(ins.created_at).toLocaleString()}</p>
+                  </div>
+                  <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => dismissAI(ins.id)}>{t('insights.ai_dismiss')}</button>
+                </div>
+              </div>
+            ))}
           </div>
         </div>
       )}

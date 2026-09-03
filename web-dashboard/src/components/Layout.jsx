@@ -55,6 +55,7 @@ export default function Layout() {
     { to: '/dashboard/bill-splits', key: 'nav.bill_splits', always: true },
     { to: '/dashboard/reports', key: 'nav.reports', always: true },
     { to: '/dashboard/projects', key: 'nav.projects', always: true },
+    { to: '/dashboard/procurement', key: 'nav.procurement', always: true },
     { to: '/dashboard/notifications', key: 'nav.notifications', always: true },
     { to: '/dashboard/admin', key: 'nav.admin', admin: true },
     { to: '/dashboard/settings', key: 'nav.settings', always: true },
