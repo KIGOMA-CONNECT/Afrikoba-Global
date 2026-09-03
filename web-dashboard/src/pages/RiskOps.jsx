@@ -19,6 +19,8 @@ export default function RiskOps() {
   const [showNewCase, setShowNewCase] = useState(false);
   const [caseForm, setCaseForm] = useState({ alert_id: '', user_id: '', risk_level: 'MEDIUM' });
   const [noteForm, setNoteForm] = useState('');
+  const [threshold, setThreshold] = useState('');
+  const [configLoaded, setConfigLoaded] = useState(false);
   const error = (err) => setMsg({ type: 'err', text: err.response?.data?.message || 'Action failed.' });
 
   const load = () => {
@@ -28,8 +30,21 @@ export default function RiskOps() {
     api.get('/admin/countries').then((r) => setCountries(r.data.countries)).catch(() => {});
     api.get('/admin/metrics/kpis').then((r) => setKpis(r.data.kpis)).catch(() => {});
     api.get('/admin/metrics/types').then((r) => setTypes(r.data.types)).catch(() => {});
+    api.get('/admin/config').then((r) => {
+      const t = r.data.settings.find((s) => s.key === 'HIGH_VALUE_TRANSFER_THRESHOLD');
+      if (t) setThreshold(t.value);
+      setConfigLoaded(true);
+    }).catch(() => {});
   };
   useEffect(() => { load(); }, []);
+
+  const saveThreshold = async (e) => {
+    e.preventDefault();
+    try {
+      await api.put('/admin/config/HIGH_VALUE_TRANSFER_THRESHOLD', { value: String(threshold) });
+      setMsg({ type: 'ok', text: 'Threshold updated.' });
+    } catch (err) { error(err); }
+  };
 
   const decideFlow = async (id, action) => {
     try {
@@ -110,6 +125,14 @@ export default function RiskOps() {
         <div className="card section">
           <h3>{t('risk.approvals_title')}</h3>
           <p className="roles-tag" style={{ marginBottom: 12 }}>{t('risk.approvals_hint')}</p>
+
+          {configLoaded && (
+            <form onSubmit={saveThreshold} style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 14, padding: 12, background: '#f8faf9', borderRadius: 10 }}>
+              <label style={{ fontSize: 13, fontWeight: 600 }}>{t('risk.high_value_threshold')}</label>
+              <input type="number" value={threshold} onChange={(e) => setThreshold(e.target.value)} style={{ width: 140 }} required />
+              <button className="btn" type="submit" style={{ padding: '4px 12px', fontSize: 12 }}>{t('risk.save')}</button>
+            </form>
+          )}
           {flows.length === 0 ? <p className="roles-tag">{t('risk.no_approvals')}</p> : (
             <table className="table">
               <thead><tr><th>ID</th><th>{t('risk.requester')}</th><th>{t('risk.action_type')}</th><th>{t('risk.ref')}</th><th>{t('risk.data')}</th><th>{t('risk.status')}</th><th>{t('risk.actions')}</th></tr></thead>

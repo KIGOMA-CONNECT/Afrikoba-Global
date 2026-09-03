@@ -346,9 +346,9 @@ router.post('/approvals', async (req, res, next) => {
 router.post('/approvals/:id/decide', async (req, res, next) => {
   try {
     const { action, comment } = req.body;
-    const flow = await governanceService.decideApprovalFlow(parseInt(req.params.id, 10), req.user.id, action, comment);
-    await logAction(req.user.id, 'APPROVAL_DECIDED', 'APPROVAL_FLOW', flow.id, { action }, req);
-    res.json({ success: true, flow });
+    const outcome = await governanceService.decideApprovalFlow(parseInt(req.params.id, 10), req.user.id, action, comment);
+    await logAction(req.user.id, 'APPROVAL_DECIDED', 'APPROVAL_FLOW', outcome.flow.id, { action }, req);
+    res.json({ success: true, flow: outcome.flow, execution: outcome.execution });
   } catch (error) { next(error); }
 });
 
@@ -443,6 +443,28 @@ router.post('/countries/quote', async (req, res, next) => {
   try {
     const { from_currency, to_country, amount } = req.body;
     res.json({ success: true, quote: await countryService.quoteTransfer(from_currency, to_country, amount) });
+  } catch (error) { next(error); }
+});
+
+// ===== CONFIG SETTINGS (four-eyes gate) =====
+router.get('/config', async (req, res, next) => {
+  try {
+    const settings = await pool.query(`SELECT key, value, updated_at FROM config_settings ORDER BY key`);
+    res.json({ success: true, settings: settings.rows });
+  } catch (error) { next(error); }
+});
+
+router.put('/config/:key', async (req, res, next) => {
+  try {
+    const { value } = req.body;
+    await pool.query(
+      `INSERT INTO config_settings (key, value, updated_by, updated_at)
+       VALUES ($1, $2, $3, NOW())
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_by = EXCLUDED.updated_by, updated_at = NOW()`,
+      [req.params.key, String(value), req.user.id]
+    );
+    await logAction(req.user.id, 'CONFIG_SET', 'CONFIG_SETTING', null, { key: req.params.key }, req);
+    res.json({ success: true });
   } catch (error) { next(error); }
 });
 

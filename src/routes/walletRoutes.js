@@ -1,7 +1,9 @@
 const express = require('express');
+const pool = require('../config/db');
 const walletService = require('../services/walletService');
 const limitService = require('../services/limitService');
 const fraudDetectionService = require('../services/fraudDetectionService');
+const governanceService = require('../services/governanceService');
 const { authRequired, requireKycLevel } = require('../middleware/auth');
 const { validate } = require('../middleware/validate');
 const { idempotent } = require('../middleware/idempotent');
@@ -10,6 +12,33 @@ const schemas = require('../validations/schemas');
 const router = express.Router();
 
 router.use(authRequired);
+
+// A user's own pending high-value approvals (maker-checker visibility).
+router.get('/pending-approvals', async (req, res, next) => {
+  try {
+    const result = await pool.query(
+      `SELECT id, action_type, ref_type, ref_id, data, status, created_at
+       FROM approval_flows WHERE requester_id = $1 ORDER BY created_at DESC LIMIT 20`,
+      [req.user.id]
+    );
+    res.json({ success: true, flows: result.rows });
+  } catch (error) { next(error); }
+});
+
+// Register executors for four-eyes maker-checker operations handled by wallet.
+// On approval of a high-value WALLET_TRANSFER, actually run the transfer.
+governanceService.registerExecutor('WALLET_TRANSFER', async (payload) => {
+  const result = await walletService.transferWallet(payload.fromUserId, payload.toPhoneNumber, payload.amount, payload.note);
+  return result;
+});
+
+// Resolve live high-value threshold (TZS). Admin override via config_settings.
+async function getHighValueThreshold(req) {
+  if (req.user && req.user.role === 'ADMIN') return Infinity; // admins bypass the gate
+  const stored = await governanceService.getSetting('HIGH_VALUE_TRANSFER_THRESHOLD');
+  const parsed = parseFloat(stored);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 5000000;
+}
 
 // Deposit - AzamPay USSD Push (1% add-on fee)
 router.post('/deposit/initiate', requireKycLevel(1), validate(schemas.wallet.deposit), async (req, res, next) => {
@@ -52,6 +81,26 @@ router.post('/transfer', validate(schemas.wallet.transfer), idempotent(async (re
         message: 'Muamala umekatwa kwa usalama. Wasiliana na msaidizi.',
         code: 'FRAUD_BLOCKED',
         alerts: fraudCheck.alerts,
+      });
+    }
+
+    // Four-eyes gate: high-value transfers need a second approver (maker-checker).
+    // A non-admin's transfer above the threshold becomes a pending approval_flow
+    // and only executes once an admin (other than the requester) approves it.
+    const threshold = await getHighValueThreshold(req);
+    if (parseFloat(amount) >= threshold) {
+      const flow = await governanceService.createApprovalFlow({
+        requesterId: req.user.id,
+        actionType: 'WALLET_TRANSFER',
+        refType: 'WALLET_TRANSFER',
+        data: { fromUserId: req.user.id, toPhoneNumber, amount: parseFloat(amount), note: note || null },
+      });
+      return res.json({
+        success: true,
+        requiresApproval: true,
+        approvalFlowId: flow.id,
+        status: 'PENDING_APPROVAL',
+        message: 'Muamala wa kiasi kikubwa unahitaji idhini ya msimamizi mwingine (four-eyes).',
       });
     }
 

@@ -22,11 +22,15 @@ export default function Wallet() {
   const [msg, setMsg] = useState({ type: '', text: '' });
   const [currencies, setCurrencies] = useState(FALLBACK_CURRENCIES);
   const [fxPreview, setFxPreview] = useState(null);
+  const [pendingApprovals, setPendingApprovals] = useState([]);
 
   const refresh = () => {
     api.get('/wallet/balance').then((r) => setBalance(r.data.balance)).catch(() => {});
     api.get('/wallet/transactions').then((r) => setTxs(r.data.transactions)).catch(() => {});
     api.get('/currency/my-holdings').then((r) => setHoldings(r.data)).catch(() => {});
+    api.get('/wallet/pending-approvals').then((r) => {
+      setPendingApprovals((r.data.flows || []).filter((f) => f.status === 'PENDING'));
+    }).catch(() => {});
   };
 
   useEffect(refresh, []);
@@ -72,7 +76,11 @@ export default function Wallet() {
     e.preventDefault();
     try {
       const res = await api.post('/wallet/transfer', { toPhoneNumber: toPhone, amount, note });
-      show('ok', res.data.message);
+      if (res.data.requiresApproval) {
+        show('ok', `${res.data.message} (#${res.data.approvalFlowId})`);
+      } else {
+        show('ok', res.data.message);
+      }
       setAmount(''); setToPhone(''); setNote('');
       refresh();
     } catch (err) {
@@ -102,6 +110,17 @@ export default function Wallet() {
       </div>
 
       {msg.text && <div className={`msg ${msg.type}`}>{msg.text}</div>}
+
+      {pendingApprovals.length > 0 && (
+        <div className="card" style={{ marginBottom: 18, padding: 16, borderLeft: '4px solid #d97706', background: '#fffbeb' }}>
+          <h3 style={{ marginTop: 0, marginBottom: 8, fontSize: 15, color: '#92400e' }}>{t('wallet.pending_approvals')}</h3>
+          {pendingApprovals.map((f) => (
+            <div key={f.id} style={{ fontSize: 13, marginBottom: 6 }}>
+              <strong>#{f.id}</strong> — {f.action_type}: {f.data?.amount ? formatMoney(f.data.amount) : '…'} {f.data?.toPhoneNumber ? `→ ${f.data.toPhoneNumber}` : ''} <span className="roles-tag" style={{ fontSize: 11 }}>{new Date(f.created_at).toLocaleString()}</span>
+            </div>
+          ))}
+        </div>
+      )}
 
       {balance && (
         <div className="grid grid-3" style={{ marginBottom: 20 }}>

@@ -6,6 +6,19 @@
 
 const pool = require('../config/db');
 
+// Executor registry: action_type -> async executor(payload, approverId, flow)
+// Enables four-eyes maker-checker to actually run an operation on approval.
+const executors = {};
+
+function registerExecutor(actionType, fn) {
+  executors[actionType] = fn;
+}
+
+function getSetting(key) {
+  return pool.query(`SELECT value FROM config_settings WHERE key = $1`, [key])
+    .then((r) => (r.rows.length ? r.rows[0].value : null));
+}
+
 // ===== FOUR-EYES RBAC (maker-checker) =====
 
 async function createApprovalFlow({ requesterId, actionType, refType, refId, data }) {
@@ -49,13 +62,34 @@ async function decideApprovalFlow(flowId, approverId, action, comment) {
       [action === 'APPROVE' ? 'APPROVED' : 'REJECTED', flowId]
     );
     await client.query('COMMIT');
-    return (await pool.query(`SELECT * FROM approval_flows WHERE id = $1`, [flowId])).rows[0];
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {});
     throw error;
   } finally {
     client.release();
   }
+
+  // If approved and an executor is registered for this action_type, run the
+  // underlying operation. On failure, revert the flow to PENDING so it can be
+  // retried (balance may have changed) rather than leaving a skipped approval.
+  let execResult = null;
+  if (action === 'APPROVE') {
+    const executor = executors[f.action_type];
+    if (executor) {
+      try {
+        execResult = await executor(f.data || {}, approverId, f);
+      } catch (execError) {
+        await pool.query(
+          `UPDATE approval_flows SET status = 'PENDING', decided_at = NULL WHERE id = $1`,
+          [flowId]
+        );
+        const err = execError;
+        err.statusCode = err.statusCode || 400;
+        throw err;
+      }
+    }
+  }
+  return { flow: (await pool.query(`SELECT * FROM approval_flows WHERE id = $1`, [flowId])).rows[0], execution: execResult };
 }
 
 // ===== AML CASE MANAGEMENT =====
@@ -138,4 +172,6 @@ module.exports = {
   getAmlCase,
   updateAmlCase,
   addAmlNote,
+  registerExecutor,
+  getSetting,
 };

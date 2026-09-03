@@ -135,6 +135,7 @@ const messages = {
     'wallet.convert_shape_rate': 'Rate kwa TZS',
     'wallet.convert_shape_value': 'Thamani ya TZS',
     'wallet.convert_shape_total': 'Jumla ya Kwingineko',
+    'wallet.pending_approvals': 'Muamala unasubiri idhini ya msimamizi:',
 
     'settings.language': 'Lugha ya Programu',
     'settings.currency': 'Sarafu ya Kuonyesha',
@@ -703,6 +704,8 @@ const messages = {
     'risk.min_fee': 'Ada ya Chini',
     'risk.percent_fee': 'Ada Asilimia',
     'risk.status2': 'Hali',
+    'risk.high_value_threshold': 'Kikomo cha Muamala Mkubwa (TZS)',
+    'risk.save': 'Hifadhi',
     'credit.title': 'Alama ya Mikopo na Pasipoti ya Kifedha',
     'credit.sub': 'Alama yako ya AFRIKOBA (kati ya 850) na vipengele vinavyoihesabia — uwazi kamili.',
     'credit.score_label': 'Alama ya AFRIKOBA',
@@ -1771,6 +1774,7 @@ const messages = {
     'wallet.convert_shape_rate': 'Rate to TZS',
     'wallet.convert_shape_value': 'TZS Value',
     'wallet.convert_shape_total': 'Portfolio Total',
+    'wallet.pending_approvals': 'Transfer pending manager approval:',
 
     'settings.language': 'App Language',
     'settings.currency': 'Display Currency',
@@ -2339,6 +2343,8 @@ const messages = {
     'risk.min_fee': 'Min Fee',
     'risk.percent_fee': 'Percent Fee',
     'risk.status2': 'Status',
+    'risk.high_value_threshold': 'High-Value Transfer Threshold (TZS)',
+    'risk.save': 'Save',
     'credit.title': 'Credit Score & Financial Passport',
     'credit.sub': 'Your AFRIKOBA score (out of 850) and the factors that drive it - full transparency.',
     'credit.score_label': 'AFRIKOBA Score',
