@@ -105,9 +105,10 @@ Status legend: ✅ **built** · 🔶 **partial** · ⬜ **not built / next**.
 - 🔶 AML/sanctions monitoring = heuristics (`fraudDetectionService`); full case
   management / regulatory reporting = **built** (migration 050: `aml_cases` +
   `aml_case_notes` on top of `fraud_alerts`; assign/investigate/resolve + notes).
-- 🔶 RBAC partial (admin role exists); **four-eyes maker-checker built** (migration
-  050: `approval_flows` + `approval_actions`; high-value ops require a second,
-  distinct approver — self-approval blocked). Security middleware: XSS, SQLi, CSRF,
+- ✅ **Four-eyes RBAC** wired end-to-end for high-value wallet transfers (migration 050
+  `approval_flows`/`approval_actions` + migration 052 `config_settings` threshold; executor
+  registry in `governanceService`; `walletRoutes` gate + `WALLET_TRANSFER` executor; admin
+  bypass; `RiskOps.jsx` approvals UI + Wallet pending indicator). Security middleware: XSS, SQLi, CSRF,
   input-length guards, OTP/TOTP, rate limits — ✅ tested.
 
 ## 10. Reconciliation / Observability / Backup-DR / Testing (Sec 29–34, 51–54, 63–64)
@@ -189,11 +190,15 @@ ledger → account abstraction → migrate services sequentially → reconciliat
   `nav.developer` + full `dev.*` i18n sw/en.
 
 ## Suggested next candidates
-- ✅ **Four-eyes RBAC** (migration 050 `approval_flows`/`approval_actions`; self-approval blocked).
+- ✅ **Four-eyes RBAC** (migration 050 `approval_flows`/`approval_actions` + migration 052
+  `config_settings` threshold). Executor registry wired end-to-end into wallet transfers
+  (`WALLET_TRANSFER`); approval triggers `transferWallet` atomically; failure reverts
+  to PENDING. Admins bypass. `/wallet/pending-approvals` + Wallet page indicator. (Live.)
 - ✅ **Observability / BI** (`observabilityService` KPIs; admin RiskOps BI tab).
 - ✅ **Fraud ops + AML case management** (migration 050 `aml_cases`/`aml_case_notes` + alert workbench).
 - ✅ **Country/regulator abstraction** (migration 051 `supported_countries` + FX quote).
+- ✅ **Wire maker-checker gate into live high-value wallet transfers** (migration 052, executor registry).
 - 🔶 **Formal backup/DR runbooks** and automated backup verification.
 - 🔶 Public cross-border transfer execution (quote built; execution/regulator reporting = open).
 - 🔶 OpenTelemetry / trace-level observability + data warehouse.
-- 🔶 Wire maker-checker gate into live high-value operations (transfers, disbursements) end-to-end.
+- 🔶 Wire maker-checker gate into loan disbursements (business + credit routes).
