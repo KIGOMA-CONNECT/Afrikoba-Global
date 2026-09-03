@@ -202,5 +202,5 @@ ledger → account abstraction → migrate services sequentially → reconciliat
 - ✅ **Wire maker-checker gate into loan disbursements** (business & credit admin disburse routes gated by high-value threshold with `BUSINESS_LOAN_DISBURSE` and `CREDIT_LOAN_DISBURSE` executors).
 - ✅ **Afrikoba Social Fund / Msaada** (migration 053: `social_fund_rules`, `social_fund_cases`, `social_fund_contributions`, `social_fund_payouts`; event-based cooperative support like Rambirambi, medical, emergency, disaster; privacy controls for anonymous contributions; dedicated ledger integration via `SOCIAL_FUND_CLEARING`; `/api/social/cases` endpoints).
 - ✅ **AI Project Intake & Automated Decomposition + Waterfall Distribution** (migration 053: `project_decompositions`, `controlled_project_accounts`, `project_revenue_waterfall`; automated WBS breakdown into phases/tasks/estimated costs; revenue distribution waterfall for investor shares, owner share, reserves, and reinvestment).
-- 🔶 **Formal backup/DR runbooks** and automated backup verification.
+- ✅ **Formal backup/DR runbooks & automated backup verification** (`docs/DISASTER_RECOVERY_RUNBOOK.md`, `backupService.js` automated daily backups with SQL integrity verification and retention management, plus `/api/admin/backup/*` management endpoints).
 - 🔶 OpenTelemetry / trace-level observability + data warehouse.
