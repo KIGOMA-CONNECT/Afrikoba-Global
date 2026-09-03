@@ -1,5 +1,6 @@
 -- Developer portal: API keys and webhook delivery log.
-CREATE TABLE IF NOT EXISTS api_keys (
+-- Uses dedicated dev_* tables (api_keys/webhook_deliveries already exist from 012/017).
+CREATE TABLE IF NOT EXISTS dev_api_keys (
   id SERIAL PRIMARY KEY,
   user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   name VARCHAR(100) NOT NULL,
@@ -12,10 +13,10 @@ CREATE TABLE IF NOT EXISTS api_keys (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_api_keys_user ON api_keys(user_id);
-CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash);
+CREATE INDEX IF NOT EXISTS idx_dev_api_keys_user ON dev_api_keys(user_id);
+CREATE INDEX IF NOT EXISTS idx_dev_api_keys_hash ON dev_api_keys(key_hash);
 
-CREATE TABLE IF NOT EXISTS webhook_deliveries (
+CREATE TABLE IF NOT EXISTS dev_webhook_deliveries (
   id SERIAL PRIMARY KEY,
   user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   url VARCHAR(500) NOT NULL,
@@ -26,4 +27,4 @@ CREATE TABLE IF NOT EXISTS webhook_deliveries (
   delivered_at TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_user ON webhook_deliveries(user_id);
+CREATE INDEX IF NOT EXISTS idx_dev_webhook_deliveries_user ON dev_webhook_deliveries(user_id);
