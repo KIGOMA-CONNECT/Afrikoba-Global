@@ -53,6 +53,7 @@ export default function Layout() {
     { to: '/dashboard/chat', key: 'nav.chat', always: true },
     { to: '/dashboard/savings', key: 'nav.savings', always: true },
     { to: '/dashboard/bill-splits', key: 'nav.bill_splits', always: true },
+    { to: '/dashboard/reports', key: 'nav.reports', always: true },
     { to: '/dashboard/notifications', key: 'nav.notifications', always: true },
     { to: '/dashboard/admin', key: 'nav.admin', admin: true },
     { to: '/dashboard/settings', key: 'nav.settings', always: true },
