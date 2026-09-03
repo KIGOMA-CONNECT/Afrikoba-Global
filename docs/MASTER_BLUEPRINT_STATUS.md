@@ -198,7 +198,7 @@ ledger → account abstraction → migrate services sequentially → reconciliat
 - ✅ **Fraud ops + AML case management** (migration 050 `aml_cases`/`aml_case_notes` + alert workbench).
 - ✅ **Country/regulator abstraction** (migration 051 `supported_countries` + FX quote).
 - ✅ **Wire maker-checker gate into live high-value wallet transfers** (migration 052, executor registry).
+- ✅ **Cross-border transfer execution** (`countryService.executeTransfer`: fee calculation, FX conversion, ledger posting via `fin.debitWallet` for fee and principal into remittance clearing, transaction logging, audit trail, `/api/admin/countries/transfer` endpoint).
+- ✅ **Wire maker-checker gate into loan disbursements** (business & credit admin disburse routes gated by high-value threshold with `BUSINESS_LOAN_DISBURSE` and `CREDIT_LOAN_DISBURSE` executors).
 - 🔶 **Formal backup/DR runbooks** and automated backup verification.
-- 🔶 Public cross-border transfer execution (quote built; execution/regulator reporting = open).
 - 🔶 OpenTelemetry / trace-level observability + data warehouse.
-- 🔶 Wire maker-checker gate into loan disbursements (business + credit routes).

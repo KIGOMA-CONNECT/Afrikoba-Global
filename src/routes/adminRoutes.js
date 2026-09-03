@@ -442,7 +442,15 @@ router.put('/countries/:id', async (req, res, next) => {
 router.post('/countries/quote', async (req, res, next) => {
   try {
     const { from_currency, to_country, amount } = req.body;
-    res.json({ success: true, quote: await countryService.quoteTransfer(from_currency, to_country, amount) });
+    res.json({ success: true, quote: await countryService.quoteTransfer(from_currency || 'TZS', to_country, amount) });
+  } catch (error) { next(error); }
+});
+
+router.post('/countries/transfer', async (req, res, next) => {
+  try {
+    const { to_country, amount, recipient, note } = req.body;
+    const result = await countryService.executeTransfer(req.user.id, to_country, amount, recipient, note);
+    res.json(result);
   } catch (error) { next(error); }
 });
 
