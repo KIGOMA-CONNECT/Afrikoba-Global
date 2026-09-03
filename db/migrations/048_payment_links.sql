@@ -1,5 +1,6 @@
--- Payment Links: shareable merchant links that resolve to a requested amount.
-CREATE TABLE IF NOT EXISTS payment_links (
+-- Merchant Payment Links: shareable merchant links that resolve to a requested amount.
+-- Uses merchant_payment_links (not payment_links, which exists from migration 020).
+CREATE TABLE IF NOT EXISTS merchant_payment_links (
   id SERIAL PRIMARY KEY,
   merchant_id INT NOT NULL REFERENCES merchants(id) ON DELETE CASCADE,
   code VARCHAR(40) NOT NULL UNIQUE,
@@ -11,5 +12,5 @@ CREATE TABLE IF NOT EXISTS payment_links (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_payment_links_merchant ON payment_links(merchant_id);
-CREATE INDEX IF NOT EXISTS idx_payment_links_code ON payment_links(code);
+CREATE INDEX IF NOT EXISTS idx_mpl_merchant ON merchant_payment_links(merchant_id);
+CREATE INDEX IF NOT EXISTS idx_mpl_code ON merchant_payment_links(code);

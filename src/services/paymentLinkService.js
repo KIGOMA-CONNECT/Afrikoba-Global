@@ -26,7 +26,7 @@ async function createPaymentLink(userId, { amount, description, currency }) {
 
   const code = generatePaymentLinkCode();
   const result = await pool.query(
-    `INSERT INTO payment_links (merchant_id, code, amount, description, currency)
+    `INSERT INTO merchant_payment_links (merchant_id, code, amount, description, currency)
      VALUES ($1, $2, $3, $4, $5) RETURNING *`,
     [merchant.id, code, amount || null, description || null, currency || 'TZS']
   );
@@ -38,7 +38,7 @@ async function getPaymentLinks(userId) {
   if (!merchant) return [];
   const result = await pool.query(
     `SELECT id, code, amount, description, currency, is_active, scan_count, created_at
-     FROM payment_links WHERE merchant_id = $1 ORDER BY created_at DESC`,
+     FROM merchant_payment_links WHERE merchant_id = $1 ORDER BY created_at DESC`,
     [merchant.id]
   );
   return result.rows;
@@ -47,7 +47,7 @@ async function getPaymentLinks(userId) {
 async function getPaymentLinkByCode(code, payerId) {
   const row = await pool.query(
     `SELECT pl.*, m.name AS merchant_name, m.business_type
-     FROM payment_links pl
+     FROM merchant_payment_links pl
      JOIN merchants m ON pl.merchant_id = m.id
      WHERE pl.code = $1 AND pl.is_active = TRUE`,
     [code]
@@ -56,7 +56,7 @@ async function getPaymentLinkByCode(code, payerId) {
 
   const p = row.rows[0];
   if (payerId) {
-    await pool.query(`UPDATE payment_links SET scan_count = scan_count + 1 WHERE id = $1`, [p.id]);
+    await pool.query(`UPDATE merchant_payment_links SET scan_count = scan_count + 1 WHERE id = $1`, [p.id]);
   }
 
   return {
@@ -79,7 +79,7 @@ async function payPaymentLink(code, payerId, amount) {
 
   const link = await pool.query(
     `SELECT pl.*, m.user_id AS merchant_user_id
-     FROM payment_links pl JOIN merchants m ON pl.merchant_id = m.id
+     FROM merchant_payment_links pl JOIN merchants m ON pl.merchant_id = m.id
      WHERE pl.code = $1 AND pl.is_active = TRUE`,
     [code]
   );
@@ -93,7 +93,7 @@ async function payPaymentLink(code, payerId, amount) {
 
 async function deactivatePaymentLink(userId, id) {
   const result = await pool.query(
-    `UPDATE payment_links SET is_active = FALSE
+    `UPDATE merchant_payment_links SET is_active = FALSE
      WHERE id = $1 AND merchant_id = (SELECT id FROM merchants WHERE user_id = $2 ORDER BY id DESC LIMIT 1)
      RETURNING id`,
     [id, userId]
@@ -104,7 +104,7 @@ async function deactivatePaymentLink(userId, id) {
 async function lookupMerchantForCode(code) {
   const row = await pool.query(
     `SELECT m.id, m.user_id
-     FROM payment_links pl JOIN merchants m ON pl.merchant_id = m.id
+     FROM merchant_payment_links pl JOIN merchants m ON pl.merchant_id = m.id
      WHERE pl.code = $1`,
     [code]
   );
