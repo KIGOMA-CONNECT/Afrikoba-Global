@@ -46,6 +46,7 @@ export default function Layout() {
     { to: '/dashboard/loans', key: 'nav.loans', always: true },
     { to: '/dashboard/network', key: 'nav.network', always: true },
     { to: '/dashboard/insights', key: 'nav.insights', always: true },
+    { to: '/dashboard/remittance', key: 'nav.remittance', always: true },
     { to: '/dashboard/notifications', key: 'nav.notifications', always: true },
     { to: '/dashboard/admin', key: 'nav.admin', admin: true },
     { to: '/dashboard/settings', key: 'nav.settings', always: true },
