@@ -62,6 +62,7 @@ const Network = lazy(() => import('./pages/Network.jsx'));
 const Insights = lazy(() => import('./pages/Insights.jsx'));
 const Remittance = lazy(() => import('./pages/Remittance.jsx'));
 const Challenges = lazy(() => import('./pages/Challenges.jsx'));
+const Bills = lazy(() => import('./pages/Bills.jsx'));
 
 function RequireAuth({ children }) {
   const token = localStorage.getItem('afrikoba_token');
@@ -130,6 +131,7 @@ export default function App() {
         <Route path="insights" element={<Page><Insights /></Page>} />
         <Route path="remittance" element={<Page><Remittance /></Page>} />
         <Route path="challenges" element={<Page><Challenges /></Page>} />
+        <Route path="bills" element={<Page><Bills /></Page>} />
         <Route path="settings" element={<Page><Settings /></Page>} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
