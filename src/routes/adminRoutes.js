@@ -526,4 +526,22 @@ router.post('/ai/anomalies/detect', async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
+// ===== AI DOCUMENT INTELLIGENCE =====
+router.get('/ai/documents/:projectId', async (req, res, next) => {
+  try {
+    const docIntel = require('../services/aiDocumentIntelligenceService');
+    const documents = await docIntel.getProjectDocuments(parseInt(req.params.projectId, 10));
+    res.json({ success: true, documents });
+  } catch (error) { next(error); }
+});
+
+router.post('/ai/documents/parse', async (req, res, next) => {
+  try {
+    const docIntel = require('../services/aiDocumentIntelligenceService');
+    const { project_id, doc_type, file_name, content } = req.body;
+    const result = await docIntel.parseDocument(project_id ? parseInt(project_id, 10) : null, doc_type, file_name, content);
+    res.json(result);
+  } catch (error) { next(error); }
+});
+
 module.exports = router;
