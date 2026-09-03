@@ -50,6 +50,7 @@ export default function Layout() {
     { to: '/dashboard/challenges', key: 'nav.challenges', always: true },
     { to: '/dashboard/bills', key: 'nav.bills', always: true },
     { to: '/dashboard/banking', key: 'nav.banking', always: true },
+    { to: '/dashboard/chat', key: 'nav.chat', always: true },
     { to: '/dashboard/notifications', key: 'nav.notifications', always: true },
     { to: '/dashboard/admin', key: 'nav.admin', admin: true },
     { to: '/dashboard/settings', key: 'nav.settings', always: true },
