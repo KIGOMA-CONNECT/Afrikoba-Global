@@ -40,6 +40,7 @@ export default function Layout() {
     { to: '/dashboard/support', key: 'nav.support', always: true },
     { to: '/dashboard/insurance', key: 'nav.insurance', always: true },
     { to: '/dashboard/business', key: 'nav.business', always: true },
+    { to: '/dashboard/fx', key: 'nav.fx', always: true },
     { to: '/dashboard/notifications', key: 'nav.notifications', always: true },
     { to: '/dashboard/admin', key: 'nav.admin', admin: true },
     { to: '/dashboard/settings', key: 'nav.settings', always: true },
