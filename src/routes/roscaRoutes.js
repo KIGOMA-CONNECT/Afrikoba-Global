@@ -70,4 +70,55 @@ router.get('/trust/summary', async (req, res, next) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// PHASE 2: UPATU GOVERNANCE
+// ---------------------------------------------------------------------------
+
+// Configure grace period / late fee / payout order (pool creator only).
+router.post('/pools/:poolId/governance', async (req, res, next) => {
+  try {
+    const { grace_days, late_fee_amount, payout_order } = req.body;
+    const pool = await roscaService.setPoolGovernance(req.user.id, parseInt(req.params.poolId, 10), { grace_days, late_fee_amount, payout_order });
+    return res.json({ success: true, pool });
+  } catch (error) { next(error); }
+});
+
+// Versioned constitution + per-member acceptance.
+router.post('/pools/:poolId/constitution', async (req, res, next) => {
+  try {
+    const { title, body } = req.body;
+    const constitution = await roscaService.createConstitution(req.user.id, parseInt(req.params.poolId, 10), { title, body });
+    return res.status(201).json({ success: true, constitution });
+  } catch (error) { next(error); }
+});
+
+router.get('/pools/:poolId/constitution', async (req, res, next) => {
+  try {
+    const constitution = await roscaService.getConstitution(parseInt(req.params.poolId, 10));
+    return res.json({ success: true, constitution });
+  } catch (error) { next(error); }
+});
+
+router.get('/pools/:poolId/constitution/:version', async (req, res, next) => {
+  try {
+    const constitution = await roscaService.getConstitution(parseInt(req.params.poolId, 10), parseInt(req.params.version, 10));
+    return res.json({ success: true, constitution });
+  } catch (error) { next(error); }
+});
+
+router.get('/pools/:poolId/constitutions', async (req, res, next) => {
+  try {
+    const constitutions = await roscaService.listConstitutions(parseInt(req.params.poolId, 10));
+    return res.json({ success: true, constitutions });
+  } catch (error) { next(error); }
+});
+
+router.post('/pools/:poolId/constitution/accept', async (req, res, next) => {
+  try {
+    const { version } = req.body;
+    const accepted = await roscaService.acceptConstitution(req.user.id, parseInt(req.params.poolId, 10), version);
+    return res.json({ success: true, accepted });
+  } catch (error) { next(error); }
+});
+
 module.exports = router;

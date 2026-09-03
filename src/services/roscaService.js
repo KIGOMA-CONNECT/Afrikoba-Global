@@ -82,6 +82,25 @@ async function joinPool(userId, poolId, opts = {}) {
       throw Object.assign(new Error('Tayari umejiunga na pool hii.'), { statusCode: 400 });
     }
 
+    // Constitution acceptance is required before joining when a pool has a
+    // versioned constitution (mandatory for PRIVATE_KIKOBA, optional PUBLIC).
+    const constCheck = await client.query(
+      'SELECT COUNT(*)::int AS n FROM rosca_constitutions WHERE pool_id = $1',
+      [poolId]
+    );
+    if (constCheck.rows[0].n > 0) {
+      const acc = await client.query(
+        `SELECT 1 FROM rosca_constitution_acceptance ca
+         JOIN rosca_constitutions c ON c.id = ca.constitution_id
+         WHERE ca.user_id = $1 AND ca.pool_id = $2
+           AND c.id = (SELECT id FROM rosca_constitutions WHERE pool_id = $2 ORDER BY version DESC LIMIT 1)`,
+        [userId, poolId]
+      );
+      if (acc.rows.length === 0) {
+        throw Object.assign(new Error('Lazima ukubali katiba ya Upatu kabla ya kujiunga. Tuma /rosca/pools/:poolId/constitution/accept.'), { statusCode: 400 });
+      }
+    }
+
     const countRes = await client.query(
       'SELECT COUNT(*)::int AS cnt FROM rosca_members WHERE pool_id = $1',
       [poolId]
@@ -147,18 +166,36 @@ async function joinPool(userId, poolId, opts = {}) {
 }
 
 /**
- * Pool ikijaa - tengeneza rosca_schedules kwa kila mzunguko
+ * Pool ikijaa - tengeneza rosca_schedules kwa kila mzunguko.
+ * Payout order is configurable per pool:
+ *   SEQUENTIAL - recipient = assigned queue number
+ *   TRUST      - recipients ranked by trust_score (highest first)
+ *   DRAW       - recipients drawn deterministically (seeded by pool id + cycle)
  */
 async function activatePool(client, rosca) {
   const members = await client.query(
-    `SELECT user_id, assigned_queue_number FROM rosca_members
-     WHERE pool_id = $1 ORDER BY assigned_queue_number ASC`,
+    `SELECT rm.user_id, rm.assigned_queue_number, u.trust_score
+     FROM rosca_members rm JOIN users u ON u.id = rm.user_id
+     WHERE rm.pool_id = $1 ORDER BY rm.assigned_queue_number ASC`,
     [rosca.id]
   );
 
-  const totalCycles = members.rows.length;
+  let order = members.rows;
+  const po = rosca.payout_order || 'SEQUENTIAL';
+  if (po === 'TRUST') {
+    order = [...members.rows].sort((a, b) => (Number(b.trust_score) || 0) - (Number(a.trust_score) || 0));
+  } else if (po === 'DRAW') {
+    order = [...members.rows];
+    const seed = rosca.id;
+    order = order
+      .map((m, i) => ({ m, k: (seed * 31 + i * 17) % 997 }))
+      .sort((a, b) => a.k - b.k)
+      .map((x) => x.m);
+  }
+
+  const totalCycles = order.length;
   for (let cycle = 1; cycle <= totalCycles; cycle++) {
-    const recipient = members.rows.find((m) => m.assigned_queue_number === cycle);
+    const recipient = order[cycle - 1];
     if (!recipient) continue;
     const scheduledDate = new Date();
     const cycleIndex = cycle - 1;
@@ -170,14 +207,15 @@ async function activatePool(client, rosca) {
 
     await client.query(
       `INSERT INTO rosca_schedules
-        (pool_id, cycle_number, recipient_user_id, scheduled_date, contribution_amount, total_payout_amount, comm_amount)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      [rosca.id, cycle, recipient.user_id, scheduledDate, rosca.contribution_amount, totalPayout, commAmount]
+        (pool_id, cycle_number, recipient_user_id, scheduled_date, contribution_amount, total_payout_amount, comm_amount,
+         expected_amount, collection_status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'OPEN')`,
+      [rosca.id, cycle, recipient.user_id, scheduledDate, rosca.contribution_amount, totalPayout, commAmount, totalPayout]
     );
   }
 
   await client.query('UPDATE rosca_pools SET status = $1, current_cycle = 1 WHERE id = $2', ['ACTIVE', rosca.id]);
-  logger.info('ROSCA', `Pool ${rosca.pool_name} imeanza (${totalCycles} cycles)`);
+  logger.info('ROSCA', `Pool ${rosca.pool_name} imeanza (${totalCycles} cycles, order=${po})`);
 }
 
 async function listPools(status) {
@@ -203,11 +241,13 @@ async function disburseDuePayouts() {
     await client.query('BEGIN');
 
     const dueSchedules = await client.query(
-      `SELECT s.*, p.pool_name, p.contribution_amount, u.phone_number, u.full_name
+      `SELECT s.*, p.pool_name, p.contribution_amount, u.phone_number, u.full_name,
+              p.grace_days, p.late_fee_amount, p.total_members
        FROM rosca_schedules s
        JOIN rosca_pools p ON p.id = s.pool_id
        JOIN users u ON u.id = s.recipient_user_id
-       WHERE s.status = 'PENDING' AND s.scheduled_date <= CURRENT_DATE
+       WHERE s.status = 'PENDING'
+         AND s.scheduled_date <= CURRENT_DATE - (COALESCE(p.grace_days,0) * INTERVAL '1 day')
        LIMIT 20
        FOR UPDATE OF s`,
     );
@@ -235,9 +275,24 @@ async function disburseDuePayouts() {
       }
 
       if (insufficient) {
+        // Meme (grace period tayari imepita): toza ada ya kuchelewa kwa kila
+        // mshiriki aliyekosa, rekodi miss, na weka hali ya mzunguko.
+        const lateFee = Number(sched.late_fee_amount) || 0;
+        let feeChargedTotal = 0;
+        for (const member of contributors.rows) {
+          if (Number(member.wallet_balance) < Number(sched.contribution_amount) && shortMembers.includes(member.user_id) && lateFee > 0) {
+            if (Number(member.wallet_balance) >= lateFee) {
+              const feeRef = `${referenceId}:LF:${member.user_id}`;
+              await fin.debitWallet({ client, userId: member.user_id, amount: lateFee, reference: feeRef, toAccount: 'PLATFORM_FEES', description: 'ROSCA Late Fee' });
+              feeChargedTotal += lateFee;
+            }
+          }
+        }
         await client.query(
-          'UPDATE rosca_schedules SET status = $1 WHERE id = $2',
-          ['SKIPPED', sched.id]
+          `UPDATE rosca_schedules
+             SET status = 'SKIPPED', collection_status = 'PARTIALLY_FUNDED', late_fee_charged = $1
+           WHERE id = $2`,
+          [feeChargedTotal, sched.id]
         );
         // Record misses for the members who actually fell short and apply a
         // small trust_score penalty (they disrupted the payout cycle).
@@ -252,7 +307,7 @@ async function disburseDuePayouts() {
             logger.warn('ROSCA', `Member ${shortId} trust ${chg.before}->${chg.after} (missed cycle #${sched.cycle_number})`);
           }
         }
-        logger.warn('ROSCA', `Mzunguko #${sched.cycle_number} umerukwa - michango haitoshi (pool ${sched.pool_id})`);
+        logger.warn('ROSCA', `Mzunguko #${sched.cycle_number} umerukwa - michango haitoshi (pool ${sched.pool_id}), late fee ${feeChargedTotal}`);
         continue;
       }
 
@@ -283,6 +338,11 @@ async function disburseDuePayouts() {
       }
 
       const netPayout = Math.round((sched.total_payout_amount - sched.comm_amount) * 100) / 100;
+
+      await client.query(
+        `UPDATE rosca_schedules SET collection_status = 'PAYOUT_PENDING', collected_amount = $1 WHERE id = $2`,
+        [Number(sched.total_payout_amount), sched.id]
+      );
 
       await fin.groupToWallet({ client, userId: sched.recipient_user_id, groupId: sched.pool_id, groupAccount: 'ROSICA_POOL', amount: netPayout, reference: `${referenceId}:PO`, description: 'ROSCA Payout' });
       if (sched.comm_amount > 0) {
@@ -316,6 +376,15 @@ async function disburseDuePayouts() {
       await client.query(
         'UPDATE rosca_schedules SET status = $1, disbursed_at = NOW() WHERE id = $2',
         ['DISBURSED', sched.id]
+      );
+
+      await client.query(
+        `UPDATE rosca_schedules
+           SET collection_status = 'DISBURSED',
+               collected_amount = $1,
+               expected_amount = $2
+         WHERE id = $3`,
+        [Number(sched.total_payout_amount), Number(sched.total_payout_amount), sched.id]
       );
 
       await client.query(
@@ -353,7 +422,16 @@ async function getPoolDetails(poolId) {
     'SELECT * FROM rosca_schedules WHERE pool_id = $1 ORDER BY cycle_number',
     [poolId]
   );
-  return { ...poolRes.rows[0], members: members.rows, schedules: schedules.rows };
+  const constitution = await pool.query(
+    'SELECT * FROM rosca_constitutions WHERE pool_id = $1 ORDER BY version DESC LIMIT 1',
+    [poolId]
+  );
+  return {
+    ...poolRes.rows[0],
+    members: members.rows,
+    schedules: schedules.rows,
+    constitution: constitution.rows[0] || null,
+  };
 }
 
 /**
@@ -384,4 +462,105 @@ async function getMemberRoscaSummary(userId) {
   };
 }
 
-module.exports = { createPool, joinPool, listPools, disburseDuePayouts, getPoolDetails, getMemberRoscaSummary, applyTrustDelta };
+// (module.exports moved to end of file)
+
+// ============================================================================
+// PHASE 2: UPATU GOVERNANCE (configurable grace/late fee/payout order,
+// versioned constitution, per-member acceptance, richer round statuses)
+// ============================================================================
+
+async function setPoolGovernance(userId, poolId, { grace_days, late_fee_amount, payout_order }) {
+  const poolRes = await pool.query('SELECT * FROM rosca_pools WHERE id = $1', [poolId]);
+  if (poolRes.rows.length === 0) throw Object.assign(new Error('Pool haijapatikana.'), { statusCode: 404 });
+  const rosca = poolRes.rows[0];
+  if (rosca.created_by_user_id !== userId) {
+    throw Object.assign(new Error('Wewe ndiye mwanzilishi pekee anayeweza kubadilisha utawala wa pool.'), { statusCode: 403 });
+  }
+  const r = await pool.query(
+    `UPDATE rosca_pools
+       SET grace_days = $1, late_fee_amount = $2, payout_order = $3, updated_at = NOW()
+     WHERE id = $4 RETURNING *`,
+    [grace_days ?? rosca.grace_days ?? 0, late_fee_amount ?? rosca.late_fee_amount ?? 0,
+     payout_order ?? rosca.payout_order ?? 'SEQUENTIAL', poolId]
+  );
+  await logAudit({ eventType: 'ROSCA_GOVERNANCE', action: 'UPDATE', entityType: 'ROSCA_POOL', userId, entityId: poolId, afterData: { grace_days, late_fee_amount, payout_order } });
+  return r.rows[0];
+}
+
+async function createConstitution(userId, poolId, { title, body }) {
+  if (!body || typeof body !== 'object') throw Object.assign(new Error('Katiba (body) inahitajika.'), { statusCode: 400 });
+  const poolRes = await pool.query('SELECT * FROM rosca_pools WHERE id = $1', [poolId]);
+  if (poolRes.rows.length === 0) throw Object.assign(new Error('Pool haijapatikana.'), { statusCode: 404 });
+  if (poolRes.rows[0].created_by_user_id !== userId) {
+    throw Object.assign(new Error('Wewe ndiye mwanzilishi pekee anayeweza kuweka katiba.'), { statusCode: 403 });
+  }
+  const verRow = await pool.query(
+    'SELECT COALESCE(MAX(version),0)+1 AS v FROM rosca_constitutions WHERE pool_id = $1',
+    [poolId]
+  );
+  const r = await pool.query(
+    `INSERT INTO rosca_constitutions (pool_id, version, title, body, created_by)
+     VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+    [poolId, verRow.rows[0].v, title || 'Katiba ya Upatu', body, userId]
+  );
+  await logAudit({ eventType: 'ROSCA_CONSTITUTION', action: 'CREATE', entityType: 'ROSCA_CONSTITUTION', userId, entityId: r.rows[0].id, afterData: { pool_id: poolId, version: verRow.rows[0].v } });
+  return r.rows[0];
+}
+
+async function getConstitution(poolId, version) {
+  if (version) {
+    const r = await pool.query(
+      'SELECT * FROM rosca_constitutions WHERE pool_id = $1 AND version = $2',
+      [poolId, version]
+    );
+    if (r.rows.length === 0) throw Object.assign(new Error('Katiba haipatikani.'), { statusCode: 404 });
+    return r.rows[0];
+  }
+  const r = await pool.query(
+    'SELECT * FROM rosca_constitutions WHERE pool_id = $1 ORDER BY version DESC LIMIT 1',
+    [poolId]
+  );
+  if (r.rows.length === 0) return null;
+  return r.rows[0];
+}
+
+async function listConstitutions(poolId) {
+  const r = await pool.query(
+    'SELECT * FROM rosca_constitutions WHERE pool_id = $1 ORDER BY version DESC',
+    [poolId]
+  );
+  return r.rows;
+}
+
+async function acceptConstitution(userId, poolId, version) {
+  const constRow = await pool.query(
+    'SELECT * FROM rosca_constitutions WHERE pool_id = $1 AND version = $2',
+    [poolId, version]
+  );
+  if (constRow.rows.length === 0) throw Object.assign(new Error('Katiba haipatikani.'), { statusCode: 404 });
+  const accepted = await pool.query(
+    `INSERT INTO rosca_constitution_acceptance (user_id, pool_id, constitution_id)
+     VALUES ($1, $2, $3) RETURNING *`,
+    [userId, poolId, constRow.rows[0].id]
+  );
+  await logAudit({ eventType: 'ROSCA_ACCEPT', action: 'ACCEPT', entityType: 'ROSCA_CONSTITUTION', userId, entityId: constRow.rows[0].id, afterData: { pool_id: poolId, version } });
+  return accepted.rows[0];
+}
+
+async function hasAcceptedConstitution(userId, poolId) {
+  const constRow = await pool.query(
+    'SELECT id FROM rosca_constitutions WHERE pool_id = $1 ORDER BY version DESC LIMIT 1',
+    [poolId]
+  );
+  if (constRow.rows.length === 0) return { exists: false, accepted: true };
+  const acc = await pool.query(
+    'SELECT 1 FROM rosca_constitution_acceptance WHERE user_id = $1 AND pool_id = $2 AND constitution_id = $3',
+    [userId, poolId, constRow.rows[0].id]
+  );
+  return { exists: true, accepted: acc.rows.length > 0 };
+}
+
+module.exports = {
+  createPool, joinPool, listPools, disburseDuePayouts, getPoolDetails, getMemberRoscaSummary, applyTrustDelta,
+  setPoolGovernance, createConstitution, getConstitution, listConstitutions, acceptConstitution, hasAcceptedConstitution,
+};

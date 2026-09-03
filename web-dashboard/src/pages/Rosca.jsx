@@ -64,6 +64,37 @@ export default function Rosca() {
     } catch (err) { show('err', err.response?.data?.message || t('rosca.error')); }
   };
 
+  const [govForm, setGovForm] = useState({ grace_days: 0, late_fee_amount: 0, payout_order: 'SEQUENTIAL' });
+  const [constTitle, setConstTitle] = useState('');
+  const [constBody, setConstBody] = useState('[{"clause":"Mchango","text":""}]');
+
+  const saveGovernance = async (id) => {
+    try {
+      await api.post(`/rosca/pools/${id}/governance`, govForm);
+      show('ok', t('rosca.gov_saved'));
+      openPool(id);
+    } catch (err) { show('err', err.response?.data?.message || t('rosca.error')); }
+  };
+
+  const createConstitution = async (id) => {
+    let body;
+    try { body = JSON.parse(constBody); } catch (e) { show('err', t('rosca.const_invalid')); return; }
+    try {
+      await api.post(`/rosca/pools/${id}/constitution`, { title: constTitle || t('rosca.const_default'), body });
+      show('ok', t('rosca.const_created'));
+      setConstTitle(''); setConstBody('[{"clause":"Mchango","text":""}]');
+      openPool(id);
+    } catch (err) { show('err', err.response?.data?.message || t('rosca.error')); }
+  };
+
+  const acceptConst = async (id, version) => {
+    try {
+      await api.post(`/rosca/pools/${id}/constitution/accept`, { version });
+      show('ok', t('rosca.const_accepted'));
+      openPool(id);
+    } catch (err) { show('err', err.response?.data?.message || t('rosca.error')); }
+  };
+
   return (
     <ServiceLock serviceKey="ROSCA">
       <div className="page-head">
@@ -146,6 +177,7 @@ export default function Rosca() {
         </div>
       )}
 
+        {selected && (
         <div className="card section">
           <h3>{selected.pool_name} <span className="roles-tag" style={{ marginLeft: 8 }}>{selected.pool_type}</span></h3>
           {selected.status === 'WAITING_MEMBERS' && (
@@ -192,6 +224,48 @@ export default function Rosca() {
               {selected.schedules.length === 0 && <tr><td colSpan="6" className="roles-tag">{t('rosca.no_schedules')}</td></tr>}
             </tbody>
           </table>
+
+          <h3 style={{ margin: '22px 0 8px' }}>{t('rosca.gov_title')}</h3>
+          <p className="roles-tag" style={{ marginBottom: 12 }}>{t('rosca.gov_sub')}</p>
+          <div className="form-row" style={{ maxWidth: 560 }}>
+            <div className="field"><label>{t('rosca.gov_grace')}</label>
+              <input type="number" min="0" value={govForm.grace_days} onChange={(e) => setGovForm({ ...govForm, grace_days: e.target.value })} /></div>
+            <div className="field"><label>{t('rosca.gov_latefee')}</label>
+              <input type="number" min="0" value={govForm.late_fee_amount} onChange={(e) => setGovForm({ ...govForm, late_fee_amount: e.target.value })} /></div>
+            <div className="field"><label>{t('rosca.gov_order')}</label>
+              <select value={govForm.payout_order} onChange={(e) => setGovForm({ ...govForm, payout_order: e.target.value })}>
+                <option value="SEQUENTIAL">Sequential</option>
+                <option value="TRUST">Trust</option>
+                <option value="DRAW">Draw</option>
+              </select></div>
+            <button className="btn" onClick={() => saveGovernance(selected.id)}>{t('rosca.gov_save')}</button>
+          </div>
+
+          <h3 style={{ margin: '22px 0 8px' }}>{t('rosca.const_title')}</h3>
+          {selected.constitution ? (
+            <div>
+              <p className="roles-tag">v{selected.constitution.version} · {selected.constitution.title}</p>
+              {(Array.isArray(selected.constitution.body) ? selected.constitution.body : []).map((cl, i) => (
+                <div key={i} style={{ margin: '6px 0' }}>
+                  <strong>{cl.clause}:</strong> {cl.text}
+                </div>
+              ))}
+              <button className="btn ghost" style={{ marginTop: 8 }} onClick={() => acceptConst(selected.id, selected.constitution.version)}>
+                {t('rosca.const_accept')} v{selected.constitution.version}
+              </button>
+            </div>
+          ) : (
+            <div>
+              <p className="roles-tag">{t('rosca.const_none')}</p>
+              <div className="form-row" style={{ maxWidth: 560, marginTop: 8 }}>
+                <div className="field"><label>{t('rosca.const_title_lbl')}</label>
+                  <input value={constTitle} onChange={(e) => setConstTitle(e.target.value)} /></div>
+                <div className="field" style={{ flex: 2 }}><label>{t('rosca.const_body_lbl')}</label>
+                  <textarea rows="3" value={constBody} onChange={(e) => setConstBody(e.target.value)} /></div>
+                <button className="btn" onClick={() => createConstitution(selected.id)}>{t('rosca.const_create')}</button>
+              </div>
+            </div>
+          )}
         </div>
       )}
     </ServiceLock>
