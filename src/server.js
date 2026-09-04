@@ -71,6 +71,7 @@ const developerRoutes = require('./routes/developerRoutes');
 const socialFundRoutes = require('./routes/socialFundRoutes');
 const governanceRoutes = require('./routes/governanceRoutes');
 const payrollRoutes = require('./routes/payrollRoutes');
+const recurrenceRoutes = require('./routes/recurrenceRoutes');
 const swaggerUi = require('swagger-ui-express');
 const { swaggerSpec } = require('./config/swagger');
 
@@ -272,6 +273,7 @@ for (const prefix of versionPrefixes) {
   app.use(`${prefix}/social`, walletLimiter, socialFundRoutes);
   app.use(`${prefix}/governance`, governanceRoutes);
   app.use(`${prefix}/payroll`, payrollRoutes);
+  app.use(`${prefix}/recurrence`, recurrenceRoutes);
 }
 
 // Swagger UI - API documentation (production off - usitangaze API surface)
@@ -322,6 +324,9 @@ if (process.env.DISABLE_CRON !== 'true') {
   // H18: Start backup scheduler
   const { startBackupScheduler } = require('./services/backupService');
   startBackupScheduler();
+  // Recurrence automation scheduler (auto-payroll, auto-savings, contribution cycles)
+  const { startRecurrenceScheduler } = require('./services/recurrenceService');
+  startRecurrenceScheduler(parseInt(process.env.RECURRENCE_INTERVAL_MS, 10) || 60000);
 }
 
 function startServer(server) {

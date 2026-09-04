@@ -1672,6 +1672,7 @@ const messages = {
     'ai.boq': 'Uchambuzi wa BOQ/Bajeti',
     'ai.analyze_boq': 'Changanua BOQ/Bajeti',
     'nav.payroll': 'Mishahara',
+    'nav.recurrence': 'Kurudia Kiotomatiki',
   },
   en: {
     'brand.name': 'AFRIKOBA GLOBAL',
@@ -3346,6 +3347,7 @@ const messages = {
     'ai.boq': 'Budget/BOQ Analysis',
     'ai.analyze_boq': 'Analyze Budget/BOQ',
     'nav.payroll': 'Payroll',
+    'nav.recurrence': 'Recurrence',
   },
 };
 
