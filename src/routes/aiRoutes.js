@@ -34,4 +34,47 @@ router.get('/cashflow', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// ===== AI RISK ENGINE =====
+router.post('/risk/evaluate', async (req, res, next) => {
+  try {
+    const riskService = require('../services/aiRiskRecommendationService');
+    const result = await riskService.evaluateRisk(req.user.id);
+    res.json(result);
+  } catch (error) { next(error); }
+});
+
+router.get('/risk', async (req, res, next) => {
+  try {
+    const riskService = require('../services/aiRiskRecommendationService');
+    const assessment = await riskService.getLatestRisk(req.user.id);
+    res.json({ success: true, assessment });
+  } catch (error) { next(error); }
+});
+
+// ===== AI RECOMMENDATION ENGINE =====
+router.get('/recommendations', async (req, res, next) => {
+  try {
+    const riskService = require('../services/aiRiskRecommendationService');
+    const recommendations = await riskService.getActiveRecommendations(req.user.id);
+    res.json({ success: true, recommendations });
+  } catch (error) { next(error); }
+});
+
+router.post('/recommendations/:id/dismiss', async (req, res, next) => {
+  try {
+    const riskService = require('../services/aiRiskRecommendationService');
+    const result = await riskService.dismissRecommendation(req.user.id, parseInt(req.params.id, 10));
+    res.json({ success: true, recommendation: result });
+  } catch (error) { next(error); }
+});
+
+// ===== AI CONFIDENCE / EXPLAINABILITY =====
+router.get('/explanations', async (req, res, next) => {
+  try {
+    const riskService = require('../services/aiRiskRecommendationService');
+    const explanations = await riskService.getExplanations(req.user.id, req.query.decision_type);
+    res.json({ success: true, explanations });
+  } catch (error) { next(error); }
+});
+
 module.exports = router;

@@ -24,6 +24,7 @@ export default function Layout() {
     { to: '/dashboard/promotions', key: 'nav.promotions', always: true },
     { to: '/dashboard/vicoba', key: 'nav.vicoba', svc: 'VICOBA' },
     { to: '/dashboard/governance', key: 'nav.governance', always: true },
+    { to: '/dashboard/ai', key: 'nav.ai', always: true },
     { to: '/dashboard/rosca', key: 'nav.rosca', svc: 'ROSCA' },
     { to: '/dashboard/p2p', key: 'nav.p2p', svc: 'P2P' },
     { to: '/dashboard/referrals', key: 'nav.referrals', always: true },

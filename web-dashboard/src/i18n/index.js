@@ -1663,6 +1663,12 @@ const messages = {
     'gov.access': 'Ufikiaji & Uwekaji',
     'gov.retention': 'Sera za Uhifadhi',
     'gov.analytics': 'Takwimu',
+    'nav.ai': 'AI Intelligence',
+    'ai.evaluate': 'Tathmini Hatari',
+    'ai.risk': 'Hatari',
+    'ai.recommendations': 'Mapendekezo',
+    'ai.explainability': 'Ufafanuzi',
+    'ai.evaluated': 'Tathmini ya hatari imekamilika.',
   },
   en: {
     'brand.name': 'AFRIKOBA GLOBAL',
@@ -3328,6 +3334,12 @@ const messages = {
     'gov.access': 'Access & Retention',
     'gov.retention': 'Retention Policies',
     'gov.analytics': 'Analytics',
+    'nav.ai': 'AI Intelligence',
+    'ai.evaluate': 'Evaluate Risk',
+    'ai.risk': 'Risk',
+    'ai.recommendations': 'Recommendations',
+    'ai.explainability': 'Explainability',
+    'ai.evaluated': 'Risk assessment completed.',
   },
 };
 
