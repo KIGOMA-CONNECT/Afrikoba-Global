@@ -8,6 +8,9 @@ export default function AiIntelligence() {
   const [assessment, setAssessment] = useState(null);
   const [recommendations, setRecommendations] = useState([]);
   const [explanations, setExplanations] = useState([]);
+  const [analyses, setAnalyses] = useState([]);
+  const [projectId, setProjectId] = useState('');
+  const [boqInput, setBoqInput] = useState('');
   const [notice, setNotice] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -17,9 +20,24 @@ export default function AiIntelligence() {
     api.get('/ai/risk').then((r) => setAssessment(r.data.assessment)).catch(() => {});
     api.get('/ai/recommendations').then((r) => setRecommendations(r.data.recommendations || [])).catch(() => {});
     api.get('/ai/explanations').then((r) => setExplanations(r.data.explanations || [])).catch(() => {});
+    api.get('/ai/budget').then((r) => setAnalyses(r.data.analyses || [])).catch(() => {});
   };
 
   useEffect(() => { loadAll(); }, []);
+
+  const runBoq = async () => {
+    setLoading(true);
+    try {
+      let items = [];
+      try { items = JSON.parse(boqInput); } catch (e) { show('BOQ must be valid JSON array of items'); setLoading(false); return; }
+      const res = await api.post('/ai/budget/analyze', {
+        projectId: projectId ? parseInt(projectId, 10) : null,
+        lineItems: items,
+      });
+      show(`Analysis done: ${res.data.analysis.budget_health} (${res.data.analysis.variance_percent ?? 'n/a'}%)`);
+      loadAll();
+    } catch (e) { show(e.response?.data?.error || t('gov.error')); } finally { setLoading(false); }
+  };
 
   const evaluate = async () => {
     setLoading(true);
@@ -53,10 +71,10 @@ export default function AiIntelligence() {
       </button>
 
       <div className="flex gap-1 mb-4">
-        {['risk', 'reco', 'explain'].map((tb) => (
+        {['risk', 'reco', 'explain', 'boq'].map((tb) => (
           <button key={tb} onClick={() => setTab(tb)}
             className={`px-3 py-2 rounded text-sm ${tab === tb ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700'}`}>
-            {tb === 'risk' ? t('ai.risk') : tb === 'reco' ? t('ai.recommendations') : t('ai.explainability')}
+            {tb === 'risk' ? t('ai.risk') : tb === 'reco' ? t('ai.recommendations') : tb === 'explain' ? t('ai.explainability') : t('ai.boq')}
           </button>
         ))}
       </div>
@@ -121,6 +139,45 @@ export default function AiIntelligence() {
               <div className="text-xs text-gray-400 mt-1">{new Date(e.created_at).toLocaleString()} · confidence {e.confidence}%</div>
             </div>
           ))}
+        </div>
+      )}
+
+      {tab === 'boq' && (
+        <div className="space-y-3">
+          <div className="bg-white border rounded p-4">
+            <b className="text-sm">Analyze Budget / BOQ</b>
+            <div className="flex gap-2 mt-2">
+              <input value={projectId} onChange={(e) => setProjectId(e.target.value)} placeholder="Project ID (optional)"
+                className="border rounded px-2 py-1 text-sm w-40" />
+            </div>
+            <textarea value={boqInput} onChange={(e) => setBoqInput(e.target.value)}
+              placeholder='JSON array of items, e.g. [{"description":"Foundation & Excavation","unitCost":15000000}]'
+              className="border rounded p-2 text-sm w-full h-28 mt-2" />
+            <button onClick={runBoq} disabled={loading} className="mt-2 bg-blue-600 text-white px-4 py-2 rounded text-sm">
+              {loading ? 'Analyzing…' : t('ai.analyze_boq')}
+            </button>
+          </div>
+
+          {analyses.map((a) => (
+            <div key={a.id} className="bg-white border rounded p-4">
+              <div className="flex justify-between">
+                <b className="text-sm">Project #{a.project_id} · Budget {Number(a.total_budget).toLocaleString()}</b>
+                <div className="flex items-center gap-2">
+                  <span className={`text-xs px-2 py-1 rounded ${levelColor(a.budget_health)}`}>{a.budget_health}</span>
+                  <span className="text-xs text-gray-400">conf {a.confidence}%</span>
+                </div>
+              </div>
+              {a.variance_percent !== null && (
+                <div className="text-sm text-gray-600 mt-1">Variance vs market: <b>{a.variance_percent}%</b> ({Number(a.market_reference_total || 0).toLocaleString()} ref)</div>
+              )}
+              {(a.recommendations || []).map((r, i) => (
+                <div key={i} className="text-sm text-gray-700 mt-1 border-t pt-1">
+                  <b className="text-xs">{r.priority}</b> · {r.title} — {r.body}
+                </div>
+              ))}
+            </div>
+          ))}
+          {analyses.length === 0 && <div className="text-gray-400 text-sm">No budget analyses yet.</div>}
         </div>
       )}
     </div>

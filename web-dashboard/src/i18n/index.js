@@ -1669,6 +1669,8 @@ const messages = {
     'ai.recommendations': 'Mapendekezo',
     'ai.explainability': 'Ufafanuzi',
     'ai.evaluated': 'Tathmini ya hatari imekamilika.',
+    'ai.boq': 'Uchambuzi wa BOQ/Bajeti',
+    'ai.analyze_boq': 'Changanua BOQ/Bajeti',
   },
   en: {
     'brand.name': 'AFRIKOBA GLOBAL',
@@ -3340,6 +3342,8 @@ const messages = {
     'ai.recommendations': 'Recommendations',
     'ai.explainability': 'Explainability',
     'ai.evaluated': 'Risk assessment completed.',
+    'ai.boq': 'Budget/BOQ Analysis',
+    'ai.analyze_boq': 'Analyze Budget/BOQ',
   },
 };
 

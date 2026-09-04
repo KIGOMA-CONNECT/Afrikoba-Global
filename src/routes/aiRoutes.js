@@ -77,4 +77,30 @@ router.get('/explanations', async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
+// ===== AI BUDGET / BOQ ANALYSIS =====
+router.post('/budget/analyze', async (req, res, next) => {
+  try {
+    const boqService = require('../services/aiBudgetBoqService');
+    const { projectId, documentId, lineItems, totalBudget } = req.body;
+    const analysis = await boqService.analyzeBudget(projectId, documentId, lineItems, totalBudget);
+    res.json({ success: true, analysis });
+  } catch (error) { next(error); }
+});
+
+router.get('/budget', async (req, res, next) => {
+  try {
+    const boqService = require('../services/aiBudgetBoqService');
+    const analyses = await boqService.listAnalyses(req.query.project_id ? parseInt(req.query.project_id, 10) : null);
+    res.json({ success: true, analyses });
+  } catch (error) { next(error); }
+});
+
+router.get('/budget/rates', async (req, res, next) => {
+  try {
+    const boqService = require('../services/aiBudgetBoqService');
+    const rates = await boqService.marketRates();
+    res.json({ success: true, rates });
+  } catch (error) { next(error); }
+});
+
 module.exports = router;
