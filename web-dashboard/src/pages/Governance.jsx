@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useT } from '../i18n/LangProvider.jsx';
 import api from '../api/client.js';
 
-const TABS = ['meetings', 'chat', 'documents', 'voting', 'resolutions', 'action'];
+const TABS = ['meetings', 'chat', 'documents', 'voting', 'resolutions', 'action', 'finance'];
 
 export default function Governance() {
   const { t } = useT();
@@ -21,6 +21,7 @@ export default function Governance() {
   const [searchResults, setSearchResults] = useState(null);
   const [notice, setNotice] = useState('');
   const [form, setForm] = useState({ title: '', scheduled_at: '', description: '' });
+  const [auditTrail, setAuditTrail] = useState([]);
 
   const show = (text) => { setNotice(text); setTimeout(() => setNotice(''), 4000); };
 
@@ -67,12 +68,19 @@ export default function Governance() {
       .then((r) => setActionItems(r.data.actionItems)).catch(() => setActionItems([]));
   };
 
+  const loadAuditTrail = () => {
+    if (!groupId) return;
+    api.get('/governance/financial/audit-trail', { params: { group_id: groupId } })
+      .then((r) => setAuditTrail(r.data.auditTrail)).catch(() => setAuditTrail([]));
+  };
+
   const switchTab = (tb) => {
     setTab(tb);
     if (tb === 'chat') loadChannels();
     if (tb === 'documents') loadDocs();
     if (tb === 'resolutions') loadResolutions();
     if (tb === 'action') loadActionItems();
+    if (tb === 'finance') loadAuditTrail();
   };
 
   const createMeeting = async (e) => {
@@ -260,6 +268,28 @@ export default function Governance() {
       {tab === 'voting' && (
         <div className="bg-white border rounded p-4 text-center text-gray-500 text-sm">
           Voting is initiated from within a meeting. Open a meeting to create and vote on proposals.
+        </div>
+      )}
+
+      {tab === 'finance' && (
+        <div className="bg-white border rounded divide-y">
+          {auditTrail.length === 0 && <div className="p-4 text-gray-500 text-sm">No financial resolutions yet. Pass a resolution with a financial action to link it here.</div>}
+          {auditTrail.map((r, i) => (
+            <div key={i} className="p-3">
+              <div className="flex justify-between items-center">
+                <b>{r.resolution_number ? `${r.resolution_number} · ` : ''}{r.title}</b>
+                <span className={`text-xs px-2 py-1 rounded ${r.execution_status === 'EXECUTED' ? 'bg-green-100 text-green-700' : r.execution_status === 'FAILED' ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'}`}>
+                  {r.execution_status || 'NO_LINK'}
+                </span>
+              </div>
+              <div className="text-sm text-gray-600 mt-1">{r.body}</div>
+              <div className="text-xs text-gray-400 mt-1">
+                {r.financial_action_type} · {r.financial_amount ? `TZS ${Number(r.financial_amount).toLocaleString()}` : ''} · {new Date(r.passed_at).toLocaleString()}
+                {r.ledger_reference && <span className="ml-2 text-blue-600">Ledger: {r.ledger_reference}</span>}
+                {r.target_entity_type && <span className="ml-2">→ {r.target_entity_type}#{r.target_entity_id}</span>}
+              </div>
+            </div>
+          ))}
         </div>
       )}
     </div>

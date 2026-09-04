@@ -220,4 +220,46 @@ router.get('/minutes', async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
+// ============ GOVERNANCE → FINANCIAL LINKAGE ============
+const gfl = () => require('../services/governanceFinancialLinkageService');
+
+router.post('/financial-executions', async (req, res, next) => {
+  try {
+    const result = await gfl().createExecution(req.body);
+    await logAction(req.user.id, 'GOV_FIN_EXECUTION_CREATED', 'GOVERNANCE_RESOLUTION', req.body.resolution_id, { type: req.body.financial_action_type, amount: req.body.amount }, req);
+    res.json(result);
+  } catch (error) { next(error); }
+});
+
+router.post('/financial-executions/:id/executed', async (req, res, next) => {
+  try {
+    const result = await gfl().markExecuted(parseInt(req.params.id, 10), { ledgerReference: req.body.ledger_reference, executedByUserId: req.user.id });
+    await logAction(req.user.id, 'GOV_FIN_EXECUTION_EXECUTED', 'GOVERNANCE_FINANCIAL_EXECUTION', parseInt(req.params.id, 10), { ledger_reference: req.body.ledger_reference }, req);
+    res.json({ success: true, execution: result });
+  } catch (error) { next(error); }
+});
+
+router.post('/financial-executions/:id/failed', async (req, res, next) => {
+  try {
+    const result = await gfl().markFailed(parseInt(req.params.id, 10), req.body.notes);
+    res.json({ success: true, execution: result });
+  } catch (error) { next(error); }
+});
+
+router.get('/financial-executions', async (req, res, next) => {
+  try {
+    const { resolution_id, group_id, status } = req.query;
+    const executions = await gfl().listExecutions({ resolutionId: resolution_id ? parseInt(resolution_id, 10) : undefined, groupId: group_id ? parseInt(group_id, 10) : undefined, status });
+    res.json({ success: true, executions });
+  } catch (error) { next(error); }
+});
+
+router.get('/financial/audit-trail', async (req, res, next) => {
+  try {
+    const { group_id } = req.query;
+    const trail = await gfl().getGovernanceAuditTrail(parseInt(group_id, 10));
+    res.json({ success: true, auditTrail: trail });
+  } catch (error) { next(error); }
+});
+
 module.exports = router;

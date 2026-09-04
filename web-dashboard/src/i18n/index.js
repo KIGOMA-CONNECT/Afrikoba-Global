@@ -1659,6 +1659,7 @@ const messages = {
     'gov.save': 'Hifadhi',
     'gov.created': 'Kikao kimeundwa.',
     'gov.error': 'Hitilafu imetokea.',
+    'gov.finance': 'Fedha za Maazimio',
   },
   en: {
     'brand.name': 'AFRIKOBA GLOBAL',
@@ -3320,6 +3321,7 @@ const messages = {
     'gov.save': 'Save',
     'gov.created': 'Meeting created.',
     'gov.error': 'An error occurred.',
+    'gov.finance': 'Resolution Finances',
   },
 };
 
