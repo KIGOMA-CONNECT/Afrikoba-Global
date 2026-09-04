@@ -57,4 +57,46 @@ async function getSeverityBreakdown() {
   return result.rows;
 }
 
-module.exports = { getBusinessKpis, getTransactionTrend, getTransactionTypeBreakdown, getSeverityBreakdown };
+async function getRequestMetrics(hours = 24) {
+  const [latency, errorRate, topSlow] = await Promise.all([
+    pool.query(
+      `SELECT 
+        PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY duration_ms) AS p50,
+        PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY duration_ms) AS p95,
+        PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY duration_ms) AS p99,
+        AVG(duration_ms) AS avg
+       FROM request_telemetry WHERE created_at > NOW() - ($1::int || ' hours')::interval`,
+      [hours]
+    ),
+    pool.query(
+      `SELECT 
+        COUNT(*) FILTER (WHERE status_code >= 500)::int AS errors,
+        COUNT(*)::int AS total
+       FROM request_telemetry WHERE created_at > NOW() - ($1::int || ' hours')::interval`,
+      [hours]
+    ),
+    pool.query(
+      `SELECT method, path, AVG(duration_ms)::int AS avg_ms, COUNT(*)::int AS count
+       FROM request_telemetry WHERE created_at > NOW() - ($1::int || ' hours')::interval
+       GROUP BY method, path ORDER BY avg_ms DESC LIMIT 10`,
+      [hours]
+    )
+  ]);
+
+  return {
+    latency: latency.rows[0],
+    errorRate: errorRate.rows[0].total > 0 
+      ? (errorRate.rows[0].errors / errorRate.rows[0].total * 100).toFixed(2) + '%'
+      : '0.00%',
+    totalRequests: errorRate.rows[0].total,
+    slowPaths: topSlow.rows
+  };
+}
+
+module.exports = { 
+  getBusinessKpis, 
+  getTransactionTrend, 
+  getTransactionTypeBreakdown, 
+  getSeverityBreakdown,
+  getRequestMetrics
+};

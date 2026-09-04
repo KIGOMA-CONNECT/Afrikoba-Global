@@ -72,6 +72,13 @@ router.get('/dashboard', async (req, res, next) => {
       )).rows;
     } catch (e) { securityEvents = []; }
 
+    // 7. Request Telemetry Metrics
+    let telemetry = null;
+    try {
+      const obs = require('../services/observabilityService');
+      telemetry = await obs.getRequestMetrics(24);
+    } catch (e) { telemetry = { error: e.message }; }
+
     res.json({
       success: true,
       observedAt: new Date().toISOString(),
@@ -82,6 +89,7 @@ router.get('/dashboard', async (req, res, next) => {
       recurrence,
       recentAudit,
       securityEvents,
+      telemetry,
       system: {
         uptime: process.uptime(),
         pid: process.pid,

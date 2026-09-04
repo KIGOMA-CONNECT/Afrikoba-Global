@@ -100,6 +100,43 @@ export default function Ops() {
             </div>
           </div>
 
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+            <div className="bg-white border rounded p-4">
+              <b className="text-sm block mb-2">Request Telemetry (24h)</b>
+              {data?.telemetry ? (
+                <div className="space-y-1 text-sm">
+                  <div className="flex justify-between border-b py-1">
+                    <span className="text-gray-600">Total Requests</span>
+                    <b>{data.telemetry.totalRequests.toLocaleString()}</b>
+                  </div>
+                  <div className="flex justify-between border-b py-1">
+                    <span className="text-gray-600">Error Rate</span>
+                    <b className={parseFloat(data.telemetry.errorRate) > 1 ? 'text-red-600' : 'text-green-600'}>{data.telemetry.errorRate}</b>
+                  </div>
+                  <div className="flex justify-between border-b py-1">
+                    <span className="text-gray-600">Avg Latency</span>
+                    <b>{Math.round(data.telemetry.latency?.avg || 0)}ms</b>
+                  </div>
+                  <div className="flex justify-between border-b py-1">
+                    <span className="text-gray-600">P95 Latency</span>
+                    <b className={(data.telemetry.latency?.p95 || 0) > 500 ? 'text-amber-600' : 'text-gray-900'}>{Math.round(data.telemetry.latency?.p95 || 0)}ms</b>
+                  </div>
+                </div>
+              ) : <div className="text-sm text-gray-400">No telemetry data</div>}
+            </div>
+
+            <div className="bg-white border rounded p-4">
+              <b className="text-sm block mb-2">Slowest Paths (Avg ms)</b>
+              {(data?.telemetry?.slowPaths || []).length === 0 && <div className="text-gray-400 text-sm">No data.</div>}
+              {(data?.telemetry?.slowPaths || []).map((p, i) => (
+                <div key={i} className="flex justify-between border-b py-1 text-sm">
+                  <span className="text-gray-600 truncate mr-2" title={p.path}>{p.method} {p.path}</span>
+                  <b>{p.avg_ms}ms</b>
+                </div>
+              ))}
+            </div>
+          </div>
+
           <div className="bg-white border rounded p-4">
             <b className="text-sm block mb-2">Recent Audit Log</b>
             <div className="max-h-96 overflow-auto">
