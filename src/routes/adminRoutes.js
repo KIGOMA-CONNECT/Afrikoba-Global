@@ -572,4 +572,45 @@ router.post('/treasury/proposals/:id/sign', async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
+// ===== PROJECT MONITORING & VARIANCE =====
+router.get('/projects/:id/monitoring', async (req, res, next) => {
+  try {
+    const monitor = require('../services/projectMonitoringService');
+    const snapshots = await monitor.getProjectMonitoring(parseInt(req.params.id, 10));
+    res.json({ success: true, snapshots });
+  } catch (error) { next(error); }
+});
+
+router.post('/projects/monitoring', async (req, res, next) => {
+  try {
+    const monitor = require('../services/projectMonitoringService');
+    const result = await monitor.recordMonitoring({ ...req.body, reviewedBy: req.user.id });
+    res.json(result);
+  } catch (error) { next(error); }
+});
+
+router.get('/projects/:id/milestones', async (req, res, next) => {
+  try {
+    const monitor = require('../services/projectMonitoringService');
+    const milestones = await monitor.listMilestones(parseInt(req.params.id, 10));
+    res.json({ success: true, milestones });
+  } catch (error) { next(error); }
+});
+
+router.post('/projects/milestones', async (req, res, next) => {
+  try {
+    const monitor = require('../services/projectMonitoringService');
+    const milestone = await monitor.addMilestone(req.body);
+    res.json({ success: true, milestone });
+  } catch (error) { next(error); }
+});
+
+router.put('/projects/milestones/:id', async (req, res, next) => {
+  try {
+    const monitor = require('../services/projectMonitoringService');
+    const milestone = await monitor.updateMilestone(parseInt(req.params.id, 10), req.body);
+    res.json({ success: true, milestone });
+  } catch (error) { next(error); }
+});
+
 module.exports = router;
