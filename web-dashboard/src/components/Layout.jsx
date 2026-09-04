@@ -64,7 +64,9 @@ export default function Layout() {
     { to: '/dashboard/risk', key: 'nav.risk', admin: true },
     { to: '/dashboard/payroll', key: 'nav.payroll', admin: true },
     { to: '/dashboard/recurrence', key: 'nav.recurrence', admin: true },
+    { to: '/dashboard/ops', key: 'nav.ops', admin: true },
     { to: '/dashboard/settings', key: 'nav.settings', always: true },
+    { to: '/dashboard/security', key: 'nav.security', always: true },
   ];
 
   const closeSidebar = () => setSidebarOpen(false);

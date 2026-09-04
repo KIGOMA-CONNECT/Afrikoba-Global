@@ -350,13 +350,21 @@ async function applyMicroLoan(userId, data) {
   const rate = Number(interest_rate) > 0 ? Number(interest_rate) : 5;
   const scoreData = await getScore(userId);
   if (amountNum > Number(scoreData.credit_limit)) throw badge(`Kiasi cha mkopo kinazidi kikomo chako (${formatMoney(scoreData.credit_limit)}).`, 400);
+
+  // Trust-score driven combined exposure limit (micro-loans + vicooba)
+  const { enforceCreditLimit } = require('./creditLimitService');
+  const limitCheck = await enforceCreditLimit(userId, amountNum);
+  if (!limitCheck.approved) {
+    throw badge(`Mkopo umezuiwa: ${limitCheck.reasons.join(' ')}`, 402);
+  }
+
   const res = await pool.query(
     `INSERT INTO micro_loans (user_id, amount, interest_rate, term_months, credit_score_at_apply, guarantor_required)
      VALUES ($1,$2,$3,$4,$5, TRUE) RETURNING *`,
     [userId, amountNum, rate, term, scoreData.score]
   );
   await logAudit(userId, 'MICRO_LOAN_APPLIED', `Mkopo wa ${formatMoney(amountNum)} umeombwa`).catch(() => {});
-  return res.rows[0];
+  return { ...res.rows[0], creditLimit: limitCheck.creditLimit };
 }
 
 async function listMicroLoans(userId, isAdmin) {

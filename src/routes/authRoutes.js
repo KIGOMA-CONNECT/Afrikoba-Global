@@ -289,4 +289,38 @@ router.post('/stepup/verify', authRequired, async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
+// ===== TOTP 2FA Enrollment =====
+router.post('/totp/setup', authRequired, async (req, res, next) => {
+  try {
+    const totpService = require('../services/totpService');
+    const result = await totpService.setupTotp(req.user.id);
+    return res.json({ success: true, ...result });
+  } catch (error) { next(error); }
+});
+
+router.post('/totp/enable', authRequired, async (req, res, next) => {
+  try {
+    const totpService = require('../services/totpService');
+    const { code } = req.body;
+    const result = await totpService.verifyAndEnable(req.user.id, code);
+    return res.json(result);
+  } catch (error) { next(error); }
+});
+
+router.post('/totp/disable', authRequired, async (req, res, next) => {
+  try {
+    const totpService = require('../services/totpService');
+    const result = await totpService.disableTotp(req.user.id);
+    return res.json(result);
+  } catch (error) { next(error); }
+});
+
+router.get('/totp/status', authRequired, async (req, res, next) => {
+  try {
+    const totpService = require('../services/totpService');
+    const status = await totpService.getTotpStatus(req.user.id);
+    return res.json({ success: true, ...status });
+  } catch (error) { next(error); }
+});
+
 module.exports = router;

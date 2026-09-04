@@ -1673,6 +1673,8 @@ const messages = {
     'ai.analyze_boq': 'Changanua BOQ/Bajeti',
     'nav.payroll': 'Mishahara',
     'nav.recurrence': 'Kurudia Kiotomatiki',
+    'nav.security': 'Usalama',
+    'nav.ops': 'Ops Dashboard',
   },
   en: {
     'brand.name': 'AFRIKOBA GLOBAL',
@@ -3348,6 +3350,8 @@ const messages = {
     'ai.analyze_boq': 'Analyze Budget/BOQ',
     'nav.payroll': 'Payroll',
     'nav.recurrence': 'Recurrence',
+    'nav.security': 'Security',
+    'nav.ops': 'Ops Dashboard',
   },
 };
 

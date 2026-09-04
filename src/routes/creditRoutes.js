@@ -33,6 +33,15 @@ router.post('/score/recompute', authRequired, async (req, res, next) => {
   catch (e) { next(e); }
 });
 
+// ===== TRUST-SCORE DRIVEN CREDIT LIMIT =====
+router.get('/limit', authRequired, async (req, res, next) => {
+  try {
+    const { getCreditLimit, existingExposure } = require('../services/creditLimitService');
+    const [limit, exposure] = await Promise.all([getCreditLimit(req.user.id), existingExposure(req.user.id)]);
+    res.json({ success: true, ...limit, existingExposure: exposure, available: Math.max(0, limit.creditLimit - exposure) });
+  } catch (e) { next(e); }
+});
+
 // ===== I4: MICRO LOANS (user) =====
 router.post('/loans', authRequired, async (req, res, next) => {
   try { res.json({ success: true, loan: await credit.applyMicroLoan(req.user.id, req.body) }); }

@@ -82,4 +82,25 @@ async function logAudit(a, b, c) {
   await writeAudit({ userId: a, action: b, entityType: null, entityId: null, meta: c ? { description: c } : null });
 }
 
-module.exports = { logAction, logAudit, writeAudit };
+module.exports = { logAction, logAudit, writeAudit, listAudit };
+
+/**
+ * List audit log entries (read path for the admin ops dashboard).
+ * @param {object} opts { limit, action, entityType }
+ */
+async function listAudit({ limit = 50, action, entityType } = {}) {
+  const where = [];
+  const params = [];
+  if (action) { params.push(action); where.push(`action = $${params.length}`); }
+  if (entityType) { params.push(entityType); where.push(`entity_type = $${params.length}`); }
+  params.push(parseInt(limit, 10) || 50);
+  const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  const res = await pool.query(
+    `SELECT a.*, u.full_name, u.phone_number
+       FROM audit_logs a LEFT JOIN users u ON u.id::text = a.user_id::text
+       ${whereSql}
+      ORDER BY a.created_at DESC LIMIT $${params.length}`,
+    params
+  );
+  return res.rows;
+}

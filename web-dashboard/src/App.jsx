@@ -63,6 +63,8 @@ const Insights = lazy(() => import('./pages/Insights.jsx'));
 const AiIntelligence = lazy(() => import('./pages/AiIntelligence.jsx'));
 const Payroll = lazy(() => import('./pages/Payroll.jsx'));
 const Recurrence = lazy(() => import('./pages/Recurrence.jsx'));
+const Security = lazy(() => import('./pages/Security.jsx'));
+const Ops = lazy(() => import('./pages/Ops.jsx'));
 const Remittance = lazy(() => import('./pages/Remittance.jsx'));
 const Challenges = lazy(() => import('./pages/Challenges.jsx'));
 const Bills = lazy(() => import('./pages/Bills.jsx'));
@@ -146,6 +148,8 @@ export default function App() {
         <Route path="ai" element={<Page><AiIntelligence /></Page>} />
         <Route path="payroll" element={<Page><Payroll /></Page>} />
         <Route path="recurrence" element={<Page><Recurrence /></Page>} />
+        <Route path="security" element={<Page><Security /></Page>} />
+        <Route path="ops" element={<Page><Ops /></Page>} />
         <Route path="remittance" element={<Page><Remittance /></Page>} />
         <Route path="challenges" element={<Page><Challenges /></Page>} />
         <Route path="bills" element={<Page><Bills /></Page>} />

@@ -37,6 +37,7 @@ const vicobaRoutes = require('./routes/vicobaRoutes');
 const roscaRoutes = require('./routes/roscaRoutes');
 const p2pRoutes = require('./routes/p2pRoutes');
 const adminRoutes = require('./routes/adminRoutes');
+const opsRoutes = require('./routes/opsRoutes');
 const callbackRoutes = require('./routes/callbackRoutes');
 const serviceRoutes = require('./routes/serviceRoutes');
 const marketingRoutes = require('./routes/marketingRoutes');
@@ -240,6 +241,7 @@ for (const prefix of versionPrefixes) {
   app.use(`${prefix}/rosca`, walletLimiter, roscaRoutes);
   app.use(`${prefix}/p2p`, financialLimiter, p2pRoutes);
   app.use(`${prefix}/admin`, adminLimiter, adminRoutes);
+  app.use(`${prefix}/ops`, adminLimiter, opsRoutes);
   app.use(`${prefix}/payments`, webhookLimiter, webhookReplayProtection, verifyWebhookHmac, callbackRoutes);
   app.use(`${prefix}/services`, serviceRoutes);
   app.use(`${prefix}/marketing`, marketingRoutes);
