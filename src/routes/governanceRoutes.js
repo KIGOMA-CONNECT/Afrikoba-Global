@@ -262,4 +262,73 @@ router.get('/financial/audit-trail', async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
+// ============ GOVERNANCE ACCESS CONTROL & RETENTION ============
+const ac = () => require('../services/governanceAccessControlService');
+
+// Document / transcript confidentiality + retention
+router.put('/documents/:id/access', async (req, res, next) => {
+  try {
+    const result = await ac().updateDocumentAccess(parseInt(req.params.id, 10), req.body);
+    await logAction(req.user.id, 'GOV_DOC_ACCESS_UPDATED', 'GOVERNANCE_DOCUMENT', parseInt(req.params.id, 10), { confidential: req.body.confidential }, req);
+    res.json({ success: true, document: result });
+  } catch (error) { next(error); }
+});
+
+router.put('/transcripts/:id/access', async (req, res, next) => {
+  try {
+    const result = await ac().updateTranscriptAccess(parseInt(req.params.id, 10), req.body);
+    res.json({ success: true, transcript: result });
+  } catch (error) { next(error); }
+});
+
+// Access grants (GRANT / DENY specific members or roles)
+router.get('/access-grants', async (req, res, next) => {
+  try {
+    const { record_type, record_id } = req.query;
+    const grants = await ac().listAccessGrants(record_type, parseInt(record_id, 10));
+    res.json({ success: true, grants });
+  } catch (error) { next(error); }
+});
+
+router.post('/access-grants', async (req, res, next) => {
+  try {
+    const result = await ac().addAccessGrant({ ...req.body, creatorUserId: req.user.id });
+    await logAction(req.user.id, 'GOV_ACCESS_GRANT', req.body.record_type, req.body.record_id, { grant_type: req.body.grant_type, user_id: req.body.user_id, role: req.body.role }, req);
+    res.json({ success: true, grant: result });
+  } catch (error) { next(error); }
+});
+
+router.delete('/access-grants/:id', async (req, res, next) => {
+  try {
+    const result = await ac().removeAccessGrant(parseInt(req.params.id, 10));
+    res.json(result);
+  } catch (error) { next(error); }
+});
+
+// Retention policies
+router.get('/retention-policies', async (req, res, next) => {
+  try {
+    const { group_type = 'VICOBA', group_id } = req.query;
+    const policies = await ac().listRetentionPolicies(group_type, parseInt(group_id, 10));
+    res.json({ success: true, policies });
+  } catch (error) { next(error); }
+});
+
+router.post('/retention-policies', async (req, res, next) => {
+  try {
+    const result = await ac().setRetentionPolicy(req.body);
+    res.json({ success: true, policy: result });
+  } catch (error) { next(error); }
+});
+
+// Permission check helper (for a member viewing a confidential record)
+router.post('/can-view', async (req, res, next) => {
+  try {
+    const { record_type, record_id, confidential } = req.body;
+    const { group_id } = req.body;
+    const result = await ac().canView({ groupId: parseInt(group_id, 10), userId: req.user.id, recordType: record_type, recordId: parseInt(record_id, 10), recordConfidential: !!confidential });
+    res.json({ success: true, ...result });
+  } catch (error) { next(error); }
+});
+
 module.exports = router;

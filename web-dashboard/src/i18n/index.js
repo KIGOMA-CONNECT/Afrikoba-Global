@@ -1660,6 +1660,8 @@ const messages = {
     'gov.created': 'Kikao kimeundwa.',
     'gov.error': 'Hitilafu imetokea.',
     'gov.finance': 'Fedha za Maazimio',
+    'gov.access': 'Ufikiaji & Uwekaji',
+    'gov.retention': 'Sera za Uhifadhi',
   },
   en: {
     'brand.name': 'AFRIKOBA GLOBAL',
@@ -3322,6 +3324,8 @@ const messages = {
     'gov.created': 'Meeting created.',
     'gov.error': 'An error occurred.',
     'gov.finance': 'Resolution Finances',
+    'gov.access': 'Access & Retention',
+    'gov.retention': 'Retention Policies',
   },
 };
 

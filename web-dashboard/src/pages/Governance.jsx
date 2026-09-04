@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useT } from '../i18n/LangProvider.jsx';
 import api from '../api/client.js';
 
-const TABS = ['meetings', 'chat', 'documents', 'voting', 'resolutions', 'action', 'finance'];
+const TABS = ['meetings', 'chat', 'documents', 'voting', 'resolutions', 'action', 'finance', 'access'];
 
 export default function Governance() {
   const { t } = useT();
@@ -22,6 +22,7 @@ export default function Governance() {
   const [notice, setNotice] = useState('');
   const [form, setForm] = useState({ title: '', scheduled_at: '', description: '' });
   const [auditTrail, setAuditTrail] = useState([]);
+  const [policies, setPolicies] = useState([]);
 
   const show = (text) => { setNotice(text); setTimeout(() => setNotice(''), 4000); };
 
@@ -74,6 +75,12 @@ export default function Governance() {
       .then((r) => setAuditTrail(r.data.auditTrail)).catch(() => setAuditTrail([]));
   };
 
+  const loadPolicies = () => {
+    if (!groupId) return;
+    api.get('/governance/retention-policies', { params: { group_id: groupId } })
+      .then((r) => setPolicies(r.data.policies)).catch(() => setPolicies([]));
+  };
+
   const switchTab = (tb) => {
     setTab(tb);
     if (tb === 'chat') loadChannels();
@@ -81,6 +88,7 @@ export default function Governance() {
     if (tb === 'resolutions') loadResolutions();
     if (tb === 'action') loadActionItems();
     if (tb === 'finance') loadAuditTrail();
+    if (tb === 'access') loadPolicies();
   };
 
   const createMeeting = async (e) => {
@@ -290,6 +298,22 @@ export default function Governance() {
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {tab === 'access' && (
+        <div className="bg-white border rounded p-4">
+          <b className="block mb-2 text-sm">{t('gov.retention')}</b>
+          {policies.map((p, i) => (
+            <div key={i} className="flex justify-between items-center border-b py-2 text-sm">
+              <span className="uppercase text-gray-600">{p.record_type}</span>
+              <span>{p.retention_days} days</span>
+            </div>
+          ))}
+          {policies.length === 0 && <div className="text-gray-400 text-sm">Set retention policies for documents, recordings, and transcripts.</div>}
+          <div className="mt-3 text-xs text-gray-500">
+            Confidential records are visible to officers and members with explicit GRANT. Use access grants to share confidential records with specific members.
+          </div>
         </div>
       )}
     </div>
