@@ -271,4 +271,22 @@ router.post('/logout', authRequired, async (req, res, next) => {
   }
 });
 
+// ===== Step-Up Authentication (sensitive operations) =====
+router.post('/stepup/request', authRequired, async (req, res, next) => {
+  try {
+    const stepUp = require('../services/stepUpAuthService');
+    const result = await stepUp.requestStepUpCode(req.user.id);
+    return res.json({ success: true, ...result });
+  } catch (error) { next(error); }
+});
+
+router.post('/stepup/verify', authRequired, async (req, res, next) => {
+  try {
+    const stepUp = require('../services/stepUpAuthService');
+    const { purpose, code } = req.body;
+    const result = await stepUp.issueStepUpToken(req.user.id, purpose, code);
+    return res.json({ success: true, ...result });
+  } catch (error) { next(error); }
+});
+
 module.exports = router;

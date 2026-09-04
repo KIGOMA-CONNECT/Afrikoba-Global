@@ -2,6 +2,7 @@ const express = require('express');
 const pool = require('../config/db');
 const p2pService = require('../services/p2pService');
 const { requireRoles, authRequired } = require('../middleware/auth');
+const { requireStepUp } = require('../services/stepUpAuthService');
 const { validate } = require('../middleware/validate');
 const schemas = require('../validations/schemas');
 const { logAction } = require('../services/auditService');
@@ -562,7 +563,7 @@ router.post('/treasury/proposals', async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
-router.post('/treasury/proposals/:id/sign', async (req, res, next) => {
+router.post('/treasury/proposals/:id/sign', requireStepUp('TREASURY_EXECUTE'), async (req, res, next) => {
   try {
     const treasury = require('../services/treasuryMultiSigService');
     const { approve } = req.body;

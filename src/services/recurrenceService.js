@@ -142,6 +142,9 @@ async function executions(ruleId, limit = 20) {
 
 async function runDueTasks() {
   try {
+    // Purge expired/consumed step-up tokens opportunistically
+    try { require('./stepUpAuthService').purgeExpired(); } catch (e) {}
+
     const due = (await pool.query(
       `SELECT * FROM recurrence_rules WHERE enabled AND next_run_at <= NOW() ORDER BY next_run_at LIMIT 50`
     )).rows;

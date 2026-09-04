@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useT } from '../i18n/LangProvider.jsx';
 import api from '../api/client.js';
+import useStepUp from '../hooks/useStepUp.js';
 
 export default function Payroll() {
   const { t } = useT();
@@ -16,6 +17,7 @@ export default function Payroll() {
   const [selectedRun, setSelectedRun] = useState(null);
   const [runPayslips, setRunPayslips] = useState([]);
   const [loading, setLoading] = useState(false);
+  const stepup = useStepUp();
 
   const show = (m, ok = true) => { setNotice({ m, ok }); setTimeout(() => setNotice(''), 4000); };
 
@@ -58,8 +60,13 @@ export default function Payroll() {
 
   const approveRun = async (id) => {
     try {
-      const res = await api.post(`/payroll/runs/${id}/approve`);
-      show(`Run ${res.data.status}`);
+      const result = await stepup.run((cfg) => api.post(`/payroll/runs/${id}/approve`, {}, cfg));
+      if (result?.__stepup) {
+        const r = await stepup.requestCode('PAYROLL_PAY');
+        show(r.message || 'Enter your step-up code');
+        return;
+      }
+      show(`Run ${result.data.status}`);
       loadAll();
       if (selectedRun === id) viewRun(id);
     } catch (e) { show(e.response?.data?.error || t('gov.error'), false); }
@@ -156,6 +163,48 @@ export default function Payroll() {
           {runPayslips.length === 0 && <div className="text-gray-400 text-sm">No payslips.</div>}
         </div>
       )}
+
+      {stepup.modal && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 w-96 shadow-xl">
+            <b className="text-sm">Step-Up Verification</b>
+            <p className="text-xs text-gray-500 mt-1">A second-factor code is required to approve this payroll run.</p>
+            <StepUpForm
+              onConfirm={async (code) => {
+                try { await stepup.confirmCode(code); show('Payroll approved'); loadAll(); }
+                catch (e) { show(e.response?.data?.message || 'Step-up failed', false); }
+              }}
+              onCancel={stepup.close}
+            />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StepUpForm({ onConfirm, onCancel }) {
+  const [code, setCode] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const submit = async () => {
+    setLoading(true); setError('');
+    try {
+      const result = await onConfirm(code);
+      if (result?.success === false) setError(result.message || 'Invalid code');
+    } catch (e) { setError('Verification failed'); }
+    finally { setLoading(false); }
+  };
+
+  return (
+    <div className="mt-3">
+      <input value={code} onChange={(e) => setCode(e.target.value)} placeholder="6-digit code" className="border rounded px-2 py-1 text-sm w-full" />
+      {error && <div className="text-red-600 text-xs mt-1">{error}</div>}
+      <div className="flex gap-2 mt-3">
+        <button onClick={submit} disabled={loading || code.length < 4} className="bg-blue-600 text-white px-4 py-2 rounded text-sm flex-1">{loading ? 'Verifying…' : 'Confirm'}</button>
+        <button onClick={onCancel} className="bg-gray-100 text-gray-700 px-4 py-2 rounded text-sm">Cancel</button>
+      </div>
     </div>
   );
 }

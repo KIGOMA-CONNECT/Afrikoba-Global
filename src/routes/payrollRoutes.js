@@ -1,6 +1,7 @@
 const express = require('express');
 const payrollService = require('../services/payrollService');
 const { authRequired, requireRoles } = require('../middleware/auth');
+const { requireStepUp } = require('../services/stepUpAuthService');
 
 const router = express.Router();
 router.use(authRequired);
@@ -58,7 +59,7 @@ router.get('/runs', requireRoles('ADMIN'), async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
-router.post('/runs/:id/approve', requireRoles('ADMIN'), async (req, res, next) => {
+router.post('/runs/:id/approve', requireRoles('ADMIN'), requireStepUp('PAYROLL_PAY'), async (req, res, next) => {
   try {
     const result = await payrollService.approveAndPayRun(parseInt(req.params.id, 10), req.user.id);
     res.json(result);
