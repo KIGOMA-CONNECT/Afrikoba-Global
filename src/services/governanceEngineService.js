@@ -236,19 +236,45 @@ async function getConstitution(groupType, groupId) {
 
 // ============ PROPOSALS & VOTING ============
 
-async function createProposal({ meetingId, groupType, groupId, title, description, userId }) {
+async function createProposal({ meetingId, groupType, groupId, title, description, userId, secretBallot }) {
   const res = await pool.query(
-    `INSERT INTO governance_proposals (meeting_id, group_type, group_id, title, description, proposed_by)
-     VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
-    [meetingId || null, groupType || 'VICOBA', groupId, title, description || null, userId]
+    `INSERT INTO governance_proposals (meeting_id, group_type, group_id, title, description, proposed_by, secret_ballot)
+     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+    [meetingId || null, groupType || 'VICOBA', groupId, title, description || null, userId, !!secretBallot]
   );
   return res.rows[0];
 }
 
+/**
+ * Zero-knowledge / secret-ballot voting.
+ * When a proposal is a secret ballot, the vote is stored as an anonymous token in
+ * the secret ballot box (never linked to the voter). The system counts the votes
+ * but does NOT store or expose who voted which way.
+ */
 async function castVote(proposalId, userId, choice) {
   if (!['YES', 'NO', 'ABSTAIN'].includes(choice)) {
     throw Object.assign(new Error('Chaguo si sahihi. Tumia YES, NO au ABSTAIN.'), { statusCode: 400 });
   }
+  const proposal = (await pool.query('SELECT * FROM governance_proposals WHERE id=$1', [proposalId])).rows[0];
+  if (!proposal) throw Object.assign(new Error('Pendekezo halipatikani'), { statusCode: 404 });
+
+  if (proposal.secret_ballot) {
+    // Anonymous vote: record presence of voter without the choice, and put choice
+    // into the shuffled secret ballot box (no user linkage).
+    await pool.query(
+      `INSERT INTO governance_votes (proposal_id, user_id, choice, voted_at)
+       VALUES ($1,$2,'SECRET',NOW())
+       ON CONFLICT (proposal_id, user_id) DO UPDATE SET voted_at=NOW()`,
+      [proposalId, userId]
+    );
+    const token = require('crypto').randomBytes(8).toString('hex');
+    await pool.query(
+      `INSERT INTO governance_secret_ballot_box (proposal_id, choice, vote_token) VALUES ($1,$2,$3)`,
+      [proposalId, choice, token]
+    );
+    return getProposalResult(proposalId);
+  }
+
   await pool.query(
     `INSERT INTO governance_votes (proposal_id, user_id, choice)
      VALUES ($1,$2,$3) ON CONFLICT (proposal_id, user_id) DO UPDATE SET choice=EXCLUDED.choice, voted_at=NOW()`,
@@ -258,13 +284,29 @@ async function castVote(proposalId, userId, choice) {
 }
 
 async function getProposalResult(proposalId) {
+  const proposal = (await pool.query('SELECT secret_ballot FROM governance_proposals WHERE id=$1', [proposalId])).rows[0];
+  const tally = { YES: 0, NO: 0, ABSTAIN: 0 };
+  const totalVoters = (await pool.query(
+    `SELECT COUNT(*)::int AS c FROM governance_votes WHERE proposal_id=$1`,
+    [proposalId]
+  )).rows[0].c;
+
+  if (proposal && proposal.secret_ballot) {
+    // Count only from the anonymous ballot box; never reveal who voted how.
+    const votes = await pool.query(
+      `SELECT choice, COUNT(*)::int FROM governance_secret_ballot_box WHERE proposal_id=$1 GROUP BY choice`,
+      [proposalId]
+    );
+    votes.rows.forEach((r) => (tally[r.choice] = r.count));
+    return { proposalId, tally, secretBallot: true, totalVoters, anonymous: true };
+  }
+
   const votes = await pool.query(
-    `SELECT choice, COUNT(*)::int FROM governance_votes WHERE proposal_id=$1 GROUP BY choice`,
+    `SELECT choice, COUNT(*)::int FROM governance_votes WHERE proposal_id=$1 AND choice <> 'SECRET' GROUP BY choice`,
     [proposalId]
   );
-  const tally = { YES: 0, NO: 0, ABSTAIN: 0 };
   votes.rows.forEach((r) => (tally[r.choice] = r.count));
-  return { proposalId, tally };
+  return { proposalId, tally, secretBallot: false, totalVoters, anonymous: false };
 }
 
 // ============ RESOLUTIONS ============
@@ -360,48 +402,114 @@ async function listActionItems(groupType, groupId, { status } = {}) {
  * Simulated AI Secretary: transcribe meeting, extract agenda/decisions/action items,
  * generate draft minutes. Prepares the record — human governance confirms it.
  */
+// Regex-based transcript parser: detects agenda topics, decisions, disagreements,
+// speakers, responsible members, amounts, and deadlines from a raw text transcript.
+function parseTranscript(text) {
+  const lower = text.toLowerCase();
+  const lines = text.split(/\n+/).map((l) => l.trim()).filter(Boolean);
+
+  const topics = [
+    { word: 'contribution', label: 'Contribution' },
+    { word: 'loan', label: 'Loan' },
+    { word: 'social fund', label: 'Social Fund' },
+    { word: 'investment', label: 'Investment' },
+    { word: 'budget', label: 'Budget' },
+    { word: 'projects', label: 'Project' },
+    { word: 'membership', label: 'Membership' },
+    { word: 'emergency', label: 'Emergency fund' },
+  ];
+
+  const agenda = topics.filter((t) => lower.includes(t.word)).map((t) => t.label);
+
+  // Decisions: lines containing agree/decide/approve/adopt/pass/tuma/pitisha/agreed
+  const decisions = lines
+    .filter((l) => /\b(agree|decide|approve|adopt|pass|agreed|kukubali|tuliamua|kupitisha|idhinishwa)\b/i.test(l))
+    .slice(0, 12)
+    .map((l) => {
+      const amountMatch = l.match(/(TZS|TSH|SH|K)\s*([\d,]+(?:\.\d+)?)/i) || l.match(/([\d,]{4,})(?:\s*\/\s*)?(TZS|TSH)/i);
+      return {
+        detail: l.slice(0, 200),
+        amount: amountMatch ? amountMatch[1].replace(/,/g, '') : null,
+      };
+    });
+
+  // Disagreements: statements of dissent
+  const disagreements = lines
+    .filter((l) => /\b(but|however|disagree|object|against|oppose|lakini|sikubaliani|kupinga)\b/i.test(l))
+    .slice(0, 6)
+    .map((l) => ({ detail: l.slice(0, 200) }));
+
+  // Responsible members / roles + deadlines
+  const actionItems = lines
+    .filter((l) => /\b(treasurer|secretary|chair|chairman|treasurer|secretary|mwekahazina|katibu|mwenyekiti|to |wewe|you)\b/i.test(l))
+    .map((l) => {
+      const roleMatch = l.match(/\b(treasurer|secretary|chairman|mwenyekiti|mwekahazina|katibu)\b/i);
+      const deadlineMatch = l.match(/\b(before|by|kabla ya|tarehe)\s*([\d]{1,2}[\/\-][\d]{1,2}(?:[\/\-][\d]{2,4})?)/i);
+      let deadline = null;
+      if (deadlineMatch) {
+        const parts = deadlineMatch[2].split(/[\/\-]/);
+        if (parts.length >= 2) deadline = new Date(`${parts[1]}/${parts[0]}/${parts[2] || new Date().getFullYear()}`).toISOString();
+      }
+      return {
+        role_or_member: roleMatch ? roleMatch[1].replace(/^./, (c) => c.toUpperCase()) : 'Member',
+        task: l.slice(0, 180),
+        deadline: deadline || new Date(Date.now() + 7 * 86400000).toISOString(),
+      };
+    })
+    .slice(0, 12);
+
+  return { agenda, decisions, disagreements, actionItems };
+}
+
 async function generateDraftMinutes(meetingId, rawTranscript) {
   const meeting = (await pool.query('SELECT * FROM governance_meetings WHERE id=$1', [meetingId])).rows[0];
   if (!meeting) throw Object.assign(new Error('Kikao hakipatikani'), { statusCode: 404 });
 
-  const text = rawTranscript || 'Discussion on contributions, loan approval, and social fund. Members agreed to raise the social fund contribution and approve a loan.';
+  const text = rawTranscript || 'Discussion on contributions, loan approval, and social fund. Members agreed to raise the social fund contribution to TZS 15,000. Treasurer, update the configuration by 7/9/2026. Secretary, upload the supporting document by 6/9/2026.';
 
+  const parsed = parseTranscript(text);
   const summary = `Meeting of ${meeting.title} on ${new Date(meeting.scheduled_at).toLocaleDateString()}`;
-  const decisions = [
-    { item: 'Social Fund contribution increase', detail: 'Raise social fund contribution from TZS 10,000 to TZS 15,000' },
-    { item: 'Loan approval', detail: 'Approve loan to a member' },
-  ];
-  const actionItems = [
-    { role_or_member: 'Treasurer', task: 'Update contribution configuration', deadline: new Date(Date.now() + 3 * 86400000) },
-    { role_or_member: 'Secretary', task: 'Upload supporting document', deadline: new Date(Date.now() + 2 * 86400000) },
-  ];
 
   const draft = {
     meetingId,
     title: meeting.title,
     date: meeting.scheduled_at,
     summary,
-    agenda: decisions.map((d) => d.item),
-    decisions,
-    actionItems,
+    agenda: parsed.agenda,
+    decisions: parsed.decisions,
+    disagreements: parsed.disagreements,
+    actionItems: parsed.actionItems,
     aiGenerated: true,
     generatedAt: new Date().toISOString(),
   };
+  const structured = { agenda: parsed.agenda, decisions: parsed.decisions, disagreements: parsed.disagreements, actionItems: parsed.actionItems };
 
+  await pool.query('BEGIN');
   const res = await pool.query(
-    `INSERT INTO governance_minutes (meeting_id, draft, status) VALUES ($1,$2,'DRAFT') RETURNING *`,
-    [meetingId, JSON.stringify(draft)]
+    `INSERT INTO governance_minutes (meeting_id, draft, ai_structured, status) VALUES ($1,$2,$3,'DRAFT') RETURNING *`,
+    [meetingId, JSON.stringify(draft), JSON.stringify(structured)]
   );
   const minutes = res.rows[0];
 
-  // Persist transcript
+  // Persist structured action items as actionable records
+  for (const ai of parsed.actionItems) {
+    try {
+      await pool.query(
+        `INSERT INTO governance_action_items (meeting_id, group_type, group_id, role_or_member, task, deadline, status)
+         VALUES ($1,$2,$3,$4,$5,$6,'OPEN')`,
+        [meetingId, meeting.group_type, meeting.group_id, ai.role_or_member, ai.task, ai.deadline ? new Date(ai.deadline) : null]
+      );
+    } catch (e) { /* skip malformed */ }
+  }
+
   await pool.query(
     `INSERT INTO governance_transcripts (meeting_id, transcript, summary, ai_status)
      VALUES ($1,$2,$3,'PROCESSED') RETURNING *`,
     [meetingId, text, summary]
   );
+  await pool.query('COMMIT');
 
-  return { success: true, minutes: { ...minutes, draft } };
+  return { success: true, minutes: { ...minutes, draft, structured } };
 }
 
 async function confirmMinutes(minutesId, officialJson, reviewerUserId) {
@@ -424,12 +532,92 @@ async function listMinutesByGroup(groupType, groupId) {
   return res.rows;
 }
 
+// ============ GOVERNANCE ANALYTICS ============
+
+async function computeGovernanceAnalytics(groupType, groupId) {
+  const meetings = (await pool.query(
+    `SELECT id, scheduled_at, status FROM governance_meetings WHERE group_type=$1 AND group_id=$2`,
+    [groupType || 'VICOBA', groupId]
+  )).rows;
+  const totalMeetings = meetings.length;
+  const completedMeetings = meetings.filter((m) => m.status === 'COMPLETED').length;
+
+  let attendancePctSum = 0;
+  for (const m of meetings) {
+    const att = (await pool.query(
+      `SELECT COUNT(*) FILTER (WHERE status='ATTENDED')::int AS att, COUNT(*)::int AS tot FROM governance_attendees WHERE meeting_id=$1`,
+      [m.id]
+    )).rows[0];
+    if (att.tot > 0) attendancePctSum += (att.att / att.tot) * 100;
+  }
+  const avgAttendance = totalMeetings > 0 ? attendancePctSum / totalMeetings : 0;
+
+  const reso = (await pool.query(
+    `SELECT COUNT(*)::int AS total,
+            COUNT(*) FILTER (WHERE status='PASSED')::int AS passed,
+            AVG(CASE WHEN status='PASSED' THEN EXTRACT(EPOCH FROM (passed_at - created_at))/3600 END)::float AS avg_hours
+     FROM governance_resolutions WHERE group_type=$1 AND group_id=$2`,
+    [groupType || 'VICOBA', groupId]
+  )).rows[0];
+
+  const action = (await pool.query(
+    `SELECT COUNT(*)::int AS total,
+            COUNT(*) FILTER (WHERE status='COMPLETED')::int AS done,
+            COUNT(*) FILTER (WHERE status='OPEN')::int AS open,
+            COUNT(*) FILTER (WHERE status='OVERDUE' OR (status='OPEN' AND deadline < CURRENT_DATE))::int AS overdue
+     FROM governance_action_items WHERE group_type=$1 AND group_id=$2`,
+    [groupType || 'VICOBA', groupId]
+  )).rows[0];
+
+  const analytics = {
+    groupType, groupId,
+    meetings: { total: totalMeetings, completed: completedMeetings, avgAttendancePercent: Number(avgAttendance.toFixed(2)) },
+    resolutions: { total: reso.total || 0, passed: reso.passed || 0, avgDecisionHours: reso.avg_hours ? Number(reso.avg_hours.toFixed(2)) : 0, passRate: reso.total ? Number((((reso.passed || 0) / reso.total) * 100).toFixed(2)) : 0 },
+    actionItems: {
+      total: action.total || 0, completed: action.done || 0, open: action.open || 0, overdue: action.overdue || 0,
+      completionRate: action.total ? Number((((action.done || 0) / action.total) * 100).toFixed(2)) : 0,
+    },
+    computedAt: new Date().toISOString(),
+  };
+
+  // Persist snapshot
+  await pool.query(
+    `INSERT INTO governance_analytics
+       (group_type, group_id, snapshot_date, total_meetings, completed_meetings, avg_attendance_percent,
+        total_resolutions, passed_resolutions, avg_decision_time_hours,
+        total_action_items, completed_action_items, open_action_items, overdue_action_items)
+     VALUES ($1,$2,CURRENT_DATE,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+     ON CONFLICT (group_type, group_id, snapshot_date) DO UPDATE
+       SET total_meetings=EXCLUDED.total_meetings, completed_meetings=EXCLUDED.completed_meetings,
+           avg_attendance_percent=EXCLUDED.avg_attendance_percent, total_resolutions=EXCLUDED.total_resolutions,
+           passed_resolutions=EXCLUDED.passed_resolutions, avg_decision_time_hours=EXCLUDED.avg_decision_time_hours,
+           total_action_items=EXCLUDED.total_action_items, completed_action_items=EXCLUDED.completed_action_items,
+           open_action_items=EXCLUDED.open_action_items, overdue_action_items=EXCLUDED.overdue_action_items`,
+    [groupType || 'VICOBA', groupId, totalMeetings, completedMeetings, Number(avgAttendance.toFixed(2)),
+     reso.total || 0, reso.passed || 0, reso.avg_hours ? Number(reso.avg_hours.toFixed(2)) : 0,
+     action.total || 0, action.done || 0, action.open || 0, action.overdue || 0]
+  );
+
+  return analytics;
+}
+
+async function getAnalyticsTrend(groupType, groupId, days = 30) {
+  const res = await pool.query(
+    `SELECT * FROM governance_analytics
+     WHERE group_type=$1 AND group_id=$2 AND snapshot_date >= CURRENT_DATE - $3::int
+     ORDER BY snapshot_date ASC`,
+    [groupType || 'VICOBA', groupId, days]
+  );
+  return res.rows;
+}
+
 module.exports = {
   createMeeting, updateMeetingStatus, listMeetings, getMeetingDetails,
   respondAttendance, markAttended,
   addAgendaItem,
   getOrCreateChannel, ensureDefaultChannels, postChatMessage, getChannelMessages, searchKnowledge,
   addDocument, listDocuments,
+  computeGovernanceAnalytics, getAnalyticsTrend, parseTranscript,
   setConstitution, getConstitution,
   createProposal, castVote, getProposalResult, passResolution, amendResolution, listResolutions,
   createActionItem, updateActionItem, listActionItems,

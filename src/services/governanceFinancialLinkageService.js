@@ -78,7 +78,7 @@ async function listExecutions({ resolutionId, groupId, status } = {}) {
 }
 
 /**
- * Fetch the full governance → financial audit trail for a group,
+ * Get the full governance → financial audit trail for a group,
  * linking resolutions to their executions and ledger references.
  */
 async function getGovernanceAuditTrail(groupId) {
@@ -95,4 +95,64 @@ async function getGovernanceAuditTrail(groupId) {
   return res.rows;
 }
 
-module.exports = { createExecution, markExecuted, markFailed, listExecutions, getGovernanceAuditTrail };
+// ============ AUTO-TRIGGER VICOBA LOAN FROM RESOLUTION ============
+
+/**
+ * Given a passed resolution with financial_action_type='LOAN_APPROVAL',
+ * auto-create the VICOBA loan workflow, disburse, and record the ledger reference.
+ * Chain: Resolution (passed) -> createExecution (PENDING) -> loan request ->
+ *        approval (treasurer) -> disbursement -> ledger -> markExecuted.
+ */
+async function triggerVicobaLoan({ actorUserId, resolutionId, groupId, applicantUserId, amount, interestRate, repaymentMonths }) {
+  const vicoba = require('./vicobaService');
+  let executionId = null;
+  try {
+    const resolution = (await pool.query(
+      'SELECT * FROM governance_resolutions WHERE id=$1',
+      [resolutionId]
+    )).rows[0];
+    if (!resolution) throw Object.assign(new Error('Maazimio halipatikani'), { statusCode: 404 });
+
+    // 1. Register the financial execution intent (PENDING)
+    const execRes = await pool.query(
+      `INSERT INTO governance_financial_executions
+         (resolution_id, group_id, financial_action_type, target_entity_type, amount, status, executed_by)
+       VALUES ($1,$2,'LOAN_APPROVAL','VICOBA_LOAN',$3,'PENDING',$4) RETURNING *`,
+      [resolutionId, groupId, amount, actorUserId]
+    );
+    executionId = execRes.rows[0].id;
+
+    // 2. Create the VICOBA loan request (chairman approval step, own tx)
+    const loanRequest = await vicoba.requestLoan(actorUserId, {
+      groupId,
+      applicantUserId,
+      requestedAmount: amount,
+      interestRate: interestRate || 10,
+      repaymentMonths: repaymentMonths || 3,
+    });
+    const loanId = loanRequest.id;
+
+    // 3. Approve the loan (treasurer step, own tx) -> disbursement + ledger transaction
+    await vicoba.approveLoan(actorUserId, loanId, amount);
+    const ledgerRef = `VL-${loanId}`;
+
+    // 4. Mark execution EXECUTED with ledger reference
+    await pool.query(
+      `UPDATE governance_financial_executions
+          SET status='EXECUTED', ledger_reference=$2, target_entity_id=$3, executed_at=NOW()
+        WHERE id=$1`,
+      [executionId, ledgerRef, loanId]
+    );
+    await pool.query(`UPDATE governance_resolutions SET linked_to_workflow=TRUE WHERE id=$1`, [resolutionId]);
+
+    return { success: true, resolutionId, executionId, loanId, ledgerReference: ledgerRef };
+  } catch (err) {
+    // Best-effort mark failed
+    if (executionId) {
+      await pool.query(`UPDATE governance_financial_executions SET status='FAILED' WHERE id=$1`, [executionId]).catch(() => {});
+    }
+    throw err;
+  }
+}
+
+module.exports = { createExecution, markExecuted, markFailed, listExecutions, getGovernanceAuditTrail, triggerVicobaLoan };

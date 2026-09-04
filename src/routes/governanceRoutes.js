@@ -101,7 +101,7 @@ router.get('/search', async (req, res, next) => {
 router.get('/documents', async (req, res, next) => {
   try {
     const { group_type = 'VICOBA', group_id, doc_category } = req.query;
-    const documents = await gov().listDocuments(group_type, parseInt(group_id, 10), doc_category);
+    const documents = await ac().listDocumentsForUser(group_type, parseInt(group_id, 10), req.user.id, doc_category);
     res.json({ success: true, documents });
   } catch (error) { next(error); }
 });
@@ -130,13 +130,6 @@ router.post('/constitution', async (req, res, next) => {
 });
 
 // ============ PROPOSALS & VOTING ============
-router.post('/proposals', async (req, res, next) => {
-  try {
-    const result = await gov().createProposal({ ...req.body, userId: req.user.id });
-    res.json({ success: true, proposal: result });
-  } catch (error) { next(error); }
-});
-
 router.get('/proposals/:id/result', async (req, res, next) => {
   try {
     const result = await gov().getProposalResult(parseInt(req.params.id, 10));
@@ -328,6 +321,49 @@ router.post('/can-view', async (req, res, next) => {
     const { group_id } = req.body;
     const result = await ac().canView({ groupId: parseInt(group_id, 10), userId: req.user.id, recordType: record_type, recordId: parseInt(record_id, 10), recordConfidential: !!confidential });
     res.json({ success: true, ...result });
+  } catch (error) { next(error); }
+});
+
+// ============ SECRET BALLOT / ZERO-KNOWLEDGE VOTING ============
+router.post('/proposals', async (req, res, next) => {
+  try {
+    const result = await gov().createProposal({ ...req.body, userId: req.user.id });
+    res.json({ success: true, proposal: result, secretBallot: result.secret_ballot });
+  } catch (error) { next(error); }
+});
+
+// ============ AUTO-TRIGGER VICOBA LOAN FROM RESOLUTION ============
+router.post('/resolutions/:id/trigger-loan', async (req, res, next) => {
+  try {
+    const result = await gfl().triggerVicobaLoan({
+      actorUserId: req.user.id,
+      resolutionId: parseInt(req.params.id, 10),
+      groupId: req.body.group_id,
+      applicantUserId: req.body.applicant_user_id,
+      amount: req.body.amount,
+      interestRate: req.body.interest_rate,
+      repaymentMonths: req.body.repayment_months,
+    });
+    await logAction(req.user.id, 'GOV_RESOLUTION_TRIGGERED_LOAN', 'GOVERNANCE_RESOLUTION', parseInt(req.params.id, 10), { ...req.body, ledger: result.ledgerReference }, req);
+    res.json(result);
+  } catch (error) { next(error); }
+});
+
+// ============ GOVERNANCE ANALYTICS ============
+router.post('/analytics/compute', async (req, res, next) => {
+  try {
+    const { group_type = 'VICOBA', group_id } = req.body;
+    const analytics = await gov().computeGovernanceAnalytics(group_type, parseInt(group_id, 10));
+    res.json({ success: true, analytics });
+  } catch (error) { next(error); }
+});
+
+router.get('/analytics', async (req, res, next) => {
+  try {
+    const { group_type = 'VICOBA', group_id, days } = req.query;
+    const analytics = await gov().computeGovernanceAnalytics(group_type, parseInt(group_id, 10));
+    const trend = await gov().getAnalyticsTrend(group_type, parseInt(group_id, 10), days ? parseInt(days, 10) : 30);
+    res.json({ success: true, analytics, trend });
   } catch (error) { next(error); }
 });
 

@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useT } from '../i18n/LangProvider.jsx';
 import api from '../api/client.js';
 
-const TABS = ['meetings', 'chat', 'documents', 'voting', 'resolutions', 'action', 'finance', 'access'];
+const TABS = ['meetings', 'chat', 'documents', 'voting', 'resolutions', 'action', 'finance', 'access', 'analytics'];
 
 export default function Governance() {
   const { t } = useT();
@@ -23,6 +23,7 @@ export default function Governance() {
   const [form, setForm] = useState({ title: '', scheduled_at: '', description: '' });
   const [auditTrail, setAuditTrail] = useState([]);
   const [policies, setPolicies] = useState([]);
+  const [analytics, setAnalytics] = useState(null);
 
   const show = (text) => { setNotice(text); setTimeout(() => setNotice(''), 4000); };
 
@@ -81,6 +82,12 @@ export default function Governance() {
       .then((r) => setPolicies(r.data.policies)).catch(() => setPolicies([]));
   };
 
+  const loadAnalytics = () => {
+    if (!groupId) return;
+    api.get('/governance/analytics', { params: { group_id: groupId } })
+      .then((r) => setAnalytics(r.data.analytics)).catch(() => setAnalytics(null));
+  };
+
   const switchTab = (tb) => {
     setTab(tb);
     if (tb === 'chat') loadChannels();
@@ -89,6 +96,7 @@ export default function Governance() {
     if (tb === 'action') loadActionItems();
     if (tb === 'finance') loadAuditTrail();
     if (tb === 'access') loadPolicies();
+    if (tb === 'analytics') loadAnalytics();
   };
 
   const createMeeting = async (e) => {
@@ -314,6 +322,36 @@ export default function Governance() {
           <div className="mt-3 text-xs text-gray-500">
             Confidential records are visible to officers and members with explicit GRANT. Use access grants to share confidential records with specific members.
           </div>
+        </div>
+      )}
+
+      {tab === 'analytics' && (
+        <div>
+          <button onClick={loadAnalytics} className="bg-blue-600 text-white px-3 py-2 rounded text-sm mb-3">Refresh</button>
+          {analytics ? (
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div className="bg-white border rounded p-3 text-center">
+                <div className="text-2xl font-semibold">{analytics.meetings.completed}/{analytics.meetings.total}</div>
+                <div className="text-xs text-gray-500">{t('gov.meetings')}</div>
+                <div className="text-xs text-gray-400 mt-1">Attendance {analytics.meetings.avgAttendancePercent}%</div>
+              </div>
+              <div className="bg-white border rounded p-3 text-center">
+                <div className="text-2xl font-semibold">{analytics.resolutions.passed}</div>
+                <div className="text-xs text-gray-500">{t('gov.resolutions')}</div>
+                <div className="text-xs text-gray-400 mt-1">Pass rate {analytics.resolutions.passRate}% · avg {analytics.resolutions.avgDecisionHours}h</div>
+              </div>
+              <div className="bg-white border rounded p-3 text-center">
+                <div className="text-2xl font-semibold">{analytics.actionItems.completed}/{analytics.actionItems.total}</div>
+                <div className="text-xs text-gray-500">{t('gov.action')}</div>
+                <div className="text-xs text-gray-400 mt-1">Completion {analytics.actionItems.completionRate}%</div>
+              </div>
+              <div className="bg-white border rounded p-3 text-center">
+                <div className="text-2xl font-semibold text-orange-600">{analytics.actionItems.overdue}</div>
+                <div className="text-xs text-gray-500">Overdue</div>
+                <div className="text-xs text-gray-400 mt-1">Open {analytics.actionItems.open}</div>
+              </div>
+            </div>
+          ) : <div className="text-gray-400 text-sm">No analytics yet.</div>}
         </div>
       )}
     </div>

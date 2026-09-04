@@ -123,4 +123,23 @@ async function listRetentionPolicies(groupType, groupId) {
   return res.rows;
 }
 
-module.exports = { canView, getMemberRole, updateDocumentAccess, updateTranscriptAccess, addAccessGrant, removeAccessGrant, listAccessGrants, setRetentionPolicy, listRetentionPolicies };
+/**
+ * List documents visible to a given viewer, excluding confidential records the
+ * viewer cannot access. Enforces canView on every confidential document.
+ */
+async function listDocumentsForUser(groupType, groupId, requestingUserId, docCategory) {
+  const all = await pool.query(
+    `SELECT * FROM governance_documents WHERE group_type=$1 AND group_id=$2 ORDER BY created_at DESC`,
+    [groupType || 'VICOBA', groupId]
+  );
+  const visible = [];
+  for (const doc of all.rows) {
+    if (!doc.confidential) { visible.push({ ...doc, allowed: true }); continue; }
+    const v = await canView({ groupId, userId: requestingUserId, recordType: 'DOCUMENT', recordId: doc.id, recordConfidential: true });
+    if (v.allowed) visible.push({ ...doc, allowed: true });
+  }
+  if (docCategory) return visible.filter((d) => d.doc_category === docCategory);
+  return visible;
+}
+
+module.exports = { canView, getMemberRole, updateDocumentAccess, updateTranscriptAccess, addAccessGrant, removeAccessGrant, listAccessGrants, setRetentionPolicy, listRetentionPolicies, listDocumentsForUser };

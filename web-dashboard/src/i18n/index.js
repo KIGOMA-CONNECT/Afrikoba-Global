@@ -1662,6 +1662,7 @@ const messages = {
     'gov.finance': 'Fedha za Maazimio',
     'gov.access': 'Ufikiaji & Uwekaji',
     'gov.retention': 'Sera za Uhifadhi',
+    'gov.analytics': 'Takwimu',
   },
   en: {
     'brand.name': 'AFRIKOBA GLOBAL',
@@ -3326,6 +3327,7 @@ const messages = {
     'gov.finance': 'Resolution Finances',
     'gov.access': 'Access & Retention',
     'gov.retention': 'Retention Policies',
+    'gov.analytics': 'Analytics',
   },
 };
 
