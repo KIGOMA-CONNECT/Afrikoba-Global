@@ -1671,6 +1671,7 @@ const messages = {
     'ai.evaluated': 'Tathmini ya hatari imekamilika.',
     'ai.boq': 'Uchambuzi wa BOQ/Bajeti',
     'ai.analyze_boq': 'Changanua BOQ/Bajeti',
+    'nav.payroll': 'Mishahara',
   },
   en: {
     'brand.name': 'AFRIKOBA GLOBAL',
@@ -3344,6 +3345,7 @@ const messages = {
     'ai.evaluated': 'Risk assessment completed.',
     'ai.boq': 'Budget/BOQ Analysis',
     'ai.analyze_boq': 'Analyze Budget/BOQ',
+    'nav.payroll': 'Payroll',
   },
 };
 
