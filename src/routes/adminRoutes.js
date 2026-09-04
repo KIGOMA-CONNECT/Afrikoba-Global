@@ -544,4 +544,32 @@ router.post('/ai/documents/parse', async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
+// ===== TREASURY MULTI-SIG =====
+router.get('/treasury/proposals/:walletId', async (req, res, next) => {
+  try {
+    const treasury = require('../services/treasuryMultiSigService');
+    const proposals = await treasury.listProposals(parseInt(req.params.walletId, 10));
+    res.json({ success: true, proposals });
+  } catch (error) { next(error); }
+});
+
+router.post('/treasury/proposals', async (req, res, next) => {
+  try {
+    const treasury = require('../services/treasuryMultiSigService');
+    const result = await treasury.createProposal(req.user.id, req.body);
+    await logAction(req.user.id, 'TREASURY_PROPOSAL_CREATED', 'TREASURY_PROPOSAL', result.proposal.id, { wallet_id: req.body.walletId }, req);
+    res.json(result);
+  } catch (error) { next(error); }
+});
+
+router.post('/treasury/proposals/:id/sign', async (req, res, next) => {
+  try {
+    const treasury = require('../services/treasuryMultiSigService');
+    const { approve } = req.body;
+    const result = await treasury.signProposal(req.user.id, parseInt(req.params.id, 10), approve !== false);
+    await logAction(req.user.id, 'TREASURY_PROPOSAL_SIGNED', 'TREASURY_PROPOSAL', parseInt(req.params.id, 10), { approve: approve !== false, executed: result.executed }, req);
+    res.json(result);
+  } catch (error) { next(error); }
+});
+
 module.exports = router;
