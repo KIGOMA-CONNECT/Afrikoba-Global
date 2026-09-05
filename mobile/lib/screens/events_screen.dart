@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import '../core/app_state.dart';
 import '../core/api_client.dart';
 import '../core/format.dart';
@@ -295,6 +296,7 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
   String _planCadence = 'WEEKLY';
   String _withdrawMode = 'FUNDRAISING';
   String? _inviteCode;
+  String _shareUrl = '';
 
   @override
   void initState() {
@@ -516,6 +518,31 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
     }
   }
 
+  Future<void> _genShare() async {
+    try {
+      final res = await AppState.instance.api.get('/events/${widget.eventId}/share');
+      if (!mounted) return;
+      final url = '${res['share']['url']}';
+      setState(() => _shareUrl = url);
+      await Clipboard.setData(ClipboardData(text: url));
+      _toast('Kiungo kimenakiliwa');
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      _toast(e.message, ok: false);
+    }
+  }
+
+  Future<void> _saveTemplate() async {
+    try {
+      await AppState.instance.api.post('/events/${widget.eventId}/template', {});
+      if (!mounted) return;
+      _toast('Tukio limehifadhiwa kama template');
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      _toast(e.message, ok: false);
+    }
+  }
+
   bool get _isOwner {
     if (_dash == null || widget.myUserId == null) return false;
     final ev = _dash!['event'] as Map<String, dynamic>;
@@ -543,6 +570,8 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
                   const SizedBox(height: 12),
                   if (_isOwner) ...[
                     _withdrawInviteCard(),
+                    const SizedBox(height: 12),
+                    _shareCard(),
                     const SizedBox(height: 12),
                   ],
                   _budgetCard(),
@@ -903,6 +932,49 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
                   title: Text('${w['mode']} · ${formatMoney(w['amount'])} → ${w['recipient']}'),
                   subtitle: Text('${w['status']}${w['requiresApproval'] == true ? ' (4-eyes)' : ''}'),
                 ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _shareCard() {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Shiriki kiungo & Template', style: TextStyle(fontWeight: FontWeight.w700)),
+            const SizedBox(height: 6),
+            Text('Tengeneza kiungo cha umma ili watu wengi wachangie na kujiunga.',
+                style: const TextStyle(color: Colors.grey, fontSize: 13)),
+            const SizedBox(height: 8),
+            if (_shareUrl.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Text(_shareUrl,
+                    style: const TextStyle(fontSize: 12, color: Color(0xFF0B7A41), fontWeight: FontWeight.w600)),
+              ),
+            Row(
+              children: [
+                Expanded(
+                  child: FilledButton.icon(
+                    onPressed: _genShare,
+                    icon: const Icon(Icons.link, size: 18),
+                    label: const Text('Kiungo cha Umma'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: _saveTemplate,
+                    icon: const Icon(Icons.bookmark_add_outlined, size: 18),
+                    label: const Text('Hifadhi Template'),
+                  ),
+                ),
+              ],
+            ),
           ],
         ),
       ),

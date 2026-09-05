@@ -1,5 +1,6 @@
 const pool = require('../config/db');
 const crypto = require('crypto');
+const config = require('../config');
 const { generateReference, formatMoney, maskPhone } = require('../utils/helpers');
 const { logAudit } = require('./auditService');
 const logger = require('../utils/logger');
@@ -38,6 +39,14 @@ async function findEventById(eventId) {
 async function calculateDeadline(input) {
   if (input == null || input === '') return null;
   return String(input).slice(0, 10);
+}
+
+function localDateOnly(value) {
+  const dt = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(dt.getTime())) return String(value);
+  const mm = String(dt.getMonth() + 1).padStart(2, '0');
+  const dd = String(dt.getDate()).padStart(2, '0');
+  return `${dt.getFullYear()}-${mm}-${dd}`;
 }
 
 async function createEvent(userId, data) {
@@ -1072,6 +1081,495 @@ async function runEventReminders() {
   return { sent, failed };
 }
 
+// ===================== STAGE 4: PUBLIC SHARE + TEMPLATES + SERIES + REPORTS =====================
+
+function generateToken() {
+  return crypto.randomBytes(12).toString('hex');
+}
+
+async function ensurePublicShare(userId, eventId) {
+  const event = await findEventById(eventId);
+  assertOwner(userId, event);
+  let token = event.public_token;
+  if (!token) {
+    token = generateToken();
+    await pool.query(`UPDATE social_events SET public_token = $1, updated_at = NOW() WHERE id = $2`, [token, eventId]);
+  }
+  return buildSharePayload(event, token);
+}
+
+function buildSharePayload(event, token) {
+  const url = `${config.publicUrl}/p/${token}`;
+  const text = `${event.name} — changia na ushiriki kupitia Afrikoba: ${url}`;
+  return {
+    token,
+    url,
+    whatsapp: `https://wa.me/?text=${encodeURIComponent(text)}`,
+  };
+}
+
+async function getPublicEvent(token) {
+  const { rows } = await pool.query(`SELECT e.*, u.full_name AS owner_name FROM social_events e JOIN users u ON u.id = e.owner_user_id WHERE e.public_token = $1`, [token]);
+  if (rows.length === 0) throw badge('Tukio halipatikani kwa kiungo hiki.', 404);
+  const event = rows[0];
+  const [collect, members, donations] = await Promise.all([
+    pool.query(`SELECT COALESCE(SUM(amount),0)::float AS total FROM event_contributions WHERE event_id=$1 AND status='SUCCESS'`, [event.id]),
+    pool.query(`SELECT COUNT(*)::int AS total FROM event_members WHERE event_id=$1 AND status='ACTIVE'`, [event.id]),
+    pool.query(`SELECT COUNT(*)::int AS total, COUNT(DISTINCT user_id)::int AS contributors FROM event_contributions WHERE event_id=$1 AND status='SUCCESS'`, [event.id]),
+  ]);
+  return {
+    id: event.id,
+    name: event.name,
+    eventType: event.event_type,
+    description: event.description,
+    ownerName: event.owner_name,
+    eventDate: event.event_date,
+    contributionDeadline: event.contribution_deadline,
+    targetAmount: Number(event.target_amount),
+    collectedAmount: Number(collect.rows[0].total),
+    progress: event.target_amount > 0 ? Math.min(Math.round((Number(collect.rows[0].total) / Number(event.target_amount)) * 100), 100) : 0,
+    donations: donations.rows[0].total,
+    contributors: donations.rows[0].contributors,
+    members: members.rows[0].total,
+    status: event.status,
+  };
+}
+
+async function joinEventByPublicLink(userId, token) {
+  const { rows } = await pool.query(`SELECT id, status FROM social_events WHERE public_token = $1`, [token]);
+  if (rows.length === 0) throw badge('Kiungo cha tukio si sahihi.', 404);
+  const event = rows[0];
+  if (event.status !== 'ACTIVE') throw badge('Tukio halikubali wanachama kwa sasa.', 400);
+  await pool.query(
+    `INSERT INTO event_members (event_id, user_id, role, status) VALUES ($1,$2,'MEMBER','ACTIVE')
+     ON CONFLICT (event_id, user_id) DO UPDATE SET status = 'ACTIVE', updated_at = NOW()`,
+    [event.id, userId]
+  );
+  notifyJoin(event.id, userId);
+  const summary = await findEventById(event.id);
+  return { event: summary, joinedAt: new Date().toISOString() };
+}
+
+// ===================== TEMPLATES =====================
+
+async function createEventTemplate(userId, data) {
+  const name = String(data.name || '').trim();
+  if (!name) throw badge('Jina la template ni lazima.', 400);
+  if (data.eventType) {
+    const eventType = String(data.eventType).toUpperCase();
+    if (!VALID_EVENT_TYPES.includes(eventType)) throw badge(`Aina ya tukio haijulikani: ${data.eventType}`, 400);
+  }
+  const budgetItems = Array.isArray(data.budgetItems) ? data.budgetItems : [];
+  const { rows } = await pool.query(
+    `INSERT INTO event_templates
+       (organizer_id, name, event_type, owner_type, target_amount, description, rules,
+        savings_cadence, savings_session_amount, budget_items)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+    [userId, name,
+     data.eventType ? String(data.eventType).toUpperCase() : 'OTHER',
+     data.ownerType ? String(data.ownerType).toUpperCase() : 'INDIVIDUAL',
+     data.targetAmount != null ? Number(data.targetAmount) : null,
+     data.description || null,
+     data.rules && typeof data.rules === 'object' ? JSON.stringify(data.rules) : '{}',
+     data.savingsCadence ? String(data.savingsCadence).toUpperCase() : null,
+     data.savingsSessionAmount != null ? Number(data.savingsSessionAmount) : null,
+     JSON.stringify(budgetItems)]
+  );
+  return rows[0];
+}
+
+async function listEventTemplates(userId) {
+  const { rows } = await pool.query(
+    `SELECT * FROM event_templates WHERE organizer_id = $1 ORDER BY updated_at DESC`, [userId]
+  );
+  return rows;
+}
+
+async function getEventTemplate(userId, templateId) {
+  const { rows } = await pool.query(`SELECT * FROM event_templates WHERE id = $1`, [templateId]);
+  if (rows.length === 0) throw badge('Template haipo.', 404);
+  if (rows[0].organizer_id !== userId) throw badge('Huna ruhusa ya template hii.', 403);
+  return rows[0];
+}
+
+async function deleteEventTemplate(userId, templateId) {
+  await getEventTemplate(userId, templateId);
+  await pool.query(`DELETE FROM event_templates WHERE id = $1`, [templateId]);
+  return { success: true };
+}
+
+async function saveEventAsTemplate(userId, eventId, name) {
+  const event = await findEventById(eventId);
+  assertOwner(userId, event);
+  const budget = await pool.query(`SELECT category, description, amount FROM event_budget_items WHERE event_id = $1`, [eventId]);
+  return createEventTemplate(userId, {
+    name: String(name || `${event.name} — Template`).trim(),
+    eventType: event.event_type,
+    ownerType: event.owner_type,
+    targetAmount: event.target_amount,
+    description: event.description,
+    rules: event.rules,
+    savingsCadence: event.savings_cadence,
+    savingsSessionAmount: event.savings_session_amount,
+    budgetItems: budget.rows,
+  });
+}
+
+async function createEventFromTemplate(userId, templateId, overrides = {}) {
+  const template = await getEventTemplate(userId, templateId);
+  const created = await createEvent(userId, {
+    name: overrides.name || `${template.name} — ${new Date().toISOString().slice(0, 10)}`,
+    eventType: template.event_type,
+    ownerType: template.owner_type,
+    targetAmount: Number(overrides.targetAmount != null ? overrides.targetAmount : template.target_amount),
+    description: template.description,
+    eventDate: overrides.eventDate || undefined,
+    contributionDeadline: overrides.contributionDeadline || undefined,
+    savingsCadence: template.savings_cadence || undefined,
+    savingsSessionAmount: template.savings_session_amount,
+    rules: template.rules,
+  });
+  for (const item of template.budget_items || []) {
+    if (item && item.category && Number(item.amount) > 0) {
+      await pool.query(
+        `INSERT INTO event_budget_items (event_id, category, description, amount) VALUES ($1,$2,$3,$4)`,
+        [created.id, item.category, item.description || null, Number(item.amount)]
+      );
+    }
+  }
+  await pool.query(`UPDATE event_templates SET usage_count = usage_count + 1, updated_at = NOW() WHERE id = $1`, [templateId]);
+  return created;
+}
+
+// ===================== SERIES (RECURRING EVENTS) =====================
+
+function nextSeriesDate(current, cadence, dayOfMonth) {
+  const d = new Date(current);
+  const day = d.getUTCDate();
+  switch (String(cadence).toUpperCase()) {
+    case 'WEEKLY': d.setUTCDate(day + 7); break;
+    case 'BIWEEKLY': d.setUTCDate(day + 14); break;
+    case 'QUARTERLY': d.setUTCMonth(d.getUTCMonth() + 3); break;
+    case 'YEARLY': d.setUTCFullYear(d.getUTCFullYear() + 1); break;
+    default: {
+      d.setUTCMonth(d.getUTCMonth() + 1);
+      if (dayOfMonth) d.setUTCDate(Math.min(dayOfMonth, 28));
+    }
+  }
+  return d;
+}
+
+async function buildSeriesStart(data) {
+  const start = data.startDate || new Date();
+  const base = new Date(start);
+  if (String(data.cadence || 'MONTHLY').toUpperCase() === 'MONTHLY' && data.dayOfMonth) {
+    base.setUTCDate(Math.min(Number(data.dayOfMonth), 28));
+  }
+  return base.toISOString().slice(0, 10);
+}
+
+async function createEventSeries(userId, data) {
+  const name = String(data.name || '').trim();
+  if (!name) throw badge('Jina la mfululizo ni lazima.', 400);
+  const cadence = String(data.cadence || 'MONTHLY').toUpperCase();
+  if (!['WEEKLY', 'BIWEEKLY', 'MONTHLY', 'QUARTERLY', 'YEARLY'].includes(cadence)) throw badge('Kadensi haijulikani.', 400);
+  const dayOfMonth = data.dayOfMonth ? Math.min(Math.max(Number(data.dayOfMonth), 1), 28) : null;
+  const templateId = data.templateId != null ? Number(data.templateId) : null;
+  const nextRunAt = await buildSeriesStart(data);
+  const { rows } = await pool.query(
+    `INSERT INTO event_series
+       (owner_id, template_id, name, cadence, day_of_month, event_type, target_amount, rules, next_run_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+    [userId, templateId, name, cadence, dayOfMonth,
+     data.eventType ? String(data.eventType).toUpperCase() : 'OTHER',
+     data.targetAmount != null ? Number(data.targetAmount) : null,
+     JSON.stringify(data.rules && typeof data.rules === 'object' ? data.rules : {}),
+     nextRunAt]
+  );
+  return rows[0];
+}
+
+async function listEventSeries(userId) {
+  const { rows } = await pool.query(
+    `SELECT s.*, t.name AS template_name, e.name AS last_event_name,
+       (SELECT COUNT(*) FROM social_events se WHERE se.series_id = s.id) AS events_count
+     FROM event_series s
+     LEFT JOIN event_templates t ON t.id = s.template_id
+     LEFT JOIN social_events e ON e.id = s.last_event_id
+     WHERE s.owner_id = $1 ORDER BY s.created_at DESC`, [userId]
+  );
+  return rows;
+}
+
+async function updateEventSeries(userId, seriesId, patch) {
+  const series = await getSeriesForOwner(userId, seriesId);
+  const sets = ['name', 'cadence', 'day_of_month', 'event_type', 'target_amount', 'rules', 'template_id', 'active', 'next_run_at'];
+  const allowed = Object.keys(patch).filter((k) => sets.includes(k));
+  if (allowed.length === 0) throw badge('Hakuna sehemu inayoweza kusasishwa.', 400);
+  const cols = [];
+  const vals = [];
+  let idx = 1;
+  for (const key of allowed) {
+    let value = patch[key];
+    if (key === 'cadence') value = String(value).toUpperCase();
+    if (key === 'event_type') value = String(value).toUpperCase();
+    if (key === 'rules') value = JSON.stringify(value || {});
+    if (key === 'active') value = value === true || value === 'true';
+    cols.push(`${key} = $${idx++}`);
+    vals.push(value);
+  }
+  vals.push(seriesId);
+  const { rows } = await pool.query(`UPDATE event_series SET ${cols.join(', ')}, updated_at = NOW() WHERE id = $${idx} RETURNING *`, vals);
+  return rows[0];
+}
+
+async function getSeriesForOwner(userId, seriesId) {
+  const { rows } = await pool.query(`SELECT * FROM event_series WHERE id = $1`, [seriesId]);
+  if (rows.length === 0) throw badge('Mfululizo haupo.', 404);
+  if (rows[0].owner_id !== userId) throw badge('Huna ruhusa ya mfululizo huu.', 403);
+  return rows[0];
+}
+
+async function generateNextEventFromSeries(seriesId, force = false) {
+  const series = await pool.query(`SELECT * FROM event_series WHERE id = $1`, [seriesId]);
+  if (series.rows.length === 0) throw badge('Mfululizo haupo.', 404);
+  const s = series.rows[0];
+  if (!s.active && !force) throw badge('Mfululizo hauko aktifu.', 400);
+  if (!s.next_run_at) throw badge('Hakuna tarehe iliyopangwa (next_run_at).', 400);
+
+  let template = null;
+  if (s.template_id) {
+    const t = await pool.query(`SELECT * FROM event_templates WHERE id = $1`, [s.template_id]);
+    template = t.rows.length ? t.rows[0] : null;
+  }
+
+  const eventDate = s.next_run_at instanceof Date ? localDateOnly(s.next_run_at) : s.next_run_at;
+  const created = await createEvent(s.owner_id, {
+    name: `${s.name} — ${eventDate}`,
+    eventType: template ? template.event_type : s.event_type,
+    ownerType: template ? template.owner_type : 'INDIVIDUAL',
+    targetAmount: Number(template && template.target_amount ? template.target_amount : (s.target_amount || 1)),
+    description: template ? template.description : null,
+    eventDate,
+    savingsCadence: template ? template.savings_cadence : null,
+    savingsSessionAmount: template ? template.savings_session_amount : null,
+    rules: template ? template.rules : s.rules,
+  });
+
+  if (template && Array.isArray(template.budget_items)) {
+    for (const item of template.budget_items) {
+      if (item && item.category && Number(item.amount) > 0) {
+        await pool.query(
+          `INSERT INTO event_budget_items (event_id, category, description, amount) VALUES ($1,$2,$3,$4)`,
+          [created.id, item.category, item.description || null, Number(item.amount)]
+        );
+      }
+    }
+  }
+
+  await pool.query(`UPDATE social_events SET series_id = $1, updated_at = NOW() WHERE id = $2`, [s.id, created.id]);
+
+  const next = nextSeriesDate(s.next_run_at, s.cadence, s.day_of_month);
+  await pool.query(
+    `UPDATE event_series SET last_event_id = $1, events_generated = events_generated + 1, next_run_at = $2, updated_at = NOW() WHERE id = $3`,
+    [created.id, next.toISOString().slice(0, 10), s.id]
+  );
+
+  if (template) {
+    await pool.query(`UPDATE event_templates SET usage_count = usage_count + 1, updated_at = NOW() WHERE id = $1`, [template.id]);
+  }
+
+  await logAudit({ userId: s.owner_id, eventType: 'EVENT_SERIES_GENERATE', entityType: 'event_series', entityId: s.id,
+    afterData: { eventId: created.id } });
+  return created;
+}
+
+async function runDueEventSeries() {
+  try {
+    const due = await pool.query(
+      `SELECT id FROM event_series WHERE active AND next_run_at IS NOT NULL AND next_run_at <= CURRENT_DATE ORDER BY next_run_at LIMIT 20`
+    );
+    let generated = 0;
+    let failed = 0;
+    for (const row of due.rows) {
+      try {
+        await generateNextEventFromSeries(row.id);
+        generated++;
+      } catch (e) {
+        failed++;
+        logger.error('EVENT_SERIES_RUN', `series ${row.id} failed: ${e.message}`);
+      }
+    }
+    if (generated + failed > 0) logger.info('EVENT_SERIES', `generated=${generated} failed=${failed}`);
+    return { due: due.rows.length, generated, failed };
+  } catch (e) {
+    logger.error('EVENT_SERIES_RUN', e.message);
+    return { error: e.message };
+  }
+}
+
+async function listSeriesEvents(userId, seriesId) {
+  await getSeriesForOwner(userId, seriesId);
+  const { rows } = await pool.query(
+    `SELECT id, name, event_date, status, target_amount, collected_amount, savings_amount, created_at
+     FROM social_events WHERE series_id = $1 ORDER BY event_date DESC`, [seriesId]
+  );
+  return rows;
+}
+
+// ===================== REPORTS & EXPORT =====================
+
+function toCsv(rows) {
+  if (!rows || rows.length === 0) return 'No data';
+  const headers = Object.keys(rows[0]).join(',');
+  const lines = rows.map((row) =>
+    Object.values(row).map((v) => {
+      if (v === null || v === undefined) return '';
+      const str = typeof v === 'object' ? JSON.stringify(v) : String(v);
+      return str.includes(',') || str.includes('"') || str.includes('\n')
+        ? `"${str.replace(/"/g, '""')}"` : str;
+    }).join(',')
+  );
+  return [headers, ...lines].join('\n');
+}
+
+async function getEventReport(eventId) {
+  const event = await findEventById(eventId);
+  const owner = await pool.query(`SELECT full_name FROM users WHERE id = $1`, [event.owner_user_id]);
+  const [contributions, members, budget, withdrawals, commitments, collect] = await Promise.all([
+    pool.query(
+      `SELECT c.mode, c.amount, c.reference_id, c.status, c.created_at, COALESCE(c.contributor_name, u.full_name) AS contributor
+       FROM event_contributions c LEFT JOIN users u ON u.id = c.user_id WHERE c.event_id = $1 ORDER BY c.created_at`,
+      [eventId]
+    ),
+    pool.query(
+      `SELECT m.user_id, u.full_name AS user_name, m.role, m.status, m.joined_at,
+         COALESCE((SELECT SUM(c.amount) FROM event_contributions c WHERE c.event_id = m.event_id AND c.user_id = m.user_id AND c.status='SUCCESS'),0)::float AS contributed
+       FROM event_members m JOIN users u ON u.id = m.user_id
+       WHERE m.event_id = $1 ORDER BY (m.role = 'OWNER') DESC, u.full_name`,
+      [eventId]
+    ),
+    pool.query(`SELECT category, description, amount FROM event_budget_items WHERE event_id = $1 ORDER BY created_at`, [eventId]),
+    pool.query(
+      `SELECT w.mode, w.amount, w.status, w.requires_approval, w.reference_id, w.paid_at, w.created_at, COALESCE(u.full_name, '') AS recipient
+       FROM event_withdrawals w LEFT JOIN users u ON u.id = w.user_id WHERE w.event_id = $1 ORDER BY w.created_at DESC`,
+      [eventId]
+    ),
+    pool.query(
+      `SELECT c.amount, c.fulfilled, c.status, c.note, c.created_at, u.full_name AS user_name
+       FROM event_commitments c JOIN users u ON u.id = c.user_id WHERE c.event_id = $1 ORDER BY c.created_at`,
+      [eventId]
+    ),
+    pool.query(
+      `SELECT COALESCE(SUM(amount) FILTER (WHERE mode='FUNDRAISING' AND status='SUCCESS'),0)::float AS fundraising,
+              COALESCE(SUM(amount) FILTER (WHERE mode='SAVINGS' AND status='SUCCESS'),0)::float AS savings,
+              SUM(amount)::float AS total,
+              COUNT(*)::int AS donations,
+              COUNT(DISTINCT user_id)::int AS contributors
+       FROM event_contributions WHERE event_id = $1`,
+      [eventId]
+    ),
+  ]);
+  const collected = collect.rows[0] || { fundraising: 0, savings: 0, total: 0, donations: 0, contributors: 0 };
+  const budgetTotal = budget.rows.reduce((a, b) => a + Number(b.amount), 0);
+  return {
+    event: {
+      id: event.id, name: event.name, eventType: event.event_type, description: event.description,
+      ownerUserId: event.owner_user_id,
+      ownerName: owner.rows.length ? owner.rows[0].full_name : '',
+      eventDate: event.event_date, contributionDeadline: event.contribution_deadline,
+      status: event.status, createdAt: event.created_at, targetAmount: Number(event.target_amount),
+    },
+    summary: {
+      collected: {
+        fundraising: collected.fundraising,
+        savings: collected.savings,
+        total: collected.total,
+      },
+      remaining: Math.max(Number(event.target_amount) - collected.fundraising - collected.savings, 0),
+      progress: Number(event.target_amount) > 0
+        ? Math.min(Math.round(((collected.fundraising + collected.savings) / Number(event.target_amount)) * 100), 100) : 0,
+      budgetTotal,
+      budgetCoverage: budgetTotal > 0 ? Math.min(Math.round((collected.total / budgetTotal) * 100), 100) : 0,
+      donations: collected.donations,
+      contributors: collected.contributors,
+      activeMembers: members.rows.filter((m) => m.status === 'ACTIVE').length,
+    },
+    contributions: contributions.rows,
+    members: members.rows,
+    budget: budget.rows,
+    withdrawals: withdrawals.rows,
+    commitments: commitments.rows,
+  };
+}
+
+async function exportEventReportCsv(eventId, section) {
+  const report = await getEventReport(eventId);
+  const sec = String(section || 'all').toLowerCase();
+  if (sec === 'contributions') return toCsv(report.contributions);
+  if (sec === 'members') return toCsv(report.members.map((m) => ({ ...m, contributed: m.contributed })));
+  if (sec === 'budget') return toCsv(report.budget);
+  if (sec === 'withdrawals') return toCsv(report.withdrawals);
+  if (sec === 'commitments') return toCsv(report.commitments);
+  const out = [];
+  out.push(['SECTION: SUMMARY'].join());
+  out.push(toCsv([{ Event: report.event.name, Type: report.event.eventType, Status: report.event.status,
+    Target: report.event.targetAmount, Fundraising: report.summary.collected.fundraising,
+    Savings: report.summary.collected.savings, Total_Collected: report.summary.collected.total,
+    Progress_Pct: report.summary.progress, Budget_Total: report.summary.budgetTotal,
+    Donations: report.summary.donations, Contributors: report.summary.contributors,
+    Active_Members: report.summary.activeMembers }]));
+  out.push(['', 'SECTION: CONTRIBUTIONS'].join());
+  out.push(toCsv(report.contributions));
+  out.push(['', 'SECTION: MEMBERS'].join());
+  out.push(toCsv(report.members));
+  out.push(['', 'SECTION: BUDGET'].join());
+  out.push(toCsv(report.budget));
+  out.push(['', 'SECTION: WITHDRAWALS'].join());
+  out.push(toCsv(report.withdrawals));
+  out.push(['', 'SECTION: COMMITMENTS'].join());
+  out.push(toCsv(report.commitments));
+  return out.filter(Boolean).join('\n');
+}
+
+// ===================== ADMIN OVERSIGHT =====================
+
+async function listAllEvents({ search, status, page = 1, limit = 100 }) {
+  const offset = (Math.max(page, 1) - 1) * Math.min(limit, 200);
+  const { rows } = await pool.query(
+    `SELECT e.id, e.name, e.event_type, e.status, e.target_amount, e.collected_amount, e.savings_amount,
+            e.event_date, e.created_at, u.full_name AS owner_name, u.phone_number AS owner_phone,
+       (SELECT COUNT(*) FROM event_contributions c WHERE c.event_id = e.id AND c.status='SUCCESS') AS donations,
+       (SELECT COUNT(*) FROM event_members m WHERE m.event_id = e.id AND m.status='ACTIVE') AS active_members,
+       (SELECT COUNT(*) FROM event_withdrawals w WHERE w.event_id = e.id) AS withdrawals_count
+     FROM social_events e JOIN users u ON u.id = e.owner_user_id
+     WHERE ($1::text IS NULL OR e.name ILIKE '%' || $1 || '%')
+       AND ($2::text IS NULL OR e.status = $2)
+     ORDER BY e.created_at DESC LIMIT $3 OFFSET $4`,
+    [search || null, status || null, Math.min(limit, 200), offset]
+  );
+  return rows;
+}
+
+async function getWithdrawalsOverview({ status, page = 1, limit = 100 }) {
+  const offset = (Math.max(page, 1) - 1) * Math.min(limit, 200);
+  const { rows } = await pool.query(
+    `SELECT w.id, w.event_id, e.name AS event_name, uo.full_name AS owner_name,
+            w.mode, w.amount, w.status, w.requires_approval, w.reference_id, w.created_at, w.paid_at,
+            r.full_name AS recipient_name
+     FROM event_withdrawals w
+     JOIN social_events e ON e.id = w.event_id
+     JOIN users uo ON uo.id = e.owner_user_id
+     LEFT JOIN users r ON r.id = w.user_id
+     WHERE ($1::text IS NULL OR w.status = $1)
+     ORDER BY w.created_at DESC LIMIT $2 OFFSET $3`,
+    [status || null, Math.min(limit, 200), offset]
+  );
+  // Flag: large withdrawals (>= threshold) ya kukaribishwa na mchango wa hivi karibuni.
+  const flagged = rows.filter((r) => r.requires_approval).map((r) => r.id);
+  return { withdrawals: rows, flags: { requiresApproval: flagged } };
+}
+
 module.exports = {
   createEvent,
   listUserEvents,
@@ -1101,4 +1599,23 @@ module.exports = {
   removeMember,
   listEventReminders,
   runEventReminders,
+  ensurePublicShare,
+  getPublicEvent,
+  joinEventByPublicLink,
+  createEventTemplate,
+  listEventTemplates,
+  getEventTemplate,
+  deleteEventTemplate,
+  saveEventAsTemplate,
+  createEventFromTemplate,
+  createEventSeries,
+  listEventSeries,
+  updateEventSeries,
+  generateNextEventFromSeries,
+  runDueEventSeries,
+  listSeriesEvents,
+  getEventReport,
+  exportEventReportCsv,
+  listAllEvents,
+  getWithdrawalsOverview,
 };

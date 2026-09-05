@@ -273,6 +273,9 @@ for (const prefix of versionPrefixes) {
   app.use(`${prefix}/passport`, walletLimiter, passportRoutes);
   app.use(`${prefix}/marketplace`, walletLimiter, marketplaceRoutes);
   app.use(`${prefix}/secondary`, walletLimiter, secondaryRoutes);
+  // Events mounted BEFORE projectRoutes: projectRoutes applies router.use(authRequired)
+  // blanket — public event share routes need to stay reachable unauthenticated.
+  app.use(`${prefix}/events`, walletLimiter, eventRoutes);
   app.use(prefix, projectRoutes);
   app.use(`${prefix}/ai`, aiRoutes);
   app.use(`${prefix}/procurement`, procurementRoutes);
@@ -283,7 +286,6 @@ for (const prefix of versionPrefixes) {
   app.use(`${prefix}/recurrence`, recurrenceRoutes);
   app.use(`${prefix}/circles`, walletLimiter, lendingCircleRoutes);
   app.use(`${prefix}/kilimo`, walletLimiter, kilimoRoutes);
-  app.use(`${prefix}/events`, walletLimiter, eventRoutes);
 }
 
 // Swagger UI - API documentation (production off - usitangaze API surface)
@@ -342,6 +344,11 @@ if (process.env.DISABLE_CRON !== 'true') {
   const runReminders = () => runEventReminders().catch(() => {});
   runReminders();
   setInterval(runReminders, parseInt(process.env.EVENT_REMINDER_INTERVAL_MS, 10) || 3600000);
+  // Recurring event series (templates + cadence) — generate due events, best-effort hourly
+  const { runDueEventSeries } = require('./services/eventService');
+  const runSeries = () => runDueEventSeries().catch(() => {});
+  runSeries();
+  setInterval(runSeries, parseInt(process.env.EVENT_SERIES_INTERVAL_MS, 10) || 3600000);
 }
 
 function startServer(server) {

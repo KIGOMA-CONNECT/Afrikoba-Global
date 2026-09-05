@@ -5,6 +5,7 @@ const DEFAULT_JWT = 'afrikoba_dev_secret_change_me';
 const config = {
   nodeEnv: process.env.NODE_ENV || 'development',
   port: parseInt(process.env.PORT || '3000', 10),
+  publicUrl: process.env.PUBLIC_BASE_URL || (process.env.NODE_ENV === 'production' ? 'https://app.afrikoba.com' : 'http://localhost:3000'),
   db: {
     user: process.env.DB_USER || 'postgres',
     host: process.env.DB_HOST || 'localhost',

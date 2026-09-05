@@ -263,6 +263,34 @@ router.post('/api-keys', async (req, res, next) => {
   }
 });
 
+// ===== SOCIAL EVENTS ADMIN OVERSIGHT (Stage 4) =====
+const eventService = require('../services/eventService');
+
+// Matukio yote (search/status/page)
+router.get('/events', async (req, res, next) => {
+  try {
+    const events = await eventService.listAllEvents({
+      search: req.query.search,
+      status: req.query.status,
+      page: parseInt(req.query.page, 10) || 1,
+      limit: parseInt(req.query.limit, 10) || 100,
+    });
+    res.json({ success: true, events });
+  } catch (error) { next(error); }
+});
+
+// Muhtasari wa uondoaji wa fedha za matukio
+router.get('/events/withdrawals', async (req, res, next) => {
+  try {
+    const result = await eventService.getWithdrawalsOverview({
+      status: req.query.status,
+      page: parseInt(req.query.page, 10) || 1,
+      limit: parseInt(req.query.limit, 10) || 100,
+    });
+    res.json(result);
+  } catch (error) { next(error); }
+});
+
 // ===== FINANCIAL RECONCILIATION ENDPOINTS (Phase 5) =====
 const { runBalanceReconciliation, recentRuns } = require('../jobs/balanceReconciliation');
 const { financialHealthSnapshot } = require('../services/financialMonitoring');

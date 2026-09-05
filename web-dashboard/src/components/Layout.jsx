@@ -66,6 +66,7 @@ export default function Layout() {
     { to: '/dashboard/secondary', key: 'nav.secondary', always: true },
     { to: '/dashboard/admin', key: 'nav.admin', admin: true },
     { to: '/dashboard/risk', key: 'nav.risk', admin: true },
+    { to: '/dashboard/admin/events', key: 'nav.events_admin', admin: true },
     { to: '/dashboard/payroll', key: 'nav.payroll', admin: true },
     { to: '/dashboard/recurrence', key: 'nav.recurrence', admin: true },
     { to: '/dashboard/ops', key: 'nav.ops', admin: true },

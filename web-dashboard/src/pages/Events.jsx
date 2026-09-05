@@ -62,6 +62,19 @@ export default function Events() {
   const [withdrawTo, setWithdrawTo] = useState('');
   const [memberPhone, setMemberPhone] = useState('');
 
+  const [share, setShare] = useState(null);
+  const [templateName, setTemplateName] = useState('');
+  const [templates, setTemplates] = useState([]);
+  const [seriesOpen, setSeriesOpen] = useState(false);
+  const [series, setSeries] = useState([]);
+  const [seriesName, setSeriesName] = useState('');
+  const [seriesCadence, setSeriesCadence] = useState('MONTHLY');
+  const [seriesDay, setSeriesDay] = useState('');
+  const [seriesTarget, setSeriesTarget] = useState('');
+  const [seriesTemplateId, setSeriesTemplateId] = useState('');
+  const [reportOpen, setReportOpen] = useState(false);
+  const [report, setReport] = useState(null);
+
   const show = (type, text) => {
     setMsg({ type, text });
     setTimeout(() => setMsg({ type: '', text: '' }), 5000);
@@ -111,6 +124,11 @@ export default function Events() {
       const rm = await api.get(`/events/${ev.id}/reminders`);
       setReminders(rm.data.reminders);
     } catch { setReminders([]); }
+    setShare(null); setReportOpen(false); setReport(null);
+    if (Number(ev.owner_user_id) === Number(user.id)) {
+      try { setTemplates((await api.get('/events/templates')).data.templates); } catch { setTemplates([]); }
+      try { setSeries((await api.get('/events/series')).data.series); } catch { setSeries([]); }
+    }
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
@@ -284,6 +302,98 @@ export default function Events() {
   };
 
   const isOwner = selected && Number(selected.owner_user_id) === Number(user.id);
+
+  const genShare = async () => {
+    try {
+      const r = await api.get(`/events/${selected.id}/share`);
+      setShare(r.data.share);
+      show('ok', t('events.share_ready'));
+    } catch (err) { show('err', err.response?.data?.message || t('events.error')); }
+  };
+
+  const copyShare = () => {
+    if (navigator.clipboard && share) {
+      navigator.clipboard.writeText(share.url).then(() => show('ok', t('events.copied'))).catch(() => {});
+    }
+  };
+
+  const saveTemplate = async () => {
+    try {
+      await api.post(`/events/${selected.id}/template`, { name: templateName || undefined });
+      show('ok', t('events.template_saved'));
+      setTemplateName('');
+      setTemplates((await api.get('/events/templates')).data.templates);
+    } catch (err) { show('err', err.response?.data?.message || t('events.error')); }
+  };
+
+  const useTemplate = async (tid) => {
+    try {
+      const ev = await api.post(`/events/templates/${tid}/use`);
+      show('ok', t('events.template_used'));
+      load();
+      selectEvent(ev.data.event);
+    } catch (err) { show('err', err.response?.data?.message || t('events.error')); }
+  };
+
+  const deleteTemplate = async (tid) => {
+    try {
+      await api.delete(`/events/templates/${tid}`);
+      show('ok', t('events.template_deleted'));
+      setTemplates((await api.get('/events/templates')).data.templates);
+    } catch (err) { show('err', err.response?.data?.message || t('events.error')); }
+  };
+
+  const createSeries = async (e) => {
+    e.preventDefault();
+    try {
+      await api.post('/events/series', {
+        name: seriesName, cadence: seriesCadence,
+        dayOfMonth: seriesDay ? Number(seriesDay) : undefined,
+        targetAmount: seriesTarget ? Number(seriesTarget) : undefined,
+        templateId: seriesTemplateId ? Number(seriesTemplateId) : undefined,
+      });
+      show('ok', t('events.series_created'));
+      setSeriesName(''); setSeriesDay(''); setSeriesTarget(''); setSeriesTemplateId('');
+      setSeries((await api.get('/events/series')).data.series);
+    } catch (err) { show('err', err.response?.data?.message || t('events.error')); }
+  };
+
+  const generateSeries = async (sid) => {
+    try {
+      const ev = await api.post(`/events/series/${sid}/generate`);
+      show('ok', t('events.series_generated'));
+      setSeries((await api.get('/events/series')).data.series);
+      load();
+      selectEvent(ev.data.event);
+    } catch (err) { show('err', err.response?.data?.message || t('events.error')); }
+  };
+
+  const toggleReport = async () => {
+    if (reportOpen) { setReportOpen(false); return; }
+    try {
+      const r = await api.get(`/events/${selected.id}/report`);
+      setReport(r.data.report);
+      setReportOpen(true);
+    } catch (err) { show('err', err.response?.data?.message || t('events.error')); }
+  };
+
+  const download = (path, name) => {
+    const token = localStorage.getItem('afrikoba_token');
+    fetch(`/api/events/${selected.id}${path}`, { headers: { Authorization: `Bearer ${token}` } })
+      .then((r) => r.blob())
+      .then((blob) => {
+        const u = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = u;
+        a.download = name;
+        a.click();
+        URL.revokeObjectURL(u);
+      })
+      .catch(() => show('err', t('events.error')));
+  };
+
+  const downloadPdf = () => download('/report/pdf', `event-report-${selected.id}.pdf`);
+  const downloadCsv = (section) => download(`/report/csv${section ? `?section=${section}` : ''}`, `event-report-${selected.id}.csv`);
 
   const updateStatus = async (status) => {
     try {
@@ -490,6 +600,132 @@ export default function Events() {
         </div>
       )}
 
+      {selected && dashboard && isOwner && (
+        <div className="grid grid-2">
+          <div className="card">
+            <h3>{t('events.share_title')}</h3>
+            <p className="roles-tag">{t('events.share_hint')}</p>
+            {isActive && <button className="btn" onClick={genShare}>{t('events.share_create')}</button>}
+            {share && (
+              <div style={{ marginTop: 10 }}>
+                <div className="field"><label>{t('events.share_public_url')}</label><input readOnly value={share.url} /></div>
+                <div className="inline-actions" style={{ marginTop: 8 }}>
+                  <button className="btn" onClick={copyShare}>{t('events.copy')}</button>
+                  <a className="btn btn-secondary" href={share.whatsapp} target="_blank" rel="noreferrer">WhatsApp</a>
+                  <a className="btn btn-secondary" href={`/p/${share.token}`} target="_blank" rel="noreferrer">{t('events.preview')}</a>
+                </div>
+              </div>
+            )}
+            <h3 style={{ marginTop: 18 }}>{t('events.template_title')}</h3>
+            <div className="form-row">
+              <div className="field"><label>{t('events.template_name')}</label><input value={templateName} onChange={(e) => setTemplateName(e.target.value)} placeholder={t('events.template_name_ph')} /></div>
+              <button className="btn" style={{ alignSelf: 'end' }} onClick={saveTemplate}>{t('events.template_save_btn')}</button>
+            </div>
+            {templates.length > 0 && (
+              <div style={{ marginTop: 10 }}>
+                {templates.map((tm) => (
+                  <div key={tm.id} className="list-item">
+                    <div>
+                      <strong>{tm.name}</strong> <span className="roles-tag">{tm.event_type}</span>
+                      <div className="roles-tag">{t('events.target')}: {formatMoney(tm.target_amount)} · {t('events.template_uses')}: {tm.usage_count}</div>
+                    </div>
+                    <div className="inline-actions">
+                      <button className="btn" onClick={() => useTemplate(tm.id)}>{t('events.template_use')}</button>
+                      <button className="btn warn" onClick={() => deleteTemplate(tm.id)}>x</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="card">
+            <h3>{t('events.series_title')}</h3>
+            <button className="btn btn-secondary" onClick={() => setSeriesOpen(!seriesOpen)}>
+              {seriesOpen ? t('events.series_close') : t('events.series_new')}
+            </button>
+            {seriesOpen && (
+              <form onSubmit={createSeries} className="form-row" style={{ marginTop: 8 }}>
+                <div className="field"><label>{t('events.series_name')}</label><input value={seriesName} onChange={(e) => setSeriesName(e.target.value)} required /></div>
+                <div className="field"><label>{t('events.series_cadence')}</label>
+                  <select value={seriesCadence} onChange={(e) => setSeriesCadence(e.target.value)}>
+                    {['WEEKLY', 'BIWEEKLY', 'MONTHLY', 'QUARTERLY', 'YEARLY'].map((c) => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                </div>
+                <div className="field"><label>{t('events.series_day')}</label><input type="number" min="1" max="28" value={seriesDay} onChange={(e) => setSeriesDay(e.target.value)} /></div>
+                <div className="field"><label>{t('events.series_target')}</label><input type="number" min="1" value={seriesTarget} onChange={(e) => setSeriesTarget(e.target.value)} /></div>
+                <div className="field"><label>{t('events.series_template')}</label>
+                  <select value={seriesTemplateId} onChange={(e) => setSeriesTemplateId(e.target.value)}>
+                    <option value="">-</option>
+                    {templates.map((tm) => <option key={tm.id} value={tm.id}>{tm.name}</option>)}
+                  </select>
+                </div>
+                <button className="btn" type="submit" style={{ alignSelf: 'end' }}>{t('events.series_create_btn')}</button>
+              </form>
+            )}
+            {series.length === 0 && <p className="roles-tag">{t('events.series_empty')}</p>}
+            {series.map((s) => (
+              <div key={s.id} className="list-item">
+                <div>
+                  <strong>{s.name}</strong> <span className="roles-tag">{s.cadence}</span>
+                  <div className="roles-tag">{t('events.series_next')}: {s.next_run_at || '-'} · {t('events.series_count')}: {s.events_count} · {s.active ? 'Active' : 'Inactive'}</div>
+                </div>
+                {s.active && <button className="btn" onClick={() => generateSeries(s.id)}>{t('events.series_generate')}</button>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {selected && dashboard && reportOpen && report && (
+        <div className="card section">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+            <h3>{t('events.report_title')}</h3>
+            <div className="inline-actions">
+              <button className="btn" onClick={downloadPdf}>PDF</button>
+              <button className="btn btn-secondary" onClick={() => downloadCsv()}>CSV</button>
+              {['contributions', 'members', 'budget', 'withdrawals', 'commitments'].map((sec) => (
+                <button key={sec} className="btn btn-secondary" onClick={() => downloadCsv(sec)}>{t(`events.report_${sec}`)}</button>
+              ))}
+            </div>
+          </div>
+          <div className="stat-row">
+            <div className="stat-box"><strong>{formatMoney(report.summary.collected.total)}</strong><span>{t('events.collected')}</span></div>
+            <div className="stat-box"><strong>{formatMoney(report.summary.budgetTotal)}</strong><span>{t('events.budget_total')}</span></div>
+            <div className="stat-box"><strong>{report.summary.progress}%</strong><span>{t('events.progress')}</span></div>
+            <div className="stat-box"><strong>{report.summary.activeMembers}</strong><span>{t('events.members')}</span></div>
+          </div>
+          <div className="stat-row">
+            <div className="stat-box"><strong>{report.summary.donations}</strong><span>{t('events.donations')}</span></div>
+            <div className="stat-box"><strong>{report.summary.contributors}</strong><span>{t('events.contributors')}</span></div>
+            <div className="stat-box"><strong>{report.summary.remaining > 0 ? formatMoney(report.summary.remaining) : '✓'}</strong><span>{t('events.remaining')}</span></div>
+            <div className="stat-box"><strong>{report.withdrawals.length}</strong><span>{t('events.report_withdrawals')}</span></div>
+          </div>
+          <h4>{t('events.report_contributions')}</h4>
+          <table>
+            <thead><tr><th>{t('events.contributor')}</th><th>{t('events.mode')}</th><th>{t('events.amount')}</th><th>{t('events.date')}</th></tr></thead>
+            <tbody>
+              {report.contributions.slice(0, 10).map((c, i) => (
+                <tr key={i}><td>{c.contributor}</td><td>{c.mode}</td><td>{formatMoney(c.amount)}</td><td>{new Date(c.created_at).toLocaleString()}</td></tr>
+              ))}
+            </tbody>
+          </table>
+          {report.commitments.length > 0 && (
+            <>
+              <h4>{t('events.report_commitments')}</h4>
+              <table>
+                <thead><tr><th>{t('events.contributor')}</th><th>{t('events.commit_amount')}</th><th>{t('events.fulfilled')}</th><th>{t('events.commit_status')}</th></tr></thead>
+                <tbody>
+                  {report.commitments.map((c, i) => (
+                    <tr key={i}><td>{c.user_name}</td><td>{formatMoney(c.amount)}</td><td>{formatMoney(c.fulfilled)}</td><td><StatusBadge status={c.status} /></td></tr>
+                  ))}
+                </tbody>
+              </table>
+            </>
+          )}
+        </div>
+      )}
+
       {selected && dashboard && (
         <div className="card section">
           <h3>{t('events.commitments_title')}</h3>
@@ -670,7 +906,12 @@ export default function Events() {
 
       {selected && dashboard && (
         <div className="card section">
-          <h3>{t('events.contributions_title')}</h3>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <h3>{t('events.contributions_title')}</h3>
+            <button className="btn btn-secondary" onClick={toggleReport}>
+              {reportOpen ? t('events.report_close') : t('events.report_open')}
+            </button>
+          </div>
           {contributions.length === 0 && <p className="roles-tag">{t('events.no_contributions')}</p>}
           <table>
             <thead><tr><th>{t('events.contributor')}</th><th>{t('events.mode')}</th><th>{t('events.amount')}</th><th>{t('events.reference')}</th><th>{t('events.date')}</th></tr></thead>

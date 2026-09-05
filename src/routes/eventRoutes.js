@@ -1,9 +1,31 @@
 const express = require('express');
 const eventService = require('../services/eventService');
+const eventReportService = require('../services/eventReportService');
 const governanceService = require('../services/governanceService');
 const { authRequired } = require('../middleware/auth');
 
 const router = express.Router();
+
+// ===== STAGE 4: PUBLIC (hakuna login inayohitajika) =====
+// Ukurasa wa umma wa tukio (share link) — kabla ya authRequired
+router.get('/public/:token', async (req, res, next) => {
+  try {
+    const event = await eventService.getPublicEvent(req.params.token);
+    return res.json({ success: true, event });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Jiunge na tukio kupitia kiungo cha umma (auth inahitajika hapa tu)
+router.post('/public/:token/join', authRequired, async (req, res, next) => {
+  try {
+    const result = await eventService.joinEventByPublicLink(req.user.id, req.params.token);
+    return res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
 
 router.use(authRequired);
 
@@ -11,6 +33,71 @@ router.use(authRequired);
 // actually move the money from the event pool back to the recipient wallet.
 governanceService.registerExecutor('EVENT_WITHDRAWAL', async (payload) => {
   return eventService.executeEventWithdrawal(payload);
+});
+
+// ===== STAGE 4: TEMPLATES & SERIES (literal paths before /:eventId) =====
+router.post('/templates', async (req, res, next) => {
+  try {
+    const template = await eventService.createEventTemplate(req.user.id, req.body);
+    return res.status(201).json({ success: true, template });
+  } catch (error) { next(error); }
+});
+
+router.get('/templates', async (req, res, next) => {
+  try {
+    const templates = await eventService.listEventTemplates(req.user.id);
+    return res.json({ success: true, templates });
+  } catch (error) { next(error); }
+});
+
+// Tumia template kuanzia tukio jipya
+router.post('/templates/:templateId/use', async (req, res, next) => {
+  try {
+    const event = await eventService.createEventFromTemplate(req.user.id, parseInt(req.params.templateId, 10), req.body);
+    return res.status(201).json({ success: true, event });
+  } catch (error) { next(error); }
+});
+
+router.delete('/templates/:templateId', async (req, res, next) => {
+  try {
+    const result = await eventService.deleteEventTemplate(req.user.id, parseInt(req.params.templateId, 10));
+    return res.json(result);
+  } catch (error) { next(error); }
+});
+
+router.post('/series', async (req, res, next) => {
+  try {
+    const series = await eventService.createEventSeries(req.user.id, req.body);
+    return res.status(201).json({ success: true, series });
+  } catch (error) { next(error); }
+});
+
+router.get('/series', async (req, res, next) => {
+  try {
+    const series = await eventService.listEventSeries(req.user.id);
+    return res.json({ success: true, series });
+  } catch (error) { next(error); }
+});
+
+router.post('/series/:seriesId/generate', async (req, res, next) => {
+  try {
+    const event = await eventService.generateNextEventFromSeries(parseInt(req.params.seriesId, 10));
+    return res.status(201).json({ success: true, event });
+  } catch (error) { next(error); }
+});
+
+router.patch('/series/:seriesId', async (req, res, next) => {
+  try {
+    const series = await eventService.updateEventSeries(req.user.id, parseInt(req.params.seriesId, 10), req.body);
+    return res.json({ success: true, series });
+  } catch (error) { next(error); }
+});
+
+router.get('/series/:seriesId/events', async (req, res, next) => {
+  try {
+    const events = await eventService.listSeriesEvents(req.user.id, parseInt(req.params.seriesId, 10));
+    return res.json({ success: true, events });
+  } catch (error) { next(error); }
 });
 
 // Jiunge na tukio kupitia kodi ya mwaliko (inserted before /:eventId so 'join' is not parsed as an event id)
@@ -268,6 +355,77 @@ router.get('/:eventId/reminders', async (req, res, next) => {
   try {
     const reminders = await eventService.listEventReminders(parseInt(req.params.eventId, 10));
     return res.json({ success: true, reminders });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ===== STAGE 4: SHARE / TEMPLATE / REPORT =====
+
+// Kiungo cha kushiriki tukio (weka/leta public token)
+router.get('/:eventId/share', async (req, res, next) => {
+  try {
+    const share = await eventService.ensurePublicShare(req.user.id, parseInt(req.params.eventId, 10));
+    return res.json({ success: true, share });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Hifadhi tukio kama template
+router.post('/:eventId/template', async (req, res, next) => {
+  try {
+    const template = await eventService.saveEventAsTemplate(req.user.id, parseInt(req.params.eventId, 10), req.body.name);
+    return res.status(201).json({ success: true, template });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Ripoti yote ya tukio (JSON) — owner/admin/member pekee
+router.get('/:eventId/report', async (req, res, next) => {
+  try {
+    const report = await eventService.getEventReport(parseInt(req.params.eventId, 10));
+    if (!(req.user.role === 'ADMIN' || Number(report.event.ownerUserId) === req.user.id ||
+          report.members.some((m) => Number(m.user_id) === req.user.id))) {
+      return res.status(403).json({ success: false, message: 'Huna ruhusa ya ripoti hii.' });
+    }
+    return res.json({ success: true, report });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// CSV export — sections: all | contributions | members | budget | withdrawals | commitments
+router.get('/:eventId/report/csv', async (req, res, next) => {
+  try {
+    const report = await eventService.getEventReport(parseInt(req.params.eventId, 10));
+    if (!(req.user.role === 'ADMIN' || Number(report.event.ownerUserId) === req.user.id ||
+          report.members.some((m) => Number(m.user_id) === req.user.id))) {
+      return res.status(403).json({ success: false, message: 'Huna ruhusa ya ripoti hii.' });
+    }
+    const csv = await eventService.exportEventReportCsv(parseInt(req.params.eventId, 10), req.query.section);
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename=event-report-${req.params.eventId}.csv`);
+    return res.send(csv);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// PDF export
+router.get('/:eventId/report/pdf', async (req, res, next) => {
+  try {
+    const report = await eventService.getEventReport(parseInt(req.params.eventId, 10));
+    if (!(req.user.role === 'ADMIN' || Number(report.event.ownerUserId) === req.user.id ||
+          report.members.some((m) => Number(m.user_id) === req.user.id))) {
+      return res.status(403).json({ success: false, message: 'Huna ruhusa ya ripoti hii.' });
+    }
+    const doc = await eventReportService.renderEventReportPdf(parseInt(req.params.eventId, 10));
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename=event-report-${req.params.eventId}.pdf`);
+    doc.pipe(res);
+    doc.end();
   } catch (error) {
     next(error);
   }
