@@ -33,6 +33,20 @@ jobs:
         run: |
           if [ -n "${{ vars.SERVER_PATH }}" ]; then echo "SERVER_PATH is set (length ${#SERVER_PATH})"; else echo "::error::SERVER_PATH repo variable is NOT set - please configure it under Settings > Secrets and variables > Actions > Variables"; exit 1; fi
 
+      - name: Validate SSH private key format
+        env:
+          SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          if [ -z "$SSH_KEY" ]; then echo "::error::SSH_PRIVATE_KEY secret is empty - configure it under Settings > Secrets and variables > Actions"; exit 1; fi
+          printf '%s\n' "$SSH_KEY" > /tmp/deploy_key
+          chmod 600 /tmp/deploy_key
+          if ssh-keygen -y -f /tmp/deploy_key > /dev/null 2>&1; then
+            echo "SSH private key parses OK"
+          else
+            echo "::error::SSH_PRIVATE_KEY is not a valid private key (ssh: no key found). Re-paste the FULL key INCLUDING its line breaks (-----BEGIN ... PRIVATE KEY----- to -----END ... PRIVATE KEY-----), or regenerate a key pair."
+            exit 1
+          fi
+
       - name: Deploy to Server via SSH
         uses: appleboy/ssh-action@v1.0.3
         with:
