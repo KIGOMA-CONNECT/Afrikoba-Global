@@ -17,6 +17,13 @@ function row(doc, label, value) {
   doc.text(`${label}: ${value}`);
 }
 
+function contributionLabel(c) {
+  if (c.currency && c.currency !== 'TZS' && c.currency_amount != null) {
+    return `${money(c.amount)} (${Number(c.currency_amount)} ${c.currency})`;
+  }
+  return money(c.amount);
+}
+
 /**
  * Tengeneza PDF report ya tukio kwa streaming (returned doc inapaswa kupiped kwa HTTP response).
  */
@@ -48,6 +55,9 @@ async function renderEventReportPdf(eventId) {
   row(doc, 'Ufunikwaji wa Bajeti', `${summary.budgetCoverage}%`);
   row(doc, 'Michango / Wachangiaji', `${summary.donations} / ${summary.contributors}`);
   row(doc, 'Wanachama Amilifu', summary.activeMembers);
+  (summary.exchange || []).forEach((x) => {
+    row(doc, `Fedha za Kigeni (${x.currency})`, `${Number(x.amount)} ${x.currency} (${x.donations} michango)`);
+  });
 
   sectionHeader(doc, 'Michango (Contributions)');
   if (report.contributions.length === 0) {
@@ -55,7 +65,7 @@ async function renderEventReportPdf(eventId) {
   } else {
     report.contributions.forEach((c) => {
       const date = c.created_at ? new Date(c.created_at).toLocaleDateString('en-GB') : '';
-      row(doc, `#${c.id}`, `${c.contributor} — ${c.mode} — ${money(c.amount)} — ${c.status} — ${date}`);
+      row(doc, `#${c.id}`, `${c.contributor} — ${c.mode} — ${contributionLabel(c)} — ${c.status} — ${date}`);
     });
   }
 

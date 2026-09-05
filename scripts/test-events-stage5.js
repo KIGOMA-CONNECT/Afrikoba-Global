@@ -238,6 +238,17 @@ async function balanceOf(userId) {
     const list = await api('GET', `/api/events/${fxId}/contributions?limit=50`, aliceToken, null);
     const fxRow = (list.data.contributions || []).find((c) => c.reference_id === res.data.reference);
     await expect(!!fxRow && fxRow.currency === 'KES' && Number(fxRow.currency_amount) === 1000, 'Orodha ya michango ina currency meta', JSON.stringify(fxRow));
+
+    const rep = await api('GET', `/api/events/${fxId}/report`, aliceToken, null);
+    const exchange = (rep.data.report && rep.data.report.summary && rep.data.report.summary.exchange) || [];
+    const kesEx = exchange.find((x) => x.currency === 'KES');
+    await expect(Number(kesEx && kesEx.amount) === 1000, 'Muhtasari wa report una FX KES=1,000', JSON.stringify(exchange));
+    const repRow = (rep.data.report && rep.data.report.contributions || []).find((c) => c.reference_id === res.data.reference);
+    await expect(!!repRow && repRow.currency === 'KES' && Number(repRow.currency_amount) === 1000, 'Report JSON inajumuisha currency meta ya mchango', JSON.stringify(repRow));
+
+    const csvRes = await fetch(`${BASE}/api/events/${fxId}/report/csv?section=contributions`, { headers: { Authorization: `Bearer ${aliceToken}` } });
+    const csv = await csvRes.text();
+    await expect(csvRes.status === 200 && csv.includes('currency_amount') && csv.includes('KES'), 'CSV ya contributions ina column za currency + KES', `${csvRes.status}`);
   }
 
   console.log(`\nStage 5: passed=${passed} failed=${failed}`);

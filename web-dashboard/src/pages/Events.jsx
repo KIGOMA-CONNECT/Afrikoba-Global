@@ -979,7 +979,7 @@ const [currencies, setCurrencies] = useState([]);
                 <tr key={c.id}>
                   <td>{c.contributor}</td>
                   <td>{c.mode}</td>
-                  <td>{formatMoney(c.amount)}</td>
+                  <td>{formatMoney(c.amount)}{c.currency && c.currency !== 'TZS' && <span className="roles-tag"> {Number(c.currency_amount)} {c.currency}</span>}</td>
                   <td className="roles-tag">{c.reference_id}</td>
                   <td>{new Date(c.created_at).toLocaleString()}</td>
                 </tr>

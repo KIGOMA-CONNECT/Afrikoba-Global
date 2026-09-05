@@ -28,6 +28,7 @@ class _VicobaBody extends StatefulWidget {
 
 class _VicobaBodyState extends State<_VicobaBody> {
   List<Map<String, dynamic>> _groups = [];
+  List<Map<String, dynamic>> _invites = [];
   bool _loading = true;
 
   final _nameCtrl = TextEditingController();
@@ -53,14 +54,50 @@ class _VicobaBodyState extends State<_VicobaBody> {
     final api = AppState.instance.api;
     try {
       final res = await api.get('/vicoba/groups');
+      List<Map<String, dynamic>> invites = [];
+      try {
+        final inv = await api.get('/vicoba/invitations');
+        invites = ((inv['invitations'] ?? []) as List).cast<Map<String, dynamic>>();
+      } catch (_) {/* inbox ni hiari */}
       if (mounted) {
         setState(() {
           _groups = (res['groups'] as List).cast<Map<String, dynamic>>();
+          _invites = invites;
           _loading = false;
         });
       }
     } catch (_) {
       if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _acceptInvite(int inviteId) async {
+    try {
+      await AppState.instance.api.post('/vicoba/invitations/$inviteId/accept', {});
+      if (!mounted) return;
+      _toast('Umekubali mwaliko! Umekuwa mwanachama wa kikundi.');
+      await _load();
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      _toast(e.message, ok: false);
+    } catch (_) {
+      if (!mounted) return;
+      _toast('Hitilafu.', ok: false);
+    }
+  }
+
+  Future<void> _rejectInvite(int inviteId) async {
+    try {
+      await AppState.instance.api.post('/vicoba/invitations/$inviteId/reject', {});
+      if (!mounted) return;
+      _toast('Mwaliko umekataliwa.');
+      await _load();
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      _toast(e.message, ok: false);
+    } catch (_) {
+      if (!mounted) return;
+      _toast('Hitilafu.', ok: false);
     }
   }
 
@@ -223,6 +260,10 @@ class _VicobaBodyState extends State<_VicobaBody> {
             ],
           ),
           const SizedBox(height: 16),
+          if (_invites.isNotEmpty) ...[
+            _invitesCard(),
+            const SizedBox(height: 12),
+          ],
           if (_groups.isEmpty)
             const Padding(
               padding: EdgeInsets.all(24),
@@ -231,6 +272,44 @@ class _VicobaBodyState extends State<_VicobaBody> {
             ),
           for (final g in _groups) _groupCard(g),
         ],
+      ),
+    );
+  }
+
+  Widget _invitesCard() {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Mialiko ya Kujiunga (Inbox)',
+                style: TextStyle(fontWeight: FontWeight.w700, color: Color(0xFF155E9C))),
+            const SizedBox(height: 4),
+            for (final inv in _invites)
+              ListTile(
+                dense: true,
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.mail_outline, color: Color(0xFF155E9C)),
+                title: Text('${inv['group_name']}'),
+                subtitle: Text(
+                    '${inv['cycle_type']} · Hisa ${inv['share_value']} · ${inv['member_count']} wanachama'),
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    FilledButton(
+                      onPressed: () => _acceptInvite(inv['id'] as int),
+                      child: const Text('Kubali'),
+                    ),
+                    TextButton(
+                      onPressed: () => _rejectInvite(inv['id'] as int),
+                      child: const Text('Kataa', style: TextStyle(color: Colors.red)),
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        ),
       ),
     );
   }

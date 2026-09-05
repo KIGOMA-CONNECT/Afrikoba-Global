@@ -25,6 +25,7 @@ class EventsScreen extends StatefulWidget {
 
 class _EventsScreenState extends State<EventsScreen> {
   List<Map<String, dynamic>> _events = [];
+  Map<String, dynamic> _reminders = {};
   bool _loading = true;
   int? _myUserId;
 
@@ -58,9 +59,15 @@ class _EventsScreenState extends State<EventsScreen> {
     try {
       final user = await AppState.instance.session.user();
       final res = await AppState.instance.api.get('/events');
+      Map<String, dynamic> reminders = {};
+      try {
+        reminders = Map<String, dynamic>.from(
+            await AppState.instance.api.get('/events/reminders/mine'));
+      } catch (_) {/* reminders ni hiari */}
       if (mounted) {
         setState(() {
           _events = (res['events'] as List).cast<Map<String, dynamic>>();
+          _reminders = reminders;
           _myUserId = user?['id'] as int?;
           _loading = false;
         });
@@ -218,6 +225,10 @@ class _EventsScreenState extends State<EventsScreen> {
           const Text('Kuchangia na kuweka akiba kwa harusi, send-off, mahafali na zaidi.',
               style: TextStyle(color: Colors.grey)),
           const SizedBox(height: 12),
+          if (_reminders.isNotEmpty) ...[
+            _remindersCard(),
+            const SizedBox(height: 12),
+          ],
           if (_events.isEmpty)
             const Padding(
               padding: EdgeInsets.all(24),
@@ -226,6 +237,38 @@ class _EventsScreenState extends State<EventsScreen> {
             ),
           for (final ev in _events) _eventCard(ev),
         ],
+      ),
+    );
+  }
+
+  Widget _remindersCard() {
+    final upcomings = (_reminders['upcoming'] as List?) ?? const [];
+    final dues = (_reminders['dues'] as List?) ?? const [];
+    final upcoming = upcomings.whereType<Map<String, dynamic>>().toList();
+    final overdue = dues.whereType<Map<String, dynamic>>().where((d) => d['status'] == 'OVERDUE').length;
+    if (upcoming.isEmpty && overdue == 0) return const SizedBox.shrink();
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Reminders & Deadlines',
+                style: TextStyle(fontWeight: FontWeight.w700, color: Color(0xFF0B7A41))),
+            const SizedBox(height: 6),
+            if (overdue > 0)
+              Text('$overdue ahadi zimerekodiwa kuchelewa (OVERDUE).',
+                  style: const TextStyle(color: Colors.red, fontSize: 13)),
+            for (final u in upcoming.take(4))
+              ListTile(
+                dense: true,
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.event_repeat, color: Color(0xFF0B7A41)),
+                title: Text('${u['name']}'),
+                subtitle: Text('Tarehe: ${formatDate('${u['event_date']}')} · Imekusanywa ${formatMoney(u['collected'])} / ${formatMoney(u['target_amount'])}'),
+              ),
+          ],
+        ),
       ),
     );
   }
@@ -291,6 +334,8 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
   final _planSessionCtrl = TextEditingController();
   final _withdrawAmtCtrl = TextEditingController();
   String _mode = 'FUNDRAISING';
+  String _currency = 'TZS';
+  List<Map<String, dynamic>> _currencies = [];
   String _cmPlanId = '';
   String _cmCommitmentId = '';
   String _planCadence = 'WEEKLY';
@@ -331,6 +376,11 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
         final w = await AppState.instance.api.get('/events/${widget.eventId}/withdrawals');
         wd = (w['withdrawals'] as List).cast<Map<String, dynamic>>();
       } catch (_) {/* owner-only */}
+      List<Map<String, dynamic>> currencies = [];
+      try {
+        final cu = await AppState.instance.api.get('/currency/currencies');
+        currencies = (cu['currencies'] as List).cast<Map<String, dynamic>>();
+      } catch (_) {/* sarafu ni hiari */}
       if (mounted) {
         setState(() {
           _dash = d['dashboard'] as Map<String, dynamic>;
@@ -339,6 +389,7 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
           _commitments = (cm['commitments'] as List).cast<Map<String, dynamic>>();
           _plans = (sp['plans'] as List).cast<Map<String, dynamic>>();
           _withdrawals = wd;
+          _currencies = currencies;
           _loading = false;
         });
       }
@@ -361,6 +412,7 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
           {
             'amount': double.parse(_amtCtrl.text.trim()),
             'mode': _mode,
+            'currency': _currency,
             'planId': _cmPlanId.isEmpty ? null : int.parse(_cmPlanId),
             'commitmentId': _cmCommitmentId.isEmpty ? null : int.parse(_cmCommitmentId),
           });
@@ -697,6 +749,18 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
               ],
               onChanged: (v) => setState(() => _mode = v ?? 'FUNDRAISING'),
             ),
+            if (_currencies.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              DropdownButtonFormField<String>(
+                initialValue: _currency,
+                decoration: const InputDecoration(labelText: 'Sarafu'),
+                items: [
+                  for (final c in _currencies)
+                    DropdownMenuItem(value: '${c['code']}', child: Text('${c['code']} · ${c['name']}')),
+                ],
+                onChanged: (v) => setState(() => _currency = v ?? 'TZS'),
+              ),
+            ],
             if (_mode == 'SAVINGS' && activePlans.isNotEmpty) ...[
               const SizedBox(height: 8),
               DropdownButtonFormField<String>(
@@ -1047,7 +1111,11 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
                   leading: const Icon(Icons.person_outline),
                   title: Text('${c['contributor']}'),
                   subtitle: Text('${c['mode']} · ${formatDate('${c['created_at']}')}'),
-                  trailing: Text(formatMoney(c['amount'])),
+                  trailing: (c['currency'] != null && c['currency'] != 'TZS')
+                      ? Text('${formatMoney(c['amount'])}\n${c['currency_amount']} ${c['currency']}',
+                          textAlign: TextAlign.end,
+                          style: const TextStyle(fontWeight: FontWeight.w600))
+                      : Text(formatMoney(c['amount'])),
                 ),
           ],
         ),

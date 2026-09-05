@@ -1562,9 +1562,9 @@ function toCsv(rows) {
 async function getEventReport(eventId) {
   const event = await findEventById(eventId);
   const owner = await pool.query(`SELECT full_name FROM users WHERE id = $1`, [event.owner_user_id]);
-  const [contributions, members, budget, withdrawals, commitments, collect] = await Promise.all([
+  const [contributions, members, budget, withdrawals, commitments, collect, exchange] = await Promise.all([
     pool.query(
-      `SELECT c.mode, c.amount, c.reference_id, c.status, c.created_at, COALESCE(c.contributor_name, u.full_name) AS contributor
+      `SELECT c.mode, c.amount, c.currency, c.currency_amount, c.reference_id, c.status, c.created_at, COALESCE(c.contributor_name, u.full_name) AS contributor
        FROM event_contributions c LEFT JOIN users u ON u.id = c.user_id WHERE c.event_id = $1 ORDER BY c.created_at`,
       [eventId]
     ),
@@ -1595,9 +1595,17 @@ async function getEventReport(eventId) {
        FROM event_contributions WHERE event_id = $1`,
       [eventId]
     ),
+    pool.query(
+      `SELECT currency, SUM(currency_amount)::float AS amount, COUNT(*)::int AS donations
+       FROM event_contributions
+       WHERE event_id = $1 AND status = 'SUCCESS' AND currency <> 'TZS'
+       GROUP BY currency ORDER BY amount DESC`,
+      [eventId]
+    ),
   ]);
   const collected = collect.rows[0] || { fundraising: 0, savings: 0, total: 0, donations: 0, contributors: 0 };
   const budgetTotal = budget.rows.reduce((a, b) => a + Number(b.amount), 0);
+  const fxSummary = (exchange.rows || []).map((r) => ({ currency: r.currency, amount: r.amount, donations: r.donations }));
   return {
     event: {
       id: event.id, name: event.name, eventType: event.event_type, description: event.description,
@@ -1620,6 +1628,7 @@ async function getEventReport(eventId) {
       donations: collected.donations,
       contributors: collected.contributors,
       activeMembers: members.rows.filter((m) => m.status === 'ACTIVE').length,
+      exchange: fxSummary,
     },
     contributions: contributions.rows,
     members: members.rows,
@@ -1647,6 +1656,10 @@ async function exportEventReportCsv(eventId, section) {
     Active_Members: report.summary.activeMembers }]));
   out.push(['', 'SECTION: CONTRIBUTIONS'].join());
   out.push(toCsv(report.contributions));
+  if (report.summary.exchange && report.summary.exchange.length > 0) {
+    out.push(['', 'SECTION: FX (FOREIGN CONTRIBUTIONS)'].join());
+    out.push(toCsv(report.summary.exchange));
+  }
   out.push(['', 'SECTION: MEMBERS'].join());
   out.push(toCsv(report.members));
   out.push(['', 'SECTION: BUDGET'].join());
