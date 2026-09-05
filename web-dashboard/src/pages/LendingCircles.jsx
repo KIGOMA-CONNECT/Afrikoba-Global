@@ -11,6 +11,7 @@ export default function LendingCircles() {
   const isAdmin = user.role === 'ADMIN';
 
   const [partners, setPartners] = useState([]);
+  const [circles, setCircles] = useState([]);
   const [campaigns, setCampaigns] = useState([]);
   const [msg, setMsg] = useState({ type: '', text: '' });
 
@@ -26,6 +27,7 @@ export default function LendingCircles() {
   const [campStory, setCampStory] = useState('');
   const [campTarget, setCampTarget] = useState('');
   const [campTerm, setCampTerm] = useState('12');
+  const [joining, setJoining] = useState(null);
 
   const [contributeAmt, setContributeAmt] = useState({});
   const [disbursing, setDisbursing] = useState(null);
@@ -37,6 +39,7 @@ export default function LendingCircles() {
 
   const load = () => {
     api.get('/circles/partners').then((r) => setPartners(r.data.partners)).catch(() => {});
+    api.get('/circles/circles').then((r) => setCircles(r.data.circles)).catch(() => {});
     api.get('/circles/campaigns').then((r) => setCampaigns(r.data.campaigns)).catch(() => {});
   };
 
@@ -51,16 +54,28 @@ export default function LendingCircles() {
       });
       show('ok', `${t('circles.created')} (ID: ${res.data.circle.id})`);
       setCircleName(''); setCirclePartner(''); setCircleDesc(''); setCircleLocation(''); setCircleImpact('COMMUNITY');
+      load();
     } catch (err) { show('err', err.response?.data?.message || t('circles.error')); }
   };
 
-  const joinCircle = async (e) => {
+  const joinCircleById = async (e) => {
     e.preventDefault();
     try {
       await api.post(`/circles/circles/${joinId}/join`);
       show('ok', t('circles.joined'));
       setJoinId('');
+      load();
     } catch (err) { show('err', err.response?.data?.message || t('circles.error')); }
+  };
+
+  const joinCircle = async (id) => {
+    setJoining(id);
+    try {
+      const res = await api.post(`/circles/circles/${id}/join`);
+      show(res.data.member ? 'ok' : 'warn', res.data.member ? t('circles.joined') : t('circles.already_member'));
+      load();
+    } catch (err) { show('err', err.response?.data?.message || t('circles.error')); }
+    finally { setJoining(null); }
   };
 
   const createCampaign = async (e) => {
@@ -146,7 +161,7 @@ export default function LendingCircles() {
             <div className="field" style={{ marginBottom: 10 }}><label>{t('circles.desc')}</label><textarea value={circleDesc} onChange={(e) => setCircleDesc(e.target.value)} /></div>
             <button className="btn" type="submit">{t('circles.create_btn')}</button>
           </form>
-          <form onSubmit={joinCircle} className="section">
+          <form onSubmit={joinCircleById} className="section">
             <div className="inline-actions">
               <div className="field" style={{ flex: 1 }}><label>{t('circles.join_label')}</label><input type="number" value={joinId} onChange={(e) => setJoinId(e.target.value)} required /></div>
               <button className="btn ghost" type="submit">{t('circles.join')}</button>
@@ -170,6 +185,21 @@ export default function LendingCircles() {
             <button className="btn" type="submit">{t('circles.create_campaign_btn')}</button>
           </form>
         </div>
+      </div>
+
+      <div className="card section">
+        <h3>{t('circles.all_circles')}</h3>
+        {circles.length === 0 && <p className="roles-tag">{t('circles.no_circles')}</p>}
+        {circles.map((c) => (
+          <div key={c.id} className="inline-actions" style={{ justifyContent: 'space-between', padding: '10px 0', borderBottom: '1px solid var(--border)' }}>
+            <div>
+              <strong>{c.name}</strong>
+              <div className="roles-tag">{t('circles.leader')}: {c.leader_name} · {t('circles.members_count')}: {c.member_count}</div>
+              <div className="roles-tag">{c.location || '-'} · {c.impact_category} · {c.field_partner_name || '-'}</div>
+            </div>
+            <button className="btn ghost" disabled={joining === c.id} onClick={() => joinCircle(c.id)}>{t('circles.join')}</button>
+          </div>
+        ))}
       </div>
 
       <div className="card section">

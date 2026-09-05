@@ -9,6 +9,7 @@ const { runMaintenance } = require('../services/dbMaintenanceService');
 const { runBalanceReconciliation } = require('./balanceReconciliation');
 const { runAutopilotPayouts } = require('../services/financialAutopilotService');
 const { recomputeAll: recomputeSellerVerifications } = require('../services/sellerVerificationService');
+const { runAutoInvestCycle } = require('../services/p2pMarketplaceService');
 const logger = require('../utils/logger');
 
 /**
@@ -98,7 +99,17 @@ function startAllJobs() {
     }
   });
 
-  logger.info('CRON', 'Cron Jobs zimeanzishwa (reconciliation, ROSCA payout, DB maintenance, split payment, scheduled payments, autopilot, seller verification)');
+  // Auto-invest sweep - every 30 minutes, sweep enabled rules over ACTIVE P2P projects.
+  cron.schedule('*/30 * * * *', async () => {
+    try {
+      const projects = await runAutoInvestCycle();
+      if (projects > 0) logger.info('CRON-AUTO-INVEST', `Auto-invest cycle done over ${projects} active project(s)`);
+    } catch (e) {
+      logger.error('CRON-AUTO-INVEST', e.message);
+    }
+  });
+
+  logger.info('CRON', 'Cron Jobs zimeanzishwa (reconciliation, ROSCA payout, DB maintenance, split payment, scheduled payments, autopilot, seller verification, auto-invest)');
 }
 
 module.exports = { startAllJobs };

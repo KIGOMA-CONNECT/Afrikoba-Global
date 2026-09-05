@@ -173,6 +173,13 @@ async function executeAutoInvestForProject(projectId) {
   const p = projectRes.rows[0];
   if (!p || p.status !== 'ACTIVE') return;
 
+  const sharePrice = Number(p.share_price);
+  if (sharePrice <= 0) return;
+
+  // Headroom in this project's raise (respect target cap).
+  const remainingRaise = Math.max(0, Number(p.target_amount) - Number(p.raised_amount));
+  if (remainingRaise <= 0) return;
+
   // Find users with matching rules
   const rules = await pool.query(
     `SELECT r.*, u.wallet_balance 
@@ -189,13 +196,17 @@ async function executeAutoInvestForProject(projectId) {
   for (const rule of rules.rows) {
     try {
       const remainingBudget = rule.budget_cap - rule.total_auto_invested;
-      let investAmount = Math.min(rule.max_amount_per_project, remainingBudget, Number(rule.wallet_balance));
-      
-      // Calculate shares
-      const shares = Math.floor(investAmount / p.share_price);
+      const investAmount = Math.min(rule.max_amount_per_project, remainingBudget, Number(rule.wallet_balance), remainingRaise);
+
+      // Calculate shares within remaining raise headroom
+      let shares = Math.floor(investAmount / sharePrice);
+      shares = Math.min(shares, Math.floor(remainingRaise / sharePrice));
       if (shares <= 0) continue;
 
-      const actualCost = shares * p.share_price;
+      const actualCost = shares * sharePrice;
+
+      // Respect project minimum ticket: skip quietly if below it.
+      if (p.min_investment_amount && actualCost < Number(p.min_investment_amount)) continue;
 
       try {
         await p2p.invest(rule.user_id, p.id, shares);
@@ -213,11 +224,26 @@ async function executeAutoInvestForProject(projectId) {
   }
 }
 
+async function runAutoInvestCycle() {
+  const projects = await pool.query(
+    `SELECT id FROM investment_projects WHERE status = 'ACTIVE'`
+  );
+  for (const row of projects.rows) {
+    try {
+      await executeAutoInvestForProject(row.id);
+    } catch (err) {
+      logger.error(`Auto-invest cycle error for project ${row.id}: ${err.message}`);
+    }
+  }
+  return projects.rows.length;
+}
+
 module.exports = {
   createListing,
   listListings,
   buyListing,
   getAutoInvestRule,
   upsertAutoInvestRule,
-  executeAutoInvestForProject
+  executeAutoInvestForProject,
+  runAutoInvestCycle
 };

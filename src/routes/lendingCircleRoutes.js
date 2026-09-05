@@ -26,6 +26,11 @@ router.post('/circles/:id/join', authRequired, async (req, res, next) => {
   catch (e) { next(e); }
 });
 
+router.get('/circles', authRequired, async (req, res, next) => {
+  try { res.json({ success: true, circles: await circles.listCircles() }); }
+  catch (e) { next(e); }
+});
+
 // Campaigns & Contributions
 router.post('/campaigns', authRequired, async (req, res, next) => {
   try { res.json({ success: true, campaign: await circles.createCampaign(req.user.id, req.body) }); }

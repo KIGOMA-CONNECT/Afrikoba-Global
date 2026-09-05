@@ -15,6 +15,12 @@ router.get('/farms', authRequired, async (req, res, next) => {
   catch (e) { next(e); }
 });
 
+// Input suppliers
+router.get('/suppliers', authRequired, async (req, res, next) => {
+  try { res.json({ success: true, suppliers: await kilimo.listAgriSuppliers() }); }
+  catch (e) { next(e); }
+});
+
 // Agri Loans & Repayments
 router.post('/loans', authRequired, async (req, res, next) => {
   try { res.json({ success: true, loan: await kilimo.applyAgriLoan(req.user.id, req.body) }); }

@@ -23,6 +23,13 @@ async function listFarmProfiles(userId) {
   return res.rows;
 }
 
+async function listAgriSuppliers() {
+  const res = await pool.query(
+    'SELECT id, supplier_name, category, phone_number, verified FROM agri_input_suppliers WHERE verified = TRUE ORDER BY supplier_name'
+  );
+  return res.rows;
+}
+
 async function applyAgriLoan(userId, data) {
   const { farmId, supplierId, amount, loanType, gracePeriodMonths, tenureMonths } = data;
   const res = await pool.query(
@@ -140,6 +147,7 @@ async function createOfftakeAgreement(userId, data) {
 module.exports = {
   createFarmProfile,
   listFarmProfiles,
+  listAgriSuppliers,
   applyAgriLoan,
   listAgriLoans,
   disburseAgriLoan,

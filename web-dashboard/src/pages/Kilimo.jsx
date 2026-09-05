@@ -12,6 +12,7 @@ export default function Kilimo() {
   const isAdmin = user.role === 'ADMIN';
 
   const [farms, setFarms] = useState([]);
+  const [suppliers, setSuppliers] = useState([]);
   const [loans, setLoans] = useState([]);
   const [msg, setMsg] = useState({ type: '', text: '' });
 
@@ -46,6 +47,7 @@ export default function Kilimo() {
 
   const load = () => {
     api.get('/kilimo/farms').then((r) => setFarms(r.data.farms)).catch(() => {});
+    api.get('/kilimo/suppliers').then((r) => setSuppliers(r.data.suppliers)).catch(() => {});
     api.get('/kilimo/loans').then((r) => setLoans(r.data.loans)).catch(() => {});
   };
 
@@ -164,7 +166,12 @@ export default function Kilimo() {
                   {LOAN_TYPES.map((lt) => <option key={lt} value={lt}>{lt}</option>)}
                 </select>
               </div>
-              <div className="field"><label>{t('kilimo.supplier_id')}</label><input type="number" placeholder="(hiari)" value={supplier} onChange={(e) => setSupplier(e.target.value)} /></div>
+              <div className="field"><label>{t('kilimo.supplier')}</label>
+                <select value={supplier} onChange={(e) => setSupplier(e.target.value)}>
+                  <option value="">-- {t('kilimo.no_supplier')} --</option>
+                  {suppliers.map((s) => <option key={s.id} value={s.id}>{s.supplier_name} ({s.category})</option>)}
+                </select>
+              </div>
             </div>
             <div className="form-row">
               <div className="field"><label>{t('kilimo.grace')}</label>

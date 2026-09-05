@@ -49,6 +49,20 @@ async function joinCircle(userId, circleId) {
   return res.rows[0];
 }
 
+async function listCircles() {
+  const res = await pool.query(
+    `SELECT c.*, fp.name AS field_partner_name, u.full_name AS leader_name,
+            COUNT(cm.id) AS member_count
+     FROM lending_circles c
+     LEFT JOIN field_partners fp ON fp.id = c.field_partner_id
+     JOIN users u ON u.id = c.leader_user_id
+     LEFT JOIN lending_circle_members cm ON cm.circle_id = c.id
+     GROUP BY c.id, fp.name, u.full_name
+     ORDER BY c.created_at DESC`
+  );
+  return res.rows;
+}
+
 async function createCampaign(borrowerUserId, data) {
   const { circleId, title, story, targetAmount, termMonths } = data;
   const res = await pool.query(
@@ -156,6 +170,7 @@ module.exports = {
   listFieldPartners,
   createCircle,
   joinCircle,
+  listCircles,
   createCampaign,
   listCampaigns,
   contribute,
