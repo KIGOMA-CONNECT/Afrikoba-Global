@@ -57,9 +57,23 @@ jobs:
           debug: true
           command_timeout: 15m
           script: |
+            set -e
             echo "connected as $(whoami) on $(hostname)"
             cd "${{ vars.SERVER_PATH }}" || exit 1
             pwd
-            git pull origin main
-            npm install
-            bash deploy.sh
+            # Robust sync: discard local artifacts (npm/root) that block plain git pull
+            git fetch origin main
+            git reset --hard origin/main
+            git log --oneline -1
+            # Production runs on Docker Compose (postgres + redis + app). Rebuild & restart.
+            docker compose up -d --build
+            # Wait for the API to come back healthy, then report.
+            for i in $(seq 1 40); do
+              if curl -s -m 5 http://127.0.0.1:3000/health/db | grep -q '"db":"UP"'; then
+                echo "API healthy after ${i} tries"
+                exit 0
+              fi
+              sleep 10
+            done
+            echo "::error::API did not become healthy within 400s after rebuild"
+            exit 1
