@@ -29,6 +29,10 @@ jobs:
       - name: Security Scan (npm audit)
         run: npm audit --audit-level=high
 
+      - name: Verify deployment target config
+        run: |
+          if [ -n "${{ vars.SERVER_PATH }}" ]; then echo "SERVER_PATH is set (length ${#SERVER_PATH})"; else echo "::error::SERVER_PATH repo variable is NOT set - please configure it under Settings > Secrets and variables > Actions > Variables"; exit 1; fi
+
       - name: Deploy to Server via SSH
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -36,8 +40,12 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: 22
+          debug: true
+          command_timeout: 15m
           script: |
+            echo "connected as $(whoami) on $(hostname)"
             cd "${{ vars.SERVER_PATH }}" || exit 1
+            pwd
             git pull origin main
             npm install
             bash deploy.sh
