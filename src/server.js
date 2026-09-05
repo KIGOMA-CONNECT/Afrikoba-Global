@@ -76,6 +76,7 @@ const payrollRoutes = require('./routes/payrollRoutes');
 const recurrenceRoutes = require('./routes/recurrenceRoutes');
 const lendingCircleRoutes = require('./routes/lendingCircleRoutes');
 const kilimoRoutes = require('./routes/kilimoRoutes');
+const eventRoutes = require('./routes/eventRoutes');
 const swaggerUi = require('swagger-ui-express');
 const { swaggerSpec } = require('./config/swagger');
 
@@ -282,6 +283,7 @@ for (const prefix of versionPrefixes) {
   app.use(`${prefix}/recurrence`, recurrenceRoutes);
   app.use(`${prefix}/circles`, walletLimiter, lendingCircleRoutes);
   app.use(`${prefix}/kilimo`, walletLimiter, kilimoRoutes);
+  app.use(`${prefix}/events`, walletLimiter, eventRoutes);
 }
 
 // Swagger UI - API documentation (production off - usitangaze API surface)
