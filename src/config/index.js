@@ -1,5 +1,7 @@
 require('dotenv').config();
 
+const DEFAULT_JWT = 'afrikoba_dev_secret_change_me';
+
 const config = {
   nodeEnv: process.env.NODE_ENV || 'development',
   port: parseInt(process.env.PORT || '3000', 10),
@@ -49,7 +51,7 @@ const config = {
     baseUrl: process.env.CONTRACT_BASE_URL || 'http://localhost:3000/contracts',
   },
   security: {
-    jwtSecret: process.env.JWT_SECRET,
+    jwtSecret: process.env.JWT_SECRET || DEFAULT_JWT,
     jwtTtl: process.env.JWT_TTL || '7d',
     // '*' ina ruhusu origin zote (development). Katika production weka list halisi.
     corsOrigins: (process.env.CORS_ORIGINS || '*')
@@ -78,8 +80,6 @@ const config = {
     tracesSampleRate: parseFloat(process.env.SENTRY_TRACES_SAMPLE_RATE || '0.1'),
   },
 };
-
-const DEFAULT_JWT = 'afrikoba_dev_secret_change_me';
 
 /**
  * Fail-fast validation: katika production, usikubali maadili ya default ambayo
