@@ -53,6 +53,15 @@ export default function Events() {
   const [planCadence, setPlanCadence] = useState('WEEKLY');
   const [planSession, setPlanSession] = useState('');
 
+  const [withdrawals, setWithdrawals] = useState([]);
+  const [members, setMembers] = useState([]);
+  const [invites, setInvites] = useState([]);
+  const [reminders, setReminders] = useState([]);
+  const [withdrawAmt, setWithdrawAmt] = useState('');
+  const [withdrawMode, setWithdrawMode] = useState('FUNDRAISING');
+  const [withdrawTo, setWithdrawTo] = useState('');
+  const [memberPhone, setMemberPhone] = useState('');
+
   const show = (type, text) => {
     setMsg({ type, text });
     setTimeout(() => setMsg({ type: '', text: '' }), 5000);
@@ -86,6 +95,22 @@ export default function Events() {
       const sp = await api.get(`/events/${ev.id}/savings-plans`);
       setPlans(sp.data.plans);
     } catch { setPlans([]); }
+    try {
+      const wd = await api.get(`/events/${ev.id}/withdrawals`);
+      setWithdrawals(wd.data.withdrawals);
+    } catch { setWithdrawals([]); }
+    try {
+      const mb = await api.get(`/events/${ev.id}/members`);
+      setMembers(mb.data.members);
+    } catch { setMembers([]); }
+    try {
+      const iv = await api.get(`/events/${ev.id}/invites`);
+      setInvites(iv.data.invites);
+    } catch { setInvites([]); }
+    try {
+      const rm = await api.get(`/events/${ev.id}/reminders`);
+      setReminders(rm.data.reminders);
+    } catch { setReminders([]); }
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
@@ -175,6 +200,64 @@ export default function Events() {
     try {
       await api.post(`/events/${selected.id}/savings-plans/${pid}/close`);
       show('ok', t('events.plan_closed'));
+      selectEvent(selected);
+    } catch (err) { show('err', err.response?.data?.message || t('events.error')); }
+  };
+
+  const requestWithdraw = async (e) => {
+    e.preventDefault();
+    if (!withdrawAmt) { show('err', t('events.enter_amount')); return; }
+    try {
+      const res = await api.post(`/events/${selected.id}/withdrawals`, {
+        amount: Number(withdrawAmt), mode: withdrawMode,
+        toUserId: withdrawTo ? Number(withdrawTo) : undefined,
+      });
+      show('ok', res.data.message || t('events.withdraw_requested'));
+      setWithdrawAmt('');
+      selectEvent(selected);
+    } catch (err) { show('err', err.response?.data?.message || t('events.error')); }
+  };
+
+  const cancelWithdraw = async (wid) => {
+    try {
+      await api.post(`/events/${selected.id}/withdrawals/${wid}/cancel`);
+      show('ok', t('events.withdraw_cancelled'));
+      selectEvent(selected);
+    } catch (err) { show('err', err.response?.data?.message || t('events.error')); }
+  };
+
+  const generateInvite = async () => {
+    try {
+      const res = await api.post(`/events/${selected.id}/invites`, { maxUses: 100 });
+      show('ok', t('events.invite_created'));
+      selectEvent(selected);
+      if (navigator.clipboard) {
+        navigator.clipboard.writeText(res.data.invite.code).catch(() => {});
+      }
+    } catch (err) { show('err', err.response?.data?.message || t('events.error')); }
+  };
+
+  const copyInvite = (code) => {
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(code).then(() => show('ok', t('events.copied'))).catch(() => {});
+    }
+  };
+
+  const addMember = async (e) => {
+    e.preventDefault();
+    if (!memberPhone) { show('err', t('events.enter_phone')); return; }
+    try {
+      await api.post(`/events/${selected.id}/members`, { phoneNumber: memberPhone });
+      show('ok', t('events.member_added'));
+      setMemberPhone('');
+      selectEvent(selected);
+    } catch (err) { show('err', err.response?.data?.message || t('events.error')); }
+  };
+
+  const removeMember = async (mid) => {
+    try {
+      await api.delete(`/events/${selected.id}/members/${mid}`);
+      show('ok', t('events.member_removed'));
       selectEvent(selected);
     } catch (err) { show('err', err.response?.data?.message || t('events.error')); }
   };
@@ -313,6 +396,11 @@ export default function Events() {
               <div className="stat-box"><strong>{formatMoney(dashboard.commitments.total)}</strong><span>{t('events.pledged')}</span></div>
               <div className="stat-box"><strong>{formatMoney(dashboard.commitments.outstanding)}</strong><span>{t('events.outstanding')}</span></div>
               <div className="stat-box"><strong>{dashboard.savingsPlans.length}</strong><span>{t('events.plans_count')}</span></div>
+            </div>
+            <div className="stat-row">
+              <div className="stat-box"><strong>{dashboard.participants.members}</strong><span>{t('events.members')}</span></div>
+              <div className="stat-box"><strong>{dashboard.participants.invitesActive}</strong><span>{t('events.invites_active')}</span></div>
+              <div className="stat-box"><strong>{formatMoney(dashboard.withdrawals?.FUNDRAISING?.paid || 0)}</strong><span>{t('events.withdrawn')}</span></div>
             </div>
             <div className="progress-track"><div className="progress-fill" style={{ width: `${Math.min(dashboard.summary.progress, 100)}%` }} /></div>
             <p>{t('events.progress')}: {dashboard.summary.progress}% · {dashboard.stats.contributors} {t('events.contributors').toLowerCase()} · {dashboard.stats.donations} {t('events.donations').toLowerCase()}</p>
@@ -467,6 +555,116 @@ export default function Events() {
               </div>
             );
           })}
+        </div>
+      )}
+
+      {selected && dashboard && (
+        <div className="grid grid-2">
+          <div className="card">
+            <h3>{t('events.members_title')}</h3>
+            {isOwner ? (
+              <>
+                <p className="roles-tag">{t('events.invite_hint')}</p>
+                {invites.length > 0 && (
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', margin: '8px 0', flexWrap: 'wrap' }}>
+                    {invites.slice(0, 3).map((iv) => (
+                      <span key={iv.id} className="roles-tag" style={{ cursor: 'pointer' }} onClick={() => copyInvite(iv.code)} title={t('events.copied')}>
+                        <strong>{iv.code}</strong> · {iv.uses}/{iv.maxUses} <StatusBadge status={iv.status} />
+                      </span>
+                    ))}
+                  </div>
+                )}
+                <button className="btn" onClick={generateInvite}>{t('events.invite_create')}</button>
+                <form onSubmit={addMember} className="form-row" style={{ marginTop: 10 }}>
+                  <div className="field"><label>{t('events.add_member_phone')}</label><input value={memberPhone} onChange={(e) => setMemberPhone(e.target.value)} placeholder="07XXXXXXXX" required /></div>
+                  <button className="btn" type="submit" style={{ alignSelf: 'end' }}>{t('events.member_add')}</button>
+                </form>
+              </>
+            ) : (
+              <p className="roles-tag">{t('events.owner_only')}</p>
+            )}
+            {members.length > 0 && (
+              <table style={{ marginTop: 10 }}>
+                <thead><tr><th>{t('events.member_name')}</th><th>{t('events.member_role')}</th><th>{t('events.member_joined')}</th>{isOwner && <th></th>}</tr></thead>
+                <tbody>
+                  {members.map((m) => (
+                    <tr key={m.userId}>
+                      <td>{m.userName} {m.userId === user.id && '· wewe'}</td>
+                      <td><StatusBadge status={m.role} /></td>
+                      <td>{m.joinedAt ? new Date(m.joinedAt).toLocaleDateString() : '-'}</td>
+                      {isOwner && m.role !== 'OWNER' && (
+                        <td><button className="btn warn" onClick={() => removeMember(m.userId)}>{t('events.member_remove')}</button></td>
+                      )}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+
+          <div className="card">
+            <h3>{t('events.withdraw_title')}</h3>
+            {isOwner ? (
+              <form onSubmit={requestWithdraw} className="form-row" style={{ marginBottom: 10 }}>
+                <div className="field"><label>{t('events.withdraw_mode')}</label>
+                  <select value={withdrawMode} onChange={(e) => setWithdrawMode(e.target.value)}>
+                    <option value="FUNDRAISING">{t('events.mode_fundraising')}</option>
+                    <option value="SAVINGS">{t('events.mode_savings')}</option>
+                  </select>
+                </div>
+                <div className="field"><label>{t('events.amount')}</label>
+                  <input type="number" min="1" value={withdrawAmt} onChange={(e) => setWithdrawAmt(e.target.value)} required />
+                </div>
+                <div className="field"><label>{t('events.withdraw_to')}</label>
+                  <select value={withdrawTo} onChange={(e) => setWithdrawTo(e.target.value)}>
+                    <option value="">{t('events.withdraw_to_owner')}</option>
+                    {members.filter((m) => m.userId !== user.id).map((m) => (
+                      <option key={m.userId} value={m.userId}>{m.userName}</option>
+                    ))}
+                  </select>
+                </div>
+                <button className="btn" type="submit" style={{ alignSelf: 'end' }}>{t('events.withdraw_btn')}</button>
+              </form>
+            ) : (
+              <p className="roles-tag">{t('events.owner_only')}</p>
+            )}
+            <div className="form-row">
+              <div className="field"><label>{t('events.fundraising')} · {t('events.withdraw_available')}</label><div>{formatMoney(dashboard.withdrawals?.FUNDRAISING?.available || 0)}</div></div>
+              <div className="field"><label>{t('events.savings_raised')} · {t('events.withdraw_available')}</label><div>{formatMoney(dashboard.withdrawals?.SAVINGS?.available || 0)}</div></div>
+            </div>
+            {withdrawals.length > 0 && (
+              <table style={{ marginTop: 10 }}>
+                <thead><tr><th>{t('events.mode')}</th><th>{t('events.amount')}</th><th>{t('events.recipient')}</th><th>{t('events.commit_status')}</th><th>{t('events.date')}</th>{isOwner && <th></th>}</tr></thead>
+                <tbody>
+                  {withdrawals.map((w) => (
+                    <tr key={w.id}>
+                      <td>{w.mode}</td>
+                      <td>{formatMoney(w.amount)}</td>
+                      <td>{w.recipient}</td>
+                      <td>{w.status}{w.requiresApproval && <span className="roles-tag"> 4-eyes</span>}</td>
+                      <td>{new Date(w.created_at).toLocaleDateString()}</td>
+                      {isOwner && w.status === 'PENDING' && (
+                        <td><button className="btn warn" onClick={() => cancelWithdraw(w.id)}>{t('events.withdraw_cancel')}</button></td>
+                      )}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+            {reminders.length > 0 && (
+              <div style={{ marginTop: 12 }}>
+                <h4>{t('events.reminders_title')}</h4>
+                {reminders.slice(0, 5).map((r) => (
+                  <div key={r.id} className="list-item" style={{ padding: '6px 0' }}>
+                    <div>
+                      <strong>{r.type}</strong> <span className="roles-tag">{r.sent_date}</span>
+                    </div>
+                    <div className="roles-tag">{r.recipient_name || '-'} · {r.channel}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       )}
 

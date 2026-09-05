@@ -276,6 +276,7 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
   List<Map<String, dynamic>> _budget = [];
   List<Map<String, dynamic>> _commitments = [];
   List<Map<String, dynamic>> _plans = [];
+  List<Map<String, dynamic>> _withdrawals = [];
   bool _loading = true;
 
   final _amtCtrl = TextEditingController();
@@ -287,10 +288,13 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
   final _planNameCtrl = TextEditingController();
   final _planTargetCtrl = TextEditingController();
   final _planSessionCtrl = TextEditingController();
+  final _withdrawAmtCtrl = TextEditingController();
   String _mode = 'FUNDRAISING';
   String _cmPlanId = '';
   String _cmCommitmentId = '';
   String _planCadence = 'WEEKLY';
+  String _withdrawMode = 'FUNDRAISING';
+  String? _inviteCode;
 
   @override
   void initState() {
@@ -309,6 +313,7 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
     _planNameCtrl.dispose();
     _planTargetCtrl.dispose();
     _planSessionCtrl.dispose();
+    _withdrawAmtCtrl.dispose();
     super.dispose();
   }
 
@@ -319,6 +324,11 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
       final b = await AppState.instance.api.get('/events/${widget.eventId}/budget');
       final cm = await AppState.instance.api.get('/events/${widget.eventId}/commitments');
       final sp = await AppState.instance.api.get('/events/${widget.eventId}/savings-plans');
+      List<Map<String, dynamic>> wd = [];
+      try {
+        final w = await AppState.instance.api.get('/events/${widget.eventId}/withdrawals');
+        wd = (w['withdrawals'] as List).cast<Map<String, dynamic>>();
+      } catch (_) {/* owner-only */}
       if (mounted) {
         setState(() {
           _dash = d['dashboard'] as Map<String, dynamic>;
@@ -326,6 +336,7 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
           _budget = (b['items'] as List).cast<Map<String, dynamic>>();
           _commitments = (cm['commitments'] as List).cast<Map<String, dynamic>>();
           _plans = (sp['plans'] as List).cast<Map<String, dynamic>>();
+          _withdrawals = wd;
           _loading = false;
         });
       }
@@ -469,6 +480,42 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
     }
   }
 
+  Future<void> _withdraw() async {
+    try {
+      final res = await AppState.instance.api.post(
+          '/events/${widget.eventId}/withdrawals',
+          {
+            'amount': double.parse(_withdrawAmtCtrl.text.trim()),
+            'mode': _withdrawMode,
+          });
+      if (!mounted) return;
+      _toast('${res['message']}');
+      _withdrawAmtCtrl.clear();
+      await _load();
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      _toast(e.message, ok: false);
+    } catch (_) {
+      if (!mounted) return;
+      _toast('Hitilafu.', ok: false);
+    }
+  }
+
+  Future<void> _generateInvite() async {
+    try {
+      final res = await AppState.instance.api.post(
+          '/events/${widget.eventId}/invites', {'maxUses': 100});
+      if (!mounted) return;
+      final code = '${res['invite']['code']}';
+      setState(() => _inviteCode = code);
+      _toast('Mwaliko: $code (umenakiliwa)');
+      await _load();
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      _toast(e.message, ok: false);
+    }
+  }
+
   bool get _isOwner {
     if (_dash == null || widget.myUserId == null) return false;
     final ev = _dash!['event'] as Map<String, dynamic>;
@@ -494,6 +541,10 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
                   const SizedBox(height: 12),
                   _plansCard(),
                   const SizedBox(height: 12),
+                  if (_isOwner) ...[
+                    _withdrawInviteCard(),
+                    const SizedBox(height: 12),
+                  ],
                   _budgetCard(),
                   const SizedBox(height: 12),
                   _contributionsCard(),
@@ -782,6 +833,75 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
                           child: const Text('Funga', style: TextStyle(color: Colors.red)),
                         )
                       : null,
+                ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _withdrawInviteCard() {
+    final participants = (_dash!['participants'] as Map?) ?? const {};
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Utoaji & Mialiko', style: TextStyle(fontWeight: FontWeight.w700)),
+            const SizedBox(height: 6),
+            Text('Wanachama: ${participants['members'] ?? 0} · Mialiko amilifu: ${participants['invitesActive'] ?? 0}',
+                style: const TextStyle(color: Colors.grey)),
+            const SizedBox(height: 6),
+            if (_inviteCode != null)
+              Text('Mwaliko wako: $_inviteCode',
+                  style: const TextStyle(fontWeight: FontWeight.w700, color: Color(0xFF0B7A41))),
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _withdrawAmtCtrl,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(labelText: 'Kiasi cha Utoaji (TZS)', prefixText: 'TZS '),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                DropdownButton<String>(
+                  value: _withdrawMode,
+                  items: const [
+                    DropdownMenuItem(value: 'FUNDRAISING', child: Text('FUNDRAISING')),
+                    DropdownMenuItem(value: 'SAVINGS', child: Text('SAVINGS')),
+                  ],
+                  onChanged: (v) => setState(() => _withdrawMode = v ?? 'FUNDRAISING'),
+                ),
+              ],
+            ),
+            Row(
+              children: [
+                Expanded(
+                  child: FilledButton(
+                    onPressed: _withdrawAmtCtrl.text.trim().isEmpty ? null : _withdraw,
+                    child: const Text('Toa Fedha'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: _generateInvite,
+                    child: const Text('Mwaliko'),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            if (_withdrawals.isNotEmpty)
+              for (final w in _withdrawals.take(5))
+                ListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.arrow_upward),
+                  title: Text('${w['mode']} · ${formatMoney(w['amount'])} → ${w['recipient']}'),
+                  subtitle: Text('${w['status']}${w['requiresApproval'] == true ? ' (4-eyes)' : ''}'),
                 ),
           ],
         ),

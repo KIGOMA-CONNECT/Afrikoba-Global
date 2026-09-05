@@ -337,6 +337,11 @@ if (process.env.DISABLE_CRON !== 'true') {
   // Recurrence automation scheduler (auto-payroll, auto-savings, contribution cycles)
   const { startRecurrenceScheduler } = require('./services/recurrenceService');
   startRecurrenceScheduler(parseInt(process.env.RECURRENCE_INTERVAL_MS, 10) || 60000);
+  // Event reminders (commitment due / upcoming event) — best-effort hourly sweep
+  const { runEventReminders } = require('./services/eventService');
+  const runReminders = () => runEventReminders().catch(() => {});
+  runReminders();
+  setInterval(runReminders, parseInt(process.env.EVENT_REMINDER_INTERVAL_MS, 10) || 3600000);
 }
 
 function startServer(server) {
