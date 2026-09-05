@@ -8,6 +8,7 @@
     "dev": "node --watch src/server.js",
     "cron": "node src/jobs/runAll.js",
     "db:setup": "node scripts/initDb.js",
+    "db:migrate": "node scripts/runMigrations.js",
     "seed": "node scripts/seedDb.js",
     "test": "node tests/security.test.js",
     "build": "cd web-dashboard && npm install && npm run build",
