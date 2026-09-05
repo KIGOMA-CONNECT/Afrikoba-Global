@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../core/app_state.dart';
+import '../core/api_client.dart';
 import '../core/format.dart';
 
 /// DahShabari - salio kwa mteja, takwimu za mfumo kwa ADMIN.
@@ -15,6 +16,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Map<String, dynamic>? _stats;
   List<Map<String, dynamic>> _services = [];
   bool _isAdmin = false;
+  bool _onboarded = false;
   String? _userName;
 
   @override
@@ -26,6 +28,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Future<void> _load() async {
     final user = await AppState.instance.session.user();
     final isAdmin = user?['role'] == 'ADMIN';
+    final onboarded = await AppState.instance.session.onboarded();
     final api = AppState.instance.api;
     try {
       if (isAdmin) {
@@ -43,9 +46,42 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (mounted) {
       setState(() {
         _isAdmin = isAdmin;
+        _onboarded = onboarded;
         _userName = user?['full_name'] as String?;
       });
     }
+  }
+
+  Future<void> _toggleOnboard(Map<String, dynamic> svc) async {
+    final active = svc['active'] == true;
+    try {
+      await AppState.instance.api
+          .post('/services/${active ? 'unsubscribe' : 'subscribe'}', {'serviceKey': svc['key']});
+      if (!mounted) return;
+      final c = await AppState.instance.api.get('/services/catalog');
+      setState(() => _services = (c['catalog'] as List).cast<Map<String, dynamic>>());
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(e.message), backgroundColor: Colors.red));
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Hitilafu.'), backgroundColor: Colors.red));
+    }
+  }
+
+  Future<void> _finishOnboard() async {
+    await AppState.instance.session.setOnboarded();
+    if (!mounted) return;
+    setState(() => _onboarded = true);
+    ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Karibu Afrikoba! Huduma zako ziko tayari.')));
+  }
+
+  bool get _needsOnboarding {
+    final joinable = _services.where((s) => s['baseService'] != true && s['comingSoon'] != true).toList();
+    return !_isAdmin && !_onboarded && joinable.isNotEmpty && !joinable.any((s) => s['active'] == true);
   }
 
   @override
@@ -60,6 +96,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
           Text(_isAdmin ? 'Muhtasari wa mfumo mzima' : 'Salio na miamala yako',
               style: TextStyle(color: Colors.grey.shade600)),
           const SizedBox(height: 16),
+          if (_needsOnboarding) ...[
+            _onboardingCard(),
+            const SizedBox(height: 16),
+          ],
           if (_isAdmin && _stats != null) _adminStats(),
           if (!_isAdmin && _balance != null) _balanceCards(),
           if (!_isAdmin && _services.isNotEmpty) ...[
@@ -67,6 +107,49 @@ class _DashboardScreenState extends State<DashboardScreen> {
             _servicesCard(),
           ],
         ],
+      ),
+    );
+  }
+
+  Widget _onboardingCard() {
+    final joinable = _services
+        .where((s) => s['baseService'] != true && s['comingSoon'] != true)
+        .toList();
+    return Card(
+      color: const Color(0xFFF2FAF4),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Karibu! Chagua huduma unazotaka kuanza',
+                style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
+            const SizedBox(height: 4),
+            Text(
+                'Washa huduma zinazokufaa. Unaweza kubadilisha wakati wowote kwenye Huduma Zako.',
+                style: TextStyle(fontSize: 12.5, color: Colors.grey.shade700)),
+            const SizedBox(height: 6),
+            for (final svc in joinable)
+              ListTile(
+                dense: true,
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.circle, size: 12, color: Color(0xFF0B7A41)),
+                title: Text('${svc['swahili'] ?? svc['name']}',
+                    style: const TextStyle(fontWeight: FontWeight.w600)),
+                subtitle: Text('${svc['tagline'] ?? ''}',
+                    maxLines: 2, overflow: TextOverflow.ellipsis),
+                trailing: FilledButton.tonal(
+                  onPressed: () => _toggleOnboard(svc),
+                  child: Text(svc['active'] == true ? 'Ondoa' : 'Jiunge'),
+                ),
+              ),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton(onPressed: _finishOnboard, child: const Text('Maliza kuchagua')),
+            ),
+          ],
+        ),
       ),
     );
   }

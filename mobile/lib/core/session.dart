@@ -5,6 +5,7 @@ import 'dart:convert';
 class Session {
   static const _kToken = 'afrikoba_token';
   static const _kUser = 'afrikoba_user';
+  static const _kOnboarded = 'afrikoba_onboarded';
 
   final FlutterSecureStorage _secure = FlutterSecureStorage(
     aOptions: AndroidOptions(encryptedSharedPreferences: true),
@@ -38,6 +39,16 @@ class Session {
   Future<void> updateUser(Map<String, dynamic> user) async {
     final p = await SharedPreferences.getInstance();
     await p.setString(_kUser, jsonEncode(user));
+  }
+
+  Future<bool> onboarded() async {
+    final p = await SharedPreferences.getInstance();
+    return p.getBool(_kOnboarded) ?? false;
+  }
+
+  Future<void> setOnboarded() async {
+    final p = await SharedPreferences.getInstance();
+    await p.setBool(_kOnboarded, true);
   }
 
   Future<void> clear() async {
