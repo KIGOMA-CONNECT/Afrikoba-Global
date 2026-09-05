@@ -1244,28 +1244,31 @@ async function createEventFromTemplate(userId, templateId, overrides = {}) {
 // ===================== SERIES (RECURRING EVENTS) =====================
 
 function nextSeriesDate(current, cadence, dayOfMonth) {
-  const d = new Date(current);
-  const day = d.getUTCDate();
+  const ymd = current instanceof Date ? localDateOnly(current) : String(current).slice(0, 10);
+  const [y, m, d] = ymd.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  const day = dt.getUTCDate();
   switch (String(cadence).toUpperCase()) {
-    case 'WEEKLY': d.setUTCDate(day + 7); break;
-    case 'BIWEEKLY': d.setUTCDate(day + 14); break;
-    case 'QUARTERLY': d.setUTCMonth(d.getUTCMonth() + 3); break;
-    case 'YEARLY': d.setUTCFullYear(d.getUTCFullYear() + 1); break;
+    case 'WEEKLY': dt.setUTCDate(day + 7); break;
+    case 'BIWEEKLY': dt.setUTCDate(day + 14); break;
+    case 'QUARTERLY': dt.setUTCMonth(dt.getUTCMonth() + 3); break;
+    case 'YEARLY': dt.setUTCFullYear(dt.getUTCFullYear() + 1); break;
     default: {
-      d.setUTCMonth(d.getUTCMonth() + 1);
-      if (dayOfMonth) d.setUTCDate(Math.min(dayOfMonth, 28));
+      dt.setUTCMonth(dt.getUTCMonth() + 1);
+      if (dayOfMonth) dt.setUTCDate(Math.min(dayOfMonth, 28));
     }
   }
-  return d;
+  return dt.toISOString().slice(0, 10);
 }
 
 async function buildSeriesStart(data) {
   const start = data.startDate || new Date();
-  const base = new Date(start);
+  let baseStr = start instanceof Date ? localDateOnly(start) : String(start).slice(0, 10);
   if (String(data.cadence || 'MONTHLY').toUpperCase() === 'MONTHLY' && data.dayOfMonth) {
-    base.setUTCDate(Math.min(Number(data.dayOfMonth), 28));
+    const [y, m] = baseStr.split('-').map(Number);
+    baseStr = `${y}-${String(m).padStart(2, '0')}-${String(Math.min(Number(data.dayOfMonth), 28)).padStart(2, '0')}`;
   }
-  return base.toISOString().slice(0, 10);
+  return baseStr;
 }
 
 async function createEventSeries(userId, data) {
@@ -1372,7 +1375,7 @@ async function generateNextEventFromSeries(seriesId, force = false) {
   const next = nextSeriesDate(s.next_run_at, s.cadence, s.day_of_month);
   await pool.query(
     `UPDATE event_series SET last_event_id = $1, events_generated = events_generated + 1, next_run_at = $2, updated_at = NOW() WHERE id = $3`,
-    [created.id, next.toISOString().slice(0, 10), s.id]
+    [created.id, next, s.id]
   );
 
   if (template) {
@@ -1381,7 +1384,7 @@ async function generateNextEventFromSeries(seriesId, force = false) {
 
   await logAudit({ userId: s.owner_id, eventType: 'EVENT_SERIES_GENERATE', entityType: 'event_series', entityId: s.id,
     afterData: { eventId: created.id } });
-  return created;
+  return { ...created, series_id: s.id };
 }
 
 async function runDueEventSeries() {
