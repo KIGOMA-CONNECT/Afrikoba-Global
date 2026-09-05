@@ -79,6 +79,9 @@ const PaymentLinkPage = lazy(() => import('./pages/PaymentLink.jsx'));
 const Developer = lazy(() => import('./pages/Developer.jsx'));
 const RiskOps = lazy(() => import('./pages/RiskOps.jsx'));
 const Governance = lazy(() => import('./pages/Governance.jsx'));
+const LendingCircles = lazy(() => import('./pages/LendingCircles.jsx'));
+const Kilimo = lazy(() => import('./pages/Kilimo.jsx'));
+const SecondaryMarket = lazy(() => import('./pages/SecondaryMarket.jsx'));
 
 function RequireAuth({ children }) {
   const token = localStorage.getItem('afrikoba_token');
@@ -163,6 +166,9 @@ export default function App() {
             <Route path="developer" element={<Page><Developer /></Page>} />
             <Route path="risk" element={<Page><RiskOps /></Page>} />
             <Route path="governance" element={<Page><Governance /></Page>} />
+            <Route path="circles" element={<Page><LendingCircles /></Page>} />
+            <Route path="kilimo" element={<Page><Kilimo /></Page>} />
+            <Route path="secondary" element={<Page><SecondaryMarket /></Page>} />
         <Route path="settings" element={<Page><Settings /></Page>} />
       </Route>
         <Route path="/pay/:code" element={<Page><PaymentLinkPage /></Page>} />

@@ -61,6 +61,7 @@ const merchantRoutes = require('./routes/merchantRoutes');
 const budgetRoutes = require('./routes/budgetRoutes');
 const creditRoutes = require('./routes/creditRoutes');
 const cardRoutes = require('./routes/cardRoutes');
+const secondaryRoutes = require('./routes/secondaryRoutes');
 const bapRoutes = require('./routes/bapRoutes');
 const publicStatsRoutes = require('./routes/publicStats');
 const passportRoutes = require('./routes/passportRoutes');
@@ -73,6 +74,8 @@ const socialFundRoutes = require('./routes/socialFundRoutes');
 const governanceRoutes = require('./routes/governanceRoutes');
 const payrollRoutes = require('./routes/payrollRoutes');
 const recurrenceRoutes = require('./routes/recurrenceRoutes');
+const lendingCircleRoutes = require('./routes/lendingCircleRoutes');
+const kilimoRoutes = require('./routes/kilimoRoutes');
 const swaggerUi = require('swagger-ui-express');
 const { swaggerSpec } = require('./config/swagger');
 
@@ -268,6 +271,7 @@ for (const prefix of versionPrefixes) {
   app.use(`${prefix}/stats`, publicStatsRoutes);
   app.use(`${prefix}/passport`, walletLimiter, passportRoutes);
   app.use(`${prefix}/marketplace`, walletLimiter, marketplaceRoutes);
+  app.use(`${prefix}/secondary`, walletLimiter, secondaryRoutes);
   app.use(prefix, projectRoutes);
   app.use(`${prefix}/ai`, aiRoutes);
   app.use(`${prefix}/procurement`, procurementRoutes);
@@ -276,6 +280,8 @@ for (const prefix of versionPrefixes) {
   app.use(`${prefix}/governance`, governanceRoutes);
   app.use(`${prefix}/payroll`, payrollRoutes);
   app.use(`${prefix}/recurrence`, recurrenceRoutes);
+  app.use(`${prefix}/circles`, walletLimiter, lendingCircleRoutes);
+  app.use(`${prefix}/kilimo`, walletLimiter, kilimoRoutes);
 }
 
 // Swagger UI - API documentation (production off - usitangaze API surface)
