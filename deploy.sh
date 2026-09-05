@@ -9,6 +9,9 @@ echo "Starting Afrikoba Global deployment..."
 # Install dependencies
 npm install
 
+# Apply any pending database migrations (idempotent)
+node scripts/runMigrations.js
+
 # Build frontend
 npm run build
 
