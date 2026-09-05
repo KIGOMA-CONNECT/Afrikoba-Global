@@ -158,7 +158,7 @@ async function updateEvent(userId, eventId, patch) {
   return updated;
 }
 
-async function contribute(userId, eventId, { amount, mode = 'FUNDRAISING', contributorName }) {
+async function contribute(userId, eventId, { amount, mode = 'FUNDRAISING', contributorName, commitmentId, planId }) {
   const amountN = Number(amount);
   if (!(amountN > 0)) throw badge('Kiasi cha mchango ni lazima kiwe chanya.', 400);
   const modeUp = String(mode).toUpperCase();
@@ -174,9 +174,27 @@ async function contribute(userId, eventId, { amount, mode = 'FUNDRAISING', contr
   const reference = generateReference('EV');
   const toAccount = modeUp === 'SAVINGS' ? 'EVENT_SAVINGS' : 'EVENT_POOL';
 
+  if (planId != null && modeUp !== 'SAVINGS') {
+    throw badge('Mpango wa akiba unaendana na njia ya SAVINGS pekee.', 400);
+  }
+
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    if (planId != null) {
+      const planCheck = await client.query(
+        `SELECT id FROM event_savings_plans WHERE id = $1 AND event_id = $2 AND status = 'ACTIVE'`,
+        [Number(planId), eventId]
+      );
+      if (planCheck.rows.length === 0) throw badge('Mpango wa akiba haupo au haupo katika tukio hili.', 400);
+    }
+    if (commitmentId != null) {
+      const commitCheck = await client.query(
+        `SELECT id FROM event_commitments WHERE id = $1 AND event_id = $2 AND user_id = $3 AND status IN ('PENDING','PARTIAL')`,
+        [Number(commitmentId), eventId, userId]
+      );
+      if (commitCheck.rows.length === 0) throw badge('Ahadi haiko sahihi kwa mchango huu.', 400);
+    }
     const debit = await fin.debitWallet({
       client, userId, amount: amountN, reference,
       toAccount,
@@ -187,11 +205,27 @@ async function contribute(userId, eventId, { amount, mode = 'FUNDRAISING', contr
       await client.query('ROLLBACK');
       return { dedup: true, reference };
     }
-    await client.query(
+    const ins = await client.query(
       `INSERT INTO event_contributions (event_id, user_id, contributor_name, mode, amount, reference_id, status)
-       VALUES ($1,$2,$3,$4,$5,$6,'SUCCESS')`,
+       VALUES ($1,$2,$3,$4,$5,$6,'SUCCESS') RETURNING id`,
       [eventId, userId, contributorName || null, modeUp, amountN, reference]
     );
+    const contributionId = ins.rows[0].id;
+    if (planId != null) {
+      await client.query(
+        `INSERT INTO event_savings_plan_contributions (plan_id, contribution_id) VALUES ($1,$2)`,
+        [Number(planId), contributionId]
+      );
+    }
+    if (commitmentId != null) {
+      await client.query(
+        `UPDATE event_commitments
+            SET fulfilled = fulfilled + $1,
+                status = CASE WHEN fulfilled + $1 >= amount THEN 'FULFILLED' ELSE 'PARTIAL' END
+          WHERE id = $2`,
+        [amountN, Number(commitmentId)]
+      );
+    }
     await client.query(
       modeUp === 'SAVINGS'
         ? `UPDATE social_events SET savings_amount = savings_amount + $1, updated_at = NOW() WHERE id = $2`
@@ -295,6 +329,137 @@ async function deleteBudgetItem(userId, eventId, itemId) {
   return { success: true };
 }
 
+async function makeCommitment(actorId, eventId, { amount, dueDate, note, userId }) {
+  const event = await findEventById(eventId);
+  if (event.status !== 'ACTIVE') throw badge('Tukio halipo kwenye hali ya kukubali ahadi.', 400);
+  const amountN = Number(amount);
+  if (!(amountN > 0)) throw badge('Kiasi cha ahadi ni lazima kiwe chanya.', 400);
+  const commitUserId = userId != null ? Number(userId) : actorId;
+  if (commitUserId !== actorId) assertOwner(actorId, event);
+  const dd = await calculateDeadline(dueDate);
+  const { rows } = await pool.query(
+    `INSERT INTO event_commitments (event_id, user_id, amount, note, due_date, created_by, status)
+     VALUES ($1,$2,$3,$4,$5,$6,'PENDING') RETURNING *`,
+    [eventId, commitUserId, amountN, note || null, dd, actorId]
+  );
+  await logAudit({
+    userId: actorId, eventType: 'EVENT_COMMITMENT', entityType: 'event', entityId: eventId,
+    amount: amountN,
+  });
+  return rows[0];
+}
+
+async function listCommitments(eventId) {
+  const { rows } = await pool.query(
+    `SELECT c.*, COALESCE(u.full_name, 'Mgeni') AS user_name
+       FROM event_commitments c
+       LEFT JOIN users u ON u.id = c.user_id
+      WHERE c.event_id = $1
+      ORDER BY c.created_at DESC`,
+    [eventId]
+  );
+  return rows.map((r) => {
+    const amount = Number(r.amount);
+    const fulfilled = Number(r.fulfilled);
+    let status = r.status;
+    if (status !== 'CANCELLED') {
+      status = fulfilled >= amount ? 'FULFILLED' : (fulfilled > 0 ? 'PARTIAL' : 'PENDING');
+    }
+    return {
+      id: r.id,
+      userId: r.user_id,
+      userName: r.user_name,
+      amount,
+      fulfilled,
+      remaining: Math.max(amount - fulfilled, 0),
+      status,
+      note: r.note,
+      dueDate: r.due_date,
+      createdAt: r.created_at,
+    };
+  });
+}
+
+async function cancelCommitment(actorId, eventId, commitmentId) {
+  const event = await findEventById(eventId);
+  const { rows } = await pool.query(
+    `SELECT * FROM event_commitments WHERE id = $1 AND event_id = $2`,
+    [commitmentId, eventId]
+  );
+  if (rows.length === 0) throw badge('Ahadi haipo.', 404);
+  const c = rows[0];
+  if (c.user_id !== actorId) assertOwner(actorId, event);
+  if (c.status === 'CANCELLED') throw badge('Ahadi tayari imeghairiwa.', 400);
+  if (Number(c.fulfilled) > 0) throw badge('Ahadi hii ina michango tayari; haiwezi kuondolewa.', 400);
+  await pool.query(`UPDATE event_commitments SET status = 'CANCELLED' WHERE id = $1`, [commitmentId]);
+  await logAudit({
+    userId: actorId, eventType: 'EVENT_COMMITMENT_CANCEL', entityType: 'event',
+    entityId: eventId, amount: Number(c.amount),
+  });
+  return { success: true };
+}
+
+async function createSavingsPlan(userId, eventId, { name, targetAmount, cadence, sessionAmount, startDate, endDate }) {
+  const event = await findEventById(eventId);
+  assertOwner(userId, event);
+  const nm = String(name || '').trim();
+  if (!nm) throw badge('Jina la mpango wa akiba ni lazima.', 400);
+  const target = Number(targetAmount);
+  if (!(target > 0)) throw badge('Lengo la mpango lazima liwe chanya.', 400);
+  const sess = Number(sessionAmount);
+  if (!(sess > 0)) throw badge('Kiasi cha kila kipindi lazima kiwe chanya.', 400);
+  const cad = cadence ? String(cadence).toUpperCase() : 'WEEKLY';
+  const { rows } = await pool.query(
+    `INSERT INTO event_savings_plans (event_id, name, target_amount, cadence, session_amount, start_date, end_date, status, created_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,'ACTIVE',$8) RETURNING *`,
+    [eventId, nm, target, cad, sess, await calculateDeadline(startDate), await calculateDeadline(endDate), userId]
+  );
+  await logAudit({
+    userId, eventType: 'EVENT_SAVINGS_PLAN', entityType: 'event', entityId: eventId,
+    amount: target,
+  });
+  return rows[0];
+}
+
+async function listSavingsPlans(eventId) {
+  const { rows } = await pool.query(
+    `SELECT p.*,
+       (SELECT COALESCE(SUM(c.amount), 0) FROM event_savings_plan_contributions pc
+         JOIN event_contributions c ON c.id = pc.contribution_id
+        WHERE pc.plan_id = p.id AND c.status = 'SUCCESS') AS collected,
+       (SELECT COUNT(*) FROM event_savings_plan_contributions pc
+         JOIN event_contributions c ON c.id = pc.contribution_id
+        WHERE pc.plan_id = p.id AND c.status = 'SUCCESS') AS sessions
+       FROM event_savings_plans p
+      WHERE p.event_id = $1
+      ORDER BY p.created_at ASC`,
+    [eventId]
+  );
+  return rows.map((r) => ({
+    ...r,
+    targetAmount: Number(r.target_amount),
+    sessionAmount: Number(r.session_amount),
+    collected: Number(r.collected),
+    sessions: Number(r.sessions),
+    remaining: Math.max(Number(r.target_amount) - Number(r.collected), 0),
+  }));
+}
+
+async function closeSavingsPlan(userId, eventId, planId) {
+  const event = await findEventById(eventId);
+  assertOwner(userId, event);
+  const { rows } = await pool.query(
+    `UPDATE event_savings_plans SET status = 'COMPLETED', updated_at = NOW()
+      WHERE id = $1 AND event_id = $2 RETURNING *`,
+    [planId, eventId]
+  );
+  if (rows.length === 0) throw badge('Mpango wa akiba haupo.', 404);
+  await logAudit({
+    userId, eventType: 'EVENT_SAVINGS_PLAN_CLOSE', entityType: 'event', entityId: eventId,
+  });
+  return rows[0];
+}
+
 async function eventDashboard(eventId) {
   const event = await findEventById(eventId);
   const { rows } = await pool.query(
@@ -341,6 +506,29 @@ async function eventDashboard(eventId) {
     [eventId]
   );
 
+  const commitmentsAgg = await pool.query(
+    `SELECT COUNT(*) AS count,
+            COALESCE(SUM(amount), 0) AS total,
+            COALESCE(SUM(fulfilled), 0) AS fulfilled
+       FROM event_commitments
+      WHERE event_id = $1 AND status <> 'CANCELLED'`,
+    [eventId]
+  );
+  const cAgg = commitmentsAgg.rows[0];
+  const commitmentsTotal = Number(cAgg.total);
+  const commitmentsFulfilled = Number(cAgg.fulfilled);
+
+  const savingsPlansRows = await pool.query(
+    `SELECT id, name, target_amount, cadence, session_amount, start_date, end_date, status,
+       (SELECT COALESCE(SUM(c.amount), 0) FROM event_savings_plan_contributions pc
+         JOIN event_contributions c ON c.id = pc.contribution_id
+        WHERE pc.plan_id = p.id AND c.status = 'SUCCESS') AS collected
+       FROM event_savings_plans p
+      WHERE p.event_id = $1 AND status = 'ACTIVE'
+      ORDER BY p.created_at ASC`,
+    [eventId]
+  );
+
   return {
     event: {
       id: event.id,
@@ -373,7 +561,21 @@ async function eventDashboard(eventId) {
       items: Number(budget.rows[0].items),
       categories: budgetCategories.rows.map((b) => ({ category: b.category, items: Number(b.items), total: Number(b.total) })),
     },
-    commitments: { count: 0, total: 0 },
+    commitments: {
+      count: Number(cAgg.count),
+      total: commitmentsTotal,
+      fulfilled: commitmentsFulfilled,
+      outstanding: Math.max(commitmentsTotal - commitmentsFulfilled, 0),
+    },
+    savingsPlans: savingsPlansRows.rows.map((p) => ({
+      id: p.id,
+      name: p.name,
+      targetAmount: Number(p.target_amount),
+      collected: Number(p.collected),
+      remaining: Math.max(Number(p.target_amount) - Number(p.collected), 0),
+      cadence: p.cadence,
+      sessionAmount: Number(p.session_amount),
+    })),
     recent: recent.rows.map((r) => ({
       id: r.id,
       contributor: r.contributor,
@@ -396,5 +598,11 @@ module.exports = {
   addBudgetItem,
   listBudget,
   deleteBudgetItem,
+  makeCommitment,
+  listCommitments,
+  cancelCommitment,
+  createSavingsPlan,
+  listSavingsPlans,
+  closeSavingsPlan,
   eventDashboard,
 };

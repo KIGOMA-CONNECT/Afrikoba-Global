@@ -42,6 +42,17 @@ export default function Events() {
   const [budgetDesc, setBudgetDesc] = useState('');
   const [budgetAmt, setBudgetAmt] = useState('');
 
+  const [commitments, setCommitments] = useState([]);
+  const [plans, setPlans] = useState([]);
+  const [commitAmt, setCommitAmt] = useState('');
+  const [commitNote, setCommitNote] = useState('');
+  const [conPlanId, setConPlanId] = useState('');
+  const [conCommitmentId, setConCommitmentId] = useState('');
+  const [planName, setPlanName] = useState('');
+  const [planTarget, setPlanTarget] = useState('');
+  const [planCadence, setPlanCadence] = useState('WEEKLY');
+  const [planSession, setPlanSession] = useState('');
+
   const show = (type, text) => {
     setMsg({ type, text });
     setTimeout(() => setMsg({ type: '', text: '' }), 5000);
@@ -67,6 +78,14 @@ export default function Events() {
       const b = await api.get(`/events/${ev.id}/budget`);
       setBudgetItems(b.data.items);
     } catch { setBudgetItems([]); }
+    try {
+      const cm = await api.get(`/events/${ev.id}/commitments`);
+      setCommitments(cm.data.commitments);
+    } catch { setCommitments([]); }
+    try {
+      const sp = await api.get(`/events/${ev.id}/savings-plans`);
+      setPlans(sp.data.plans);
+    } catch { setPlans([]); }
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
@@ -107,10 +126,55 @@ export default function Events() {
     try {
       const res = await api.post(`/events/${selected.id}/contributions`, {
         amount: Number(contributeAmt), mode: contributeMode,
+        planId: conPlanId ? Number(conPlanId) : undefined,
+        commitmentId: conCommitmentId ? Number(conCommitmentId) : undefined,
       });
       show('ok', res.data.message || t('events.contributed'));
-      setContributeAmt('');
+      setContributeAmt(''); setConPlanId(''); setConCommitmentId('');
       load();
+      selectEvent(selected);
+    } catch (err) { show('err', err.response?.data?.message || t('events.error')); }
+  };
+
+  const makeCommitment = async (e) => {
+    e.preventDefault();
+    if (!commitAmt) { show('err', t('events.enter_amount')); return; }
+    try {
+      await api.post(`/events/${selected.id}/commitments`, {
+        amount: Number(commitAmt), note: commitNote || undefined,
+      });
+      show('ok', t('events.commit_created'));
+      setCommitAmt(''); setCommitNote('');
+      selectEvent(selected);
+    } catch (err) { show('err', err.response?.data?.message || t('events.error')); }
+  };
+
+  const cancelCommit = async (cid) => {
+    try {
+      await api.post(`/events/${selected.id}/commitments/${cid}/cancel`);
+      show('ok', t('events.commit_cancelled'));
+      selectEvent(selected);
+    } catch (err) { show('err', err.response?.data?.message || t('events.error')); }
+  };
+
+  const createPlan = async (e) => {
+    e.preventDefault();
+    if (!planName || !planTarget || !planSession) { show('err', t('events.plan_required')); return; }
+    try {
+      await api.post(`/events/${selected.id}/savings-plans`, {
+        name: planName, targetAmount: Number(planTarget),
+        cadence: planCadence, sessionAmount: Number(planSession),
+      });
+      show('ok', t('events.plan_created'));
+      setPlanName(''); setPlanTarget(''); setPlanCadence('WEEKLY'); setPlanSession('');
+      selectEvent(selected);
+    } catch (err) { show('err', err.response?.data?.message || t('events.error')); }
+  };
+
+  const closePlan = async (pid) => {
+    try {
+      await api.post(`/events/${selected.id}/savings-plans/${pid}/close`);
+      show('ok', t('events.plan_closed'));
       selectEvent(selected);
     } catch (err) { show('err', err.response?.data?.message || t('events.error')); }
   };
@@ -148,6 +212,10 @@ export default function Events() {
   };
 
   const isActive = selected && selected.status === 'ACTIVE';
+
+  const myPledges = (commitments || []).filter(
+    (c) => Number(c.userId) === Number(user.id) && c.status !== 'CANCELLED' && c.status !== 'FULFILLED'
+  );
 
   return (
     <div>
@@ -241,6 +309,11 @@ export default function Events() {
               <div className="stat-box"><strong>{formatMoney(dashboard.summary.collected.total)}</strong><span>{t('events.collected')}</span></div>
               <div className="stat-box"><strong>{formatMoney(dashboard.summary.remaining)}</strong><span>{t('events.remaining')}</span></div>
             </div>
+            <div className="stat-row">
+              <div className="stat-box"><strong>{formatMoney(dashboard.commitments.total)}</strong><span>{t('events.pledged')}</span></div>
+              <div className="stat-box"><strong>{formatMoney(dashboard.commitments.outstanding)}</strong><span>{t('events.outstanding')}</span></div>
+              <div className="stat-box"><strong>{dashboard.savingsPlans.length}</strong><span>{t('events.plans_count')}</span></div>
+            </div>
             <div className="progress-track"><div className="progress-fill" style={{ width: `${Math.min(dashboard.summary.progress, 100)}%` }} /></div>
             <p>{t('events.progress')}: {dashboard.summary.progress}% · {dashboard.stats.contributors} {t('events.contributors').toLowerCase()} · {dashboard.stats.donations} {t('events.donations').toLowerCase()}</p>
             <div className="form-row">
@@ -270,6 +343,26 @@ export default function Events() {
                     <option value="SAVINGS">{t('events.mode_savings')}</option>
                   </select>
                 </div>
+                {contributeMode === 'SAVINGS' && (
+                  <div className="field"><label>{t('events.select_plan')}</label>
+                    <select value={conPlanId} onChange={(e) => setConPlanId(e.target.value)}>
+                      <option value="">-</option>
+                      {plans.filter((p) => p.status === 'ACTIVE').map((p) => (
+                        <option key={p.id} value={p.id}>{p.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+                {myPledges.length > 0 && (
+                  <div className="field"><label>{t('events.select_commitment')}</label>
+                    <select value={conCommitmentId} onChange={(e) => setConCommitmentId(e.target.value)}>
+                      <option value=""></option>
+                      {myPledges.map((p) => (
+                        <option key={p.id} value={p.id}>{formatMoney(p.amount)} · {p.status}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
               </div>
               {!isActive && <p className="roles-tag">{t('events.not_accepting')}</p>}
               <button className="btn" type="submit" disabled={!isActive}>{t('events.contribute_btn')}</button>
@@ -306,6 +399,74 @@ export default function Events() {
               </table>
             )}
           </div>
+        </div>
+      )}
+
+      {selected && dashboard && (
+        <div className="card section">
+          <h3>{t('events.commitments_title')}</h3>
+          <form onSubmit={makeCommitment} className="form-row" style={{ marginBottom: 10 }}>
+            <div className="field"><label>{t('events.commit_amount')}</label><input type="number" min="1" value={commitAmt} onChange={(e) => setCommitAmt(e.target.value)} required /></div>
+            <div className="field"><label>{t('events.commit_note')}</label><input value={commitNote} onChange={(e) => setCommitNote(e.target.value)} /></div>
+            {isActive && <button className="btn" type="submit" style={{ alignSelf: 'end' }}>{t('events.commit_btn')}</button>}
+          </form>
+          {commitments.length === 0 && <p className="roles-tag">{t('events.no_commitments')}</p>}
+          <table>
+            <thead><tr><th>{t('events.contributor')}</th><th>{t('events.commit_amount')}</th><th>{t('events.fulfilled')}</th><th>{t('events.commit_status')}</th><th>{t('events.note')}</th>{isOwner && <th></th>}</tr></thead>
+            <tbody>
+              {commitments.map((c) => (
+                <tr key={c.id}>
+                  <td>{c.userName}</td>
+                  <td>{formatMoney(c.amount)}</td>
+                  <td>{formatMoney(c.fulfilled)}</td>
+                  <td><StatusBadge status={c.status} /></td>
+                  <td>{c.note || '-'}</td>
+                  <td>
+                    {(isOwner || Number(c.userId) === Number(user.id)) && c.status === 'PENDING' && (
+                      <button className="btn warn" onClick={() => cancelCommit(c.id)}>{t('events.commit_cancel')}</button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {selected && dashboard && (
+        <div className="card section">
+          <h3>{t('events.plan_title')}</h3>
+          {isOwner && (
+            <form onSubmit={createPlan} className="form-row" style={{ marginBottom: 10 }}>
+              <div className="field"><label>{t('events.plan_name')}</label><input value={planName} onChange={(e) => setPlanName(e.target.value)} required /></div>
+              <div className="field"><label>{t('events.plan_target')}</label><input type="number" min="1" value={planTarget} onChange={(e) => setPlanTarget(e.target.value)} required /></div>
+              <div className="field"><label>{t('events.plan_cadence')}</label>
+                <select value={planCadence} onChange={(e) => setPlanCadence(e.target.value)}>
+                  {['DAILY', 'WEEKLY', 'BIWEEKLY', 'MONTHLY'].map((c) => <option key={c} value={c}>{c}</option>)}
+                </select>
+              </div>
+              <div className="field"><label>{t('events.plan_session')}</label><input type="number" min="1" value={planSession} onChange={(e) => setPlanSession(e.target.value)} required /></div>
+              <button className="btn" type="submit" style={{ alignSelf: 'end' }}>{t('events.plan_create_btn')}</button>
+            </form>
+          )}
+          {plans.length === 0 && <p className="roles-tag">{t('events.no_plans')}</p>}
+          {plans.map((p) => {
+            const pct = p.targetAmount > 0 ? Math.min(Math.round((p.collected / p.targetAmount) * 100), 100) : 0;
+            return (
+              <div key={p.id} className="list-item">
+                <div>
+                  <strong>{p.name}</strong> <span className="roles-tag">{p.status}</span>
+                  <div className="progress-track" style={{ maxWidth: 260, marginTop: 4 }}><div className="progress-fill" style={{ width: `${pct}%` }} /></div>
+                  <div className="roles-tag">
+                    {t('events.plan_target')}: {formatMoney(p.targetAmount)} · {t('events.collected')}: {formatMoney(p.collected)} ({pct}%)
+                  </div>
+                </div>
+                {isOwner && p.status === 'ACTIVE' && (
+                  <button className="btn warn" onClick={() => closePlan(p.id)}>{t('events.plan_close')}</button>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
 

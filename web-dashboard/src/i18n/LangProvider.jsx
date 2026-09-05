@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import React, { createContext, useContext, useEffect, useMemo, useState, useCallback } from 'react';
 import { resolveLocale, tr } from './index.js';
 
 const LangContext = createContext(null);
@@ -6,18 +6,36 @@ const LangContext = createContext(null);
 export function LangProvider({ children }) {
   const [lang, setLang] = useState(() => resolveLocale());
 
-  const changeLang = (next) => {
-    setLang(resolveLocale(next));
+  const changeLang = useCallback((next) => {
+    const resolved = resolveLocale(next);
+    setLang(resolved);
+    applyToDom(resolved);
     try {
-      localStorage.setItem('afrikoba_lang', resolveLocale(next));
-      document.documentElement.lang = resolveLocale(next);
+      localStorage.setItem('afrikoba_lang', resolved);
     } catch (e) {
       /* ignore */
     }
-  };
+  }, []);
+
+  function applyToDom(l) {
+    try {
+      document.documentElement.lang = l;
+      if (document.body) document.body.setAttribute('data-lang', l);
+      document.title = l === 'en'
+        ? 'AFRIKOBA GLOBAL | Digital Bank'
+        : 'AFRIKOBA GLOBAL | Benki ya Dijitali';
+    } catch (e) {
+      /* ignore */
+    }
+  }
 
   useEffect(() => {
-    document.documentElement.lang = lang;
+    applyToDom(lang);
+    const onStorage = (e) => {
+      if (e.key === 'afrikoba_lang' && e.newValue) setLang(resolveLocale(e.newValue));
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
   }, [lang]);
 
   const t = useMemo(() => (key, vars) => tr(key, lang, vars), [lang]);

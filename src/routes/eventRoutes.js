@@ -96,11 +96,71 @@ router.delete('/:eventId/budget/:itemId', async (req, res, next) => {
   }
 });
 
-// Dashibodi: muhtasari wa tukio (lengo, mchango, bajeti)
+// Dashibodi: muhtasari wa tukio (lengo, mchango, bajeti, ahadi, mipango)
 router.get('/:eventId/dashboard', async (req, res, next) => {
   try {
     const dashboard = await eventService.eventDashboard(parseInt(req.params.eventId, 10));
     return res.json({ success: true, dashboard });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Ahadi (commitment): toa ahadi ya kuchangia
+router.post('/:eventId/commitments', async (req, res, next) => {
+  try {
+    const commitment = await eventService.makeCommitment(req.user.id, parseInt(req.params.eventId, 10), req.body);
+    return res.status(201).json({ success: true, commitment });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Orodha ya ahadi za tukio
+router.get('/:eventId/commitments', async (req, res, next) => {
+  try {
+    const commitments = await eventService.listCommitments(parseInt(req.params.eventId, 10));
+    return res.json({ success: true, commitments });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Ghairi ahadi
+router.post('/:eventId/commitments/:commitmentId/cancel', async (req, res, next) => {
+  try {
+    const result = await eventService.cancelCommitment(req.user.id, parseInt(req.params.eventId, 10), parseInt(req.params.commitmentId, 10));
+    return res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Unda mpango wa akiba (collaborative savings plan)
+router.post('/:eventId/savings-plans', async (req, res, next) => {
+  try {
+    const plan = await eventService.createSavingsPlan(req.user.id, parseInt(req.params.eventId, 10), req.body);
+    return res.status(201).json({ success: true, plan });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Mipango ya akiba ya tukio
+router.get('/:eventId/savings-plans', async (req, res, next) => {
+  try {
+    const plans = await eventService.listSavingsPlans(parseInt(req.params.eventId, 10));
+    return res.json({ success: true, plans });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Funga/kamilisha mpango wa akiba
+router.post('/:eventId/savings-plans/:planId/close', async (req, res, next) => {
+  try {
+    const plan = await eventService.closeSavingsPlan(req.user.id, parseInt(req.params.eventId, 10), parseInt(req.params.planId, 10));
+    return res.json({ success: true, plan });
   } catch (error) {
     next(error);
   }
