@@ -350,6 +350,16 @@ router.delete('/:eventId/members/:userId', async (req, res, next) => {
   }
 });
 
+// Paneli ya "matukio yanayokuja + ahadi" kwa mtumiaji (literal path kabla ya /:eventId)
+router.get('/reminders/mine', async (req, res, next) => {
+  try {
+    const data = await eventService.listMyEventReminders(req.user.id);
+    return res.json({ success: true, ...data });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // Kumbusho za tukio
 router.get('/:eventId/reminders', async (req, res, next) => {
   try {

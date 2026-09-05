@@ -8,6 +8,7 @@ const fin = require('./financialEngine');
 const governanceService = require('./governanceService');
 const { createNotification } = require('./notificationService');
 const smsService = require('./smsService');
+const currencyService = require('./currencyService');
 
 const VALID_EVENT_TYPES = [
   'HARUSI', 'SEND_OFF', 'BIRTHDAY', 'GRADUATION', 'MAHAFALI', 'KIPAIMARA',
@@ -177,11 +178,24 @@ async function updateEvent(userId, eventId, patch) {
   return updated;
 }
 
-async function contribute(userId, eventId, { amount, mode = 'FUNDRAISING', contributorName, commitmentId, planId }) {
+async function contribute(userId, eventId, { amount, mode = 'FUNDRAISING', contributorName, commitmentId, planId, currency = 'TZS' }) {
   const amountN = Number(amount);
   if (!(amountN > 0)) throw badge('Kiasi cha mchango ni lazima kiwe chanya.', 400);
   const modeUp = String(mode).toUpperCase();
   if (!VALID_MODES.includes(modeUp)) throw badge(`Njia haijulikani: ${mode}`, 400);
+
+  // Multi-currency: debiti daima huwa kwa TZS (equivalent); fedha ya chanzo inahifadhiwa.
+  const cur = String(currency || 'TZS').toUpperCase();
+  let effectiveTzs = amountN;
+  let currencyAmount = amountN;
+  if (cur !== 'TZS') {
+    const rate = await currencyService.getExchangeRate(cur, 'TZS');
+    if (!rate) {
+      throw badge(`Hakuna kiwango cha ubadilishaji kwa ${cur} → TZS.`, 400);
+    }
+    effectiveTzs = Number((amountN * rate.rate).toFixed(2));
+    currencyAmount = amountN;
+  }
 
   const event = await findEventById(eventId);
   if (event.status !== 'ACTIVE') throw badge('Tukio halipo kwenye hali ya kukubali michango.', 400);
@@ -215,9 +229,9 @@ async function contribute(userId, eventId, { amount, mode = 'FUNDRAISING', contr
       if (commitCheck.rows.length === 0) throw badge('Ahadi haiko sahihi kwa mchango huu.', 400);
     }
     const debit = await fin.debitWallet({
-      client, userId, amount: amountN, reference,
+      client, userId, amount: effectiveTzs, reference,
       toAccount,
-      description: `${modeUp} kwa tukio #${eventId}`,
+      description: `${modeUp} kwa tukio #${eventId}${cur !== 'TZS' ? ` (${currencyAmount} ${cur})` : ''}`,
       actor: 'eventService',
     });
     if (debit.dedup) {
@@ -225,9 +239,9 @@ async function contribute(userId, eventId, { amount, mode = 'FUNDRAISING', contr
       return { dedup: true, reference };
     }
     const ins = await client.query(
-      `INSERT INTO event_contributions (event_id, user_id, contributor_name, mode, amount, reference_id, status)
-       VALUES ($1,$2,$3,$4,$5,$6,'SUCCESS') RETURNING id`,
-      [eventId, userId, contributorName || null, modeUp, amountN, reference]
+      `INSERT INTO event_contributions (event_id, user_id, contributor_name, mode, amount, currency, currency_amount, reference_id, status)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'SUCCESS') RETURNING id`,
+      [eventId, userId, contributorName || null, modeUp, effectiveTzs, cur, currencyAmount, reference]
     );
     const contributionId = ins.rows[0].id;
     if (planId != null) {
@@ -242,18 +256,18 @@ async function contribute(userId, eventId, { amount, mode = 'FUNDRAISING', contr
             SET fulfilled = fulfilled + $1,
                 status = CASE WHEN fulfilled + $1 >= amount THEN 'FULFILLED' ELSE 'PARTIAL' END
           WHERE id = $2`,
-        [amountN, Number(commitmentId)]
+        [effectiveTzs, Number(commitmentId)]
       );
     }
     await client.query(
       modeUp === 'SAVINGS'
         ? `UPDATE social_events SET savings_amount = savings_amount + $1, updated_at = NOW() WHERE id = $2`
         : `UPDATE social_events SET collected_amount = collected_amount + $1, updated_at = NOW() WHERE id = $2`,
-      [amountN, eventId]
+      [effectiveTzs, eventId]
     );
     await logAudit({
       userId, eventType: 'EVENT_CONTRIBUTE', entityType: 'event', entityId: eventId,
-      referenceId: reference, amount: amountN, client,
+      referenceId: reference, amount: effectiveTzs, client,
     });
     await client.query('COMMIT');
     const totals = await pool.query(
@@ -265,11 +279,11 @@ async function contribute(userId, eventId, { amount, mode = 'FUNDRAISING', contr
       [eventId]
     );
     return {
-      success: true, reference, mode: modeUp, amount: amountN,
+      success: true, reference, mode: modeUp, amount: effectiveTzs, currency: cur, currencyAmount,
       contributorName: contributorName || null,
       collected: Number(totals.rows[0].fundraising_raised),
       savings: Number(totals.rows[0].savings_raised),
-      message: `${formatMoney(amountN)} imepokelewa.`,
+      message: `${formatMoney(effectiveTzs)}${cur !== 'TZS' ? ` (${currencyAmount} ${cur})` : ''} imepokelewa.`,
     };
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {});
@@ -289,7 +303,7 @@ async function listContributions(eventId, { limit = 50, status } = {}) {
   }
   params.push(Math.min(parseInt(limit, 10) || 50, 200));
   const { rows } = await pool.query(
-    `SELECT c.id, c.user_id, c.contributor_name, c.mode, c.amount, c.reference_id, c.status,
+    `SELECT c.id, c.user_id, c.contributor_name, c.mode, c.amount, c.currency, c.currency_amount, c.reference_id, c.status,
             c.created_at,
             COALESCE(u.full_name, c.contributor_name, 'Mgeni') AS contributor,
             u.phone_number
@@ -971,6 +985,46 @@ async function listEventReminders(eventId) {
   return rows;
 }
 
+async function listMyEventReminders(userId) {
+  const [dues, upcoming, reminders] = await Promise.all([
+    pool.query(
+      `SELECT c.id, c.event_id, c.amount, c.fulfilled, c.status, c.due_date,
+              e.name AS event_name, e.event_date, (e.savings_cadence IS NOT NULL) AS is_savings
+         FROM event_commitments c
+         JOIN social_events e ON e.id = c.event_id AND e.status = 'ACTIVE'
+        WHERE c.user_id = $1
+          AND c.status IN ('PENDING','PARTIAL','OVERDUE')
+        ORDER BY c.due_date ASC NULLS LAST`,
+      [userId]
+    ),
+    pool.query(
+      `SELECT e.id, e.name, e.event_date, e.contribution_deadline, e.target_amount,
+              (e.savings_cadence IS NOT NULL) AS is_savings,
+              (SELECT COALESCE(SUM(amount),0) FROM event_contributions ec WHERE ec.event_id = e.id) AS collected
+         FROM event_members m
+         JOIN social_events e ON e.id = m.event_id AND e.status = 'ACTIVE'
+        WHERE m.user_id = $1 AND m.status = 'ACTIVE'
+          AND (
+                (e.event_date IS NOT NULL AND e.event_date BETWEEN CURRENT_DATE AND CURRENT_DATE + 7)
+             OR (e.contribution_deadline IS NOT NULL AND e.contribution_deadline BETWEEN CURRENT_DATE AND CURRENT_DATE + 7)
+          )
+        ORDER BY COALESCE(e.contribution_deadline, e.event_date) ASC`,
+      [userId]
+    ),
+    pool.query(
+      `SELECT r.event_id, r.type, r.channel, r.status, r.sent_date, r.reference_data,
+              e.name AS event_name, e.event_date, e.contribution_deadline
+         FROM event_reminders r
+         JOIN social_events e ON e.id = r.event_id
+        WHERE r.user_id = $1
+        ORDER BY r.created_at DESC
+        LIMIT 15`,
+      [userId]
+    ),
+  ]);
+  return { dues: dues.rows, upcoming: upcoming.rows, reminders: reminders.rows };
+}
+
 async function notifyJoin(eventId, newUserId) {
   try {
     const event = await findEventById(eventId);
@@ -1037,36 +1091,40 @@ async function runEventReminders() {
 
   try {
     const upcoming = await pool.query(
-      `SELECT e.id, e.name, e.event_date, e.owner_user_id, u.full_name, u.phone_number
+      `SELECT e.id, e.name, e.event_date, e.owner_user_id, m.user_id AS member_id,
+              u.full_name, u.phone_number
          FROM social_events e
-         JOIN users u ON u.id = e.owner_user_id
+         JOIN event_members m ON m.event_id = e.id AND m.status = 'ACTIVE'
+         JOIN users u ON u.id = m.user_id
         WHERE e.status = 'ACTIVE'
           AND e.event_date IS NOT NULL
           AND e.event_date >= CURRENT_DATE AND e.event_date <= CURRENT_DATE + 3
           AND NOT EXISTS (
             SELECT 1 FROM event_reminders r
-             WHERE r.event_id = e.id AND r.type = 'EVENT_UPCOMING'
+             WHERE r.event_id = e.id AND r.user_id = m.user_id
+               AND r.type = 'EVENT_UPCOMING'
                AND r.status = 'SENT' AND r.sent_date = CURRENT_DATE
           )`
     );
     for (const ev of upcoming.rows) {
       try {
+        const isOwner = Number(ev.member_id) === Number(ev.owner_user_id);
         const message = `${ev.full_name}, tukio "${ev.name}" ni tarehe ${ev.event_date}. Jipange vizuri!`;
-        await createNotification(ev.owner_user_id, {
+        await createNotification(ev.member_id, {
           title: 'Tukio linakaribia',
           body: message, type: 'REMINDER', channel: 'IN_APP', entityType: 'event', entityId: ev.id,
         });
         let channel = 'IN_APP';
-        try {
-          if (ev.phone_number) {
+        if (ev.phone_number) {
+          try {
             await smsService.sendSMS(ev.phone_number, message);
             channel = 'BOTH';
-          }
-        } catch (_) { /* SMS best-effort */ }
+          } catch (_) { /* SMS best-effort */ }
+        }
         await pool.query(
           `INSERT INTO event_reminders (event_id, user_id, type, channel, status, sent_date, reference_data)
            VALUES ($1,$2,'EVENT_UPCOMING',$3,'SENT',$4,$5) ON CONFLICT DO NOTHING`,
-          [ev.id, ev.owner_user_id, channel, today, JSON.stringify({ eventDate: ev.event_date })]
+          [ev.id, ev.member_id, channel, today, JSON.stringify({ eventDate: ev.event_date, member: true, isOwner })]
         );
         sent++;
       } catch (e) {
@@ -1076,6 +1134,71 @@ async function runEventReminders() {
     }
   } catch (e) {
     logger.error('EVENT_REMINDER_UPCOMING_SCAN', e.message);
+  }
+
+  try {
+    const deadline = await pool.query(
+      `SELECT e.id, e.name, e.contribution_deadline, m.user_id, u.full_name, u.phone_number
+         FROM social_events e
+         JOIN event_members m ON m.event_id = e.id AND m.status = 'ACTIVE'
+         JOIN users u ON u.id = m.user_id
+        WHERE e.status = 'ACTIVE' AND e.savings_cadence IS NULL
+          AND e.contribution_deadline IS NOT NULL
+          AND e.contribution_deadline >= CURRENT_DATE AND e.contribution_deadline <= CURRENT_DATE + 3
+          AND NOT EXISTS (
+            SELECT 1 FROM event_contributions ec WHERE ec.event_id = e.id AND ec.user_id = m.user_id
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM event_reminders r
+             WHERE r.event_id = e.id AND r.user_id = m.user_id
+               AND r.type = 'DEADLINE'
+               AND r.status = 'SENT' AND r.sent_date = CURRENT_DATE
+          )`
+    );
+    for (const ev of deadline.rows) {
+      try {
+        const message = `${ev.full_name}, mmoja wa waandaaji wa "${ev.name}" amekubali michango za hadi tarehe ${ev.contribution_deadline}. Bado haujachangia — fanya sasa!`;
+        await createNotification(ev.user_id, {
+          title: 'Mwisho wa kuchangia unakaribia',
+          body: message, type: 'REMINDER', channel: 'IN_APP', entityType: 'event', entityId: ev.id,
+        });
+        let channel = 'IN_APP';
+        if (ev.phone_number) {
+          try {
+            await smsService.sendSMS(ev.phone_number, message);
+            channel = 'BOTH';
+          } catch (_) { /* SMS best-effort */ }
+        }
+        await pool.query(
+          `INSERT INTO event_reminders (event_id, user_id, type, channel, status, sent_date, reference_data)
+           VALUES ($1,$2,'DEADLINE',$3,'SENT',$4,$5) ON CONFLICT DO NOTHING`,
+          [ev.id, ev.user_id, channel, today, JSON.stringify({ contributionDeadline: ev.contribution_deadline })]
+        );
+        sent++;
+      } catch (e) {
+        failed++;
+        logger.error('EVENT_REMINDER_DL', e.message, { eventId: ev.id });
+      }
+    }
+  } catch (e) {
+    logger.error('EVENT_REMINDER_DEADLINE_SCAN', e.message);
+  }
+
+  try {
+    const overdue = await pool.query(
+      `UPDATE event_commitments c
+          SET status = 'OVERDUE'
+         FROM social_events e
+        WHERE c.event_id = e.id AND e.status = 'ACTIVE'
+          AND c.due_date IS NOT NULL AND c.due_date < CURRENT_DATE
+          AND c.status = 'PENDING'
+      RETURNING c.id`
+    );
+    if (overdue.rowCount > 0) {
+      logger.info('EVENT_REMINDERS', `overdue_flagged=${overdue.rowCount}`);
+    }
+  } catch (e) {
+    logger.error('EVENT_REMINDER_OVERDUE_SCAN', e.message);
   }
   if (sent > 0 || failed > 0) logger.info('EVENT_REMINDERS', `sent=${sent} failed=${failed}`);
   return { sent, failed };
@@ -1601,6 +1724,7 @@ module.exports = {
   listEventMembers,
   removeMember,
   listEventReminders,
+  listMyEventReminders,
   runEventReminders,
   ensurePublicShare,
   getPublicEvent,

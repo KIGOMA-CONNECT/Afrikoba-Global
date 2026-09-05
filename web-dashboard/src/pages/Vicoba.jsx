@@ -34,6 +34,7 @@ export default function Vicoba() {
   const [profitCalc, setProfitCalc] = useState(null);
   const [distributions, setDistributions] = useState([]);
   const [myPayouts, setMyPayouts] = useState([]);
+const [invitations, setInvitations] = useState([]);
 
   const show = (type, text) => {
     setMsg({ type, text });
@@ -44,8 +45,30 @@ export default function Vicoba() {
     api.get('/vicoba/groups').then((r) => setGroups(r.data.groups)).catch(() => {});
   };
 
+  const loadInvites = () => {
+    api.get('/vicoba/invitations').then((r) => setInvitations(r.data.invitations || [])).catch(() => { setInvitations([]); });
+  };
+
+  const acceptInvite = async (id) => {
+    try {
+      const res = await api.post(`/vicoba/invitations/${id}/accept`);
+      show('ok', res.data.message || 'Umejiunga na kikundi.');
+      setInvitations([]);
+      loadGroups();
+    } catch (err) { show('err', err.response?.data?.message || t('vicoba.error')); }
+  };
+
+  const rejectInvite = async (id) => {
+    try {
+      await api.post(`/vicoba/invitations/${id}/reject`);
+      show('ok', 'Umekataa mwaliko.');
+      setInvitations((prev) => prev.filter((i) => i.id !== id));
+    } catch (err) { show('err', err.response?.data?.message || t('vicoba.error')); }
+  };
+
   useEffect(() => {
     loadGroups();
+    loadInvites();
   }, []);
 
   const selectGroup = (g) => {
@@ -171,6 +194,27 @@ export default function Vicoba() {
       </div>
 
       {msg.text && <div className={`msg ${msg.type}`}>{msg.text}</div>}
+
+      {invitations.length > 0 && (
+        <div className="card section" style={{ marginBottom: 14 }}>
+          <h3>Mialiko ya kujiunga (<strong>{invitations.length}</strong>)</h3>
+          <div className="grid grid-2" style={{ gap: 8 }}>
+            {invitations.map((i) => (
+              <div key={i.id} className="list-item">
+                <div>
+                  <strong>{i.group_name}</strong>
+                  <div className="roles-tag">{i.cycle_type} · {t('vicoba.share')} {formatMoney(i.share_value)} · Wanachama: {i.member_count}</div>
+                  <div style={{ opacity: 0.7, fontSize: 12 }}>Umealikwa {String(i.created_at).slice(0, 10)}</div>
+                </div>
+                <div className="inline-actions">
+                  <button className="btn" onClick={() => acceptInvite(i.id)}>{t('vicoba.accept')}</button>
+                  <button className="btn warn" onClick={() => rejectInvite(i.id)}>{t('vicoba.reject')}</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-2">
         <div className="card">

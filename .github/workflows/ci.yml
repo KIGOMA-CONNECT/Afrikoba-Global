@@ -73,6 +73,7 @@ jobs:
           node scripts/test-rosca.js
           node scripts/test-p2p.js
           node scripts/test-events-stage4.js
+          node scripts/test-events-stage5.js
 
       - name: Upload server log on failure
         if: failure()

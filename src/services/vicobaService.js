@@ -322,7 +322,10 @@ async function inviteMembers(inviterUserId, groupId, phoneNumbers) {
   for (const rawPhone of phoneNumbers) {
     const phone = toInternationalFormat(rawPhone);
     await pool.query(
-      'INSERT INTO vicoba_invites (group_id, phone_number) VALUES ($1, $2)',
+      `INSERT INTO vicoba_invites (group_id, phone_number)
+       VALUES ($1, $2)
+       ON CONFLICT (group_id, phone_number)
+       DO UPDATE SET status = 'SENT', joined_user_id = NULL, created_at = CURRENT_TIMESTAMP`,
       [groupId, phone]
     );
     const msg = `AFRIKOBA: Umealikwa kujiunga na kikundi cha VICOBA "${group.group_name}". Ingia AFRIKOBA, nenda VICOBA, weka msimbo wa kujiunga: ${group.join_code}.`;
@@ -330,6 +333,104 @@ async function inviteMembers(inviterUserId, groupId, phoneNumbers) {
     sent.push(phone);
   }
   return { success: true, invited: sent.length, phones: sent, joinCode: group.join_code };
+}
+
+async function listMyInvitations(userId) {
+  const userRes = await pool.query('SELECT phone_number FROM users WHERE id = $1', [userId]);
+  if (!userRes.rows[0]) {
+    throw Object.assign(new Error('Mtumiaji hapatikani.'), { statusCode: 404 });
+  }
+  const { rows } = await pool.query(
+    `SELECT i.id, i.group_id, i.status, i.created_at,
+            g.group_name, g.cycle_type, g.share_value, g.monthly_maintenance_fee,
+            (SELECT COUNT(*) FROM vicoba_members vm WHERE vm.group_id = i.group_id) AS member_count
+       FROM vicoba_invites i
+       JOIN vicoba_groups g ON g.id = i.group_id
+      WHERE i.phone_number = $1 AND i.status = 'SENT'
+      ORDER BY i.created_at DESC`,
+    [userRes.rows[0].phone_number]
+  );
+  return rows;
+}
+
+async function replyToInvitation(userId, inviteId, action) {
+  const userRes = await pool.query('SELECT phone_number, full_name FROM users WHERE id = $1', [userId]);
+  const user = userRes.rows[0];
+  if (!user) throw Object.assign(new Error('Mtumiaji hapatikani.'), { statusCode: 404 });
+
+  const invRes = await pool.query('SELECT * FROM vicoba_invites WHERE id = $1', [inviteId]);
+  const invite = invRes.rows[0];
+  if (!invite) throw Object.assign(new Error('Mwaliko haupatikani.'), { statusCode: 404 });
+  if (invite.phone_number !== user.phone_number) {
+    throw Object.assign(new Error('Mwaliko huu si wako.'), { statusCode: 403 });
+  }
+  if (invite.status !== 'SENT') {
+    throw Object.assign(new Error(`Mwaliko umeshachakatwa tayari (${invite.status}).`), { statusCode: 400 });
+  }
+
+  if (action === 'DECLINED') {
+    await pool.query(
+      `UPDATE vicoba_invites SET status = 'DECLINED' WHERE id = $1 AND status = 'SENT'`,
+      [inviteId]
+    );
+    return { success: true, status: 'DECLINED', groupId: invite.group_id };
+  }
+
+  const group = await pool.query('SELECT * FROM vicoba_groups WHERE id = $1', [invite.group_id]);
+  if (group.rows.length === 0) {
+    throw Object.assign(new Error('Kikundi hakijapatikana.'), { statusCode: 404 });
+  }
+
+  const existing = await pool.query(
+    'SELECT 1 FROM vicoba_members WHERE group_id = $1 AND user_id = $2',
+    [invite.group_id, userId]
+  );
+  let memberInserted = false;
+  if (existing.rows.length === 0) {
+    await pool.query(
+      `INSERT INTO vicoba_members (group_id, user_id, role_in_group)
+       VALUES ($1, $2, 'MJUMBE')`,
+      [invite.group_id, userId]
+    );
+    memberInserted = true;
+  }
+
+  await pool.query(
+    `UPDATE vicoba_invites
+        SET status = 'ACCEPTED', joined_user_id = $1
+      WHERE id = $2 AND status = 'SENT'`,
+    [userId, inviteId]
+  );
+
+  try {
+    const chairman = await pool.query(
+      `SELECT u.phone_number, u.full_name
+         FROM vicoba_members vm
+         JOIN users u ON u.id = vm.user_id
+        WHERE vm.group_id = $1 AND vm.role_in_group = 'MWENYEKITI'`,
+      [invite.group_id]
+    );
+    if (chairman.rows.length > 0) {
+      const msg = `Habari, ${user.full_name} amekubali mwaliko na amejiunga na ${group.rows[0].group_name}.`;
+      await sendSMS(chairman.rows[0].phone_number, msg);
+    }
+  } catch (e) { /* SMS best-effort */ }
+
+  return {
+    success: true,
+    status: 'ACCEPTED',
+    group: group.rows[0],
+    memberInserted,
+    message: `Umejiunga na ${group.rows[0].group_name}.`,
+  };
+}
+
+async function acceptInvitation(userId, inviteId) {
+  return replyToInvitation(userId, inviteId, 'ACCEPTED');
+}
+
+async function rejectInvitation(userId, inviteId) {
+  return replyToInvitation(userId, inviteId, 'DECLINED');
 }
 
 async function getGroupDetails(groupId, requesterUserId) {
@@ -1057,6 +1158,9 @@ module.exports = {
   addMember,
   joinByCode,
   inviteMembers,
+  listMyInvitations,
+  acceptInvitation,
+  rejectInvitation,
   contributeShares,
   requestLoan,
   approveLoan,

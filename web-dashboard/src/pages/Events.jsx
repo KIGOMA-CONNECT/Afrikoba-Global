@@ -36,8 +36,10 @@ export default function Events() {
   const [minimum, setMinimum] = useState('');
   const [surplus, setSurplus] = useState('DONOR_CHOICE');
 
-  const [contributeAmt, setContributeAmt] = useState('');
-  const [contributeMode, setContributeMode] = useState('FUNDRAISING');
+const [contributeAmt, setContributeAmt] = useState('');
+const [contributeMode, setContributeMode] = useState('FUNDRAISING');
+const [contributeCurrency, setContributeCurrency] = useState('TZS');
+const [currencies, setCurrencies] = useState([]);
   const [budgetCat, setBudgetCat] = useState('');
   const [budgetDesc, setBudgetDesc] = useState('');
   const [budgetAmt, setBudgetAmt] = useState('');
@@ -75,6 +77,8 @@ export default function Events() {
   const [reportOpen, setReportOpen] = useState(false);
   const [report, setReport] = useState(null);
 
+  const [myReminders, setMyReminders] = useState(null);
+
   const show = (type, text) => {
     setMsg({ type, text });
     setTimeout(() => setMsg({ type: '', text: '' }), 5000);
@@ -82,6 +86,8 @@ export default function Events() {
 
   const load = () => {
     api.get('/events').then((r) => setEvents(r.data.events)).catch(() => {});
+    api.get('/events/reminders/mine').then((r) => setMyReminders(r.data)).catch(() => {});
+    api.get('/currency/currencies').then((r) => setCurrencies(r.data.currencies || [])).catch(() => {});
   };
 
   useEffect(() => { load(); }, []);
@@ -168,12 +174,12 @@ export default function Events() {
     if (!contributeAmt) { show('err', t('events.enter_amount')); return; }
     try {
       const res = await api.post(`/events/${selected.id}/contributions`, {
-        amount: Number(contributeAmt), mode: contributeMode,
+        amount: Number(contributeAmt), mode: contributeMode, currency: contributeCurrency,
         planId: conPlanId ? Number(conPlanId) : undefined,
         commitmentId: conCommitmentId ? Number(conCommitmentId) : undefined,
       });
       show('ok', res.data.message || t('events.contributed'));
-      setContributeAmt(''); setConPlanId(''); setConCommitmentId('');
+      setContributeAmt(''); setConPlanId(''); setConCommitmentId(''); setContributeCurrency('TZS');
       load();
       selectEvent(selected);
     } catch (err) { show('err', err.response?.data?.message || t('events.error')); }
@@ -419,6 +425,52 @@ export default function Events() {
 
       {msg.text && <div className={`msg ${msg.type}`}>{msg.text}</div>}
 
+      {myReminders && (myReminders.upcoming?.length > 0 || myReminders.dues?.length > 0 || myReminders.reminders?.length > 0) && (
+        <div className="card section" style={{ marginBottom: 14 }}>
+          <h3>Reminders na Deadline</h3>
+          <div className="grid grid-3" style={{ gap: 8 }}>
+            {myReminders.upcoming?.length > 0 && (
+              <div>
+                <strong>Yanayokuja (siku 7)</strong>
+                {(myReminders.upcoming || []).map((u) => (
+                  <div key={`up-${u.id}`} className="list-item">
+                    <div><strong>{u.name}</strong>{u.is_savings && <span className="roles-tag">SAVINGS</span>}</div>
+                    <div style={{ opacity: 0.8 }}>Tukio: {u.event_date || '-'} · Mwisho wa kuchangia: {u.contribution_deadline || '-'}</div>
+                    <div className="roles-tag">Imekusanywa {formatMoney(u.collected)} / {formatMoney(u.target_amount)}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+            {myReminders.dues?.length > 0 && (
+              <div>
+                <strong>Ahadi zangu</strong>
+                {(myReminders.dues || []).map((d) => {
+                  const remaining = Math.max(Number(d.amount) - Number(d.fulfilled || 0), 0);
+                  return (
+                    <div key={`due-${d.id}`} className="list-item">
+                      <div><strong>{d.event_name}</strong> <StatusBadge status={d.status} /></div>
+                      <div style={{ opacity: 0.8 }}>Baki: {formatMoney(remaining)} · Muda: {d.due_date || '-'}</div>
+                      {d.status === 'OVERDUE' && <div className="roles-tag" style={{ color: '#c62828' }}>MECHELEWA — lipa sasa</div>}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            {myReminders.reminders?.length > 0 && (
+              <div>
+                <strong>Kumbusho zilizopokelewa</strong>
+                {(myReminders.reminders || []).slice(0, 5).map((r) => (
+                  <div key={`rem-${r.event_id}-${r.type}-${r.sent_date}`} className="list-item">
+                    <div><strong>{r.type}</strong> <span className="roles-tag">{r.channel}</span></div>
+                    <div style={{ opacity: 0.8 }}>{r.event_name} · {r.sent_date}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {!selected && (
         <div className="grid grid-2">
           <div className="card">
@@ -539,6 +591,13 @@ export default function Events() {
                   <select value={contributeMode} onChange={(e) => setContributeMode(e.target.value)}>
                     <option value="FUNDRAISING">{t('events.mode_fundraising')}</option>
                     <option value="SAVINGS">{t('events.mode_savings')}</option>
+                  </select>
+                </div>
+                <div className="field"><label>{t('events.currency')}</label>
+                  <select value={contributeCurrency} onChange={(e) => setContributeCurrency(e.target.value)}>
+                    {currencies.map((c) => (
+                      <option key={c.code} value={c.code}>{c.code} · {c.name}</option>
+                    ))}
                   </select>
                 </div>
                 {contributeMode === 'SAVINGS' && (

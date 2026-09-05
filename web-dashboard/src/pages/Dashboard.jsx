@@ -21,6 +21,27 @@ export default function Dashboard() {
   };
   const [services, setServices] = useState([]);
   const [aiInsights, setAiInsights] = useState([]);
+  const [onboarded, setOnboarded] = useState(localStorage.getItem('afrikoba_onboarded') === '1');
+  const [onboardMsg, setOnboardMsg] = useState({ type: '', text: '' });
+
+  const hasService = (key) => services.find((s) => s.key === key)?.active;
+
+  const toggleOnboard = async (svc) => {
+    setOnboardMsg({ type: '', text: '' });
+    try {
+      if (svc.active) await api.post('/services/unsubscribe', { serviceKey: svc.key });
+      else await api.post('/services/subscribe', { serviceKey: svc.key });
+      setOnboardMsg({ type: 'ok', text: svc.active ? `${svc.swahili || svc.name} imezimwa.` : `${svc.swahili || svc.name} imewashwa. Karibu!` });
+      setServices((await api.get('/services/catalog')).data.catalog);
+    } catch (e) {
+      setOnboardMsg({ type: 'err', text: e.response?.data?.message || 'Hitilafu.' });
+    }
+  };
+
+  const finishOnboarding = () => {
+    localStorage.setItem('afrikoba_onboarded', '1');
+    setOnboarded(true);
+  };
 
   useEffect(() => {
     if (isAdmin) {
@@ -40,6 +61,35 @@ export default function Dashboard() {
         <h2>{isAdmin ? t('dashboard.welcome_admin', { name: user.full_name }) : t('dashboard.welcome_user', { name: user.full_name })}</h2>
         <p>{isAdmin ? t('dashboard.admin_summary') : t('dashboard.user_summary')}</p>
       </div>
+
+      {!isAdmin && <>{
+        (() => {
+          const joinable = services.filter((s) => !s.baseService && !s.comingSoon);
+          const hasChoices = joinable.some((s) => s.active);
+          const needsOnboard = !onboarded && services.length > 0 && !hasChoices;
+          return needsOnboard ? (
+            <div className="card section" style={{ marginBottom: 16 }}>
+              <h3>{t('dashboard.onboard_title')}</h3>
+              <p>{t('dashboard.onboard_sub')}</p>
+              {onboardMsg.text && <div className={`msg ${onboardMsg.type}`}>{onboardMsg.text}</div>}
+              <div className="grid grid-2" style={{ gap: 8, marginTop: 10 }}>
+                {joinable.map((svc) => (
+                  <div key={svc.key} className="list-item">
+                    <div>
+                      <strong>{svc.swahili || svc.name}</strong>
+                      <div className="roles-tag">{svc.tagline}</div>
+                    </div>
+                    <button className={`btn ${hasService(svc.key) ? 'ghost' : ''}`} onClick={() => toggleOnboard(svc)}>
+                      {hasService(svc.key) ? t('dashboard.off') : t('dashboard.on')}
+                    </button>
+                  </div>
+                ))}
+              </div>
+              <button className="btn" style={{ marginTop: 12 }} onClick={finishOnboarding}>{t('dashboard.onboard_done')}</button>
+            </div>
+          ) : null;
+        })()
+      }</>}
 
       {isAdmin && !stats && (
         <div className="grid grid-3">

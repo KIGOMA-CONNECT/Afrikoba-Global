@@ -10,6 +10,36 @@ const router = express.Router();
 router.use(authRequired);
 router.use(requireService('VICOBA'));
 
+// Mialiko yangu (invitation inbox) — kabla ya /groups/:groupId
+router.get('/invitations', async (req, res, next) => {
+  try {
+    const invitations = await vicobaService.listMyInvitations(req.user.id);
+    return res.json({ success: true, invitations });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Kubali mwaliko (ujiunge bila msimbo)
+router.post('/invitations/:inviteId/accept', async (req, res, next) => {
+  try {
+    const result = await vicobaService.acceptInvitation(req.user.id, parseInt(req.params.inviteId, 10));
+    return res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Kukataa mwaliko
+router.post('/invitations/:inviteId/reject', async (req, res, next) => {
+  try {
+    const result = await vicobaService.rejectInvitation(req.user.id, parseInt(req.params.inviteId, 10));
+    return res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
 // Unda kikundi cha VICOBA
 router.post('/groups', validate(schemas.vicoba.createGroup), async (req, res, next) => {
   try {
