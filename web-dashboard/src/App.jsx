@@ -81,6 +81,7 @@ const RiskOps = lazy(() => import('./pages/RiskOps.jsx'));
 const Governance = lazy(() => import('./pages/Governance.jsx'));
 const LendingCircles = lazy(() => import('./pages/LendingCircles.jsx'));
 const Kilimo = lazy(() => import('./pages/Kilimo.jsx'));
+const Events = lazy(() => import('./pages/Events.jsx'));
 const SecondaryMarket = lazy(() => import('./pages/SecondaryMarket.jsx'));
 
 function RequireAuth({ children }) {
@@ -168,6 +169,7 @@ export default function App() {
             <Route path="governance" element={<Page><Governance /></Page>} />
             <Route path="circles" element={<Page><LendingCircles /></Page>} />
             <Route path="kilimo" element={<Page><Kilimo /></Page>} />
+<Route path="events" element={<Page><Events /></Page>} />
             <Route path="secondary" element={<Page><SecondaryMarket /></Page>} />
         <Route path="settings" element={<Page><Settings /></Page>} />
       </Route>

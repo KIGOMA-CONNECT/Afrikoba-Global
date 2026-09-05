@@ -62,6 +62,7 @@ export default function Layout() {
     { to: '/dashboard/notifications', key: 'nav.notifications', always: true },
     { to: '/dashboard/circles', key: 'nav.circles', always: true },
     { to: '/dashboard/kilimo', key: 'nav.kilimo', always: true },
+    { to: '/dashboard/events', key: 'nav.events', always: true },
     { to: '/dashboard/secondary', key: 'nav.secondary', always: true },
     { to: '/dashboard/admin', key: 'nav.admin', admin: true },
     { to: '/dashboard/risk', key: 'nav.risk', admin: true },

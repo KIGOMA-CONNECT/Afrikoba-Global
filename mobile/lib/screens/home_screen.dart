@@ -7,6 +7,7 @@ import 'promotions_screen.dart';
 import 'vicoba_screen.dart';
 import 'rosca_screen.dart';
 import 'p2p_screen.dart';
+import 'events_screen.dart';
 import 'admin_screen.dart';
 import 'login_screen.dart';
 import 'notifications_screen.dart';
@@ -54,6 +55,7 @@ class _HomeScreenState extends State<HomeScreen> {
     WalletScreen(),
     ServicesScreen(),
     PromotionsScreen(),
+    EventsScreen(),
     VicobaScreen(),
     RoscaScreen(),
     P2pScreen(),
@@ -68,6 +70,7 @@ class _HomeScreenState extends State<HomeScreen> {
     'Wallet',
     'Huduma Zangu',
     'Matangazo',
+    'Matukio (Events)',
     'VICOBA',
     'Upatu (ROSCA)',
     'Uwekezaji (P2P)',
@@ -82,6 +85,7 @@ class _HomeScreenState extends State<HomeScreen> {
     Icons.account_balance_wallet_outlined,
     Icons.grid_view_outlined,
     Icons.campaign_outlined,
+    Icons.celebration_outlined,
     Icons.groups_outlined,
     Icons.sync_alt,
     Icons.trending_up,
@@ -132,7 +136,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 child: ListView(
                   children: [
                     for (var i = 0; i < _titles.length; i++)
-                      if (!(i == 7 && !_isAdmin))
+                      if (!(i == 8 && !_isAdmin))
                         ListTile(
                           leading: Icon(_icons[i]),
                           title: Text(_titles[i]),
