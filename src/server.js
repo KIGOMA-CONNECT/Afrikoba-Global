@@ -79,6 +79,8 @@ const kilimoRoutes = require('./routes/kilimoRoutes');
 const eventRoutes = require('./routes/eventRoutes');
 const featureFlagRoutes = require('./routes/featureFlagRoutes');
 const fraudOpsRoutes = require('./routes/fraudOpsRoutes');
+const experimentRoutes = require('./routes/experimentRoutes');
+const fourEyesRoutes = require('./routes/fourEyesRoutes');
 const swaggerUi = require('swagger-ui-express');
 const { swaggerSpec } = require('./config/swagger');
 
@@ -289,6 +291,8 @@ for (const prefix of versionPrefixes) {
   app.use(`${prefix}/circles`, walletLimiter, lendingCircleRoutes);
   app.use(`${prefix}/kilimo`, walletLimiter, kilimoRoutes);
   app.use(`${prefix}/features`, featureFlagRoutes);
+  app.use(`${prefix}/experiments`, experimentRoutes);
+  app.use(`${prefix}/admin/four-eyes`, adminLimiter, fourEyesRoutes);
   app.use(`${prefix}/fraud-ops`, adminLimiter, fraudOpsRoutes);
 }
 

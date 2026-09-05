@@ -76,6 +76,8 @@ jobs:
           node scripts/test-events-stage5.js
           node scripts/test-vicoba-inbox.js
           node scripts/test-features.js
+          node scripts/test-four-eyes.js
+          node scripts/test-experiments.js
 
       - name: Upload server log on failure
         if: failure()

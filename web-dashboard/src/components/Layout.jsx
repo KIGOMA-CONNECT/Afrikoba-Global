@@ -72,6 +72,8 @@ export default function Layout() {
     { to: '/dashboard/ops', key: 'nav.ops', admin: true },
     { to: '/dashboard/features', key: 'nav.features', admin: true },
     { to: '/dashboard/fraud-ops', key: 'nav.fraud_ops', admin: true },
+    { to: '/dashboard/experiments', key: 'nav.experiments', admin: true },
+    { to: '/dashboard/four-eyes', key: 'nav.four_eyes', admin: true },
     { to: '/dashboard/settings', key: 'nav.settings', always: true },
     { to: '/dashboard/security', key: 'nav.security', always: true },
   ];
