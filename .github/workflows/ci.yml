@@ -39,6 +39,7 @@ jobs:
       DB_USER: postgres
       DB_PASSWORD: postgres
       DB_NAME: afrikoba_global
+      WEBHOOK_SECRET: ci-test-webhook-secret
     steps:
       - uses: actions/checkout@v4
 
