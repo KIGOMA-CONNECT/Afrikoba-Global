@@ -74,6 +74,8 @@ jobs:
           node scripts/test-p2p.js
           node scripts/test-events-stage4.js
           node scripts/test-events-stage5.js
+          node scripts/test-vicoba-inbox.js
+          node scripts/test-features.js
 
       - name: Upload server log on failure
         if: failure()

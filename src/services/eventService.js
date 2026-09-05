@@ -1040,7 +1040,8 @@ async function notifyJoin(eventId, newUserId) {
 }
 
 async function runEventReminders() {
-  const today = new Date().toISOString().slice(0, 10);
+  const todayRes = await pool.query('SELECT CURRENT_DATE::text AS today');
+  const today = todayRes.rows[0].today;
   let sent = 0;
   let failed = 0;
   try {
