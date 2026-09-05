@@ -64,7 +64,7 @@ CREATE TABLE IF NOT EXISTS transactions (
     commission NUMERIC(15, 2) NOT NULL, -- 1% comm
     total_charged NUMERIC(15, 2) NOT NULL,
     currency_code VARCHAR(3) DEFAULT 'TZS',
-    type VARCHAR(30) CHECK (type IN (
+    type VARCHAR(60) CHECK (type IN (
         'DEPOSIT', 'WITHDRAWAL', 'TRANSFER',
         'ROSCA_CONTRIBUTION', 'ROSCA_PAYOUT', 'ROSCA_LOCK',
         'INVESTMENT', 'INVESTMENT_PAYOUT',

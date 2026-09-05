@@ -237,6 +237,7 @@ async function listPools(status) {
 async function disburseDuePayouts() {
   const client = await pool.connect();
   let processed = 0;
+  const smsQueue = [];
   try {
     await client.query('BEGIN');
 
@@ -393,8 +394,8 @@ async function disburseDuePayouts() {
       );
 
       const smsMsg = `Habari ${sched.full_name}, umepokea ${formatMoney(netPayout)} kutoka ${sched.pool_name} (Mzunguko #${sched.cycle_number}). Ref: ${referenceId}`;
-      await sendSMS(sched.phone_number, smsMsg);
-      await logAudit({ eventType: 'ROSCA_PAYOUT', action: 'RELEASE', entityType: 'ROSCA_SCHEDULE', userId: sched.recipient_user_id, entityId: sched.id, referenceId, amount: netPayout, afterData: { pool_id: sched.pool_id, cycle: sched.cycle_number } });
+      smsQueue.push({ phone: sched.phone_number, msg: smsMsg });
+      await logAudit({ eventType: 'ROSCA_PAYOUT', action: 'RELEASE', entityType: 'ROSCA_SCHEDULE', userId: sched.recipient_user_id, entityId: sched.id, referenceId, amount: netPayout, afterData: { pool_id: sched.pool_id, cycle: sched.cycle_number }, client });
       processed++;
     }
 
@@ -405,6 +406,16 @@ async function disburseDuePayouts() {
     throw error;
   } finally {
     client.release();
+  }
+  // SMS hupangwa baada ya COMMIT: hatuwezi kushikilia row locks wakati
+  // tunaposubiri mtandao (provider calls), vinginevyo conns nyingine
+  // (k.m. audit inserts) zinajibana kwenye transactions/zn za txn hii.
+  for (const sms of smsQueue) {
+    try {
+      await sendSMS(sms.phone, sms.msg);
+    } catch (smsErr) {
+      logger.warn('ROSCA SMS', `Imeshindwa (baada ya payout): ${smsErr.message}`);
+    }
   }
   return { processed };
 }

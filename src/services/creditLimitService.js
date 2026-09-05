@@ -38,9 +38,9 @@ async function getCreditLimit(userId) {
 
   // Reference activity base: ~10x recent 90-day inflow
   const inflow = (await pool.query(
-    `SELECT COALESCE(SUM(amount),0)::numeric AS a
+    `SELECT COALESCE(SUM(wallet_amount),0)::numeric AS a
        FROM transactions
-      WHERE user_id=$1 AND amount > 0 AND created_at > NOW() - INTERVAL '90 days'`,
+      WHERE user_id=$1 AND wallet_amount > 0 AND created_at > NOW() - INTERVAL '90 days'`,
     [userId]
   )).rows[0]?.a || 0;
 

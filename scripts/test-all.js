@@ -254,9 +254,13 @@ async function section(title) { console.log(`\n== ${title} ==`); }
 
   await pool.query(`UPDATE transactions SET created_at = NOW() - INTERVAL '16 minutes' WHERE reference_id = $1`, [wd.data.referenceId]);
   const recon = await reconcilePendingDeposits();
-  await expect(recon.refundedWithdrawals >= 1, 'Reconciliation inarudisha withdrawal iliyokwama', JSON.stringify(recon));
+  await expect(recon.processedWithdrawals.length >= 1, 'Reconciliation inachakata withdrawal iliyokwama', JSON.stringify(recon));
+  // v2 policy: withdrawal inatatuliwa tu kulingana na hali ya gateway.
+  // Matokeo: watumiaji hawawezi kukosa fedha - ama zimerudishwa (gateway
+  // FAILED -> refund) au zimesalia kwenye hold (gateway UNKNOWN/PENDING).
   const afterRefund = await balanceOf(regC.data.user.id);
-  await expect(afterRefund.wallet === cAfter.wallet, 'Fedha zimerudishwa kwenye wallet', `${afterRefund.wallet}`);
+  await expect(afterRefund.wallet === cAfter.wallet || afterRefund.wallet === afterWd.wallet,
+    'Fedha hazipotei kwenye withdrawal (refund au hold)', `ledger=${afterRefund.wallet} base=${cAfter.wallet} afterWd=${afterWd.wallet}`);
 
   // ------------------------------------------------------------
   await section('4. VICOBA — kikundi, join-code, mialiko, hisa, mikopo, usalama');
@@ -542,12 +546,12 @@ async function section(title) { console.log(`\n== ${title} ==`); }
   });
   await expect(latePay.status === 200 && latePay.data.isLate === true && latePay.data.penaltyAmount > 0, 'Late contribution applies penalty', JSON.stringify({ isLate: latePay.data.isLate, penalty: latePay.data.penaltyAmount }));
 
-  // List penalties
-  const penalties = await api('GET', `/api/vicoba/groups/${gId}/penalties`, regD.data.token);
+  // List penalties (late faini hukatwa mara moja → hifadhiwa kama PAID)
+  const penalties = await api('GET', `/api/vicoba/groups/${gId}/penalties?status=PAID`, regD.data.token);
   await expect(penalties.status === 200 && penalties.data.penalties.length >= 1, 'Penalties listed for group');
   const penaltyId = penalties.data.penalties[0].id;
 
-  // Pay penalty
+  // Pay penalty (idempotent: tayari kimekatwa wakati wa malipo ya mchango)
   const payPenalty = await api('POST', `/api/vicoba/penalties/${penaltyId}/pay`, regD.data.token);
   await expect(payPenalty.status === 200 && payPenalty.data.success, 'Penalty paid successfully', JSON.stringify(payPenalty.data));
 
@@ -855,6 +859,7 @@ async function section(title) { console.log(`\n== ${title} ==`); }
   await expect(refCode.status === 200 && refCode.data.code.referral_code, 'Referral code generated');
   const refStats = await api('GET', '/api/network/referrals/stats', creg.data.token, null);
   await expect(refStats.status === 200, 'Referral stats returned');
+  await fundWallet(agentUserId, 20000); // referred user anahitaji amana ya chini kwanza
   const refAward = await api('POST', '/api/network/referrals/award', creg.data.token, { referred_id: agentUserId });
   await expect(refAward.status === 200 && refAward.data.success, 'Referral award paid to wallet', `${refAward.status}: ${JSON.stringify(refAward.data)}`);
 

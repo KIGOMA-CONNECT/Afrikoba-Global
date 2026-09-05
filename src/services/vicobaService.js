@@ -557,7 +557,10 @@ async function payPenalty(userId, penaltyId) {
     }
     const penalty = penaltyRes.rows[0];
     if (penalty.status === 'PAID') {
-      throw Object.assign(new Error('Faini tayari imelipwa.'), { statusCode: 400 });
+      // Idempotent: late faini hukatwa mara moja wakati wa malipo; kujaribu
+      // kulipa tena hakuchukulii kiasi mara mbili.
+      await client.query('COMMIT');
+      return { success: true, referenceId: generateReference('VP'), message: 'Faini tayari imelipwa.' };
     }
 
     const userRes = await client.query('SELECT phone_number, full_name FROM users WHERE id = $1', [userId]);

@@ -11,16 +11,20 @@ const pool = require('../config/db');
 
 /**
  * Core write. Stores an audit row; never throws.
- * @param {object} p { userId, action, entityType, entityId, meta, req }
+ * @param {object} p { userId, action, entityType, entityId, meta, req, client }
+ *   `client` (optional) is a caller-owned pg transaction/connection; when
+ *   supplied the row is written INSIDE that transaction so FK checks on
+ *   `users(id)` never deadlock against locks the caller's txn already holds.
  */
-async function writeAudit({ userId, action, entityType, entityId, meta, req }) {
+async function writeAudit({ userId, action, entityType, entityId, meta, req, client }) {
   try {
     let metaJson = null;
     if (meta != null) {
       if (typeof meta === 'string') metaJson = JSON.stringify({ description: meta });
       else if (Object.keys(meta).length) metaJson = JSON.stringify(meta);
     }
-    await pool.query(
+    const db = client || pool;
+    await db.query(
       `INSERT INTO audit_logs (user_id, action, entity_type, entity_id, meta, ip_address, user_agent)
        VALUES ($1, $2, $3, $4, $5, $6, $7)`,
       [
@@ -75,6 +79,7 @@ async function logAudit(a, b, c) {
       entityType: a.entityType || null,
       entityId: a.entityId ?? null,
       meta,
+      client: a.client,
     });
     return;
   }
