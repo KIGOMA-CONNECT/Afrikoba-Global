@@ -83,7 +83,7 @@ function nowSuffix() { return String(Date.now()).slice(-6); }
   // ---------- dispatch ----------
   await section('Dispatcher (delivered + unregistered)');
   let dispatched = await api('POST', '/api/outbox/dispatch', adminToken, { batchSize: 20 });
-  await expect(dispatched.status === 200 && dispatched.data.result.claimed === 2, 'Dispatch claimed 2 events', `status=${dispatched.status} ${JSON.stringify(dispatched.data.result)}`);
+  await expect(dispatched.status === 200 && dispatched.data.result.claimed >= 2, 'Dispatch claimed events (incl. events from earlier suites)', `status=${dispatched.status} ${JSON.stringify(dispatched.data.result)}`);
   let notif = await pool.query('SELECT COUNT(*)::int AS n FROM notifications WHERE user_id = $1 AND title = $2', [userId, 'Outbox heartbeat']);
   await expect(notif.rows[0].n === 1, 'OUTBOX_TEST handler created a notification', `n=${notif.rows[0].n}`);
   let txType = await pool.query("SELECT status FROM outbox_events WHERE reference_id = $1", [ref]);

@@ -105,10 +105,18 @@ const app = express();
 // Outbox / event-bus default handlers (transaction-aware fan-out).
 let _outboxRetryCount = 0;
 outbox.registerHandler('MERCHANT_PAYOUT_EXECUTED', async ({ payload }) => {
-  await createNotification(payload.merchantId || payload.userId, {
+  const m = (await pool.query('SELECT user_id FROM merchants WHERE id = $1', [payload.merchantId])).rows[0];
+  await createNotification(m ? m.user_id : payload.userId, {
     title: 'Malipo ya mfanyabiashara yametumwa',
     body: payload.reference ? `Rejea: ${payload.reference}` : 'Malipo yametumwa.',
     type: 'FRAUD_TRANSACTION',
+  }).catch(() => {});
+});
+outbox.registerHandler('VICOBA_LOAN_APPROVED', async ({ payload }) => {
+  await createNotification(payload.applicantUserId, {
+    title: 'Mkopo wa VICOBA umetolewa',
+    body: `Mkopo wa TZS ${payload.amount} umewekwa kwenye wallet yako.`,
+    type: 'TRANSACTION',
   }).catch(() => {});
 });
 outbox.registerHandler('OUTBOX_TEST', async ({ payload }) => {
