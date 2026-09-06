@@ -31,6 +31,7 @@ export default function Layout() {
     { to: '/dashboard/marketplace', key: 'nav.marketplace', always: true },
     { to: '/dashboard/financing', key: 'nav.financing', always: true },
     { to: '/dashboard/verification', key: 'nav.verification', always: true },
+    { to: '/dashboard/kyc', key: 'nav.kyc', always: true },
     { to: '/dashboard/credit', key: 'nav.credit', always: true },
     { to: '/dashboard/budget', key: 'nav.budget', always: true },
     { to: '/dashboard/vaults', key: 'nav.vaults', always: true },

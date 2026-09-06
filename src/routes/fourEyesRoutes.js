@@ -5,6 +5,10 @@ const { logAction } = require('../services/auditService');
 const fe = require('../services/fourEyesService');
 const pool = require('../config/db');
 const fin = require('../services/financialEngine');
+const vicoba = require('../services/vicobaService');
+const card = require('../services/cardService');
+const credit = require('../services/savingsCreditService');
+const business = require('../services/businessService');
 
 router.use(authRequired, requireRoles('ADMIN'));
 
@@ -70,6 +74,49 @@ fe.registerExecutor('ADMIN_LARGE_REFUND', async (payload, approverId) => {
     client.release();
   }
   return { userId, amount, reference };
+});
+
+const num = (v) => Number(v);
+const requireValue = (v, msg) => {
+  if (v == null || v === '' || (typeof v === 'number' && Number.isNaN(v))) {
+    throw Object.assign(new Error(msg), { status: 400 });
+  }
+};
+
+fe.registerExecutor('VICOBA_LOAN_DISBURSE', async (payload, approverId) => {
+  const loanId = num(payload.loanId);
+  requireValue(loanId, 'loanId inahitajika.');
+  const actorId = num(payload.actorId) || approverId;
+  return vicoba.approveLoan(actorId, loanId, payload.approvedAmount != null && payload.approvedAmount !== '' ? num(payload.approvedAmount) : undefined);
+});
+
+fe.registerExecutor('VICOBA_SOCIAL_FUND_DISBURSE', async (payload, approverId) => {
+  const requestId = num(payload.requestId);
+  requireValue(requestId, 'requestId inahitajika.');
+  const actorId = num(payload.actorId) || approverId;
+  return vicoba.approveSocialFundDisbursement(actorId, requestId, payload.approvedAmount != null && payload.approvedAmount !== '' ? num(payload.approvedAmount) : undefined);
+});
+
+fe.registerExecutor('CARD_ADMIN_SETTLE', async (payload, approverId) => {
+  requireValue(payload.authReference, 'authReference inahitajika.');
+  return card.settleCardAuth(approverId, String(payload.authReference));
+});
+
+fe.registerExecutor('CARD_ADMIN_REFUND', async (payload, approverId) => {
+  requireValue(payload.authReference, 'authReference inahitajika.');
+  return card.refundCardAuth(approverId, String(payload.authReference));
+});
+
+fe.registerExecutor('CREDIT_LOAN_DISBURSE', async (payload, approverId) => {
+  const loanId = num(payload.loanId);
+  requireValue(loanId, 'loanId inahitajika.');
+  return credit.adminDisburseMicroLoan(loanId, approverId);
+});
+
+fe.registerExecutor('BUSINESS_LOAN_DISBURSE', async (payload, approverId) => {
+  const loanId = num(payload.loanId);
+  requireValue(loanId, 'loanId inahitajika.');
+  return business.adminDisburseLoan(loanId, approverId);
 });
 
 // ===== Policies =====
@@ -158,6 +205,54 @@ router.post('/actions/demote-role', async (req, res, next) => {
 router.post('/actions/large-refund', async (req, res, next) => {
   try {
     const { request, policy } = await fe.initiateRequest({ actionCode: 'ADMIN_LARGE_REFUND', requesterId: req.user.id, payload: { userId: req.body.userId, amount: req.body.amount } });
+    await logAction(req.user.id, 'FOUR_EYES_REQUESTED', 'FOUR_EYES_REQUEST', request.id, { action_code: request.action_code }, req);
+    res.status(201).json({ request, policy });
+  } catch (error) { next(error); }
+});
+
+router.post('/actions/vicoba-loan-disburse', async (req, res, next) => {
+  try {
+    const { request, policy } = await fe.initiateRequest({ actionCode: 'VICOBA_LOAN_DISBURSE', requesterId: req.user.id, payload: { actorId: req.body.actorId, loanId: req.body.loanId, approvedAmount: req.body.approvedAmount } });
+    await logAction(req.user.id, 'FOUR_EYES_REQUESTED', 'FOUR_EYES_REQUEST', request.id, { action_code: request.action_code }, req);
+    res.status(201).json({ request, policy });
+  } catch (error) { next(error); }
+});
+
+router.post('/actions/vicoba-social-disburse', async (req, res, next) => {
+  try {
+    const { request, policy } = await fe.initiateRequest({ actionCode: 'VICOBA_SOCIAL_FUND_DISBURSE', requesterId: req.user.id, payload: { actorId: req.body.actorId, requestId: req.body.requestId, approvedAmount: req.body.approvedAmount } });
+    await logAction(req.user.id, 'FOUR_EYES_REQUESTED', 'FOUR_EYES_REQUEST', request.id, { action_code: request.action_code }, req);
+    res.status(201).json({ request, policy });
+  } catch (error) { next(error); }
+});
+
+router.post('/actions/card-settle', async (req, res, next) => {
+  try {
+    const { request, policy } = await fe.initiateRequest({ actionCode: 'CARD_ADMIN_SETTLE', requesterId: req.user.id, payload: { authReference: req.body.authReference } });
+    await logAction(req.user.id, 'FOUR_EYES_REQUESTED', 'FOUR_EYES_REQUEST', request.id, { action_code: request.action_code }, req);
+    res.status(201).json({ request, policy });
+  } catch (error) { next(error); }
+});
+
+router.post('/actions/card-refund', async (req, res, next) => {
+  try {
+    const { request, policy } = await fe.initiateRequest({ actionCode: 'CARD_ADMIN_REFUND', requesterId: req.user.id, payload: { authReference: req.body.authReference } });
+    await logAction(req.user.id, 'FOUR_EYES_REQUESTED', 'FOUR_EYES_REQUEST', request.id, { action_code: request.action_code }, req);
+    res.status(201).json({ request, policy });
+  } catch (error) { next(error); }
+});
+
+router.post('/actions/credit-loan-disburse', async (req, res, next) => {
+  try {
+    const { request, policy } = await fe.initiateRequest({ actionCode: 'CREDIT_LOAN_DISBURSE', requesterId: req.user.id, payload: { loanId: req.body.loanId } });
+    await logAction(req.user.id, 'FOUR_EYES_REQUESTED', 'FOUR_EYES_REQUEST', request.id, { action_code: request.action_code }, req);
+    res.status(201).json({ request, policy });
+  } catch (error) { next(error); }
+});
+
+router.post('/actions/business-loan-disburse', async (req, res, next) => {
+  try {
+    const { request, policy } = await fe.initiateRequest({ actionCode: 'BUSINESS_LOAN_DISBURSE', requesterId: req.user.id, payload: { loanId: req.body.loanId } });
     await logAction(req.user.id, 'FOUR_EYES_REQUESTED', 'FOUR_EYES_REQUEST', request.id, { action_code: request.action_code }, req);
     res.status(201).json({ request, policy });
   } catch (error) { next(error); }

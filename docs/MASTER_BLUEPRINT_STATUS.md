@@ -100,8 +100,7 @@ Status legend: ✅ **built** · 🔶 **partial** · ⬜ **not built / next**.
 
 ## 9. Compliance / AML / KYC / Data Governance / RBAC / Audit (Sec 22–28)
 - ✅ Audit trail: `audit_logs` + `financial_audit_log` (append-only posture).
-- 🔶 KYC lifecycle partial (`kycDocumentService`, `kyc_documents`, seller
-  verification, identity verification).
+- ✅ **KYC lifecycle built** (migrations 082+083: `kyc_documents` reconciled to `document_url` + `file_hash`/`rejection_reason`/`document_number`/`issued_country`/`submitted_via`/`reviewed_at`; `kycDocumentService` upload/list/pending (claimant name+phone)/verify with auto `kyc_level` upgrade (ID→2, +SELFIE→3)/biographic profile (NIDA uniqueness)/status; routes in `advancedRoutes.js` incl. `POST /kyc/profile`, `GET /kyc/status`; `requireKycLevel` gate reusable; `Kyc.jsx` member + admin review page at `/dashboard/kyc`).
 - 🔶 AML/sanctions monitoring = heuristics (`fraudDetectionService`); full case
   management / regulatory reporting = **built** (migration 050: `aml_cases` +
   `aml_case_notes` on top of `fraud_alerts`; assign/investigate/resolve + notes).
@@ -146,9 +145,8 @@ Status legend: ✅ **built** · 🔶 **partial** · ⬜ **not built / next**.
   in `docs/PLATFORM_ROADMAP.md`; a full 27-doc set is not yet written.
 - ✅ **Feature flags + experimentation framework built** (migration 080, `/api/features` + admin `/api/features/admin`, `FeatureFlags.jsx`).
 - ✅ **Fraud operations centre dashboard built** (`/api/fraud-ops`, `FraudOps.jsx`).
-- ✅ **Role-based four-eyes built** (migration 081: `four_eyes_policies`/`four_eyes_requests`/`four_eyes_approvals`; maker-checker with role enforcement, no-self-approval, quorum 1–3, registered executors for role promote/demote + large refund; `/api/admin/four-eyes`, gated by `FOUR_EYES` flag, `FourEyes.jsx`).
+- ✅ **Role-based four-eyes built + extended** (migration 081 + 082: `four_eyes_policies`/`four_eyes_requests`/`four_eyes_approvals`; maker-checker with role enforcement, no-self-approval, quorum 1–3, registered executors, retry; `/api/admin/four-eyes`, gated by `FOUR_EYES` flag, `FourEyes.jsx`). Executors: `ADMIN_PROMOTE_ROLE`, `ADMIN_DEMOTE_ROLE`, `ADMIN_LARGE_REFUND`, plus (migration 082) `VICOBA_LOAN_DISBURSE`, `VICOBA_SOCIAL_FUND_DISBURSE`, `CARD_ADMIN_SETTLE`, `CARD_ADMIN_REFUND`, `CREDIT_LOAN_DISBURSE`, `BUSINESS_LOAN_DISBURSE` with convenience launchers (`/actions/vicoba-loan-disburse|vicoba-social-disburse|card-settle|card-refund|credit-loan-disburse|business-loan-disburse`) — card settle/refund move money via `cardService` (capture/unlock), loan disburse wraps `savingsCreditService.adminDisburseMicroLoan` / `businessService.adminDisburseLoan`, VICOBA executors wrap `vicobaService.approveLoan`/`approveSocialFundDisbursement` (actor fallback = approving admin).
 - ✅ **A/B experimentation engine built** (migration 081: `experiments`/`experiment_assignments`/`experiment_events`; deterministic weighted assignment, audience targeting, event tracking, report with uplift + z-score + WIN/LOSS/NEUTRAL verdict; `/api/experiments` consumer + admin, gated by `EXPERIMENTS` flag, `Experiments.jsx`).
-- 🔶 Role-based four-eyes currently covers admin role changes (promote/demote) and large refunds via registered executors — wiring further sensitive actions (e.g. role-based four-eyes for card/VICOBA ops, high-value loan approvals) is incremental. Model/AI governance register tracked via `ai_model_register` (Phase 8).
 
 ---
 
@@ -190,6 +188,21 @@ ledger → account abstraction → migrate services sequentially → reconciliat
   (`api_keys` + `webhook_deliveries`), `developerService.js`,
   `developerRoutes.js` at `/api/developer`, `Developer.jsx` (3-tab page),
   `nav.developer` + full `dev.*` i18n sw/en.
+- ✅ **Four-eyes extended to VICOBA / card / high-value loan ops + full KYC lifecycle**:
+  migrations 082 (`four_eyes_policies` seeds for `VICOBA_LOAN_DISBURSE`,
+  `VICOBA_SOCIAL_FUND_DISBURSE`, `CARD_ADMIN_SETTLE`, `CARD_ADMIN_REFUND`,
+  `CREDIT_LOAN_DISBURSE`, `BUSINESS_LOAN_DISBURSE` + KYC doc columns) and 083
+  (`kyc_documents` schema reconciliation: `document_url` standardisation +
+  `file_hash`/`rejection_reason`/`document_number`/`issued_country`/`submitted_via`/
+  `reviewed_at`/`reviewer_note`). Six new four-eyes executors + convenience
+  launchers in `fourEyesRoutes.js`; `kycDocumentService.js` reworked (upload with
+  document metadata, admin review queue exposing claimant `full_name`/`phone_number`,
+  verify with auto `kyc_level` upgrade, biographic profile with unique-NIDA guard,
+  KYC status); `advancedRoutes.js` adds `POST /kyc/profile` + `GET /kyc/status`;
+  `Kyc.jsx` page (member docs/profile + admin review queue with stats) wired into
+  App/Layout/i18n. Regression: `test-kyc.js` (22) new; `test-four-eyes.js` extended
+  to 60 (card refund/settle money-movement + loan/VICOBA FAILED guards); older
+  suites now honour `TEST_BASE` env for local runs.
 
 ## Suggested next candidates
 - ✅ **Four-eyes RBAC** (migration 050 `approval_flows`/`approval_actions` + migration 052

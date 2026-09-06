@@ -89,6 +89,7 @@ const FeatureFlags = lazy(() => import('./pages/FeatureFlags.jsx'));
 const FraudOps = lazy(() => import('./pages/FraudOps.jsx'));
 const Experiments = lazy(() => import('./pages/Experiments.jsx'));
 const FourEyes = lazy(() => import('./pages/FourEyes.jsx'));
+const Kyc = lazy(() => import('./pages/Kyc.jsx'));
 
 function RequireAuth({ children }) {
   const token = localStorage.getItem('afrikoba_token');
@@ -182,6 +183,7 @@ export default function App() {
             <Route path="fraud-ops" element={<Page><FraudOps /></Page>} />
             <Route path="experiments" element={<Page><Experiments /></Page>} />
             <Route path="four-eyes" element={<Page><FourEyes /></Page>} />
+            <Route path="kyc" element={<Page><Kyc /></Page>} />
         <Route path="settings" element={<Page><Settings /></Page>} />
       </Route>
         <Route path="/pay/:code" element={<Page><PaymentLinkPage /></Page>} />

@@ -6,6 +6,8 @@
  * ============================================================ */
 const BASE = process.env.FOUREYES_TEST_BASE || 'http://127.0.0.1:3000';
 const pool = require('../src/config/db');
+const cardSvc = require('../src/services/cardService');
+const fin = require('../src/services/financialEngine');
 
 let passed = 0;
 let failed = 0;
@@ -62,6 +64,7 @@ function nowSuffix() { return String(Date.now()).slice(-6); }
   const target = await register(`255723${suffix}`, 'Target Member');
   const target2 = await register(`255724${suffix}`, 'Target Member 2');
   const stranger = await register(`255725${suffix}`, 'Stranger Member');
+  const cardOwner = await register(`255726${suffix}`, 'Card Owner');
   await expect(mk.data.token && ck.data.token && ck2.data.token, 'Users registered');
   await expect(target.data.user.role === 'MJUMBE', 'Targets default to MJUMBE');
 
@@ -201,6 +204,66 @@ function nowSuffix() { return String(Date.now()).slice(-6); }
   let sameRole = await api('POST', '/api/admin/four-eyes/actions/promote-role', maker, { userId: member2Id, role: 'OPS' });
   let sameRoleApprov = await api('POST', `/api/admin/four-eyes/requests/${sameRole.data.request.id}/approve`, checker, {});
   await expect(sameRoleApprov.status === 200 && sameRoleApprov.data.request.status === 'FAILED' && /tayari ana jukumu/.test(sameRoleApprov.data.request.error), 'Same-role change -> FAILED', `status=${sameRoleApprov.status} err=${sameRoleApprov.data.request?.error}`);
+
+  // ---------- new ops executors: card refund & settle ----------
+  await section('Card ops via four-eyes (money movement)');
+  const ownerId = cardOwner.data.user.id;
+  await fin.postDeposit({ userId: ownerId, amount: 100000, reference: `TEST:CARD:${suffix}:${Date.now()}`, description: 'Four-eyes card test deposit' });
+  const issued = await cardSvc.issueCard(ownerId, { scheme: 'VISA' });
+  await expect(issued.card.status === 'ACTIVE', 'Card issued');
+  const auth = await cardSvc.authorizeCard(ownerId, issued.card.id, { merchant_name: 'AFRIKOBA TEST MERCH', amount: 6000, cvv: issued.cvv });
+  await expect(auth.status === 'AUTH_HOLD' && auth.auth_reference, 'Authorization hold created', `status=${auth.status}`);
+  const authRef = auth.auth_reference;
+  const balAfterAuth = Number((await pool.query('SELECT wallet_balance::numeric AS b FROM users WHERE id = $1', [ownerId])).rows[0].b);
+  await expect(balAfterAuth === 94000, `Hold deducted 6000 (wallet=${balAfterAuth})`);
+
+  let rf = await api('POST', '/api/admin/four-eyes/actions/card-refund', maker, { authReference: authRef });
+  await expect(rf.status === 201 && rf.data.request.status === 'PENDING', 'Card refund queued', `status=${rf.status}`);
+  let rfApp = await api('POST', `/api/admin/four-eyes/requests/${rf.data.request.id}/approve`, checker, {});
+  await expect(rfApp.status === 200 && rfApp.data.executed && rfApp.data.request.status === 'EXECUTED', 'Card refund approved & executed', `status=${rfApp.status}`);
+  const balRefund = Number((await pool.query('SELECT wallet_balance::numeric AS b FROM users WHERE id = $1', [ownerId])).rows[0].b);
+  await expect(balRefund === 100000, `Refund restored wallet (wallet=${balRefund})`);
+  const txRefund = await pool.query('SELECT status FROM card_transactions WHERE auth_reference = $1', [authRef]);
+  await expect(txRefund.rows[0].status === 'REFUNDED', 'Card transaction REFUNDED');
+
+  const auth2 = await cardSvc.authorizeCard(ownerId, issued.card.id, { merchant_name: 'AFRIKOBA TEST MERCH 2', amount: 6000, cvv: issued.cvv });
+  await expect(auth2.status === 'AUTH_HOLD', 'Second authorization hold created', `status=${auth2.status}`);
+  const auth2Ref = auth2.auth_reference;
+  let st = await api('POST', '/api/admin/four-eyes/actions/card-settle', maker, { authReference: auth2Ref });
+  await expect(st.status === 201, 'Card settle queued', `status=${st.status}`);
+  let stApp = await api('POST', `/api/admin/four-eyes/requests/${st.data.request.id}/approve`, checker, {});
+  await expect(stApp.status === 200 && stApp.data.executed, 'Card settle approved & executed', `status=${stApp.status}`);
+  const balSettle = await pool.query('SELECT wallet_balance::numeric AS b, locked_balance::numeric AS l FROM users WHERE id = $1', [ownerId]);
+  await expect(Number(balSettle.rows[0].b) === 94000 && Number(balSettle.rows[0].l) === 0, `Settle converts hold (wallet=${balSettle.rows[0].b}, locked=${balSettle.rows[0].l})`);
+  const txSettle = await pool.query('SELECT status FROM card_transactions WHERE auth_reference = $1', [auth2Ref]);
+  await expect(txSettle.rows[0].status === 'SETTLED', 'Card transaction SETTLED');
+
+  // ---------- new ops executors: guarded failures ----------
+  await section('New ops failed guards (loans + VICOBA + bogus ref)');
+  let bogusRef = await api('POST', '/api/admin/four-eyes/actions/card-refund', maker, { authReference: 'NOPE-NOT-REAL-9' });
+  await api('POST', `/api/admin/four-eyes/requests/${bogusRef.data.request.id}/approve`, checker, {});
+  let bogusRefReq = await api('GET', `/api/admin/four-eyes/requests/${bogusRef.data.request.id}`, maker);
+  await expect(bogusRefReq.data.request.status === 'FAILED' && /haipatikani/.test(bogusRefReq.data.request.error), 'Bogus authReference -> FAILED', `err=${bogusRefReq.data.request?.error}`);
+
+  let cl = await api('POST', '/api/admin/four-eyes/actions/credit-loan-disburse', maker, { loanId: 999999999 });
+  await api('POST', `/api/admin/four-eyes/requests/${cl.data.request.id}/approve`, checker, {});
+  let clReq = await api('GET', `/api/admin/four-eyes/requests/${cl.data.request.id}`, maker);
+  await expect(clReq.data.request.status === 'FAILED' && /haupatikani/.test(clReq.data.request.error), 'Unknown micro-loan -> FAILED', `err=${clReq.data.request?.error}`);
+
+  let bl = await api('POST', '/api/admin/four-eyes/actions/business-loan-disburse', maker, { loanId: 999999999 });
+  await api('POST', `/api/admin/four-eyes/requests/${bl.data.request.id}/approve`, checker, {});
+  let blReq = await api('GET', `/api/admin/four-eyes/requests/${bl.data.request.id}`, maker);
+  await expect(blReq.data.request.status === 'FAILED' && /haupatikani/.test(blReq.data.request.error), 'Unknown business loan -> FAILED', `err=${blReq.data.request?.error}`);
+
+  let vl = await api('POST', '/api/admin/four-eyes/actions/vicoba-loan-disburse', maker, { loanId: 999999999 });
+  await api('POST', `/api/admin/four-eyes/requests/${vl.data.request.id}/approve`, checker, {});
+  let vlReq = await api('GET', `/api/admin/four-eyes/requests/${vl.data.request.id}`, maker);
+  await expect(vlReq.data.request.status === 'FAILED' && /Hauko kwenye kikundi/.test(vlReq.data.request.error), 'VICOBA loan needs group officer -> FAILED', `err=${vlReq.data.request?.error}`);
+
+  let vs = await api('POST', '/api/admin/four-eyes/actions/vicoba-social-disburse', maker, { requestId: 999999999 });
+  await api('POST', `/api/admin/four-eyes/requests/${vs.data.request.id}/approve`, checker, {});
+  let vsReq = await api('GET', `/api/admin/four-eyes/requests/${vs.data.request.id}`, maker);
+  await expect(vsReq.data.request.status === 'FAILED' && /Ombi halipo/.test(vsReq.data.request.error), 'Unknown social fund request -> FAILED', `err=${vsReq.data.request?.error}`);
 
   console.log(`\n===== FOUR-EYES: ${passed} passed, ${failed} failed =====`);
   if (failed > 0) {

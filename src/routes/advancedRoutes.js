@@ -210,6 +210,20 @@ router.post('/kyc/documents', authRequired, async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
+router.post('/kyc/profile', authRequired, async (req, res, next) => {
+  try {
+    const profile = await kycDocumentService.upsertBiographicProfile(req.user.id, req.body);
+    res.json({ success: true, profile });
+  } catch (error) { next(error); }
+});
+
+router.get('/kyc/status', authRequired, async (req, res, next) => {
+  try {
+    const status = await kycDocumentService.getKycStatus(req.user.id);
+    res.json({ success: true, ...status });
+  } catch (error) { next(error); }
+});
+
 router.get('/admin/kyc/pending', authRequired, requireRoles('ADMIN'), async (req, res, next) => {
   try {
     const docs = await kycDocumentService.getPendingDocuments();

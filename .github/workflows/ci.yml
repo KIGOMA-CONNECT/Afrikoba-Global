@@ -78,6 +78,7 @@ jobs:
           node scripts/test-features.js
           node scripts/test-four-eyes.js
           node scripts/test-experiments.js
+          node scripts/test-kyc.js
 
       - name: Upload server log on failure
         if: failure()

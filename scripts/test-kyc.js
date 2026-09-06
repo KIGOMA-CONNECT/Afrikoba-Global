@@ -1,0 +1,139 @@
+/* ============================================================
+ * AFRIKOBA GLOBAL - KYC LIFECYCLE REGRESSION
+ * Identity profile, document upload, admin review queue,
+ * verify/reject, kyc_level auto-upgrade, access control.
+ * ============================================================ */
+const BASE = process.env.KYC_TEST_BASE || 'http://127.0.0.1:3000';
+const pool = require('../src/config/db');
+
+let passed = 0;
+let failed = 0;
+const failures = [];
+
+function ok(label) { passed++; console.log(`  ✓ ${label}`); }
+function fail(label, extra) {
+  failed++;
+  failures.push(label);
+  console.log(`  ✗ ${label}${extra ? ' :: ' + extra : ''}`);
+}
+async function expect(cond, label, extra) {
+  if (cond) ok(label);
+  else fail(label, extra);
+}
+async function section(label) { console.log('\n--- ' + label + ' ---'); }
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function api(method, path, token, body) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const isGet = method === 'GET' || method === 'HEAD';
+  const res = await fetch(BASE + path, {
+    method,
+    headers,
+    body: !isGet && body !== undefined && body !== null ? JSON.stringify(body) : undefined,
+  });
+  let data = null;
+  try { data = await res.json(); } catch (e) { data = {}; }
+  return { status: res.status, data };
+}
+
+async function sendOtp(phoneNumber) {
+  const r = await api('POST', '/api/auth/send-otp', null, { phoneNumber });
+  return r.data.devOtp;
+}
+async function register(phoneNumber, fullName) {
+  const otp = await sendOtp(phoneNumber);
+  return api('POST', '/api/auth/register', null, { fullName, phoneNumber, otp });
+}
+async function makeAdmin(reg) {
+  await pool.query('UPDATE users SET role = $2, updated_at = NOW() WHERE id = $1', [reg.data.user.id, 'ADMIN']);
+  const refresh = await api('POST', '/api/auth/refresh', null, { refreshToken: reg.data.refreshToken });
+  return refresh.data.token;
+}
+
+function nowSuffix() { return String(Date.now()).slice(-6); }
+
+(async () => {
+  const suffix = nowSuffix();
+  const user = await register(`255730${suffix}`, 'KYC User Alpha');
+  const user2 = await register(`255731${suffix}`, 'KYC User Beta');
+  const admin = await register(`255732${suffix}`, 'KYC Admin');
+  await expect(user.data.token && user2.data.token && admin.data.token, 'Users registered');
+  const token = user.data.token;
+  const token2 = user2.data.token;
+  const adminToken = await makeAdmin(admin);
+  await expect(!!adminToken, 'Reviewer promoted to ADMIN');
+
+  // ---------- access control ----------
+  await section('Access control');
+  let anon = await api('GET', '/api/advanced/admin/kyc/pending');
+  await expect(anon.status === 401, 'Anonymous blocked', `status=${anon.status}`);
+  let nonAdmin = await api('GET', '/api/advanced/admin/kyc/pending', token);
+  await expect(nonAdmin.status === 403, 'Non-admin blocked from review queue', `status=${nonAdmin.status}`);
+  let adminQueue = await api('GET', '/api/advanced/admin/kyc/pending', adminToken);
+  await expect(adminQueue.status === 200 && Array.isArray(adminQueue.data.documents), 'Admin views pending queue', `status=${adminQueue.status}`);
+
+  // ---------- biographic profile ----------
+  await section('Identity profile submission');
+  let badProfile = await api('POST', '/api/advanced/kyc/profile', token, {});
+  await expect(badProfile.status === 400, 'Empty profile rejected', `status=${badProfile.status}`);
+  let profile = await api('POST', '/api/advanced/kyc/profile', token, { nida_number: `NIDA${suffix}`, residential_address: 'Dar es Salaam, Kinondoni', id_document_url: 'https://cdn.example/tz-id.jpg' });
+  await expect(profile.status === 200 && profile.data.profile.nida_number === `NIDA${suffix}`, 'Profile saved with NIDA', `status=${profile.status}`);
+  let profileDup = await api('POST', '/api/advanced/kyc/profile', token2, { nida_number: `NIDA${suffix}` });
+  await expect(profileDup.status === 409, 'Duplicate NIDA rejected', `status=${profileDup.status}`);
+
+  // ---------- document upload ----------
+  await section('Document upload');
+  let badType = await api('POST', '/api/advanced/kyc/documents', token, { document_type: 'GUN_LICENSE', document_url: 'https://cdn.example/x.jpg' });
+  await expect(badType.status === 400 && /batili/.test(badType.data?.message || ''), 'Invalid doc type rejected', `status=${badType.status}`);
+  let upload = await api('POST', '/api/advanced/kyc/documents', token, { document_type: 'NATIONAL_ID', document_url: 'https://cdn.example/nida-f.jpg', document_number: `NID${suffix}`, issued_country: 'TZ' });
+  await expect(upload.status === 200 && upload.data.document.status === 'PENDING' && upload.data.document.document_number === `NID${suffix}`, 'National ID uploaded (PENDING)', `status=${upload.status}`);
+  const docId = upload.data.document.id;
+
+  let status = await api('GET', '/api/advanced/kyc/status', token);
+  await expect(status.status === 200 && status.data.kyc_level === 1 && status.data.documents.length === 1, 'Status shows level 1 + 1 doc', `status=${status.status}`);
+
+  // ---------- review queue + verify ----------
+  await section('Admin review queue');
+  adminQueue = await api('GET', '/api/advanced/admin/kyc/pending', adminToken);
+  const pendingDoc = adminQueue.data.documents.find((d) => d.id === docId);
+  await expect(!!pendingDoc, 'Pending doc appears in queue');
+  await expect(pendingDoc.full_name === 'KYC User Alpha' && pendingDoc.phone_number === `255730${suffix}`, 'Queue exposes claimant name + phone', `name=${pendingDoc.full_name}`);
+
+  let verify = await api('PUT', `/api/advanced/admin/kyc/${docId}/verify`, adminToken, { status: 'APPROVED' });
+  await expect(verify.status === 200 && verify.data.document.status === 'APPROVED', 'Doc approved by admin', `status=${verify.status}`);
+  const level = await pool.query('SELECT kyc_level FROM users WHERE id = $1', [user.data.user.id]);
+  await expect(level.rows[0].kyc_level === 2, 'National ID bumps kyc_level to 2', `level=${level.rows[0].kyc_level}`);
+
+  // ---------- reject path ----------
+  await section('Reject + level 3 upgrade');
+  let upload2 = await api('POST', '/api/advanced/kyc/documents', token2, { document_type: 'PASSPORT', document_url: 'https://cdn.example/pass.jpg', document_number: `PB${suffix}` });
+  await expect(upload2.status === 200, 'Second user uploads passport', `status=${upload2.status}`);
+  let reject = await api('PUT', `/api/advanced/admin/kyc/${upload2.data.document.id}/verify`, adminToken, { status: 'REJECTED', rejection_reason: 'Hati haijasomika' });
+  await expect(reject.status === 200 && reject.data.document.status === 'REJECTED' && reject.data.document.rejection_reason === 'Hati haijasomika', 'Doc rejected with reason', `status=${reject.status}`);
+  const level2 = await pool.query('SELECT kyc_level FROM users WHERE id = $1', [user2.data.user.id]);
+  await expect(level2.rows[0].kyc_level === 1, 'Rejected doc does not upgrade level', `level=${level2.rows[0].kyc_level}`);
+
+  let selfie = await api('POST', '/api/advanced/kyc/documents', token, { document_type: 'SELFIE', document_url: 'https://cdn.example/selfie.jpg' });
+  await expect(selfie.status === 200, 'Selfie uploaded', `status=${selfie.status}`);
+  await api('PUT', `/api/advanced/admin/kyc/${selfie.data.document.id}/verify`, adminToken, { status: 'APPROVED' });
+  const level3 = await pool.query('SELECT kyc_level FROM users WHERE id = $1', [user.data.user.id]);
+  await expect(level3.rows[0].kyc_level === 3, 'ID + SELFIE upgrades to level 3', `level=${level3.rows[0].kyc_level}`);
+
+  let stats = await api('GET', '/api/advanced/admin/kyc/stats', adminToken);
+  await expect(stats.status === 200 && stats.data.stats.approved >= 2 && stats.data.stats.rejected >= 1 && stats.data.stats.pending === 0, 'Stats reflect lifecycle', `stats=${JSON.stringify(stats.data.stats)}`);
+
+  let myDocs = await api('GET', '/api/advanced/kyc/documents', token);
+  await expect(myDocs.status === 200 && myDocs.data.documents.length === 2, 'User lists own docs', `status=${myDocs.status}`);
+
+  console.log(`\n===== KYC: ${passed} passed, ${failed} failed =====`);
+  if (failed > 0) {
+    console.log('FAILURES:', failures.join(' | '));
+    process.exit(1);
+  }
+  await pool.end();
+  process.exit(0);
+})().catch((e) => {
+  console.error('FATAL', e);
+  process.exit(2);
+});

@@ -2,7 +2,7 @@
  * AFRIKOBA GLOBAL - COMPREHENSIVE TEST SUITE (kila hatua)
  * Huendesha mtihani wa mfumo mzima na kukusanya matokeo.
  * ============================================================ */
-const BASE = 'http://127.0.0.1:3000';
+const BASE = process.env.TEST_BASE || 'http://127.0.0.1:3000';
 const nodeCrypto = require('crypto');
 const http = require('http');
 const pool = require('../src/config/db');
