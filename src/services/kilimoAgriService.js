@@ -147,6 +147,160 @@ async function createOfftakeAgreement(userId, data) {
   return res.rows[0];
 }
 
+/* ================= FARM SEASONS + YIELD TRACKING ================= */
+
+async function getOwnedFarmOrThrow(userId, farmId, statusCode = 403) {
+  const res = await pool.query('SELECT id FROM farm_profiles WHERE id = $1 AND user_id = $2', [farmId, userId]);
+  if (!res.rows.length) throw Object.assign(new Error('Shamba halipatikani au sio lako.'), { statusCode });
+  return res.rows[0];
+}
+
+async function createSeason(userId, farmId, data) {
+  await getOwnedFarmOrThrow(userId, farmId);
+  const { seasonName, plantingDate, expectedHarvestDate, crop, areaAcres, expectedYieldTons } = data;
+  const res = await pool.query(
+    `INSERT INTO farm_seasons (farm_id, season_name, planting_date, expected_harvest_date, crop, area_acres, expected_yield_tons)
+     VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+    [farmId, seasonName, plantingDate, expectedHarvestDate, crop, areaAcres || null, expectedYieldTons || 0]
+  );
+  await logAudit(userId, 'FARM_SEASON_CREATED', `Season "${seasonName}" created for farm #${farmId}`);
+  return res.rows[0];
+}
+
+async function listSeasons(userId, farmId) {
+  await getOwnedFarmOrThrow(userId, farmId);
+  const res = await pool.query(
+    `SELECT * FROM farm_seasons WHERE farm_id = $1 ORDER BY created_at DESC`,
+    [farmId]
+  );
+  return res.rows;
+}
+
+/**
+ * Harvest close-out: marks the ACTIVE season COMPLETED, records the measured
+ * yield + sale amount, and rolls the yield into the farm profile history.
+ */
+async function completeHarvest(userId, seasonId, data) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const season = (await client.query(
+      `SELECT fs.*, fp.user_id AS owner_id FROM farm_seasons fs
+       JOIN farm_profiles fp ON fp.id = fs.farm_id
+       WHERE fs.id = $1 FOR UPDATE`,
+      [seasonId]
+    )).rows[0];
+    if (!season || season.owner_id !== userId) {
+      throw Object.assign(new Error('Msimu haupatikani au sio wako.'), { statusCode: 403 });
+    }
+    if (season.status !== 'ACTIVE') throw Object.assign(new Error('Msimu tayari umefungwa.'), { statusCode: 400 });
+
+    const actualYieldTons = Number(data.actualYieldTons ?? data.actual_yield_tons ?? 0);
+    const saleAmount = Number(data.saleAmount ?? data.sale_amount ?? 0);
+    if (!(actualYieldTons >= 0) || !(saleAmount >= 0)) {
+      throw Object.assign(new Error('Mavuno na bei viwe thamani chanya.'), { statusCode: 400 });
+    }
+
+    await client.query(
+      `UPDATE farm_seasons
+       SET status = 'COMPLETED', actual_yield_tons = $1, sale_amount = $2, notes = $3, updated_at = NOW()
+       WHERE id = $4`,
+      [actualYieldTons, saleAmount, data.notes || null, seasonId]
+    );
+    await client.query(
+      `UPDATE farm_profiles SET historical_yield_tons = historical_yield_tons + $1 WHERE id = $2`,
+      [actualYieldTons, season.farm_id]
+    );
+    await logAudit(userId, 'FARM_SEASON_COMPLETED', `Harvest recorded: ${actualYieldTons} tons (${formatMoney(saleAmount)})`);
+    await client.query('COMMIT');
+    const fresh = (await client.query(
+      `SELECT fs.*, (SELECT historical_yield_tons FROM farm_profiles WHERE id = fs.farm_id) AS farm_historical_yield_tons
+       FROM farm_seasons fs WHERE fs.id = $1`,
+      [seasonId]
+    )).rows[0];
+    return fresh;
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+/* ================= AGRONOMIST ADVISORIES ================= */
+
+async function createAdvisory(agronomistUserId, data) {
+  const { farmId = data.farm_id, seasonId = data.season_id, category, title, advice, actionDueDate = data.action_due_date } = data;
+  if (!farmId || !category || !title || !advice) {
+    throw Object.assign(new Error('Shamba, kategoria, kichwa na ushauri vinahitajika.'), { statusCode: 400 });
+  }
+  const farm = await pool.query('SELECT id FROM farm_profiles WHERE id = $1', [farmId]);
+  if (!farm.rows.length) throw Object.assign(new Error('Shamba halipatikani.'), { statusCode: 404 });
+  if (seasonId) {
+    const season = await pool.query('SELECT id FROM farm_seasons WHERE id = $1 AND farm_id = $2', [seasonId, farmId]);
+    if (!season.rows.length) throw Object.assign(new Error('Msimu huo haupo kwenye shamba hili.'), { statusCode: 400 });
+  }
+  const res = await pool.query(
+    `INSERT INTO agri_advisories (season_id, farm_id, agronomist_user_id, category, title, advice, action_due_date)
+     VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+    [seasonId || null, farmId, agronomistUserId, category, title, advice, actionDueDate || null]
+  );
+  await logAudit(agronomistUserId, 'AGRI_ADVISORY_CREATED', `Advisory "${title}" issued for farm #${farmId}`);
+  return res.rows[0];
+}
+
+async function listAdvisories(userId, role, farmId) {
+  const isAdmin = role === 'ADMIN';
+  const isAgronomist = role === 'AGRONOMIST' || role === 'ADMIN';
+  const params = [];
+  let where = '';
+  if (farmId) {
+    params.push(farmId);
+    where += 'AND a.farm_id = $' + params.length + ' ';
+  }
+  if (!isAdmin) {
+    if (isAgronomist) {
+      params.push(userId);
+      where += 'AND a.agronomist_user_id = $' + params.length + ' ';
+    } else {
+      params.push(userId);
+      where += 'AND fp.user_id = $' + params.length + ' ';
+    }
+  }
+  const res = await pool.query(
+    `SELECT a.*, fp.user_id AS farm_owner_id, fp.farm_name, fs.season_name,
+            u.full_name AS agronomist_name
+     FROM agri_advisories a
+     JOIN farm_profiles fp ON fp.id = a.farm_id
+     LEFT JOIN farm_seasons fs ON fs.id = a.season_id
+     JOIN users u ON u.id = a.agronomist_user_id
+     WHERE 1=1 ${where}
+     ORDER BY a.created_at DESC`,
+    params
+  );
+  return res.rows;
+}
+
+async function actionAdvisory(userId, role, advisoryId) {
+  const advisory = await pool.query(
+    `SELECT a.*, fp.user_id AS farm_owner_id FROM agri_advisories a
+     JOIN farm_profiles fp ON fp.id = a.farm_id
+     WHERE a.id = $1`,
+    [advisoryId]
+  );
+  if (!advisory.rows.length) throw Object.assign(new Error('Ushauri haupatikani.'), { statusCode: 404 });
+  const row = advisory.rows[0];
+  const allowed = role === 'ADMIN' || row.farm_owner_id === userId || row.agronomist_user_id === userId;
+  if (!allowed) throw Object.assign(new Error('Huna ruhusa ya kuchukulia hatua ushauri huu.'), { statusCode: 403 });
+  const res = await pool.query(
+    `UPDATE agri_advisories SET status = 'ACTIONED', updated_at = NOW() WHERE id = $1 AND status = 'ISSUED' RETURNING *`,
+    [advisoryId]
+  );
+  if (!res.rows.length) throw Object.assign(new Error('Ushauri hauko kwenye hali ya ISSUED.'), { statusCode: 400 });
+  await logAudit(userId, 'AGRI_ADVISORY_ACTIONED', `Advisory #${advisoryId} marked ACTIONED`);
+  return res.rows[0];
+}
+
 module.exports = {
   createFarmProfile,
   listFarmProfiles,
@@ -155,5 +309,11 @@ module.exports = {
   listAgriLoans,
   disburseAgriLoan,
   repayAgriLoan,
-  createOfftakeAgreement
+  createOfftakeAgreement,
+  createSeason,
+  listSeasons,
+  completeHarvest,
+  createAdvisory,
+  listAdvisories,
+  actionAdvisory
 };

@@ -53,4 +53,38 @@ router.post('/offtakes', authRequired, async (req, res, next) => {
   catch (e) { next(e); }
 });
 
+// ===== Farm seasons + yield tracking =====
+router.post('/farms/:farmId/seasons', authRequired, async (req, res, next) => {
+  try { res.json({ success: true, season: await kilimo.createSeason(req.user.id, parseInt(req.params.farmId, 10), req.body) }); }
+  catch (e) { next(e); }
+});
+
+router.get('/farms/:farmId/seasons', authRequired, async (req, res, next) => {
+  try { res.json({ success: true, seasons: await kilimo.listSeasons(req.user.id, parseInt(req.params.farmId, 10)) }); }
+  catch (e) { next(e); }
+});
+
+router.post('/seasons/:seasonId/harvest', authRequired, async (req, res, next) => {
+  try { res.json({ success: true, season: await kilimo.completeHarvest(req.user.id, parseInt(req.params.seasonId, 10), req.body) }); }
+  catch (e) { next(e); }
+});
+
+// ===== Agronomist advisories =====
+router.post('/advisories', authRequired, requireRoles('ADMIN', 'AGRONOMIST'), async (req, res, next) => {
+  try { res.json({ success: true, advisory: await kilimo.createAdvisory(req.user.id, req.body) }); }
+  catch (e) { next(e); }
+});
+
+router.get('/advisories', authRequired, async (req, res, next) => {
+  try {
+    const farmId = req.query.farmId || req.query.farm_id || null;
+    res.json({ success: true, advisories: await kilimo.listAdvisories(req.user.id, req.user.role, farmId ? parseInt(farmId, 10) : null) });
+  } catch (e) { next(e); }
+});
+
+router.post('/advisories/:advisoryId/action', authRequired, async (req, res, next) => {
+  try { res.json({ success: true, advisory: await kilimo.actionAdvisory(req.user.id, req.user.role, parseInt(req.params.advisoryId, 10)) }); }
+  catch (e) { next(e); }
+});
+
 module.exports = router;
