@@ -19,6 +19,7 @@ function errorHandler(err, req, res, next) {
     message: localizeError(err, req.locale || 'sw'),
   };
   if (err.details) body.details = err.details;
+  if (err.kycLevel !== undefined) body.kycLevel = err.kycLevel;
   res.status(status).json(body);
 }
 

@@ -190,6 +190,9 @@ function secureErrorHandler(err, req, res, next) {
     code: err.code || (isServerError ? 'INTERNAL_ERROR' : 'VALIDATION_ERROR'),
   };
 
+  if (err.details) response.details = err.details;
+  if (err.kycLevel !== undefined) response.kycLevel = err.kycLevel;
+
   // Include request ID if available
   if (req.id) response.requestId = req.id;
 

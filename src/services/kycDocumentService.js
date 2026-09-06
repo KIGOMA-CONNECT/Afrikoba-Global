@@ -121,6 +121,25 @@ async function enforceKycLevel(userId, required) {
 }
 
 /**
+ * High-value lending gate: loans at/above `threshold` (TZS) require the
+ * holder to be at `requiredLevel`. Doc-less legacy users keep their stored
+ * level (same semantics as enforceKycLevel). Returns { allowed } when the
+ * caller clears; otherwise throws a 403 carrying `kycLevel`.
+ */
+async function enforceHighValueKyc({ userId, amount, threshold, requiredLevel = 3 }) {
+  const amountNum = Number(amount);
+  if (!(amountNum > 0) || amountNum < Number(threshold)) return { allowed: true, level: undefined };
+  const { ok, level } = await enforceKycLevel(userId, requiredLevel);
+  if (ok) return { allowed: true, level };
+  const err = Object.assign(
+    new Error(`Mkopo huu ni mkubwa (kiasi ≥ ${Math.round(Number(threshold)).toLocaleString()}). Kamilisha KYC Level ${requiredLevel} kwanza.`),
+    { statusCode: 403, code: 'KYC_LEVEL_REQUIRED' }
+  );
+  err.kycLevel = level;
+  throw err;
+}
+
+/**
  * Agent sweep: expire every past-dated APPROVED document platform-wide and
  * recompute the affected holders' KYC levels (downgrades included).
  */
@@ -202,4 +221,4 @@ async function getDocumentStats() {
   return result.rows[0];
 }
 
-module.exports = { uploadDocument, getDocuments, getPendingDocuments, verifyDocument, upsertBiographicProfile, getKycStatus, getDocumentStats, enforceKycLevel, runExpirySweep };
+module.exports = { uploadDocument, getDocuments, getPendingDocuments, verifyDocument, upsertBiographicProfile, getKycStatus, getDocumentStats, enforceKycLevel, enforceHighValueKyc, runExpirySweep };

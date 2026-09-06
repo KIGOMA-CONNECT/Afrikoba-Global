@@ -64,6 +64,9 @@ async function listCircles() {
 }
 
 async function createCampaign(borrowerUserId, data) {
+  const { enforceHighValueKyc } = require('./kycDocumentService');
+  const config = require('../config');
+  await enforceHighValueKyc({ userId: borrowerUserId, amount: data.targetAmount, threshold: config.lending.highValueLoanThreshold, requiredLevel: config.lending.highValueKycLevel });
   const { circleId, title, story, targetAmount, termMonths } = data;
   const res = await pool.query(
     `INSERT INTO crowdfund_campaigns (circle_id, borrower_user_id, title, story, target_amount, term_months)

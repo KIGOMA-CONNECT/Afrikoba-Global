@@ -36,6 +36,11 @@ const config = {
     clientSecret: process.env.AZAMPAY_CLIENT_SECRET,
     env: process.env.AZAMPAY_ENV || 'sandbox',
   },
+  lending: {
+    // Mikopo mikubwa (≥ threshold TZS) inahitaji KYC Level highValueKycLevel
+    highValueLoanThreshold: parseFloat(process.env.HIGH_VALUE_LOAN_THRESHOLD || '1000000'),
+    highValueKycLevel: parseInt(process.env.HIGH_VALUE_KYC_LEVEL || '3', 10),
+  },
   fees: {
     depositCommissionPercent: parseFloat(process.env.DEPOSIT_COMMISSION_PERCENT || '0.01'),
     platformCommPercent: parseFloat(process.env.PLATFORM_COMM_PERCENT || '2.00'),

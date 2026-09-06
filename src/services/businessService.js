@@ -365,6 +365,9 @@ async function applyBusinessLoan(userId, businessId, data) {
   const { amount, interest_rate, term_months } = data;
   const amountNum = Number(amount);
   if (!amountNum || amountNum <= 0) throw Object.assign(new Error('Kiasi si sahihi.'), { statusCode: 400 });
+  const { enforceHighValueKyc } = require('./kycDocumentService');
+  const config = require('../config');
+  await enforceHighValueKyc({ userId, amount: amountNum, threshold: config.lending.highValueLoanThreshold, requiredLevel: config.lending.highValueKycLevel });
   const biz = await pool.query('SELECT * FROM business_accounts WHERE id = $1 AND owner_id = $2', [businessId, userId]);
   if (!biz.rows.length) throw Object.assign(new Error('Biashara haipatikani au sio yako.'), { statusCode: 403 });
   const res = await pool.query(

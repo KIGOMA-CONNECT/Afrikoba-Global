@@ -116,6 +116,9 @@ async function contributeShares(groupId, userId, amount, sharesCount) {
 }
 
 async function requestLoan(chairmanUserId, { groupId, applicantUserId, requestedAmount, interestRate, repaymentMonths }) {
+  const { enforceHighValueKyc } = require('./kycDocumentService');
+  const config = require('../config');
+  await enforceHighValueKyc({ userId: applicantUserId, amount: requestedAmount, threshold: config.lending.highValueLoanThreshold, requiredLevel: config.lending.highValueKycLevel });
   const roleRes = await pool.query(
     'SELECT role_in_group FROM vicoba_members WHERE group_id = $1 AND user_id = $2',
     [groupId, chairmanUserId]

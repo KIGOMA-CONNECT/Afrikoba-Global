@@ -347,6 +347,9 @@ async function applyMicroLoan(userId, data) {
   const term = parseInt(term_months, 10);
   if (!amountNum || amountNum <= 0) throw badge('Kiasi si sahihi.', 400);
   if (!term || term < 1 || term > 24) throw badge('Muda (miezi) ni kati ya 1 na 24.', 400);
+  const { enforceHighValueKyc } = require('./kycDocumentService');
+  const config = require('../config');
+  await enforceHighValueKyc({ userId, amount: amountNum, threshold: config.lending.highValueLoanThreshold, requiredLevel: config.lending.highValueKycLevel });
   const rate = Number(interest_rate) > 0 ? Number(interest_rate) : 5;
   const scoreData = await getScore(userId);
   if (amountNum > Number(scoreData.credit_limit)) throw badge(`Kiasi cha mkopo kinazidi kikomo chako (${formatMoney(scoreData.credit_limit)}).`, 400);

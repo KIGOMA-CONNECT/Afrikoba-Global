@@ -31,7 +31,10 @@ async function listAgriSuppliers() {
 }
 
 async function applyAgriLoan(userId, data) {
-  const { farmId, supplierId, amount, loanType, gracePeriodMonths, tenureMonths } = data;
+  const { enforceHighValueKyc } = require('./kycDocumentService');
+  const config = require('../config');
+  await enforceHighValueKyc({ userId, amount: data.amount, threshold: config.lending.highValueLoanThreshold, requiredLevel: config.lending.highValueKycLevel });
+  const { farmId = data.farm_id, supplierId = data.supplier_id, amount, loanType = data.loan_type, gracePeriodMonths = data.grace_period_months, tenureMonths = data.tenure_months } = data;
   const res = await pool.query(
     `INSERT INTO agri_loans (farm_id, borrower_user_id, supplier_id, amount, loan_type, grace_period_months, tenure_months)
      VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,

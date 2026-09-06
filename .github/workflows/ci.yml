@@ -79,6 +79,7 @@ jobs:
           node scripts/test-four-eyes.js
           node scripts/test-experiments.js
           node scripts/test-kyc.js
+          node scripts/test-lending-gates.js
           node scripts/test-disputes.js
           node scripts/test-merchant-payouts.js
 
