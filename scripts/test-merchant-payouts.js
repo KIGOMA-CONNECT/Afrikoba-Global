@@ -4,7 +4,7 @@
  * admin KYC-activate -> accept payments (MERCHANT_BALANCE accumulation) ->
  * request settlement -> admin execute against the ledger (fee + net).
  * ============================================================ */
-const BASE = process.env.MERCHANT_TEST_BASE || 'http://127.0.0.1:3001';
+const BASE = process.env.MERCHANT_TEST_BASE || 'http://127.0.0.1:3000';
 const pool = require('../src/config/db');
 
 let passed = 0;
