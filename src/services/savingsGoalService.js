@@ -11,8 +11,8 @@ const fin = require('./financialEngine');
 /**
  * Get all savings goals for user.
  */
-async function getGoals(userId) {
-  const result = await pool.query(
+async function getGoals(userId, query = pool) {
+  const result = await query.query(
     `SELECT *, 
        CASE WHEN target_amount > 0 THEN ROUND((current_amount / target_amount * 100)::numeric, 1) ELSE 0 END AS progress_pct
      FROM savings_goals

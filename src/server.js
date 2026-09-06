@@ -57,6 +57,7 @@ const familyRoutes = require('./routes/familyRoutes');
 const businessRoutes = require('./routes/businessRoutes');
 const savingsRoutes = require('./routes/savingsRoutes');
 const vaultRoutes = require('./routes/vaultRoutes');
+const cacheRoutes = require('./routes/cacheRoutes');
 const merchantRoutes = require('./routes/merchantRoutes');
 const budgetRoutes = require('./routes/budgetRoutes');
 const creditRoutes = require('./routes/creditRoutes');
@@ -298,6 +299,7 @@ for (const prefix of versionPrefixes) {
   app.use(`${prefix}/savings`, walletLimiter, savingsRoutes);
   app.use(`${prefix}/budget`, walletLimiter, budgetRoutes);
   app.use(`${prefix}/vaults`, walletLimiter, vaultRoutes);
+  app.use(`${prefix}/cache`, adminLimiter, cacheRoutes);
   app.use(`${prefix}/merchant`, walletLimiter, merchantRoutes);
   app.use(`${prefix}/credit`, walletLimiter, creditRoutes);
   app.use(`${prefix}/cards`, walletLimiter, cardRoutes);

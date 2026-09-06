@@ -96,15 +96,15 @@ Everything we build must pass the "international standards" bar:
 ### Phase 2 — Access Control & Onboarding (🔄 in progress)
 - [x] `user_service_subscriptions` (choose-your-services model)
 - [ ] Service catalog + onboarding screen + lock/gating (backend ✅ frontend 🔨)
-- [ ] VICOBA join codes + SMS invitations + accept flow
-- [ ] Group invitations inbox (accept/reject)
+- [x] VICOBA join codes + SMS invitations + accept flow — done: `vicoba_groups.join_code`, join-by-code, `inviteMembers` SMS, `/invitations/:id/accept|reject`, mobile invite inbox
+- [x] Group invitations inbox (accept/reject) — done: `VicobaScreen.dart` invite inbox + CI stage
 
 ### Phase 3 — Platform depth (world-class parity)
 - [x] VICOBA share-outs & dividend runs (ChamaPro) — done: calculate → approve per-share dividends, member payouts
 - [x] ROSCA auto-contribution scheduling + trust_score from history (eRosca) — done: migration 042, on-time/missed scoring
 - [x] Trust → **AFRIKOBA Credit Score** dashboard — done: 0-850 gauge, pillars, capacity, explained dimensions
 - [x] Multi-currency wallets + FX (Revolut) — TZS, KES, UGX, USD, EUR, GBP ... — done: dynamic currencies, live FX, holdings portfolio
-- [ ] Vaults/Spaces (targeted saving goals) (Monzo/Revolut)
+- [x] Vaults/Spaces (targeted saving goals) (Monzo/Revolut) — done: `/api/vaults` (goals + deposits/withdraws + fixed deposits + summary), `scripts/test-vault.js` wired into CI, mobile `VaultScreen.dart`
 - [x] Budgeting & spending insights (Monzo) — done: per-category monthly budgets, spend vs budget progress, over-budget alerts, savings-rate (migration 043, /api/budget)
 
 ### Phase 4 — Marketplace & Kiva-style
@@ -123,7 +123,7 @@ Everything we build must pass the "international standards" bar:
 
 ### Phase 6 — Scale engineering
 - [x] Event bus + outbox → queue workers — done: migration 087 transaction-aware outbox, SKIP LOCKED dispatcher, backoff + dead-letter, `/api/outbox`
-- [ ] Redis caching, read replicas, partition tables
+- [x] Redis caching, read replicas — done: `src/utils/cache.js` pluggable cache (REDIS_URL → ioredis, else in-memory TTL), `src/config/replica.js` `queryRead()` route-to-replica w/ primary fallback, cache-first reads on `/services/catalog`, `/vaults*`, `/admin/dashboard`; ops `/api/cache/stats|flush`; partition tables still next
 - [ ] Multi-country deployment, regulatory licensing
 - [x] Mobile apps: Flutter (Android/iOS) — done: `mobile/` merchant parity added on home drawer; USSD (MNO rails) + feature-phone support still next
 

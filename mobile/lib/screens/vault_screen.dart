@@ -173,8 +173,8 @@ class _VaultScreenState extends State<VaultScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final saved = _summary?['total_saved'] is num ? _summary!['total_saved'] : 0;
-    final target = _summary?['total_target'] is num ? _summary!['total_target'] : 0;
+    final saved = _summary?['totalSavedOverall'] is num ? _summary!['totalSavedOverall'] : 0;
+    final target = _summary?['totalTarget'] is num ? _summary!['totalTarget'] : 0;
     return RefreshIndicator(
       onRefresh: _load,
       child: _loading
@@ -232,7 +232,7 @@ class _VaultScreenState extends State<VaultScreen> {
             const SizedBox(height: 8),
             LinearProgressIndicator(value: pct / 100, backgroundColor: Colors.green.shade100),
             const SizedBox(height: 6),
-            Text('${pct.toStringAsFixed(0)}% ya lengo ${formatMoney(target)}   •   ${_summary?['total_goals'] ?? 0} vaults (${_summary?['completed'] ?? 0} zimekamilika)',
+            Text('${pct.toStringAsFixed(0)}% ya lengo ${formatMoney(target)}   •   ${_summary?['totalGoals'] ?? 0} vaults (${_summary?['completedGoals'] ?? 0} zimekamilika)',
                 style: TextStyle(fontSize: 12, color: Colors.grey.shade700)),
           ],
         ),

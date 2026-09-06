@@ -10,15 +10,19 @@ const governanceService = require('../services/governanceService');
 const observabilityService = require('../services/observabilityService');
 const countryService = require('../services/countryService');
 const fraudService = require('../services/fraudDetectionService');
+const cache = require('../utils/cache');
 
 const router = express.Router();
 
 router.use(authRequired);
 router.use(requireRoles('ADMIN'));
 
-// Picha ya jumla ya mfumo (Super Admin Dashboard)
+// Picha ya jumla ya mfumo (Super Admin Dashboard) — cached 10s
 router.get('/dashboard', async (req, res, next) => {
   try {
+    const cacheKey = 'dashboard:admin:global';
+    const cached = await cache.get(cacheKey);
+    if (cached) return res.json({ success: true, stats: cached.source });
     const [users, revenue, txs, pools, projects, groups, subscriptions] = await Promise.all([
       pool.query('SELECT COUNT(*)::int AS total FROM users'),
       pool.query('SELECT * FROM company_revenue WHERE id = 1'),
@@ -34,6 +38,15 @@ router.get('/dashboard', async (req, res, next) => {
          GROUP BY service_key`
       ),
     ]);
+    await cache.set(cacheKey, { source: {
+      users: users.rows[0].total,
+      transactions: txs.rows[0],
+      roscaPools: pools.rows[0].total,
+      projects: projects.rows[0].total,
+      vicobaGroups: groups.rows[0].total,
+      revenue: revenue.rows[0],
+      serviceSubscriptions: subscriptions.rows,
+    } }, 10000);
     res.json({
       success: true,
       stats: {

@@ -187,8 +187,8 @@ async function createFixedDeposit(userId, data) {
   } finally { client.release(); }
 }
 
-async function listFixedDeposits(userId) {
-  const res = await pool.query(
+async function listFixedDeposits(userId, query = pool) {
+  const res = await query.query(
     'SELECT * FROM fixed_deposits WHERE user_id = $1 ORDER BY created_at DESC',
     [userId]
   );
@@ -240,8 +240,8 @@ async function withdrawFixedDeposit(userId, depositId, data) {
   } finally { client.release(); }
 }
 
-async function savingsSummary(userId) {
-  const goals = await pool.query(
+async function savingsSummary(userId, query = pool) {
+  const goals = await query.query(
     `SELECT COUNT(*)::int AS total_goals,
             COALESCE(SUM(current_amount),0)::numeric AS goal_balance,
             COALESCE(SUM(target_amount),0)::numeric AS total_target,
@@ -249,7 +249,7 @@ async function savingsSummary(userId) {
      FROM savings_goals WHERE user_id = $1`,
     [userId]
   );
-  const deposits = await pool.query(
+  const deposits = await query.query(
     `SELECT COALESCE(SUM(CASE WHEN status = 'ACTIVE' THEN amount ELSE 0 END),0)::numeric AS active_principal,
             COALESCE(SUM(CASE WHEN status = 'ACTIVE' THEN amount * (annual_rate/100) * (term_months/12.0) ELSE 0 END),0)::numeric AS projected_interest,
             COUNT(*) FILTER (WHERE status = 'ACTIVE')::int AS active_count

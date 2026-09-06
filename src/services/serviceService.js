@@ -94,8 +94,8 @@ const SERVICE_CATALOG = {
   },
 };
 
-async function getUserServices(userId) {
-  const res = await pool.query(
+async function getUserServices(userId, query = pool) {
+  const res = await query.query(
     `SELECT service_key, status, subscribed_at
      FROM user_service_subscriptions
      WHERE user_id = $1 AND status = 'ACTIVE'
@@ -162,8 +162,8 @@ async function openWallet(userId) {
   return { success: true };
 }
 
-async function getCatalogForUser(userId) {
-  const active = await getUserServices(userId);
+async function getCatalogForUser(userId, query = pool) {
+  const active = await getUserServices(userId, query);
   return Object.values(SERVICE_CATALOG).map((svc) => ({
     ...svc,
     active: active.includes(svc.key),
