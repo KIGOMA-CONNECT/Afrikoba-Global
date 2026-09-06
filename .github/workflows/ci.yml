@@ -40,6 +40,7 @@ jobs:
       DB_PASSWORD: postgres
       DB_NAME: afrikoba_global
       WEBHOOK_SECRET: ci-test-webhook-secret
+      USSD_SECRET: ci-ussd-secret
     steps:
       - uses: actions/checkout@v4
 
@@ -87,6 +88,7 @@ jobs:
           node scripts/test-vault.js
           node scripts/test-caching.js
           node scripts/test-partitions.js
+          node scripts/test-ussd.js
 
       - name: Upload server log on failure
         if: failure()

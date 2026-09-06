@@ -95,7 +95,7 @@ Everything we build must pass the "international standards" bar:
 
 ### Phase 2 — Access Control & Onboarding (🔄 in progress)
 - [x] `user_service_subscriptions` (choose-your-services model)
-- [ ] Service catalog + onboarding screen + lock/gating (backend ✅ frontend 🔨)
+- [x] Service catalog + onboarding screen + lock/gating — done: `web-dashboard/src/pages/Services.jsx` fully wired with `ServiceLock` for sub-service gating, i18n SW/EN translations complete, subscription API integration active.
 - [x] VICOBA join codes + SMS invitations + accept flow — done: `vicoba_groups.join_code`, join-by-code, `inviteMembers` SMS, `/invitations/:id/accept|reject`, mobile invite inbox
 - [x] Group invitations inbox (accept/reject) — done: `VicobaScreen.dart` invite inbox + CI stage
 
@@ -125,7 +125,8 @@ Everything we build must pass the "international standards" bar:
 - [x] Event bus + outbox → queue workers — done: migration 087 transaction-aware outbox, SKIP LOCKED dispatcher, backoff + dead-letter, `/api/outbox`
 - [x] Redis caching, read replicas, partition tables — done: caching + replicas as above; **partition tables** done (migration 088): `journal_entries` + `audit_logs` → monthly declarative RANGE partitions, `partitionService.js` (ensure/create/list/archive DETACH), boot + cron provisioning, `GET /api/ops/partitions`, `scripts/test-partitions.js` in CI; remaining scale: multi-country deployment, regulatory licensing
 - [ ] Multi-country deployment, regulatory licensing
-- [x] Mobile apps: Flutter (Android/iOS) — done: `mobile/` merchant parity added on home drawer; USSD (MNO rails) + feature-phone support still next
+- [x] Mobile apps: Flutter (Android/iOS) — done: `mobile/` merchant parity added on home drawer.
+- [x] USSD (MNO rails) & feature-phone support — done: `src/routes/ussdRoutes.js` + `ussdService.js` handling full sessions, menu navigation (main, balance, VICOBA/ROSCA/P2P queries), transfer operations (SQL balance check + `financialEngine.internalTransfer` journal routing), and `scripts/test-ussd.js` containing 32 checks (valid/invalid/stale HMAC signature guard, rate limit, end-to-end transfers) wired into CI.
 
 ---
 
