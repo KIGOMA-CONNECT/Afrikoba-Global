@@ -461,11 +461,20 @@ async function section(title) { console.log(`\n== ${title} ==`); }
   // ------------------------------------------------------------
 
   async function ussd(sessionId, phoneNumber, text) {
+    const crypto = require('crypto');
+    const secret = process.env.USSD_SECRET || '';
+    const timestamp = Date.now();
     const headers = { 'Content-Type': 'application/json' };
+    if (secret) {
+      headers['x-ussd-signature'] = crypto
+        .createHmac('sha256', secret)
+        .update(`${sessionId}${phoneNumber}${timestamp}`)
+        .digest('hex');
+    }
     const res = await fetch(BASE + '/api/ussd', {
       method: 'POST',
       headers,
-      body: JSON.stringify({ sessionId, phoneNumber, text }),
+      body: JSON.stringify({ sessionId, phoneNumber, text, timestamp }),
     });
     const data = await res.text();
     return { status: res.status, data };
