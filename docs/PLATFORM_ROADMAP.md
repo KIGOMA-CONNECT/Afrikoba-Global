@@ -108,29 +108,30 @@ Everything we build must pass the "international standards" bar:
 - [x] Budgeting & spending insights (Monzo) — done: per-category monthly budgets, spend vs budget progress, over-budget alerts, savings-rate (migration 043, /api/budget)
 
 ### Phase 4 — Marketplace & Kiva-style
-- [ ] P2P secondary market (LendingClub)
-- [ ] Auto-invest rules (Prosper/LendingClub)
-- [ ] Kiva-style lending circles & donor crowdfunding
-- [ ] Connected merchant accounts + marketplace payouts (Stripe Connect)
-- [ ] Disputes & chargeback toolkit (Stripe Connect)
+- [x] P2P secondary market (LendingClub) — done: `p2p_secondary_listings` + buy flow + auto-invest rules
+- [x] Auto-invest rules (Prosper/LendingClub) — done: `/api/secondary/auto-invest`
+- [x] Kiva-style lending circles & donor crowdfunding — done: `lending_circles` + `crowdfund_campaigns`
+- [x] Connected merchant accounts + marketplace payouts (Stripe Connect) — done: migration 085, `/api/merchant/connected` + `/payouts` + admin execute, dashboard + mobile parity
+- [x] Disputes & chargeback toolkit (Stripe Connect) — done: `disputeService.js`
 
 ### Phase 5 — Kilimo (Agri-Finance) (Farmdrive/Complete Farmer)
-- [ ] Farm profiles, cycle-based repayment schedules
-- [ ] Input financing (seeds/fertiliser) via supplier network
-- [ ] Ofotake agreements backing loans
-- [ ] Agronomist advisory + yield data
+- [x] Farm profiles, cycle-based repayment schedules — done: `farm_profiles`, `agri_loans`
+- [x] Input financing (seeds/fertiliser) via supplier network — done: `agri_input_suppliers` + `applyAgriLoan`
+- [x] Ofotake agreements backing loans — done: `agri_offtake_agreements`
+- [x] Farm seasons + harvest/yield tracking — done: migration 086 `farm_seasons`, `completeHarvest` yield roll-up
+- [x] Agronomist advisory + yield data — done: migration 086 `agri_advisories`, issue/action lifecycle
 
 ### Phase 6 — Scale engineering
-- [ ] Event bus + outbox → queue workers
+- [x] Event bus + outbox → queue workers — done: migration 087 transaction-aware outbox, SKIP LOCKED dispatcher, backoff + dead-letter, `/api/outbox`
 - [ ] Redis caching, read replicas, partition tables
 - [ ] Multi-country deployment, regulatory licensing
-- [ ] Mobile apps: Flutter (Android/iOS), USSD (MNO rails), feature-phone support
+- [x] Mobile apps: Flutter (Android/iOS) — done: `mobile/` merchant parity added on home drawer; USSD (MNO rails) + feature-phone support still next
 
 ---
 
 ## 5. International-Standard Guardrails
 - **Money movement**: every transfer = 1 transaction row + 2 ledger entries + audit row (done).
-- **KYC gates**: ROSCA/P2P = L2; higher value / lending = L3 (documented identity) future.
+- **KYC gates**: ROSCA/P2P = L2; higher value / lending = L3 (documented identity) — done: `enforceHighValueKyc` on all borrow paths (≥ 1,000,000 TZS → L3, env-configurable).
 - **Rate limiting & anti-fraud**: OTP attempt limits, per-IP limits, device binding (next phase).
 - **Data protection**: encryption at rest (pgcrypto/TDE), secrets in env (not repo), least-privilege roles.
 - **Audit**: `audit_logs` for privileged actions; immutable append-only.
