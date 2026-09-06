@@ -11,6 +11,7 @@ const { runAutopilotPayouts } = require('../services/financialAutopilotService')
 const { recomputeAll: recomputeSellerVerifications } = require('../services/sellerVerificationService');
 const { runAutoInvestCycle } = require('../services/p2pMarketplaceService');
 const { dispatchOutbox } = require('../services/outboxService');
+const { ensureAll: ensurePartitions } = require('../services/partitionService');
 const logger = require('../utils/logger');
 
 /**
@@ -120,7 +121,17 @@ function startAllJobs() {
     }
   });
 
-  logger.info('CRON', 'Cron Jobs zimeanzishwa (reconciliation, ROSCA payout, DB maintenance, split payment, scheduled payments, autopilot, seller verification, auto-invest, outbox dispatcher)');
+  // Partition future-proofing - kila siku, hakikisha partitions za miezi ijayo zipo.
+  cron.schedule('5 0 * * *', async () => {
+    try {
+      await ensurePartitions();
+      logger.info('CRON-PARTITION', 'Partitions ensured (journal_entries + audit_logs)');
+    } catch (e) {
+      logger.error('CRON-PARTITION', e.message);
+    }
+  });
+
+  logger.info('CRON', 'Cron Jobs zimeanzishwa (reconciliation, ROSCA payout, DB maintenance, split payment, scheduled payments, autopilot, seller verification, auto-invest, outbox dispatcher, partition future)');
 }
 
 module.exports = { startAllJobs };

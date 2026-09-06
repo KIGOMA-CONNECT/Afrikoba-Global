@@ -123,7 +123,7 @@ Everything we build must pass the "international standards" bar:
 
 ### Phase 6 — Scale engineering
 - [x] Event bus + outbox → queue workers — done: migration 087 transaction-aware outbox, SKIP LOCKED dispatcher, backoff + dead-letter, `/api/outbox`
-- [x] Redis caching, read replicas — done: `src/utils/cache.js` pluggable cache (REDIS_URL → ioredis, else in-memory TTL), `src/config/replica.js` `queryRead()` route-to-replica w/ primary fallback, cache-first reads on `/services/catalog`, `/vaults*`, `/admin/dashboard`; ops `/api/cache/stats|flush`; partition tables still next
+- [x] Redis caching, read replicas, partition tables — done: caching + replicas as above; **partition tables** done (migration 088): `journal_entries` + `audit_logs` → monthly declarative RANGE partitions, `partitionService.js` (ensure/create/list/archive DETACH), boot + cron provisioning, `GET /api/ops/partitions`, `scripts/test-partitions.js` in CI; remaining scale: multi-country deployment, regulatory licensing
 - [ ] Multi-country deployment, regulatory licensing
 - [x] Mobile apps: Flutter (Android/iOS) — done: `mobile/` merchant parity added on home drawer; USSD (MNO rails) + feature-phone support still next
 

@@ -86,6 +86,7 @@ jobs:
           node scripts/test-outbox.js
           node scripts/test-vault.js
           node scripts/test-caching.js
+          node scripts/test-partitions.js
 
       - name: Upload server log on failure
         if: failure()

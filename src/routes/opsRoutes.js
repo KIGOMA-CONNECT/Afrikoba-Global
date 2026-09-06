@@ -8,6 +8,7 @@ const express = require('express');
 const pool = require('../config/db');
 const { authRequired, requireRoles } = require('../middleware/auth');
 const { listAudit } = require('../services/auditService');
+const { partitionOverview } = require('../services/partitionService');
 
 const router = express.Router();
 router.use(authRequired, requireRoles('ADMIN'));
@@ -109,6 +110,13 @@ router.get('/audit', async (req, res, next) => {
       entityType: req.query.entity_type,
     });
     res.json({ success: true, logs });
+  } catch (error) { next(error); }
+});
+
+// ===== Partition state (journal_entries + audit_logs) =====
+router.get('/partitions', async (req, res, next) => {
+  try {
+    res.json({ success: true, partitions: await partitionOverview() });
   } catch (error) { next(error); }
 });
 

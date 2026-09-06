@@ -370,6 +370,11 @@ if (config.sentry.dsn) app.use(Sentry.Handlers.errorHandler());
 app.use(sanitizeHeaders);
 app.use(secureErrorHandler);
 
+// Partition future months for journal_entries + audit_logs (idempotent boot ensure;
+// runs unconditionally so ledger/audit writes never hit a missing partition).
+const { ensureAll: ensurePartitionsAtBoot } = require('./services/partitionService');
+ensurePartitionsAtBoot().catch((e) => logger.error('PARTITION-BOOT', e.message));
+
 // Start background jobs (reconciliation, ROSCA payout, split payment)
 if (process.env.DISABLE_CRON !== 'true') {
   const { startAllJobs } = require('./jobs/runAll');
