@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../core/app_state.dart';
 import 'dashboard_screen.dart';
 import 'wallet_screen.dart';
+import 'merchant_screen.dart';
 import 'services_screen.dart';
 import 'promotions_screen.dart';
 import 'vicoba_screen.dart';
@@ -53,6 +54,7 @@ class _HomeScreenState extends State<HomeScreen> {
   static const _pages = <Widget>[
     DashboardScreen(),
     WalletScreen(),
+    MerchantScreen(),
     ServicesScreen(),
     PromotionsScreen(),
     EventsScreen(),
@@ -68,6 +70,7 @@ class _HomeScreenState extends State<HomeScreen> {
   static const _titles = [
     'DahShabari',
     'Wallet',
+    'Mfanyabiashara',
     'Huduma Zangu',
     'Matangazo',
     'Matukio (Events)',
@@ -83,6 +86,7 @@ class _HomeScreenState extends State<HomeScreen> {
   static const _icons = [
     Icons.dashboard_outlined,
     Icons.account_balance_wallet_outlined,
+    Icons.storefront_outlined,
     Icons.grid_view_outlined,
     Icons.campaign_outlined,
     Icons.celebration_outlined,
@@ -136,7 +140,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 child: ListView(
                   children: [
                     for (var i = 0; i < _titles.length; i++)
-                      if (!(i == 8 && !_isAdmin))
+                      if (!(i == 9 && !_isAdmin))
                         ListTile(
                           leading: Icon(_icons[i]),
                           title: Text(_titles[i]),
