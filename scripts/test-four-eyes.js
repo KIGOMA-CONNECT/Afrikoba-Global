@@ -8,6 +8,8 @@ const BASE = process.env.FOUREYES_TEST_BASE || 'http://127.0.0.1:3000';
 const pool = require('../src/config/db');
 const cardSvc = require('../src/services/cardService');
 const fin = require('../src/services/financialEngine');
+const circleSvc = require('../src/services/lendingCircleService');
+const kilimoSvc = require('../src/services/kilimoAgriService');
 
 let passed = 0;
 let failed = 0;
@@ -264,6 +266,45 @@ function nowSuffix() { return String(Date.now()).slice(-6); }
   await api('POST', `/api/admin/four-eyes/requests/${vs.data.request.id}/approve`, checker, {});
   let vsReq = await api('GET', `/api/admin/four-eyes/requests/${vs.data.request.id}`, maker);
   await expect(vsReq.data.request.status === 'FAILED' && /Ombi halipo/.test(vsReq.data.request.error), 'Unknown social fund request -> FAILED', `err=${vsReq.data.request?.error}`);
+
+  // ---------- lending circle disbursement via four-eyes ----------
+  await section('Lending circle disbursement (four-eyes)');
+  const borrowerId = target2.data.user.id;
+  const camp = await circleSvc.createCampaign(borrowerId, { title: `Four-eyes circle ${suffix}`, story: 'circle test', targetAmount: 100000 });
+  await pool.query(`UPDATE crowdfund_campaigns SET status='FULLY_FUNDED', raised_amount=100000 WHERE id=$1`, [camp.id]);
+  const campBefore = Number((await pool.query('SELECT wallet_balance::numeric AS b FROM users WHERE id = $1', [borrowerId])).rows[0].b);
+  let ci = await api('POST', '/api/admin/four-eyes/actions/lending-circle-disburse', maker, { campaignId: camp.id });
+  await expect(ci.status === 201 && ci.data.request.status === 'PENDING', 'Circle disbursement queued', `status=${ci.status}`);
+  let ciApp = await api('POST', `/api/admin/four-eyes/requests/${ci.data.request.id}/approve`, checker, {});
+  await expect(ciApp.status === 200 && ciApp.data.executed && ciApp.data.request.status === 'EXECUTED', 'Circle disbursement approved & executed', `status=${ciApp.status}`);
+  const campAfter = Number((await pool.query('SELECT wallet_balance::numeric AS b FROM users WHERE id = $1', [borrowerId])).rows[0].b);
+  await expect(campAfter - campBefore === 100000, `Borrower credited raised_amount (delta=${campAfter - campBefore})`);
+  const campStatus = await pool.query('SELECT status FROM crowdfund_campaigns WHERE id = $1', [camp.id]);
+  await expect(campStatus.rows[0].status === 'DISBURSED', 'Campaign moved to DISBURSED');
+
+  let ciBad = await api('POST', '/api/admin/four-eyes/actions/lending-circle-disburse', maker, { campaignId: 999999999 });
+  await api('POST', `/api/admin/four-eyes/requests/${ciBad.data.request.id}/approve`, checker, {});
+  let ciBadReq = await api('GET', `/api/admin/four-eyes/requests/${ciBad.data.request.id}`, maker);
+  await expect(ciBadReq.data.request.status === 'FAILED', 'Unknown campaign -> FAILED', `err=${ciBadReq.data.request?.error}`);
+
+  // ---------- kilimo agri loan disbursement via four-eyes ----------
+  await section('Kilimo agri-loan disbursement (four-eyes)');
+  const farm = await kilimoSvc.createFarmProfile(borrowerId, { farmName: `Shamba ${suffix}`, region: 'Morogoro', district: 'Mvomero', sizeAcres: 2, primaryCrop: 'MAIZE' });
+  const agri = await kilimoSvc.applyAgriLoan(borrowerId, { farmId: farm.id, amount: 20000, loanType: 'HARVEST_CYCLE' });
+  const agriBefore = Number((await pool.query('SELECT wallet_balance::numeric AS b FROM users WHERE id = $1', [borrowerId])).rows[0].b);
+  let ai = await api('POST', '/api/admin/four-eyes/actions/kilimo-loan-disburse', maker, { loanId: agri.id });
+  await expect(ai.status === 201 && ai.data.request.status === 'PENDING', 'Agri-loan disbursement queued', `status=${ai.status}`);
+  let aiApp = await api('POST', `/api/admin/four-eyes/requests/${ai.data.request.id}/approve`, checker, {});
+  await expect(aiApp.status === 200 && aiApp.data.executed && aiApp.data.request.status === 'EXECUTED', 'Agri-loan approved & executed', `status=${aiApp.status}`);
+  const agriAfter = Number((await pool.query('SELECT wallet_balance::numeric AS b FROM users WHERE id = $1', [borrowerId])).rows[0].b);
+  await expect(agriAfter - agriBefore === 20000, `Farmer credited loan amount (delta=${agriAfter - agriBefore})`);
+  const agriStatus = await pool.query('SELECT status FROM agri_loans WHERE id = $1', [agri.id]);
+  await expect(agriStatus.rows[0].status === 'DISBURSED', 'Agri-loan moved to DISBURSED');
+
+  let aiBad = await api('POST', '/api/admin/four-eyes/actions/kilimo-loan-disburse', maker, { loanId: 999999999 });
+  await api('POST', `/api/admin/four-eyes/requests/${aiBad.data.request.id}/approve`, checker, {});
+  let aiBadReq = await api('GET', `/api/admin/four-eyes/requests/${aiBad.data.request.id}`, maker);
+  await expect(aiBadReq.data.request.status === 'FAILED' && /not found/.test(aiBadReq.data.request.error), 'Unknown agri-loan -> FAILED', `err=${aiBadReq.data.request?.error}`);
 
   console.log(`\n===== FOUR-EYES: ${passed} passed, ${failed} failed =====`);
   if (failed > 0) {

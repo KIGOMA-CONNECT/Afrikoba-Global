@@ -1,5 +1,5 @@
 const express = require('express');
-const { authRequired, requireRoles } = require('../middleware/auth');
+const { authRequired, requireRoles, requireKycLevel } = require('../middleware/auth');
 const circles = require('../services/lendingCircleService');
 
 const router = express.Router();
@@ -32,7 +32,7 @@ router.get('/circles', authRequired, async (req, res, next) => {
 });
 
 // Campaigns & Contributions
-router.post('/campaigns', authRequired, async (req, res, next) => {
+router.post('/campaigns', authRequired, requireKycLevel(2), async (req, res, next) => {
   try { res.json({ success: true, campaign: await circles.createCampaign(req.user.id, req.body) }); }
   catch (e) { next(e); }
 });

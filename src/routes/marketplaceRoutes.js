@@ -4,7 +4,7 @@
  */
 
 const express = require('express');
-const { authRequired, requireRoles } = require('../middleware/auth');
+const { authRequired, requireRoles, requireKycLevel } = require('../middleware/auth');
 const mkt = require('../services/marketplaceService');
 const verifySvc = require('../services/sellerVerificationService');
 
@@ -97,7 +97,7 @@ router.post('/orders/:id/cancel', authRequired, async (req, res, next) => {
 });
 
 // ===== SELLER VERIFICATION (trust layer) =====
-router.get('/sellers/:id/verify', authRequired, async (req, res, next) => {
+router.get('/sellers/:id/verify', authRequired, requireKycLevel(2), async (req, res, next) => {
   try {
     const profile = await verifySvc.getSellerVerification(parseInt(req.params.id, 10));
     res.json({ success: true, ...profile });
@@ -133,7 +133,7 @@ router.get('/disputes', authRequired, async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-router.post('/disputes/:id/resolve', authRequired, requireRoles('ADMIN'), async (req, res, next) => {
+router.post('/disputes/:id/resolve', authRequired, requireRoles('ADMIN', 'SUPPORT', 'COMPLIANCE'), async (req, res, next) => {
   try {
     const result = await mkt.resolveMarketplaceDispute(req.user.id, parseInt(req.params.id, 10), req.body);
     res.json({ success: true, ...result });

@@ -83,7 +83,7 @@ async function disburseAgriLoan(adminUserId, loanId) {
 
     await client.query(
       `UPDATE agri_loans 
-       SET status = 'DISBURSED', repayment_due_date = $1, updated_at = NOW() 
+       SET status = 'DISBURSED', repayment_due_date = $1
        WHERE id = $2`,
       [dueDate, loanId]
     );
@@ -118,7 +118,7 @@ async function repayAgriLoan(userId, loanId, amount) {
     const newStatus = isFullyPaid ? 'REPAID' : 'DISBURSED';
 
     await client.query(
-      `UPDATE agri_loans SET status = $1, updated_at = NOW() WHERE id = $2`,
+      `UPDATE agri_loans SET status = $1 WHERE id = $2`,
       [newStatus, loanId]
     );
 

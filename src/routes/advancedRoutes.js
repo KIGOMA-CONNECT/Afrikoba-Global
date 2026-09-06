@@ -246,6 +246,13 @@ router.get('/admin/kyc/stats', authRequired, requireRoles('ADMIN'), async (req, 
   } catch (error) { next(error); }
 });
 
+router.post('/admin/kyc/sweep', authRequired, requireRoles('ADMIN'), async (req, res, next) => {
+  try {
+    const result = await kycDocumentService.runExpirySweep();
+    res.json({ success: true, ...result });
+  } catch (error) { next(error); }
+});
+
 // ===== C10: MERCHANTS =====
 
 router.get('/merchants', async (req, res, next) => {

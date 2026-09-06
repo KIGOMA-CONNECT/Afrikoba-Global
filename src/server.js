@@ -66,6 +66,7 @@ const bapRoutes = require('./routes/bapRoutes');
 const publicStatsRoutes = require('./routes/publicStats');
 const passportRoutes = require('./routes/passportRoutes');
 const marketplaceRoutes = require('./routes/marketplaceRoutes');
+const disputeRoutes = require('./routes/disputeRoutes');
 const projectRoutes = require('./routes/projectRoutes');
 const aiRoutes = require('./routes/aiRoutes');
 const procurementRoutes = require('./routes/procurementRoutes');
@@ -276,6 +277,7 @@ for (const prefix of versionPrefixes) {
   app.use(`${prefix}/stats`, publicStatsRoutes);
   app.use(`${prefix}/passport`, walletLimiter, passportRoutes);
   app.use(`${prefix}/marketplace`, walletLimiter, marketplaceRoutes);
+app.use(`${prefix}/disputes`, walletLimiter, disputeRoutes);
   app.use(`${prefix}/secondary`, walletLimiter, secondaryRoutes);
   // Events mounted BEFORE projectRoutes: projectRoutes applies router.use(authRequired)
   // blanket — public event share routes need to stay reachable unauthenticated.

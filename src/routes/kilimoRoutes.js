@@ -1,5 +1,5 @@
 const express = require('express');
-const { authRequired, requireRoles } = require('../middleware/auth');
+const { authRequired, requireRoles, requireKycLevel } = require('../middleware/auth');
 const kilimo = require('../services/kilimoAgriService');
 
 const router = express.Router();
@@ -22,7 +22,7 @@ router.get('/suppliers', authRequired, async (req, res, next) => {
 });
 
 // Agri Loans & Repayments
-router.post('/loans', authRequired, async (req, res, next) => {
+router.post('/loans', authRequired, requireKycLevel(2), async (req, res, next) => {
   try { res.json({ success: true, loan: await kilimo.applyAgriLoan(req.user.id, req.body) }); }
   catch (e) { next(e); }
 });

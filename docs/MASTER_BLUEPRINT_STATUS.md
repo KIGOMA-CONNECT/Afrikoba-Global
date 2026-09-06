@@ -168,7 +168,39 @@ ledger → account abstraction → migrate services sequentially → reconciliat
 ---
 
 ## New this session
-- ✅ Landing page redesign ("Enterprise Financial Operating System"): Yield
+- ✅ **Full dispute lifecycle (user + reviewer workbench)**: migration 084 adds
+  `resolution_type`, `resolved_amount`, `notes TEXT[]`, `assigned_to`, `escalated_at`
+  to `disputes` + indexes on status/assignee, and seeds four-eyes policies
+  `LENDING_CIRCLE_DISBURSE` + `KILIMO_AGRI_LOAN_DISBURSE` (and the previously-missing
+  `TREASURY` ledger account the kilimo disbursement sources from). `disputeService.js`
+  rebuilt: `createDispute`/`getUserDisputes` (kept), `getAllDisputes` (fixed joins to
+  users/transactions/marketplace orders), `listDisputeStats`, `getDisputeDetail`,
+  `addDisputeNote`, `startDisputeReview` (OPEN→UNDER_REVIEW), `escalateDispute`
+  (UNDER_REVIEW→MEDIATION), `decideDispute` (REFUND via credits from SUSPENSE with a
+  compliant `transactions` row, or REJECT; escrow disputes declined with guidance).
+  New `disputeRoutes.js` at `/api/v1/disputes` (member queue + `/admin/*` guarded by
+  `ADMIN|SUPPORT|COMPLIANCE`); legacy `/banking/disputes` removed; marketplace
+  `resolve` widened to the same reviewer roles.
+- ✅ **Four-eyes on the remaining admin disbursements**: executors +
+  convenience launchers `/actions/lending-circle-disburse`, `/actions/kilimo-loan-disburse`
+  in `fourEyesRoutes.js` (`disburseCampaign`, `disburseAgriLoan`). Fixed latent bugs in
+  the kilimo path: `agri_loans` has no `updated_at` column (removed from UPDATEs) and the
+  disbursement now balances against the registered `TREASURY` ledger account.
+- ✅ **Expiry-aware KYC**: `kycDocumentService` gains `enforceKycLevel(userId, level)`
+  (expires past-dated APPROVED docs, recomputes `kyc_level`, preserves stored level for
+  legacy doc-less users so `/auth/kyc`-bumped accounts aren't broken) and
+  `runExpirySweep()` (platform-wide sweep + downgrade, wired into the recurrence job and
+  a new admin `POST /admin/kyc/sweep`). `requireKycLevel` is now async + DB-backed;
+  document stats include EXPIRED. Gating: kilimo loan apply, lending-circle campaign
+  create, and marketplace seller verify now demand KYC level 2.
+- ✅ **Frontend**: new `Disputes.jsx` (member list/create + reviewer workbench with stats,
+  queue filter, review/escalate/refund/reject/notes) wired into App/Layout/i18n sw/en;
+  `Kyc.jsx` shows EXPIRED red badge + admin expiry-sweep button.
+- ✅ **Regression**: new `scripts/test-disputes.js` (28 checks, incl. 4-eyes-role queue +
+  refund ledger mechanics); `test-four-eyes.js` extended to 70 (circle + agri-loan
+  disbursement through the engine); `test-kyc.js` extended to 30 (expiry sweep,
+  downgrade, gate 403, legacy doc-less compat). All wired into CI; dashboard build green.
+- ✅ **Landing page redesign** ("Enterprise Financial Operating System"): Yield
   Calculator, Huduma Zetu services, Yield Pool, Hatua Rahisi (4-step), Soko la
   Miradi projects, brand CTA + footer. Deployed.
 - ✅ **Budgeting & spend control** (Phase 3): migration 043, `/api/budget`

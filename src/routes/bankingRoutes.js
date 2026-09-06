@@ -7,7 +7,7 @@ const express = require('express');
 const { authRequired } = require('../middleware/auth');
 const limitService = require('../services/limitService');
 const beneficiaryService = require('../services/beneficiaryService');
-const disputeService = require('../services/disputeService');
+const disputeService = require('../services/disputeService'); // user dispute endpoints live in disputeRoutes.js
 const savingsGoalService = require('../services/savingsGoalService');
 const deviceService = require('../services/deviceService');
 const fraudDetectionService = require('../services/fraudDetectionService');
@@ -88,29 +88,7 @@ router.delete('/beneficiaries/:id', authRequired, async (req, res, next) => {
   }
 });
 
-// ===== B3: DISPUTES =====
-
-router.get('/disputes', authRequired, async (req, res, next) => {
-  try {
-    const disputes = await disputeService.getUserDisputes(req.user.id, req.query.status);
-    res.json({ success: true, disputes });
-  } catch (error) {
-    next(error);
-  }
-});
-
-router.post('/disputes', authRequired, async (req, res, next) => {
-  try {
-    const { transaction_id, reason, description, amount } = req.body;
-    if (!transaction_id || !reason || !description) {
-      return res.status(400).json({ success: false, message: 'Taarifa zote zinahitajika.' });
-    }
-    const dispute = await disputeService.createDispute(req.user.id, transaction_id, reason, description, amount);
-    res.json({ success: true, dispute });
-  } catch (error) {
-    next(error);
-  }
-});
+// ===== B3: DISPUTES ===== (moved to /api/v1/disputes - disputeRoutes.js)
 
 // ===== B4: SAVINGS GOALS =====
 

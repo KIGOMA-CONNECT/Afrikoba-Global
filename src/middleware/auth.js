@@ -71,15 +71,23 @@ function requireRoles(...roles) {
 }
 
 function requireKycLevel(level) {
-  return (req, res, next) => {
-    if (!req.user) return res.status(401).json({ success: false, message: 'Una hitaji kuingia.' });
-    if ((req.user.kyc_level || 1) < level) {
-      return res.status(403).json({
-        success: false,
-        message: `Unahitaji KYC Level ${level} ili kufanya muamala huu.`,
-      });
+  return async (req, res, next) => {
+    try {
+      if (!req.user) return res.status(401).json({ success: false, message: 'Una hitaji kuingia.' });
+      const { enforceKycLevel } = require('../services/kycDocumentService');
+      const { ok, level: effective } = await enforceKycLevel(req.user.id, level);
+      if (!ok) {
+        return res.status(403).json({
+          success: false,
+          message: `Unahitaji KYC Level ${level} ili kufanya muamala huu.`,
+          kycLevel: effective,
+        });
+      }
+      if (effective !== undefined && req.user.kyc_level !== effective) req.user.kyc_level = effective;
+      next();
+    } catch (error) {
+      next(error);
     }
-    next();
   };
 }
 

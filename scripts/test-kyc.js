@@ -126,6 +126,34 @@ function nowSuffix() { return String(Date.now()).slice(-6); }
   let myDocs = await api('GET', '/api/advanced/kyc/documents', token);
   await expect(myDocs.status === 200 && myDocs.data.documents.length === 2, 'User lists own docs', `status=${myDocs.status}`);
 
+  // ---------- expiry + level refresh + sweep ----------
+  await section('Expiry, level refresh, sweep + legacy compat');
+  const user3 = await register(`255733${suffix}`, 'KYC User Gamma');
+  const token3 = user3.data.token;
+  await expect(!!token3, 'Third user registered');
+  let upload3 = await api('POST', '/api/advanced/kyc/documents', token3, { document_type: 'PASSPORT', document_url: 'https://cdn.example/pass3.jpg', document_number: `PB3${suffix}` });
+  await expect(upload3.status === 200, 'Third user uploads passport', `status=${upload3.status}`);
+  const doc3Id = upload3.data.document.id;
+  await api('PUT', `/api/advanced/admin/kyc/${doc3Id}/verify`, adminToken, { status: 'APPROVED' });
+  const lvlBefore = await pool.query('SELECT kyc_level FROM users WHERE id = $1', [user3.data.user.id]);
+  await expect(lvlBefore.rows[0].kyc_level === 2, 'Approved doc upgrades to level 2', `level=${lvlBefore.rows[0].kyc_level}`);
+
+await pool.query(`UPDATE kyc_documents SET expires_at = NOW() - INTERVAL '1 day' WHERE id = $1`, [doc3Id]);
+  let sweep = await api('POST', '/api/advanced/admin/kyc/sweep', adminToken, {});
+  await expect(sweep.status === 200 && sweep.data.expired >= 1 && sweep.data.downgraded >= 1, 'Sweep flags expired docs + downgrades levels', `sweep=${JSON.stringify(sweep.data)}`);
+  const doc3 = await pool.query('SELECT status FROM kyc_documents WHERE id = $1', [doc3Id]);
+  await expect(doc3.rows[0].status === 'EXPIRED', 'Expired document marked EXPIRED', `status=${doc3.rows[0].status}`);
+  const lvlSwept = await pool.query('SELECT kyc_level FROM users WHERE id = $1', [user3.data.user.id]);
+  await expect(lvlSwept.rows[0].kyc_level === 1, 'Sweep downgrades user to level 1', `level=${lvlSwept.rows[0].kyc_level}`);
+
+  const user4 = await register(`255734${suffix}`, 'KYC User Delta');
+  await pool.query(`UPDATE kyc_documents SET expires_at = NOW() - INTERVAL '1 day' WHERE id = $1`, [doc3Id]);
+  let gatedKilimo = await api('POST', '/api/v1/kilimo/loans', token3, { farm_id: 0, amount: 1000, loan_type: 'HARVEST_CYCLE' });
+  await expect(gatedKilimo.status === 403 && gatedKilimo.data.kycLevel === 1, 'Expired doc gates kilimo loans (403)', `status=${gatedKilimo.status}`);
+  await pool.query('UPDATE users SET kyc_level = 2 WHERE id = $1', [user4.data.user.id]);
+  let gatedLegacy = await api('POST', '/api/v1/kilimo/loans', user4.data.token, { farm_id: 0, amount: 1000, loan_type: 'HARVEST_CYCLE' });
+  await expect(gatedLegacy.status !== 403, 'Doc-less legacy level-2 user still passes gate', `status=${gatedLegacy.status}`);
+
   console.log(`\n===== KYC: ${passed} passed, ${failed} failed =====`);
   if (failed > 0) {
     console.log('FAILURES:', failures.join(' | '));

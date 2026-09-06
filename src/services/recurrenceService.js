@@ -145,6 +145,9 @@ async function runDueTasks() {
     // Purge expired/consumed step-up tokens opportunistically
     try { require('./stepUpAuthService').purgeExpired(); } catch (e) {}
 
+    // KYC document expiry sweep (best-effort every cycle)
+    try { await require('./kycDocumentService').runExpirySweep(); } catch (e) { logger.error('RECURRENCE', `KYC expiry sweep failed: ${e.message}`); }
+
     const due = (await pool.query(
       `SELECT * FROM recurrence_rules WHERE enabled AND next_run_at <= NOW() ORDER BY next_run_at LIMIT 50`
     )).rows;

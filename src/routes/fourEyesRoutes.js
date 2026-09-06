@@ -9,6 +9,8 @@ const vicoba = require('../services/vicobaService');
 const card = require('../services/cardService');
 const credit = require('../services/savingsCreditService');
 const business = require('../services/businessService');
+const circle = require('../services/lendingCircleService');
+const kilimo = require('../services/kilimoAgriService');
 
 router.use(authRequired, requireRoles('ADMIN'));
 
@@ -117,6 +119,18 @@ fe.registerExecutor('BUSINESS_LOAN_DISBURSE', async (payload, approverId) => {
   const loanId = num(payload.loanId);
   requireValue(loanId, 'loanId inahitajika.');
   return business.adminDisburseLoan(loanId, approverId);
+});
+
+fe.registerExecutor('LENDING_CIRCLE_DISBURSE', async (payload, approverId) => {
+  const campaignId = num(payload.campaignId);
+  requireValue(campaignId, 'campaignId inahitajika.');
+  return circle.disburseCampaign(approverId, campaignId);
+});
+
+fe.registerExecutor('KILIMO_AGRI_LOAN_DISBURSE', async (payload, approverId) => {
+  const loanId = num(payload.loanId);
+  requireValue(loanId, 'loanId inahitajika.');
+  return kilimo.disburseAgriLoan(approverId, loanId);
 });
 
 // ===== Policies =====
@@ -253,6 +267,22 @@ router.post('/actions/credit-loan-disburse', async (req, res, next) => {
 router.post('/actions/business-loan-disburse', async (req, res, next) => {
   try {
     const { request, policy } = await fe.initiateRequest({ actionCode: 'BUSINESS_LOAN_DISBURSE', requesterId: req.user.id, payload: { loanId: req.body.loanId } });
+    await logAction(req.user.id, 'FOUR_EYES_REQUESTED', 'FOUR_EYES_REQUEST', request.id, { action_code: request.action_code }, req);
+    res.status(201).json({ request, policy });
+  } catch (error) { next(error); }
+});
+
+router.post('/actions/lending-circle-disburse', async (req, res, next) => {
+  try {
+    const { request, policy } = await fe.initiateRequest({ actionCode: 'LENDING_CIRCLE_DISBURSE', requesterId: req.user.id, payload: { campaignId: req.body.campaignId } });
+    await logAction(req.user.id, 'FOUR_EYES_REQUESTED', 'FOUR_EYES_REQUEST', request.id, { action_code: request.action_code }, req);
+    res.status(201).json({ request, policy });
+  } catch (error) { next(error); }
+});
+
+router.post('/actions/kilimo-loan-disburse', async (req, res, next) => {
+  try {
+    const { request, policy } = await fe.initiateRequest({ actionCode: 'KILIMO_AGRI_LOAN_DISBURSE', requesterId: req.user.id, payload: { loanId: req.body.loanId } });
     await logAction(req.user.id, 'FOUR_EYES_REQUESTED', 'FOUR_EYES_REQUEST', request.id, { action_code: request.action_code }, req);
     res.status(201).json({ request, policy });
   } catch (error) { next(error); }
