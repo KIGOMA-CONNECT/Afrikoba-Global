@@ -105,9 +105,9 @@ async function deposit(userId, goalId, amount) {
 
     // Record transaction
     await client.query(
-      `INSERT INTO transactions (user_id, type, amount, status, description, category_id, reference_id)
-       VALUES ($1, 'SAVINGS_DEPOSIT', $2, 'COMPLETED', $3, (SELECT id FROM spending_categories WHERE name = 'Savings'), $4)`,
-      [userId, amount, `Akiba kwenye: ${g.name}`, ref]
+      `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, category_id, meta)
+       VALUES ($1, $2, $3, 0, $3, 'SUCCESS', 'SAVINGS_DEPOSIT', (SELECT id FROM spending_categories WHERE name = 'Savings'), $4)`,
+      [ref, userId, amount, JSON.stringify({ description: `Akiba kwenye: ${g.name}` })]
     );
 
     if (isCompleted) {
@@ -166,9 +166,9 @@ async function withdraw(userId, goalId, amount) {
     );
 
     await client.query(
-      `INSERT INTO transactions (user_id, type, amount, status, description, category_id, reference_id)
-       VALUES ($1, 'SAVINGS_WITHDRAWAL', $2, 'COMPLETED', $3, (SELECT id FROM spending_categories WHERE name = 'Savings'), $4)`,
-      [userId, amount, `Kutoa kutoka: ${g.name}`, ref]
+      `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, category_id, meta)
+       VALUES ($1, $2, $3, 0, $3, 'SUCCESS', 'SAVINGS_WITHDRAWAL', (SELECT id FROM spending_categories WHERE name = 'Savings'), $4)`,
+      [ref, userId, amount, JSON.stringify({ description: `Kutoa kutoka: ${g.name}` })]
     );
 
     await client.query('COMMIT');

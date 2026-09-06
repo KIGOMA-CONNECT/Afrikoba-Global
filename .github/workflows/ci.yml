@@ -84,6 +84,7 @@ jobs:
           node scripts/test-disputes.js
           node scripts/test-merchant-payouts.js
           node scripts/test-outbox.js
+          node scripts/test-vault.js
 
       - name: Upload server log on failure
         if: failure()
