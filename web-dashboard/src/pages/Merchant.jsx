@@ -24,6 +24,13 @@ export default function Merchant() {
   const [showLink, setShowLink] = useState(false);
   const [linkForm, setLinkForm] = useState({ amount: '', description: '' });
   const [copiedLink, setCopiedLink] = useState('');
+  const [connected, setConnected] = useState(null);
+  const [payouts, setPayouts] = useState([]);
+  const [adminAccounts, setAdminAccounts] = useState([]);
+  const [adminPayouts, setAdminPayouts] = useState([]);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [connForm, setConnForm] = useState({ payout_type: 'MNO_PHONE', payout_reference: '', bank_name: '', account_holder: '' });
+  const [reqForm, setReqForm] = useState({ amount: '' });
   const error = (err) => setMsg({ type: 'err', text: err.response?.data?.message || t('merchant.error') });
 
   const load = () => {
@@ -31,6 +38,10 @@ export default function Merchant() {
     api.get('/merchant/qr').then((r) => setCodes(r.data.codes)).catch(() => {});
     api.get('/merchant/payments').then((r) => setPayments(r.data.payments)).catch(() => {});
     api.get('/merchant/payment-links').then((r) => setLinks(r.data.links)).catch(() => {});
+    api.get('/merchant/connected').then((r) => setConnected(r.data.account)).catch(() => {});
+    api.get('/merchant/payouts').then((r) => setPayouts(r.data.payouts)).catch(() => {});
+    api.get('/merchant/admin/connected').then((r) => { setAdminAccounts(r.data.accounts); setIsAdmin(true); }).catch(() => {});
+    api.get('/merchant/admin/payouts').then((r) => setAdminPayouts(r.data.payouts)).catch(() => {});
   };
   useEffect(() => { load(); }, []);
 
@@ -116,6 +127,47 @@ export default function Merchant() {
       setShowPayQr(false);
       setPayQrForm({ qr_code_id: '', amount: '' });
     } catch (err) { error(err); }
+  };
+
+  const saveConnected = async (e) => {
+    e.preventDefault();
+    try {
+      const r = await api.post('/merchant/connected', connForm);
+      setConnected(r.data.account);
+      setMsg({ type: 'ok', text: t('merchant.connected_ok') });
+      load();
+    } catch (err) { error(err); }
+  };
+
+  const requestPayout = async (e) => {
+    e.preventDefault();
+    try {
+      await api.post('/merchant/payouts', { amount: Number(reqForm.amount) });
+      setMsg({ type: 'ok', text: t('merchant.payout_ok') });
+      setReqForm({ amount: '' });
+      load();
+    } catch (err) { error(err); }
+  };
+
+  const setConnStatus = async (id, status) => {
+    try {
+      await api.patch(`/merchant/admin/connected/${id}`, { status });
+      load();
+    } catch (err) { error(err); }
+  };
+
+  const executePayout = async (id) => {
+    try {
+      await api.post(`/merchant/admin/payouts/${id}/execute`, {});
+      setMsg({ type: 'ok', text: t('merchant.exec_ok') });
+      load();
+    } catch (err) { error(err); }
+  };
+
+  const connBadge = (status) => {
+    const cls = status === 'ACTIVE' ? 'success' : status === 'SUSPENDED' ? 'danger' : 'neutral';
+    const label = status === 'ACTIVE' ? t('merchant.status_active') : status === 'SUSPENDED' ? t('merchant.status_suspended') : t('merchant.status_pending');
+    return <span className={`badge ${cls}`}>{label}</span>;
   };
 
   return (
@@ -323,6 +375,165 @@ export default function Merchant() {
             </div>
           </form>
         </div>
+      )}
+
+      {/* Connected payout account + settlements */}
+      {merchant && (
+        <div className="card" style={{ marginBottom: 24 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+            <h3 style={{ margin: 0 }}>{t('merchant.connected_title')}</h3>
+            {connected && connBadge(connected.status)}
+          </div>
+          {connected ? (
+            <>
+              <p className="roles-tag" style={{ marginBottom: 12 }}>
+                {connected.payout_type} → {connected.payout_reference}
+                {connected.bank_name ? ` · ${connected.bank_name}` : ''}
+                {connected.account_holder ? ` · ${connected.account_holder}` : ''}
+              </p>
+              <p style={{ fontWeight: 600, fontSize: 22, margin: '0 0 14px' }}>
+                {formatMoney(connected.balance)} <span style={{ fontSize: 14, fontWeight: 400, color: '#6b7280' }}>{t('merchant.held_balance')}</span>
+              </p>
+              {connected.status !== 'ACTIVE' && (
+                <p className="alert alert-ok" style={{ padding: 10, borderRadius: 8 }}>{t('merchant.connected_hint')}</p>
+              )}
+            </>
+          ) : (
+            <p className="roles-tag" style={{ marginBottom: 14 }}>{t('merchant.connect_hint')}</p>
+          )}
+
+          {(connected && connected.status !== 'ACTIVE') || !connected ? (
+            <form onSubmit={saveConnected} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <label>{t('merchant.payout_type')}
+                <select value={connForm.payout_type} onChange={(e) => setConnForm({ ...connForm, payout_type: e.target.value })}>
+                  <option value="MNO_PHONE">MNO_PHONE</option>
+                  <option value="BANK_ACCOUNT">BANK_ACCOUNT</option>
+                </select>
+              </label>
+              <label>{t('merchant.payout_reference')}<input type="text" value={connForm.payout_reference} onChange={(e) => setConnForm({ ...connForm, payout_reference: e.target.value })} required placeholder="2557... / 015..." /></label>
+              {connForm.payout_type === 'BANK_ACCOUNT' && (
+                <>
+                  <label>{t('merchant.bank_name')}<input type="text" value={connForm.bank_name} onChange={(e) => setConnForm({ ...connForm, bank_name: e.target.value })} /></label>
+                  <label>{t('merchant.account_holder')}<input type="text" value={connForm.account_holder} onChange={(e) => setConnForm({ ...connForm, account_holder: e.target.value })} /></label>
+                </>
+              )}
+              <div>
+                <button className="btn" type="submit">{t('merchant.save_connected')}</button>
+              </div>
+            </form>
+          ) : (
+            <form onSubmit={requestPayout} style={{ display: 'flex', gap: 10, alignItems: 'flex-end' }}>
+              <label style={{ flex: 1 }}>{t('merchant.payout_amount')}<input type="number" min="1" value={reqForm.amount} onChange={(e) => setReqForm({ ...reqForm, amount: e.target.value })} required /></label>
+              <button className="btn" type="submit">{t('merchant.request_payout')}</button>
+            </form>
+          )}
+
+          {payouts.length > 0 && (
+            <div style={{ overflowX: 'auto', marginTop: 14 }}>
+              <h4 style={{ marginBottom: 8 }}>{t('merchant.payout_history')}</h4>
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>{t('merchant.reference')}</th>
+                    <th>{t('merchant.amount')}</th>
+                    <th>{t('merchant.payout_fee')}</th>
+                    <th>{t('merchant.payout_net')}</th>
+                    <th>{t('merchant.status')}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {payouts.map((p) => (
+                    <tr key={p.id}>
+                      <td style={{ wordBreak: 'break-all' }}>{p.payout_reference}</td>
+                      <td>{formatMoney(p.gross_amount)}</td>
+                      <td>{formatMoney(p.fee_amount)}</td>
+                      <td>{formatMoney(p.net_amount)}</td>
+                      <td><span className={`badge ${p.status === 'EXECUTED' ? 'success' : 'neutral'}`}>{p.status}</span></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Admin: connected accounts + payout queue */}
+      {isAdmin && (
+        <>
+          <div className="card" style={{ marginBottom: 24 }}>
+            <h3 style={{ marginBottom: 14 }}>{t('merchant.connected_merchants')}</h3>
+            {adminAccounts.length === 0 ? (
+              <p className="roles-tag">{t('merchant.no_connected')}</p>
+            ) : (
+              <div style={{ overflowX: 'auto' }}>
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>{t('merchant.merchant_name')}</th>
+                      <th>{t('merchant.payout_reference')}</th>
+                      <th>{t('merchant.held_balance')}</th>
+                      <th>{t('merchant.status')}</th>
+                      <th>{t('merchant.actions')}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {adminAccounts.map((a) => (
+                      <tr key={a.id}>
+                        <td>{a.merchant_name}</td>
+                        <td>{a.payout_reference}</td>
+                        <td>{formatMoney(a.balance)}</td>
+                        <td>{connBadge(a.status)}</td>
+                        <td style={{ display: 'flex', gap: 6 }}>
+                          {a.status !== 'ACTIVE' && (
+                            <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => setConnStatus(a.id, 'ACTIVE')}>{t('merchant.activate')}</button>
+                          )}
+                          {a.status === 'ACTIVE' && (
+                            <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12, color: '#dc2626' }} onClick={() => setConnStatus(a.id, 'SUSPENDED')}>{t('merchant.suspend')}</button>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          <div className="card" style={{ marginBottom: 24 }}>
+            <h3 style={{ marginBottom: 14 }}>{t('merchant.payout_queue')}</h3>
+            {adminPayouts.filter((p) => p.status === 'PENDING').length === 0 ? (
+              <p className="roles-tag">{t('merchant.no_pending')}</p>
+            ) : (
+              <div style={{ overflowX: 'auto' }}>
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>{t('merchant.merchant_name')}</th>
+                      <th>{t('merchant.payout_ref')}</th>
+                      <th>{t('merchant.amount')}</th>
+                      <th>{t('merchant.payout_net')}</th>
+                      <th>{t('merchant.actions')}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {adminPayouts.filter((p) => p.status === 'PENDING').map((p) => (
+                      <tr key={p.id}>
+                        <td>{p.merchant_name}</td>
+                        <td style={{ wordBreak: 'break-all' }}>{p.payout_reference}</td>
+                        <td>{formatMoney(p.gross_amount)}</td>
+                        <td>{formatMoney(p.net_amount)}</td>
+                        <td>
+                          <button className="btn" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => executePayout(p.id)}>{t('merchant.execute_payout')}</button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </>
       )}
 
       {/* Payment history */}

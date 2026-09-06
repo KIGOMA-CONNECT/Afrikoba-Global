@@ -6,6 +6,7 @@
 const pool = require('../config/db');
 const crypto = require('crypto');
 const fin = require('./financialEngine');
+const { creditMerchantProceeds } = require('./merchantPayoutService');
 
 async function registerMerchant(userId, { name, business_type, phone, email }) {
   const result = await pool.query(
@@ -46,17 +47,27 @@ async function payMerchant(payerId, merchantId, amount, description) {
   try {
     await client.query('BEGIN');
 
-    if (merchantUserId && merchantUserId !== payerId) {
-      await fin.internalTransfer({
-        client, fromUserId: payerId, toUserId: merchantUserId, amount,
-        reference: ref, description: `Merchant payment to ${merchant.rows[0].name}`
-      });
-    } else {
-      await fin.debitWallet({
-        client, userId: payerId, amount, reference: ref,
-        toAccount: 'SUSPENSE',
-        description: `Merchant payment to ${merchant.rows[0].name}`
-      });
+    // Connected (ACTIVE) merchants accumulate proceeds in MERCHANT_BALANCE so
+    // they can request settlements; everyone else keeps the legacy rails.
+    const acc = await creditMerchantProceeds({
+      client, merchantId, amount,
+      reference: ref,
+      description: `Merchant payment to ${merchant.rows[0].name}`,
+    });
+
+    if (!acc.credited) {
+      if (merchantUserId && merchantUserId !== payerId) {
+        await fin.internalTransfer({
+          client, fromUserId: payerId, toUserId: merchantUserId, amount,
+          reference: ref, description: `Merchant payment to ${merchant.rows[0].name}`
+        });
+      } else {
+        await fin.debitWallet({
+          client, userId: payerId, amount, reference: ref,
+          toAccount: 'SUSPENSE',
+          description: `Merchant payment to ${merchant.rows[0].name}`
+        });
+      }
     }
 
     // Record payment
@@ -68,8 +79,8 @@ async function payMerchant(payerId, merchantId, amount, description) {
 
     // Record transaction
     await client.query(
-      `INSERT INTO transactions (user_id, type, total_charged, commission, status, reference_id, meta)
-       VALUES ($1, 'TRANSFER', $2, 0, 'SUCCESS', $3, $4)`,
+      `INSERT INTO transactions (user_id, type, total_charged, wallet_amount, commission, status, reference_id, meta)
+       VALUES ($1, 'TRANSFER', $2, 0, 0, 'SUCCESS', $3, $4)`,
       [payerId, amount, ref, JSON.stringify({
         merchant_id: merchantId,
         merchant_name: merchant.rows[0].name,

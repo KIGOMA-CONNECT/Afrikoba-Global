@@ -8,8 +8,9 @@
 
 const express = require('express');
 const pool = require('../config/db');
-const { authRequired } = require('../middleware/auth');
+const { authRequired, requireRoles } = require('../middleware/auth');
 const merchantService = require('../services/merchantService');
+const merchantPayoutService = require('../services/merchantPayoutService');
 const qrCodeService = require('../services/qrCodeService');
 const paymentLinkService = require('../services/paymentLinkService');
 
@@ -119,6 +120,65 @@ router.post('/payment-links/:code/pay', authRequired, async (req, res, next) => 
 router.delete('/payment-links/:id', authRequired, async (req, res, next) => {
   try { res.json({ success: true, deleted: await paymentLinkService.deactivatePaymentLink(req.user.id, parseInt(req.params.id, 10)) }); }
   catch (e) { next(e); }
+});
+
+// ---- Connected account + payouts (Stripe-Connect-style) ----
+
+// My connected payout account + held balance
+router.get('/connected', authRequired, async (req, res, next) => {
+  try {
+    const { merchant, account } = await merchantPayoutService.getConnectedAccount(req.user.id);
+    res.json({ success: true, merchant, account });
+  } catch (e) { next(e); }
+});
+
+// Create / update my connected payout account (resets to PENDING for re-KYC)
+router.post('/connected', authRequired, async (req, res, next) => {
+  try {
+    const account = await merchantPayoutService.upsertConnectedAccount(req.user.id, req.body);
+    res.json({ success: true, account });
+  } catch (e) { next(e); }
+});
+
+// My payout history
+router.get('/payouts', authRequired, async (req, res, next) => {
+  try { res.json({ success: true, payouts: await merchantPayoutService.listPayouts(req.user.id) }); }
+  catch (e) { next(e); }
+});
+
+// Request a settlement against held proceeds
+router.post('/payouts', authRequired, async (req, res, next) => {
+  try {
+    const payout = await merchantPayoutService.requestPayout(req.user.id, { amount: req.body?.amount });
+    res.json({ success: true, payout });
+  } catch (e) { next(e); }
+});
+
+// ---- Admin: connected accounts + settlement execution ----
+router.use('/admin', authRequired, requireRoles('ADMIN', 'OPS', 'COMPLIANCE', 'SUPPORT'));
+
+router.get('/admin/connected', async (req, res, next) => {
+  try { res.json({ success: true, accounts: await merchantPayoutService.adminListConnected() }); }
+  catch (e) { next(e); }
+});
+
+router.patch('/admin/connected/:id', async (req, res, next) => {
+  try {
+    const account = await merchantPayoutService.adminSetConnectedStatus(req.user.id, parseInt(req.params.id, 10), req.body?.status);
+    res.json({ success: true, account });
+  } catch (e) { next(e); }
+});
+
+router.get('/admin/payouts', async (req, res, next) => {
+  try { res.json({ success: true, payouts: await merchantPayoutService.adminListPayouts(req.query.status || null) }); }
+  catch (e) { next(e); }
+});
+
+router.post('/admin/payouts/:id/execute', async (req, res, next) => {
+  try {
+    const payout = await merchantPayoutService.adminExecutePayout(req.user.id, parseInt(req.params.id, 10));
+    res.json({ success: true, payout });
+  } catch (e) { next(e); }
 });
 
 module.exports = router;
