@@ -82,6 +82,9 @@ const featureFlagRoutes = require('./routes/featureFlagRoutes');
 const fraudOpsRoutes = require('./routes/fraudOpsRoutes');
 const experimentRoutes = require('./routes/experimentRoutes');
 const fourEyesRoutes = require('./routes/fourEyesRoutes');
+const outboxRoutes = require('./routes/outboxRoutes');
+const outbox = require('./services/outboxService');
+const { createNotification } = require('./services/notificationService');
 const swaggerUi = require('swagger-ui-express');
 const { swaggerSpec } = require('./config/swagger');
 
@@ -98,6 +101,23 @@ if (config.sentry.dsn) {
 }
 
 const app = express();
+
+// Outbox / event-bus default handlers (transaction-aware fan-out).
+let _outboxRetryCount = 0;
+outbox.registerHandler('MERCHANT_PAYOUT_EXECUTED', async ({ payload }) => {
+  await createNotification(payload.merchantId || payload.userId, {
+    title: 'Malipo ya mfanyabiashara yametumwa',
+    body: payload.reference ? `Rejea: ${payload.reference}` : 'Malipo yametumwa.',
+    type: 'FRAUD_TRANSACTION',
+  }).catch(() => {});
+});
+outbox.registerHandler('OUTBOX_TEST', async ({ payload }) => {
+  await createNotification(payload.userId, { title: 'Outbox heartbeat', body: 'delivered' });
+});
+outbox.registerHandler('OUTBOX_RETRY', async () => {
+  _outboxRetryCount += 1;
+  if (_outboxRetryCount % 3 !== 0) throw new Error('sigui bado');
+});
 
 // H5: Initialize database security settings
 initDbSecurity().catch(() => {});
@@ -282,6 +302,7 @@ app.use(`${prefix}/disputes`, walletLimiter, disputeRoutes);
   // Events mounted BEFORE projectRoutes: projectRoutes applies router.use(authRequired)
   // blanket — public event share routes need to stay reachable unauthenticated.
   app.use(`${prefix}/events`, walletLimiter, eventRoutes);
+  app.use(`${prefix}/outbox`, walletLimiter, outboxRoutes);
   app.use(prefix, projectRoutes);
   app.use(`${prefix}/ai`, aiRoutes);
   app.use(`${prefix}/procurement`, procurementRoutes);

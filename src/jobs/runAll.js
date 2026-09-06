@@ -10,6 +10,7 @@ const { runBalanceReconciliation } = require('./balanceReconciliation');
 const { runAutopilotPayouts } = require('../services/financialAutopilotService');
 const { recomputeAll: recomputeSellerVerifications } = require('../services/sellerVerificationService');
 const { runAutoInvestCycle } = require('../services/p2pMarketplaceService');
+const { dispatchOutbox } = require('../services/outboxService');
 const logger = require('../utils/logger');
 
 /**
@@ -109,7 +110,17 @@ function startAllJobs() {
     }
   });
 
-  logger.info('CRON', 'Cron Jobs zimeanzishwa (reconciliation, ROSCA payout, DB maintenance, split payment, scheduled payments, autopilot, seller verification, auto-invest)');
+  // Outbox dispatcher - kila dakika, chambua due events (SKIP LOCKED) kwa handlers.
+  cron.schedule('* * * * *', async () => {
+    try {
+      const mapped = await dispatchOutbox({ batchSize: 50 });
+      if (mapped.processed > 0) logger.info('CRON-OUTBOX', `Outbox: ${mapped.processed} processed (${mapped.delivered} delivered)`);
+    } catch (e) {
+      logger.error('CRON-OUTBOX', e.message);
+    }
+  });
+
+  logger.info('CRON', 'Cron Jobs zimeanzishwa (reconciliation, ROSCA payout, DB maintenance, split payment, scheduled payments, autopilot, seller verification, auto-invest, outbox dispatcher)');
 }
 
 module.exports = { startAllJobs };

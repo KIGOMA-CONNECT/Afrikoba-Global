@@ -199,6 +199,15 @@ async function approveLoan(approverUserId, loanId, approvedAmount) {
       ['DISBURSED', loanId]
     );
 
+    const { enqueueOutbox } = require('./outboxService');
+    await enqueueOutbox({
+      eventType: 'VICOBA_LOAN_APPROVED',
+      aggregateId: String(loanId),
+      payload: { groupId: loan.group_id, applicantUserId: loan.applicant_user_id, amount: finalAmount, referenceId },
+      reference: `VICOBA:LOAN:${loanId}`,
+      tx: client,
+    }).catch(() => {});
+
     await client.query('COMMIT');
     await logAudit({ eventType: 'VICOBA_LOAN', action: 'APPROVE', entityType: 'VICOBA_LOAN', userId: approverUserId, entityId: loanId, referenceId, amount: finalAmount, afterData: { group_id: loan.group_id, applicant: loan.applicant_user_id } });
 

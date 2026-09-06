@@ -83,6 +83,7 @@ jobs:
           node scripts/test-kilimo-seasons.js
           node scripts/test-disputes.js
           node scripts/test-merchant-payouts.js
+          node scripts/test-outbox.js
 
       - name: Upload server log on failure
         if: failure()

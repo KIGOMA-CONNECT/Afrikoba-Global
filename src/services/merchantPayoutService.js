@@ -205,6 +205,14 @@ async function adminExecutePayout(adminId, payoutId) {
        WHERE id = $3`,
       [adminId, ref, payoutId]
     );
+    const { enqueueOutbox } = require('./outboxService');
+    await enqueueOutbox({
+      eventType: 'MERCHANT_PAYOUT_EXECUTED',
+      aggregateId: String(payoutId),
+      payload: { merchantId: p.merchant_id, payoutId, amount: Number(p.net_amount), gross: Number(p.gross_amount), fee: Number(p.fee_amount), reference: ref },
+      reference: `PAYOUT:${payoutId}:${ref}`,
+      tx: client,
+    }).catch(() => {});
     await client.query('COMMIT');
     await logAction(adminId, 'MERCHANT_PAYOUT_EXECUTED', 'MERCHANT_PAYOUT', payoutId, { reference: ref, gross: p.gross_amount, net: p.net_amount }, null);
     return (await pool.query('SELECT * FROM merchant_payouts WHERE id = $1', [payoutId])).rows[0];
