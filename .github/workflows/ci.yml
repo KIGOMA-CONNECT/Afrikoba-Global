@@ -96,6 +96,7 @@ jobs:
           node scripts/test-chart-of-accounts.js
           node scripts/test-tracing.js
           node scripts/test-ai-insights.js
+          node scripts/test-sar-filing.js
 
       - name: Upload server log on failure
         if: failure()

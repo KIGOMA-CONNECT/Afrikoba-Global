@@ -135,7 +135,12 @@ async function getAmlCase(caseId) {
      LEFT JOIN users u ON n.author_id = u.id WHERE n.case_id = $1 ORDER BY n.created_at DESC`,
     [caseId]
   );
-  return { case: c.rows[0], notes: notes.rows };
+  const filings = await pool.query(
+    `SELECT f.*, u.full_name AS filed_name FROM sar_filings f
+     LEFT JOIN users u ON f.filed_by = u.id WHERE f.case_id = $1 ORDER BY f.created_at DESC`,
+    [caseId]
+  );
+  return { case: c.rows[0], notes: notes.rows, filings: filings.rows };
 }
 
 async function updateAmlCase(caseId, authorId, { status, assignedTo, riskLevel, disposition }) {
@@ -163,6 +168,50 @@ async function addAmlNote(caseId, authorId, note) {
   return result.rows[0];
 }
 
+/**
+ * Formalise an FIU suspicious-activity filing. A case must exist; the filing is
+ * appended to sar_filings (immutable trail, multiple filings allowed) and the
+ * latest filing is mirrored onto aml_cases for dashboard surface.
+ */
+async function fileSar(caseId, authorId, { reference, agency, summary }) {
+  const ref = reference == null ? '' : String(reference).trim();
+  if (!ref) {
+    const e = new Error('SAR filing reference ni lazima.');
+    e.statusCode = 400;
+    throw e;
+  }
+  const caseRow = await pool.query(`SELECT * FROM aml_cases WHERE id = $1`, [caseId]);
+  if (caseRow.rows.length === 0) throw new Error('Kesi haipatikani.');
+  const agcy = agency == null || !String(agency).trim() ? 'FIU' : String(agency).trim();
+  const filing = await pool.query(
+    `INSERT INTO sar_filings (case_id, reference, agency, summary, filed_by)
+     VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+    [caseId, ref, agcy, summary || null, authorId]
+  );
+  const updated = await pool.query(
+    `UPDATE aml_cases
+        SET disposition = COALESCE(disposition, 'REFERRED_TO_LRA'),
+            sar_reference = $2, sar_agency = $3, sar_filed_at = NOW(), sar_filed_by = $4,
+            status = CASE WHEN status NOT IN ('RESOLVED','CLOSED') THEN 'INVESTIGATING' ELSE status END,
+            updated_at = NOW()
+      WHERE id = $1 RETURNING *`,
+    [caseId, ref, agcy, authorId]
+  );
+  return { filing: filing.rows[0], case: updated.rows[0] };
+}
+
+async function listSarFilings(caseId, limit = 500) {
+  const result = await pool.query(
+    `SELECT f.*, u.full_name AS filed_name
+       FROM sar_filings f
+       LEFT JOIN users u ON f.filed_by = u.id
+      WHERE f.case_id = $1
+      ORDER BY f.created_at DESC LIMIT $2`,
+    [caseId, limit]
+  );
+  return result.rows;
+}
+
 module.exports = {
   createApprovalFlow,
   listApprovalFlows,
@@ -172,6 +221,8 @@ module.exports = {
   getAmlCase,
   updateAmlCase,
   addAmlNote,
+  fileSar,
+  listSarFilings,
   registerExecutor,
   getSetting,
 };

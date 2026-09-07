@@ -429,6 +429,21 @@ router.post('/aml/cases/:id/notes', async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
+// Formal FIU SAR filing (disposition + immutable trail)
+router.post('/aml/cases/:id/file-sar', async (req, res, next) => {
+  try {
+    const outcome = await governanceService.fileSar(parseInt(req.params.id, 10), req.user.id, req.body);
+    await logAction(req.user.id, 'SAR_FILED', 'AML_CASE', outcome.case.id, { sarId: outcome.filing.id, reference: outcome.filing.reference, agency: outcome.filing.agency }, req);
+    res.json({ success: true, ...outcome });
+  } catch (error) { next(error); }
+});
+
+router.get('/aml/cases/:id/filings', async (req, res, next) => {
+  try {
+    res.json({ success: true, filings: await governanceService.listSarFilings(parseInt(req.params.id, 10)) });
+  } catch (error) { next(error); }
+});
+
 // Fraud alerts (queue for AML case opening)
 router.get('/fraud/alerts', async (req, res, next) => {
   try {

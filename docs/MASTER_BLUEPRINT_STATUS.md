@@ -185,6 +185,13 @@ Status legend: ✅ **built** · 🔶 **partial** · ⬜ **not built / next**.
   Project Charter, 19 Business Continuity Plan, 24 Service Level Agreement, 25 Vendor Management
   Framework, 27 Internal Audit Framework — registry + gap-analysis show all 27 DRAFT/APPROVED;
   next is formal approval cycling and OpenAPI generation.
+- ✅ **C2 privacy/retention consolidation** (AFK-INST-14 v0.3): single authoritative retention schedule
+  grounded in code (`dbMaintenanceService`, `sessionManager`, `backupService`); fixed 10y→7y financial
+  conflict and withdrew phantom backup tiers; PRIVACY_POLICY / DATA_RETENTION_POLICY /
+  DATA_PROTECTION_POLICY regenerated as controlled derivatives.
+- ✅ **FIU SAR filing formalised** (migration 095 + `sar_filings` trail; `fileSar` records reference/agency
+  and mirrors `REFERRED_TO_LRA` disposition; `POST /api/admin/aml/cases/:id/file-sar` + filings GET;
+  `SAR_FILED` audit entry; `scripts/test-sar-filing.js` 20/20 in CI) — AFK-INST-13 SAR row → IMPLEMENTED.
 - ✅ **Feature flags + experimentation framework built** (migration 080, `/api/features` + admin `/api/features/admin`, `FeatureFlags.jsx`).
 - ✅ **Fraud operations centre dashboard built** (`/api/fraud-ops`, `FraudOps.jsx`).
 - ✅ **Role-based four-eyes built + extended** (migration 081 + 082: `four_eyes_policies`/`four_eyes_requests`/`four_eyes_approvals`; maker-checker with role enforcement, no-self-approval, quorum 1–3, registered executors, retry; `/api/admin/four-eyes`, gated by `FOUR_EYES` flag, `FourEyes.jsx`). Executors: `ADMIN_PROMOTE_ROLE`, `ADMIN_DEMOTE_ROLE`, `ADMIN_LARGE_REFUND`, plus (migration 082) `VICOBA_LOAN_DISBURSE`, `VICOBA_SOCIAL_FUND_DISBURSE`, `CARD_ADMIN_SETTLE`, `CARD_ADMIN_REFUND`, `CREDIT_LOAN_DISBURSE`, `BUSINESS_LOAN_DISBURSE` with convenience launchers (`/actions/vicoba-loan-disburse|vicoba-social-disburse|card-settle|card-refund|credit-loan-disburse|business-loan-disburse`) — card settle/refund move money via `cardService` (capture/unlock), loan disburse wraps `savingsCreditService.adminDisburseMicroLoan` / `businessService.adminDisburseLoan`, VICOBA executors wrap `vicobaService.approveLoan`/`approveSocialFundDisbursement` (actor fallback = approving admin).
