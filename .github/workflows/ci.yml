@@ -93,6 +93,9 @@ jobs:
           node scripts/test-ledger-integrity.js
           node scripts/test-field-partners.js
           node scripts/test-device-binding.js
+          node scripts/test-chart-of-accounts.js
+          node scripts/test-tracing.js
+          node scripts/test-ai-insights.js
 
       - name: Upload server log on failure
         if: failure()

@@ -221,6 +221,134 @@ async function genLoanRelief(user) {
 }
 
 // ---------------------------------------------------------------------------
+// Expanded coverage (Sec 89 gap): invoices, payroll, procurement
+// ---------------------------------------------------------------------------
+
+async function genInvoiceHealth(userId) {
+  const r = await pool.query(
+    `SELECT COALESCE(SUM(CASE WHEN i.status='OVERDUE' THEN i.total_amount END),0)::numeric AS overdue,
+            COALESCE(SUM(CASE WHEN i.status='PENDING' THEN i.total_amount END),0)::numeric AS pending,
+            COUNT(*) FILTER (WHERE i.status IN ('PENDING','OVERDUE'))::int AS open_invoices
+       FROM business_invoices i
+       JOIN business_accounts b ON b.id = i.business_id
+      WHERE b.owner_id = $1 AND i.status IN ('PENDING','OVERDUE') AND i.created_at > NOW() - INTERVAL '60 days'`,
+    [userId]
+  );
+  const row = r.rows[0] || { overdue: 0, pending: 0, open_invoices: 0 };
+  const overdue = Number(row.overdue || 0);
+  const pending = Number(row.pending || 0);
+  const open = Number(row.open_invoices || 0);
+  if (open === 0) return [];
+  const arr = [];
+  if (overdue > 0) {
+    arr.push({
+      insight_type: 'INVOICE_CASHFLOW', severity: overdue > pending ? 'alert' : 'warning', metric: round2(overdue),
+      title: 'Overdue invoices receivable',
+      body: `You have ${open} open invoice(s) of which ${round2(overdue)} is overdue. Chasing these frees cash for growth.`,
+      health: overdue > pending ? 0.35 : 0.6,
+    });
+  } else {
+    arr.push({
+      insight_type: 'INVOICE_CASHFLOW', severity: 'info', metric: round2(pending),
+      title: 'Invoices awaiting payment',
+      body: `${open} invoice(s) worth ${round2(pending)} are still unpaid. Consider a gentle reminder to customers.`,
+      health: 0.7,
+    });
+  }
+  return arr;
+}
+
+async function genPayrollHealth(userId) {
+  const r = await pool.query(
+    `WITH months AS (
+       SELECT b.owner_id,
+              EXTRACT(MONTH FROM pr.created_at)::int AS m,
+              EXTRACT(YEAR FROM pr.created_at)::int AS y,
+              SUM(pr.total_amount)::numeric AS total,
+              COUNT(*)::int AS runs
+         FROM payroll_runs pr
+        JOIN business_accounts b ON b.id = pr.business_id
+        WHERE b.owner_id = $1 AND pr.created_at > NOW() - INTERVAL '90 days'
+        GROUP BY b.owner_id, m, y
+     )
+     SELECT COALESCE((SELECT total FROM months WHERE m = EXTRACT(MONTH FROM NOW()) AND y = EXTRACT(YEAR FROM NOW())),0)::numeric AS current_month,
+            COALESCE((SELECT total FROM months WHERE m = EXTRACT(MONTH FROM NOW()) - 1),0)::numeric AS prev_month`,
+    [userId]
+  );
+  const row = r.rows[0] || { current_month: 0, prev_month: 0 };
+  const cur = Number(row.current_month || 0);
+  const prev = Number(row.prev_month || 0);
+  if (cur <= 0) return [];
+  if (prev > 0 && cur > prev * 1.3) {
+    return [{
+      insight_type: 'PAYROLL_HEALTH', severity: 'warning', metric: round2(cur - prev),
+      title: 'Payroll costs rising',
+      body: `Your payroll this month is ${round2(cur)}, up ${round2(cur - prev)} from last month. Make sure revenue is keeping pace.`,
+      health: 0.5,
+    }];
+  }
+  if (prev > 0 && cur < prev * 0.7) {
+    return [{
+      insight_type: 'PAYROLL_HEALTH', severity: 'info', metric: round2(cur),
+      title: 'Payroll under control',
+      body: `Payroll this month (${round2(cur)}) is below last month (${round2(prev)}) — costs are easing.`,
+      health: 1,
+    }];
+  }
+  return [{
+    insight_type: 'PAYROLL_HEALTH', severity: 'good', metric: round2(cur),
+    title: 'Payroll steady',
+    body: `You ran ${round2(cur)} in payroll this month. Keep payroll < 50% of revenue to stay healthy.`,
+    health: 0.75,
+  }];
+}
+
+async function genProcurementHealth(userId) {
+  const open = await pool.query(
+    `SELECT COUNT(*)::int AS c, COALESCE(SUM(budget_cap),0)::numeric AS budget
+       FROM procurement_requests
+      WHERE buyer_user_id = $1 AND status IN ('OPEN','ACCEPTING_BIDS')`,
+    [userId]
+  );
+  // supplier_financing is linked either to the buyer's RFQ (request_id) or to a
+  // supplier owned by a business the user runs (business_id -> business owner).
+  const fin = await pool.query(
+    `SELECT COALESCE(SUM(sf.amount),0)::numeric AS outstanding
+       FROM supplier_financing sf
+      WHERE sf.status IN ('PENDING','DISBURSED')
+        AND (sf.request_id IN (SELECT r.id FROM procurement_requests r WHERE r.buyer_user_id = $1)
+             OR EXISTS (SELECT 1 FROM business_accounts b
+                        WHERE b.owner_id = $1
+                          AND EXISTS (SELECT 1 FROM suppliers s
+                                      WHERE s.id = sf.supplier_id AND s.business_id = b.id)))`,
+    [userId]
+  );
+  const openCount = Number(open.rows[0].c || 0);
+  const openBudget = Number(open.rows[0].budget || 0);
+  const outstanding = Number(fin.rows[0].outstanding || 0);
+  if (openCount === 0 && outstanding === 0) return [];
+  const arr = [];
+  if (openCount > 0) {
+    arr.push({
+      insight_type: 'PROCUREMENT_HEALTH', severity: 'info', metric: round2(openBudget),
+      title: `${openCount} open procurement request(s)`,
+      body: `You have ${openCount} open RFQ(s) totalling a budget of ${round2(openBudget)}. Awarding the best bid locks in pricing.`,
+      health: 0.7,
+    });
+  }
+  if (outstanding > 0) {
+    arr.push({
+      insight_type: 'PROCUREMENT_HEALTH', severity: outstanding > openBudget * 0.5 ? 'warning' : 'info',
+      metric: round2(outstanding),
+      title: 'Supplier financing active',
+      body: `${round2(outstanding)} is outstanding in supplier financing. Repaying early reduces interest cost.`,
+      health: outstanding > openBudget * 0.5 ? 0.5 : 0.75,
+    });
+  }
+  return arr;
+}
+
+// ---------------------------------------------------------------------------
 
 function severityWeight(sev) {
   return { good: 1, info: 0.75, warning: 0.5, alert: 0.25 }[sev] ?? 0.6;
@@ -244,6 +372,11 @@ async function refreshInsights(userId) {
   push(await genAnomaly(rows));
   push(await genCredit(score));
   push(await genLoanRelief(user));
+
+  // Expanded coverage: invoices, payroll, procurement.
+  push(await genInvoiceHealth(userId));
+  push(await genPayrollHealth(userId));
+  push(await genProcurementHealth(userId));
 
   if (generated.length === 0) {
     generated.push({
