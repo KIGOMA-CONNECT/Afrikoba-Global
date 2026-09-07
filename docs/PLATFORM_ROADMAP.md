@@ -111,7 +111,7 @@ Everything we build must pass the "international standards" bar:
 - [x] P2P secondary market (LendingClub) — done: `p2p_secondary_listings` + buy flow + auto-invest rules
 - [x] Auto-invest rules (Prosper/LendingClub) — done: `/api/secondary/auto-invest`
 - [x] Kiva-style lending circles & donor crowdfunding — done: `lending_circles` + `crowdfund_campaigns`
-- [x] **Field Partner API (Kiva)** — done: `db/migrations/091_field_partners_overlay.sql`, `src/services/fieldPartnerService.js` + `/api/field-partners` (funding pool on `PARTNER_BALANCE`, onboarding, USD/EUR-agnostic disbursement → borrower wallet, field-collected + self repayment, levered pool) + `scripts/test-field-partners.js` (29 checks) wired into CI
+- [x] **Field Partner API (Kiva)** — done: `db/migrations/091_field_partners_overlay.sql`, `src/services/fieldPartnerService.js` + `/api/field-partners` (funding pool on `PARTNER_BALANCE`, onboarding, USD/EUR-agnostic disbursement → borrower wallet, field-collected + self repayment, levered pool) + `scripts/test-field-partners.js` (29 checks) wired into CI + **web/mobile dashboards** (`/dashboard/field-partners`, Flutter "Mashirika ya Uga")
 - [x] Connected merchant accounts + marketplace payouts (Stripe Connect) — done: migration 085, `/api/merchant/connected` + `/payouts` + admin execute, dashboard + mobile parity
 - [x] Disputes & chargeback toolkit (Stripe Connect) — done: `disputeService.js`
 
@@ -134,7 +134,7 @@ Everything we build must pass the "international standards" bar:
 ## 5. International-Standard Guardrails
 - **Money movement**: every transfer = 1 transaction row + 2 ledger entries + audit row (done).
 - **KYC gates**: ROSCA/P2P = L2; higher value / lending = L3 (documented identity) — done: `enforceHighValueKyc` on all borrow paths (≥ 1,000,000 TZS → L3, env-configurable).
-- **Rate limiting & anti-fraud**: OTP attempt limits, per-IP limits, **device binding** — done: `x-device-fingerprint` trusted-device binding + per-user `device_policy` (PERMISSIVE/TRUSTED_ONLY) enforced on transfer/withdraw, per-device sliding-window rate limiter, first-seen-device `fraud_alerts` — migration 092, `/api/devices`, `scripts/test-device-binding.js` (19 checks).
+- **Rate limiting & anti-fraud**: OTP attempt limits, per-IP limits, **device binding** — done: `x-device-fingerprint` trusted-device binding + per-user `device_policy` (PERMISSIVE/TRUSTED_ONLY) enforced on transfer/withdraw, per-device sliding-window rate limiter, first-seen-device `fraud_alerts` — migration 092, `/api/devices`, `scripts/test-device-binding.js` (19 checks) + **web/mobile dashboards** (`/dashboard/devices`, Flutter "Vifaa na Usalama").
 - **Data protection**: encryption at rest (pgcrypto/TDE), secrets in env (not repo), least-privilege roles.
 - **Audit**: `audit_logs` for privileged actions; immutable append-only.
 
