@@ -53,6 +53,16 @@ const ERROR_CODES = {
   CURRENCY_TZS_COST_MISSING:     { status: 400, message: 'Salio la TZS halitoshi.' },
   FX_RATE_NOT_FOUND:             { status: 404, message: 'Kiwango cha ubadilishaji hakipatikani.' },
 
+  // Field Partners (Kiva-style)
+  FIELD_PARTNER_NOT_FOUND:       { status: 404, message: 'Shirika la mshirika halijapatikana.' },
+  FIELD_PARTNER_INACTIVE:        { status: 403, message: 'Shirika la mshirika halijawashwa.' },
+  FIELD_PARTNER_UNAUTHORIZED:    { status: 403, message: 'Huna ruhusa ya kufanya hili kwa mshirika huyu.' },
+  FIELD_PARTNER_POOL_INSUFFICIENT: { status: 400, message: 'Hazina ya ukopeshaji haitoshi.' },
+  FP_LOAN_NOT_FOUND:             { status: 404, message: 'Mkopo haujapatikana.' },
+  FP_LOAN_STATUS_INVALID:        { status: 400, message: 'Hali ya mkopo hairuhusu hatua hii.' },
+  FP_REPAYMENT_EXCEEDS_DUE:      { status: 400, message: 'Malipo yanazidi deni lililobaki.' },
+  FP_BORROWER_NOT_FOUND:         { status: 404, message: 'Mkopoaji hajapatikana.' },
+
   // Generic
   INTERNAL_ERROR:                { status: 500, message: 'Hitilafu ya ndani ya server.' },
 };

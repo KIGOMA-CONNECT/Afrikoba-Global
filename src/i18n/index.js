@@ -109,6 +109,16 @@ const messages = {
     // ---- Multi-country compliance ----
     COUNTRY_NOT_FOUND: 'Nchi haijapatikana au haina leseni.',
     REGULATORY_DAILY_LIMIT: 'Umefikia kikomo cha kila siku cha uhamisho kwa nchi hii.',
+
+    // ---- Field partners ----
+    FIELD_PARTNER_NOT_FOUND: 'Shirika la mshirika halijapatikana.',
+    FIELD_PARTNER_INACTIVE: 'Shirika la mshirika halijawashwa.',
+    FIELD_PARTNER_UNAUTHORIZED: 'Huna ruhusa ya kufanya hili kwa mshirika huyu.',
+    FIELD_PARTNER_POOL_INSUFFICIENT: 'Hazina ya ukopeshaji haitoshi.',
+    FP_LOAN_NOT_FOUND: 'Mkopo haujapatikana.',
+    FP_LOAN_STATUS_INVALID: 'Hali ya mkopo hairuhusu hatua hii.',
+    FP_REPAYMENT_EXCEEDS_DUE: 'Malipo yanazidi deni lililobaki.',
+    FP_BORROWER_NOT_FOUND: 'Mkopoaji hajapatikana.',
   },
 
   en: {
@@ -210,6 +220,16 @@ const messages = {
     // ---- Multi-country compliance ----
     COUNTRY_NOT_FOUND: 'Country not found or not licensed.',
     REGULATORY_DAILY_LIMIT: 'Daily transfer limit for this country exceeded.',
+
+    // ---- Field partners ----
+    FIELD_PARTNER_NOT_FOUND: 'Field partner not found.',
+    FIELD_PARTNER_INACTIVE: 'Field partner is deactivated.',
+    FIELD_PARTNER_UNAUTHORIZED: 'You are not authorized for this partner.',
+    FIELD_PARTNER_POOL_INSUFFICIENT: 'Lending pool is insufficient.',
+    FP_LOAN_NOT_FOUND: 'Loan not found.',
+    FP_LOAN_STATUS_INVALID: 'Loan status does not allow this action.',
+    FP_REPAYMENT_EXCEEDS_DUE: 'Repayment exceeds the outstanding balance.',
+    FP_BORROWER_NOT_FOUND: 'Borrower not found.',
   },
 };
 

@@ -91,6 +91,7 @@ jobs:
           node scripts/test-ussd.js
           node scripts/test-multi-country.js
           node scripts/test-ledger-integrity.js
+          node scripts/test-field-partners.js
 
       - name: Upload server log on failure
         if: failure()
