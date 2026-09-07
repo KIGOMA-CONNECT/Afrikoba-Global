@@ -38,8 +38,11 @@ Status legend: ✅ **built** · 🔶 **partial** · ⬜ **not built / next**.
 - ✅ Chart of accounts seeded: CUSTOMER_WALLET, MNO_CLEARING, PLATFORM_FEES,
   COMMISSION, SUSPENSE, CARD_HOLD, FAMILY_WALLET, VICOBA_GROUP, ROSCA_POOL,
   AGENT_BALANCE, PARTNER_BALANCE, REFERRAL_REWARD, YIELD_LIABILITY, INTEREST_INCOME.
-- 🔶 Formal 1000/2000/3000/4000/5000 account-numbering hierarchy not yet mirrored
-  in UI/reporting; account codes use semantic names.
+- ✅ **Formal 1000/2000/3000/4000/5000 account-numbering mirrored** (migration 093)
+  via `chart_number` (ASSET 1000–1999, LIABILITY 2000–2999, EQUITY 3000–3999,
+  REVENUE 4000–4999, EXPENSE 5000–5999) + `chartOfAccountsService.js` grouped view with
+  journal balances + `GET /api/ops/chart-of-accounts` + Ops dashboard coverage summary;
+  `scripts/test-chart-of-accounts.js` (21 checks) in CI.
 - ✅ Per-product separation: user / group / family wallets kept distinct in ledger.
 
 ## 4. Wallet System (Sec 9–10, 42, 44–45)
@@ -81,6 +84,14 @@ Status legend: ✅ **built** · 🔶 **partial** · ⬜ **not built / next**.
 - ✅ **Financial Health + AI recommendations on Dashboard**: Dashboard.jsx pulls
   `/api/ai/insights` and surfaces top 3 AI-powered insights inline alongside the
   existing health stats card. (sw/en i18n, deployed).
+- ✅ **AI insights extended to commerce/ops coverage** (`aiInsightService.js`):
+  `genInvoiceHealth` (INVOICE_CASHFLOW — overdue-vs-pending cash drag, alert when
+  overdue > pending), `genPayrollHealth` (PAYROLL_HEALTH — current-month vs prev-month
+  wage bill, warning when >130% of prior run), `genProcurementHealth`
+  (PROCUREMENT_HEALTH — open RFQ count/budget + outstanding supplier financing);
+  all wired into `refreshInsights` under the `afri-ai-1.0` model-register governance
+  ledger; `scripts/test-ai-insights.js` (13 checks incl. severity, metric precision,
+  dismiss persistence, 401 RBAC) in CI.
 
 ## 7. Payments / Merchant / Business (Sec 11–13)
 - ✅ P2P, deposits, withdrawals, settlements, mobile-money callbacks (idempotent,
@@ -115,9 +126,11 @@ Status legend: ✅ **built** · 🔶 **partial** · ⬜ **not built / next**.
 ## 10. Reconciliation / Observability / Backup-DR / Testing (Sec 29–34, 51–54, 63–64)
 - ✅ Reconciliation cron + exceptions + `reconciliation_exceptions` table.
 - ✅ Concurrency-critical financial tests: idempotency + debit=credit enforced.
-- 🔶 Structured observability / BI **built** (migration-free `observabilityService`:
-  business KPIs, transaction-by-type breakdown, fraud-severity rollups; surfaced in
-  admin RiskOps BI tab). OpenTelemetry/trace-level = still open.
+- ✅ **OpenTelemetry/trace-level spans built** (migration 094: `trace_spans` table +
+  `request_telemetry.span_id`/`span_kind`/`operation`): AsyncLocalStorage context
+  propagation in `telemetry.js`, zero-dep `trace.js` span/trace-tree builder, financial
+  engine instrumented (`fin.accountIdByCode`, `fin.postJournal`), `GET /api/ops/tracing/:traceId`
+  tree view; `scripts/test-tracing.js` (19 checks with ROOT/CHILD/ERROR spans) in CI.
 - 🔶 Formal backup/DR runbooks = not built (DB container backup exists).
 
 ## 11. API / Developer Platform / Cross-Border (Sec 46–48, 81)
@@ -143,8 +156,16 @@ Status legend: ✅ **built** · 🔶 **partial** · ⬜ **not built / next**.
 
 ## 13. Governance / Risk / Docs (Sec 55–62, 83–90)
 - 🔶 Dispute lifecycle (`disputeService`), support cases partial.
-- 🔶 Risk register / compliance matrix / formal docs set = partially documented
-  in `docs/PLATFORM_ROADMAP.md`; a full 27-doc set is not yet written.
+- ✅ **Canonical 27-document institutional set registry** (`docs/institutional/README.md`):
+  the Afrikoba Master Project Blueprint Sec 85 set (Project Charter → Internal Audit
+  Framework) registered with mandatory metadata header, source hierarchy, research-
+  controlled change control; `docs/institutional/GAP_ANALYSIS.md` maps every existing
+  repo asset (README, roadmap, blueprint status, compliance/DR/privacy/legal docs,
+  migrations, routes, CI tests) onto the 27 documents with exists/version/complete/
+  conflicts/missing/owner/priority, plus a conflict log (C1 suppliers schema, C2
+  privacy-policy overlap, C3 missing ADRs, C4 API return-shape drift) and a 3-tier
+  sequencing plan. Drafting of remaining P1–P3 documents is scheduled and tracked in
+  the registry.
 - ✅ **Feature flags + experimentation framework built** (migration 080, `/api/features` + admin `/api/features/admin`, `FeatureFlags.jsx`).
 - ✅ **Fraud operations centre dashboard built** (`/api/fraud-ops`, `FraudOps.jsx`).
 - ✅ **Role-based four-eyes built + extended** (migration 081 + 082: `four_eyes_policies`/`four_eyes_requests`/`four_eyes_approvals`; maker-checker with role enforcement, no-self-approval, quorum 1–3, registered executors, retry; `/api/admin/four-eyes`, gated by `FOUR_EYES` flag, `FourEyes.jsx`). Executors: `ADMIN_PROMOTE_ROLE`, `ADMIN_DEMOTE_ROLE`, `ADMIN_LARGE_REFUND`, plus (migration 082) `VICOBA_LOAN_DISBURSE`, `VICOBA_SOCIAL_FUND_DISBURSE`, `CARD_ADMIN_SETTLE`, `CARD_ADMIN_REFUND`, `CREDIT_LOAN_DISBURSE`, `BUSINESS_LOAN_DISBURSE` with convenience launchers (`/actions/vicoba-loan-disburse|vicoba-social-disburse|card-settle|card-refund|credit-loan-disburse|business-loan-disburse`) — card settle/refund move money via `cardService` (capture/unlock), loan disburse wraps `savingsCreditService.adminDisburseMicroLoan` / `businessService.adminDisburseLoan`, VICOBA executors wrap `vicobaService.approveLoan`/`approveSocialFundDisbursement` (actor fallback = approving admin).
