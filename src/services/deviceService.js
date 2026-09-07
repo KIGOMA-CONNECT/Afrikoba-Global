@@ -6,11 +6,19 @@
 const pool = require('../config/db');
 const crypto = require('crypto');
 const logger = require('../utils/logger');
+const config = require('../config');
 
 /**
  * Generate device fingerprint from request.
+ * Prefers the client's stable `x-device-fingerprint` (mobile apps bind a
+ * per-install id) and falls back to a server-derived hash of the HTTP
+ * signature so the same browser/IP resolves consistently.
  */
 function generateFingerprint(req) {
+  const header = req.headers ? req.headers[config.device.fingerprintHeader] : null;
+  if (typeof header === 'string' && /^[a-f0-9]{32,128}$/i.test(header.trim())) {
+    return header.trim().toLowerCase();
+  }
   const raw = `${req.ip}|${req.headers['user-agent'] || ''}|${req.headers['accept-language'] || ''}`;
   return crypto.createHash('sha256').update(raw).digest('hex');
 }
@@ -28,7 +36,7 @@ async function registerDevice(userId, req, deviceName) {
     `INSERT INTO trusted_devices (user_id, device_fingerprint, device_name, device_type, os, browser, ip_address)
      VALUES ($1, $2, $3, $4, $5, $6, $7)
      ON CONFLICT (user_id, device_fingerprint) DO UPDATE SET
-       last_used_at = NOW(), ip_address = $7, device_name = COALESCE($3, device_name)
+       last_used_at = NOW(), ip_address = $7, device_name = COALESCE($3, trusted_devices.device_name)
      RETURNING *`,
     [userId, fingerprint, deviceName || `${os} ${browser}`, os.includes('Mobile') ? 'MOBILE' : 'DESKTOP', os, browser, req.ip]
   );
@@ -37,15 +45,76 @@ async function registerDevice(userId, req, deviceName) {
 }
 
 /**
- * Check if device is trusted.
+ * Check if device is trusted (registered, active and explicitly trusted).
  */
 async function isTrustedDevice(userId, req) {
   const fingerprint = generateFingerprint(req);
   const result = await pool.query(
-    `SELECT id FROM trusted_devices WHERE user_id = $1 AND device_fingerprint = $2 AND is_active = TRUE`,
+    `SELECT id FROM trusted_devices WHERE user_id = $1 AND device_fingerprint = $2 AND is_active = TRUE AND is_trusted = TRUE`,
     [userId, fingerprint]
   );
   return result.rows.length > 0;
+}
+
+/**
+ * Trust status for a specific fingerprint (row incl. policy bits).
+ */
+async function trustedDeviceStatus(userId, fingerprint) {
+  const result = await pool.query(
+    `SELECT id, device_fingerprint, device_name, device_type, os, browser,
+            ip_address, last_used_at, is_active, is_trusted, created_at
+     FROM trusted_devices
+     WHERE user_id = $1 AND device_fingerprint = $2`,
+    [userId, fingerprint]
+  );
+  return result.rows[0] || null;
+}
+
+/**
+ * Non-blocking heartbeat: refresh last_used_at + ip for a known device.
+ */
+async function touchDevice(userId, fingerprint, req) {
+  try {
+    await pool.query(
+      `UPDATE trusted_devices SET last_used_at = NOW(), ip_address = COALESCE($3, ip_address)
+       WHERE user_id = $1 AND device_fingerprint = $2`,
+      [userId, fingerprint, req ? req.ip : null]
+    );
+  } catch (e) {
+    logger.error('DEVICE_TOUCH_FAILURE', e.message, { userId });
+  }
+}
+
+/**
+ * Alert on a first-seen device (fraud_alerts DEVICE row, MEDIUM).
+ */
+async function noteNewDevice(userId, fingerprint, req) {
+  try {
+    const known = await pool.query(
+      'SELECT 1 FROM trusted_devices WHERE user_id = $1 AND device_fingerprint = $2',
+      [userId, fingerprint]
+    );
+    if (known.rows.length > 0) return;
+    await pool.query(
+      `INSERT INTO fraud_alerts (user_id, alert_type, severity, description, ip_address, device_fingerprint)
+       VALUES ($1, 'DEVICE', 'MEDIUM', $2, $3, $4)`,
+      [userId, `Kifaa kipya kimeonekana: ${req ? req.ip : ''}`, req ? req.ip : null, fingerprint]
+    );
+  } catch (e) {
+    logger.error('DEVICE_ALERT_FAILURE', e.message, { userId });
+  }
+}
+
+/**
+ * Set the user's device policy (PERMISSIVE | TRUSTED_ONLY).
+ */
+async function setDevicePolicy(userId, policy) {
+  const result = await pool.query(
+    `UPDATE users SET device_policy = $1, updated_at = NOW() WHERE id = $2 RETURNING device_policy`,
+    [policy, userId]
+  );
+  if (result.rows.length === 0) return null;
+  return result.rows[0].device_policy;
 }
 
 /**
@@ -142,6 +211,10 @@ module.exports = {
   generateFingerprint,
   registerDevice,
   isTrustedDevice,
+  trustedDeviceStatus,
+  touchDevice,
+  noteNewDevice,
+  setDevicePolicy,
   getTrustedDevices,
   removeDevice,
   createSession,

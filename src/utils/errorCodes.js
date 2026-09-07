@@ -63,6 +63,12 @@ const ERROR_CODES = {
   FP_REPAYMENT_EXCEEDS_DUE:      { status: 400, message: 'Malipo yanazidi deni lililobaki.' },
   FP_BORROWER_NOT_FOUND:         { status: 404, message: 'Mkopoaji hajapatikana.' },
 
+  // Device security (403/404/429)
+  DEVICE_NOT_TRUSTED:            { status: 403, message: 'Kifaa hiki hakijakubaliwa. Dhibitisha kifaa chako.' },
+  DEVICE_POLICY_INVALID:         { status: 400, message: 'Sera ya kifaa si sahihi.' },
+  DEVICE_NOT_FOUND:              { status: 404, message: 'Kifaa hakijapatikana.' },
+  DEVICE_RATE_LIMIT_EXCEEDED:    { status: 429, message: 'Ombi nyingi sana kutoka kifaa hiki.' },
+
   // Generic
   INTERNAL_ERROR:                { status: 500, message: 'Hitilafu ya ndani ya server.' },
 };

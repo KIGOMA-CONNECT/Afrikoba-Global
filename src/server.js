@@ -19,6 +19,7 @@ const { securityHeaders, requestValidation, trackSuspiciousActivity, strictCors,
 const { validateSession } = require('./middleware/sessionManager');
 const { initDbSecurity } = require('./middleware/dbSecurity');
 const { authLimiter, otpLimiter, walletLimiter, financialLimiter, adminLimiter, webhookLimiter } = require('./middleware/granularRateLimit');
+const { deviceRateLimit } = require('./middleware/deviceRateLimit');
 const { requestId, responseTiming, requestTimeout, sanitizeHeaders } = require('./middleware/requestHardening');
 const { validateTokenPayload } = require('./middleware/jwtHardening');
 const { validateApiKey } = require('./middleware/apiKeyAuth');
@@ -46,6 +47,7 @@ const mkobaRoutes = require('./routes/mkobaRoutes');
 const totpRoutes = require('./routes/totpRoutes');
 const currencyRoutes = require('./routes/currencyRoutes');
 const countryRoutes = require('./routes/countryRoutes');
+const deviceRoutes = require('./routes/deviceRoutes');
 const notificationRoutes = require('./routes/notificationRoutes');
 const referralRoutes = require('./routes/referralRoutes');
 const analyticsRoutes = require('./routes/analyticsRoutes');
@@ -275,7 +277,7 @@ app.use('/api', validateTokenPayload);
 const versionPrefixes = ['/api/v1', '/api'];
 for (const prefix of versionPrefixes) {
   app.use(`${prefix}/auth`, authLimiter, authRoutes);
-  app.use(`${prefix}/wallet`, walletLimiter, walletRoutes);
+  app.use(`${prefix}/wallet`, deviceRateLimit, walletLimiter, walletRoutes);
   app.use(`${prefix}/vicoba`, walletLimiter, vicobaRoutes);
   app.use(`${prefix}/vicoba`, walletLimiter, mkobaRoutes);
   app.use(`${prefix}/rosca`, walletLimiter, roscaRoutes);
@@ -289,6 +291,7 @@ for (const prefix of versionPrefixes) {
   app.use(`${prefix}/totp`, authLimiter, totpRoutes);
   app.use(`${prefix}/currency`, currencyRoutes);
   app.use(`${prefix}/countries`, countryRoutes);
+  app.use(`${prefix}/devices`, walletLimiter, deviceRoutes);
   app.use(`${prefix}/notifications`, notificationRoutes);
   app.use(`${prefix}/referrals`, referralRoutes);
   app.use(`${prefix}/analytics`, analyticsRoutes);

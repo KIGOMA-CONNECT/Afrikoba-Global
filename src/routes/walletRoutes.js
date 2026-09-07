@@ -5,6 +5,7 @@ const limitService = require('../services/limitService');
 const fraudDetectionService = require('../services/fraudDetectionService');
 const governanceService = require('../services/governanceService');
 const { authRequired, requireKycLevel } = require('../middleware/auth');
+const { enforceDeviceTrust } = require('../middleware/deviceGuard');
 const { validate } = require('../middleware/validate');
 const { idempotent } = require('../middleware/idempotent');
 const schemas = require('../validations/schemas');
@@ -51,8 +52,8 @@ router.post('/deposit/initiate', requireKycLevel(1), validate(schemas.wallet.dep
   }
 });
 
-// Transfer wallet-to-wallet
-router.post('/transfer', validate(schemas.wallet.transfer), idempotent(async (req, res, next) => {
+// Transfer wallet-to-wallet (TRUSTED_ONLY users must present a trusted device)
+router.post('/transfer', enforceDeviceTrust, validate(schemas.wallet.transfer), idempotent(async (req, res, next) => {
   try {
     const { toPhoneNumber, amount, note } = req.body;
 
@@ -111,8 +112,8 @@ router.post('/transfer', validate(schemas.wallet.transfer), idempotent(async (re
   }
 }));
 
-// Withdrawal kwenda MNO
-router.post('/withdraw', requireKycLevel(1), validate(schemas.wallet.withdraw), idempotent(async (req, res, next) => {
+// Withdrawal kwenda MNO (TRUSTED_ONLY users must present a trusted device)
+router.post('/withdraw', enforceDeviceTrust, requireKycLevel(1), validate(schemas.wallet.withdraw), idempotent(async (req, res, next) => {
   try {
     const { amount, provider } = req.body;
 

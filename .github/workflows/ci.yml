@@ -92,6 +92,7 @@ jobs:
           node scripts/test-multi-country.js
           node scripts/test-ledger-integrity.js
           node scripts/test-field-partners.js
+          node scripts/test-device-binding.js
 
       - name: Upload server log on failure
         if: failure()

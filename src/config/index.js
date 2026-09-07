@@ -76,6 +76,15 @@ const config = {
   ussd: {
     secret: process.env.USSD_SECRET || '',
   },
+  device: {
+    defaultPolicy: process.env.DEVICE_DEFAULT_POLICY || 'PERMISSIVE',
+    fingerprintHeader: 'x-device-fingerprint',
+    rateMax: parseInt(process.env.DEVICE_RATE_MAX || '300', 10),
+    rateWindowMs: parseInt(process.env.DEVICE_RATE_WINDOW_MS || String(15 * 60 * 1000), 10),
+    // For normal server runs the per-device limiter follows RATE_LIMIT_DISABLED;
+    // DEVICE_RATE_LIMIT_ALWAYS=true forces it on (mirrors USSD guard's always-on).
+    rateAlways: process.env.DEVICE_RATE_LIMIT_ALWAYS === 'true',
+  },
   trustProxy: process.env.TRUST_PROXY === 'true',
   redis: {
     url: process.env.REDIS_URL || '',

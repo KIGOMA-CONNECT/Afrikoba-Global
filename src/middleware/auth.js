@@ -31,7 +31,8 @@ async function authRequired(req, res, next) {
     const decoded = hardenedVerify(token, JWT_SECRET);
     const result = await pool.query(
       `SELECT id, full_name, phone_number, email, role, kyc_level, wallet_balance,
-              locked_balance, trust_score, nida_number, is_active, currency_code, auth_version
+              locked_balance, trust_score, nida_number, is_active, currency_code, auth_version,
+              device_policy
        FROM users WHERE id = $1`,
       [decoded.id]
     );

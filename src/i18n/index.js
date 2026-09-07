@@ -119,6 +119,12 @@ const messages = {
     FP_LOAN_STATUS_INVALID: 'Hali ya mkopo hairuhusu hatua hii.',
     FP_REPAYMENT_EXCEEDS_DUE: 'Malipo yanazidi deni lililobaki.',
     FP_BORROWER_NOT_FOUND: 'Mkopoaji hajapatikana.',
+
+    // ---- Device security ----
+    DEVICE_NOT_TRUSTED: 'Kifaa hiki hakijakubaliwa. Dhibitisha kifaa chako.',
+    DEVICE_POLICY_INVALID: 'Sera ya kifaa si sahihi.',
+    DEVICE_NOT_FOUND: 'Kifaa hakijapatikana.',
+    DEVICE_RATE_LIMIT_EXCEEDED: 'Ombi nyingi sana kutoka kifaa hiki.',
   },
 
   en: {
@@ -230,6 +236,12 @@ const messages = {
     FP_LOAN_STATUS_INVALID: 'Loan status does not allow this action.',
     FP_REPAYMENT_EXCEEDS_DUE: 'Repayment exceeds the outstanding balance.',
     FP_BORROWER_NOT_FOUND: 'Borrower not found.',
+
+    // ---- Device security ----
+    DEVICE_NOT_TRUSTED: 'This device is not trusted. Verify your device first.',
+    DEVICE_POLICY_INVALID: 'Invalid device policy.',
+    DEVICE_NOT_FOUND: 'Device not found.',
+    DEVICE_RATE_LIMIT_EXCEEDED: 'Too many requests from this device.',
   },
 };
 
