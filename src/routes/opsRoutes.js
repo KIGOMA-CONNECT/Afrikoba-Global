@@ -80,6 +80,16 @@ router.get('/dashboard', async (req, res, next) => {
       telemetry = await obs.getRequestMetrics(24);
     } catch (e) { telemetry = { error: e.message }; }
 
+    // 8. Chart of accounts coverage (formal numbering completeness)
+    let chartOfAccounts = null;
+    try {
+      const coa = require('../services/chartOfAccountsService').getChart;
+      const chart = await coa();
+      const total = chart.groups.reduce((s, g) => s + g.accounts.length, 0);
+      const numbered = chart.groups.reduce((s, g) => s + g.accounts.filter((a) => a.chart_number != null).length, 0);
+      chartOfAccounts = { totalAccounts: total, numberedAccounts: numbered, unnumberedAccounts: total - numbered };
+    } catch (e) { chartOfAccounts = { error: e.message }; }
+
     res.json({
       success: true,
       observedAt: new Date().toISOString(),
@@ -91,6 +101,7 @@ router.get('/dashboard', async (req, res, next) => {
       recentAudit,
       securityEvents,
       telemetry,
+      chartOfAccounts,
       system: {
         uptime: process.uptime(),
         pid: process.pid,
@@ -135,6 +146,29 @@ router.get('/system', async (req, res, next) => {
         heapTotal: mem.heapTotal,
       },
       time: new Date().toISOString(),
+    });
+  } catch (error) { next(error); }
+});
+
+// ===== Chart of Accounts (formal 1000/2000/3000/4000/5000 numbering) =====
+router.get('/chart-of-accounts', async (req, res, next) => {
+  try {
+    res.json({ success: true, chart: await require('../services/chartOfAccountsService').getChart() });
+  } catch (error) { next(error); }
+});
+
+// ===== Trace-level span tree for a given trace_id =====
+router.get('/tracing/:traceId', async (req, res, next) => {
+  try {
+    const { getTraceTree } = require('../utils/trace');
+    const spans = await getTraceTree(req.params.traceId);
+    const roots = spans.filter((s) => !s.parent_span_id);
+    res.json({
+      success: true,
+      traceId: req.params.traceId,
+      spanCount: spans.length,
+      roots,
+      spans,
     });
   } catch (error) { next(error); }
 });

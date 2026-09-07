@@ -18,16 +18,24 @@
 const pool = require('../config/db');
 const { generateReference } = require('../utils/helpers');
 const logger = require('../utils/logger');
+const { startSpan } = require('../utils/trace');
 
 /** Look up (and lazily create) an internal account id by its code. */
 async function accountIdByCode(code, client) {
-  const r = await client.query(
-    `SELECT id FROM ledger_accounts WHERE account_code = $1`, [code]
-  );
-  if (r.rows.length === 0) {
-    throw new Error(`Financial Engine: unknown account code '${code}'`);
+  const span = startSpan('fin.accountIdByCode');
+  try {
+    const r = await client.query(
+      `SELECT id FROM ledger_accounts WHERE account_code = $1`, [code]
+    );
+    if (r.rows.length === 0) {
+      throw new Error(`Financial Engine: unknown account code '${code}'`);
+    }
+    span.end('OK', { code, accountId: r.rows[0].id });
+    return r.rows[0].id;
+  } catch (e) {
+    span.end('ERROR', { code, message: e.message });
+    throw e;
   }
-  return r.rows[0].id;
 }
 
 /**
@@ -74,6 +82,7 @@ async function auditBalance({ client, accountKind, accountId, operation, amount,
  * @param postedBy
  */
 async function postJournal({ client, lines, transactionId = null, referenceId, description, postedBy = 'engine' }) {
+  const span = startSpan('fin.postJournal');
   const groupId = referenceId || generateReference('JE');
   let dr = 0, cr = 0;
   for (const line of lines) {
@@ -81,20 +90,27 @@ async function postJournal({ client, lines, transactionId = null, referenceId, d
     else cr += Number(line.amount);
   }
   if (Math.abs(dr - cr) > 0.000001) {
+    span.end('ERROR', { referenceId, dr, cr });
     throw new Error(`Financial Engine: unbalanced posting DR=${dr} CR=${cr}`);
   }
-  for (const line of lines) {
-    const accId = await accountIdByCode(line.accountCode, client);
-    await client.query(
-      `INSERT INTO journal_entries
-         (entry_group_id, transaction_id, account_id, direction, amount,
-          currency_code, reference_id, description, posted_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-      [groupId, transactionId, accId, line.direction, line.amount,
-       line.currencyCode || 'TZS', referenceId, line.description || description || null, postedBy]
-    );
+  try {
+    for (const line of lines) {
+      const accId = await accountIdByCode(line.accountCode, client);
+      await client.query(
+        `INSERT INTO journal_entries
+           (entry_group_id, transaction_id, account_id, direction, amount,
+            currency_code, reference_id, description, posted_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        [groupId, transactionId, accId, line.direction, line.amount,
+         line.currencyCode || 'TZS', referenceId, line.description || description || null, postedBy]
+      );
+    }
+    span.end('OK', { groupId, lines: lines.map((l) => `${l.accountCode}:${l.direction}:${l.amount}`) });
+    return groupId;
+  } catch (e) {
+    span.end('ERROR', { groupId, message: e.message });
+    throw e;
   }
-  return groupId;
 }
 
 /**
