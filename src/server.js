@@ -45,6 +45,7 @@ const ussdRoutes = require('./routes/ussdRoutes');
 const mkobaRoutes = require('./routes/mkobaRoutes');
 const totpRoutes = require('./routes/totpRoutes');
 const currencyRoutes = require('./routes/currencyRoutes');
+const countryRoutes = require('./routes/countryRoutes');
 const notificationRoutes = require('./routes/notificationRoutes');
 const referralRoutes = require('./routes/referralRoutes');
 const analyticsRoutes = require('./routes/analyticsRoutes');
@@ -286,6 +287,7 @@ for (const prefix of versionPrefixes) {
   app.use(`${prefix}/ussd`, webhookLimiter, ussdRoutes);
   app.use(`${prefix}/totp`, authLimiter, totpRoutes);
   app.use(`${prefix}/currency`, currencyRoutes);
+  app.use(`${prefix}/countries`, countryRoutes);
   app.use(`${prefix}/notifications`, notificationRoutes);
   app.use(`${prefix}/referrals`, referralRoutes);
   app.use(`${prefix}/analytics`, analyticsRoutes);

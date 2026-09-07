@@ -105,6 +105,10 @@ const messages = {
     BANKING_AMOUNT_REQUIRED: 'Kiasi kinahitajika.',
     BANKING_NAME_PHONE_REQUIRED: 'Simu na jina vinahitajika.',
     BANKING_RECIPIENT_DELETED: 'Mpokeaji amefutwa.',
+
+    // ---- Multi-country compliance ----
+    COUNTRY_NOT_FOUND: 'Nchi haijapatikana au haina leseni.',
+    REGULATORY_DAILY_LIMIT: 'Umefikia kikomo cha kila siku cha uhamisho kwa nchi hii.',
   },
 
   en: {
@@ -202,6 +206,10 @@ const messages = {
     BANKING_AMOUNT_REQUIRED: 'Amount is required.',
     BANKING_NAME_PHONE_REQUIRED: 'Phone and name are required.',
     BANKING_RECIPIENT_DELETED: 'Recipient deleted.',
+
+    // ---- Multi-country compliance ----
+    COUNTRY_NOT_FOUND: 'Country not found or not licensed.',
+    REGULATORY_DAILY_LIMIT: 'Daily transfer limit for this country exceeded.',
   },
 };
 

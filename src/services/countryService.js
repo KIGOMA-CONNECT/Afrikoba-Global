@@ -23,17 +23,138 @@ async function getCountryByCode(code) {
   return result.rows[0] || null;
 }
 
-async function addCountry({ code, name, currency, region, min_fee, percent_fee }) {
+function normalizePhone(phone) {
+  return String(phone || '').replace(/[^\d]/g, '');
+}
+
+/**
+ * Resolve the active country from an E.164-ish MSISDN by longest calling-code match
+ * (e.g. '2557...' -> TZ, '2547...' -> KE). Guards against empty calling codes.
+ */
+async function getCountryByPhone(phone) {
+  const digits = normalizePhone(phone);
+  if (digits.length < 7) return null;
   const result = await pool.query(
-    `INSERT INTO supported_countries (code, name, currency, region, min_fee, percent_fee)
-     VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-    [code.toUpperCase(), name, currency.toUpperCase(), region, min_fee || 0, percent_fee || 0]
+    `SELECT * FROM supported_countries
+     WHERE is_active = TRUE AND calling_code <> '' AND $1 LIKE (calling_code || '%')
+     ORDER BY LENGTH(calling_code) DESC
+     LIMIT 1`,
+    [digits]
+  );
+  return result.rows[0] || null;
+}
+
+/** Resolve a user's regulatory country: users.country_code first, else phone prefix. */
+async function getCountryForUser(userId) {
+  const { rows } = await pool.query(
+    `SELECT id, country_code, phone_number FROM users WHERE id = $1`,
+    [userId]
+  );
+  if (!rows.length) return null;
+  const country = await getCountryByCode(rows[0].country_code);
+  if (country) return country;
+  return getCountryByPhone(rows[0].phone_number);
+}
+
+/** Public/regulator-facing projection of a country row's compliance attributes. */
+async function getRegulatoryConfig(country) {
+  if (!country) return null;
+  return {
+    code: country.code,
+    name: country.name,
+    currency: country.currency,
+    region: country.region,
+    callingCode: country.calling_code,
+    maxDailyTransferLimit: country.max_daily_transfer_limit == null
+      ? null : Number(country.max_daily_transfer_limit),
+    withholdingTaxRate: Number(country.withholding_tax_rate || 0),
+    kycDocTypeRequired: country.kyc_doc_type_required,
+    license: {
+      status: country.regulatory_license_status,
+      name: country.regulatory_license_name
+    },
+    support: {
+      phone: country.local_support_phone,
+      email: country.local_compliance_email
+    }
+  };
+}
+
+function computeWithholdingTax(amount, taxRate) {
+  const rate = Number(taxRate || 0);
+  if (rate <= 0) return 0;
+  return Math.round(Number(amount) * rate * 100) / 100;
+}
+
+/** Today's recorded outbound-transfer total for a user in a country (UTC day). */
+async function getDailyUsage({ client = pool, userId, countryCode }) {
+  const { rows } = await client.query(
+    `SELECT total_amount FROM user_daily_transfer_totals
+     WHERE user_id = $1 AND country_code = $2 AND txn_date = CURRENT_DATE`,
+    [userId, countryCode]
+  );
+  return Number(rows[0]?.total_amount || 0);
+}
+
+function assertWithinDailyLimit(usage, amount, limit) {
+  if (!limit || Number(limit) <= 0) return usage + Number(amount);
+  const projected = usage + Number(amount);
+  if (projected > Number(limit)) {
+    throw Object.assign(new Error('Umefikia kikomo cha kila siku cha uhamisho kwa nchi hii.'), {
+      statusCode: 402,
+      code: 'REGULATORY_DAILY_LIMIT',
+      data: { limit: Number(limit), used: usage, requested: Number(amount) }
+    });
+  }
+  return projected;
+}
+
+/** Enforce a country's per-user daily outbound-transfer cap (no-op when no cap). */
+async function enforceDailyTransferLimit({ client = pool, userId, countryCode, amount }) {
+  const country = await getCountryByCode(countryCode);
+  if (!country || country.max_daily_transfer_limit == null) return;
+  const usage = await getDailyUsage({ client, userId, countryCode });
+  assertWithinDailyLimit(usage, amount, country.max_daily_transfer_limit);
+}
+
+/** Append to today's per-country outbound total (idempotent bump per transfer). */
+async function recordDailyTransfer({ client, userId, countryCode, amount }) {
+  await client.query(
+    `INSERT INTO user_daily_transfer_totals (user_id, country_code, txn_date, total_amount)
+     VALUES ($1, $2, CURRENT_DATE, $3)
+     ON CONFLICT (user_id, country_code, txn_date)
+     DO UPDATE SET total_amount = user_daily_transfer_totals.total_amount + EXCLUDED.total_amount`,
+    [userId, countryCode, amount]
+  );
+}
+
+async function addCountry({
+  code, name, currency, region, min_fee, percent_fee,
+  calling_code, max_daily_transfer_limit, withholding_tax_rate, kyc_doc_type_required,
+  regulatory_license_status, regulatory_license_name, local_support_phone, local_compliance_email
+}) {
+  const result = await pool.query(
+    `INSERT INTO supported_countries
+      (code, name, currency, region, min_fee, percent_fee, calling_code,
+       max_daily_transfer_limit, withholding_tax_rate, kyc_doc_type_required,
+       regulatory_license_status, regulatory_license_name, local_support_phone, local_compliance_email)
+     VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, ''),
+             $8, COALESCE($9, 0), COALESCE($10, 'NATIONAL_ID'),
+             COALESCE($11, 'SANDBOX'), $12, $13, $14) RETURNING *`,
+    [code.toUpperCase(), name, currency.toUpperCase(), region, min_fee || 0, percent_fee || 0,
+     calling_code || null, max_daily_transfer_limit ?? null, withholding_tax_rate ?? null,
+     kyc_doc_type_required || null, regulatory_license_status || null, regulatory_license_name || null,
+     local_support_phone || null, local_compliance_email || null]
   );
   return result.rows[0];
 }
 
 async function updateCountry(id, updates) {
-  const allowed = ['name', 'currency', 'region', 'is_active', 'min_fee', 'percent_fee'];
+  const allowed = [
+    'name', 'currency', 'region', 'is_active', 'min_fee', 'percent_fee',
+    'calling_code', 'max_daily_transfer_limit', 'withholding_tax_rate', 'kyc_doc_type_required',
+    'regulatory_license_status', 'regulatory_license_name', 'local_support_phone', 'local_compliance_email'
+  ];
   const sets = [];
   const params = [];
   for (const key of allowed) {
@@ -97,23 +218,39 @@ async function executeTransfer(userId, toCountryCode, amountIn, recipientDetails
     await client.query('BEGIN');
 
     const userRes = await client.query(
-      `SELECT id, wallet_balance, phone_number, full_name FROM users WHERE id = $1 FOR UPDATE`,
+      `SELECT id, wallet_balance, phone_number, full_name, country_code FROM users WHERE id = $1 FOR UPDATE`,
       [userId]
     );
     if (userRes.rows.length === 0) throw new Error('Mtumiaji hajapatikana.');
     const user = userRes.rows[0];
 
-    if (Number(user.wallet_balance) < amountIn) {
+    const sourceCountry = (await getCountryByCode(user.country_code))
+      || (await getCountryByPhone(user.phone_number));
+
+    const withholdingTaxRate = Number(sourceCountry?.withholding_tax_rate || 0);
+    const withholdingTax = computeWithholdingTax(amountIn, withholdingTaxRate);
+
+    await enforceDailyTransferLimit({
+      client,
+      userId,
+      countryCode: sourceCountry?.code || 'TZ',
+      amount: amountIn
+    });
+
+    if (Number(user.wallet_balance) < amountIn + withholdingTax) {
       throw Object.assign(new Error('Salio lako halitoshi.'), { statusCode: 400 });
     }
 
     const referenceId = generateReference('XB');
     const meta = {
       is_cross_border: true,
+      source_country: sourceCountry?.code || null,
       target_country: country.code,
       target_currency: country.currency,
       exchange_rate: quote.rate,
       amount_out: amountOut,
+      withholding_tax: withholdingTax,
+      tax_rate: withholdingTaxRate,
       recipient: recipientDetails,
       note: note || null
     };
@@ -150,6 +287,25 @@ async function executeTransfer(userId, toCountryCode, amountIn, recipientDetails
       actor: 'engine:cross_border'
     });
 
+    if (withholdingTax > 0) {
+      await fin.debitWallet({
+        client,
+        userId,
+        amount: withholdingTax,
+        reference: `${referenceId}:WHT`,
+        toAccount: 'GOVERNMENT_WHT',
+        description: `Kodi ya withholding (${(withholdingTaxRate * 100).toFixed(2)}%) - ${sourceCountry?.name || 'nchi ya mtumiaji'}`,
+        actor: 'engine:cross_border'
+      });
+    }
+
+    await recordDailyTransfer({
+      client,
+      userId,
+      countryCode: sourceCountry?.code || 'TZ',
+      amount: amountIn
+    });
+
     await client.query(
       `INSERT INTO wallet_ledger (transaction_id, reference_id, from_user_id, to_user_id, amount, description)
        VALUES ($1, $2, $3, NULL, $4, $5)`,
@@ -175,6 +331,9 @@ async function executeTransfer(userId, toCountryCode, amountIn, recipientDetails
       fee,
       amountOut,
       currency: country.currency,
+      withholdingTax,
+      taxRate: withholdingTaxRate,
+      sourceCountry: sourceCountry?.code || null,
       message: 'Muamala wa mpaka-mbali umekamilika na unashughulikiwa.'
     };
   } catch (error) {
@@ -185,4 +344,9 @@ async function executeTransfer(userId, toCountryCode, amountIn, recipientDetails
   }
 }
 
-module.exports = { listCountries, getCountryByCode, addCountry, updateCountry, quoteTransfer, executeTransfer };
+module.exports = {
+  listCountries, getCountryByCode, getCountryByPhone, getCountryForUser,
+  getRegulatoryConfig, computeWithholdingTax, getDailyUsage,
+  enforceDailyTransferLimit, recordDailyTransfer,
+  addCountry, updateCountry, quoteTransfer, executeTransfer
+};

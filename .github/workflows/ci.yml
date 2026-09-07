@@ -89,6 +89,7 @@ jobs:
           node scripts/test-caching.js
           node scripts/test-partitions.js
           node scripts/test-ussd.js
+          node scripts/test-multi-country.js
 
       - name: Upload server log on failure
         if: failure()
