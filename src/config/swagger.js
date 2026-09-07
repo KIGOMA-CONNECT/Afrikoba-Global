@@ -22,8 +22,26 @@ const options = {
           scheme: 'bearer',
           bearerFormat: 'JWT',
         },
+        hmacAuth: {
+          type: 'apiKey',
+          in: 'header',
+          name: 'X-Signature',
+          description: 'HMAC signature for USSD/webhook rails (WEBHOOK_SECRET)',
+        },
       },
       schemas: {
+        User: {
+          type: 'object',
+          properties: {
+            id: { type: 'integer' },
+            fullName: { type: 'string' },
+            phone_number: { type: 'string', description: 'Canonical phone field (C4 contract: not `phone`)' },
+            email: { type: 'string', nullable: true },
+            role: { type: 'string' },
+            kycLevel: { type: 'integer' },
+            createdAt: { type: 'string', format: 'date-time' },
+          },
+        },
         Error: {
           type: 'object',
           properties: {
@@ -44,10 +62,39 @@ const options = {
           },
         },
       },
+      parameters: {
+        IdempotencyKey: {
+          name: 'Idempotency-Key',
+          in: 'header',
+          required: false,
+          description: 'Idempotency key to prevent double-posting on financial mutations',
+          schema: {
+            type: 'string',
+          },
+        },
+      },
+      responses: {
+        Unauthorized: {
+          description: 'Missing or invalid JWT',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/Error' },
+            },
+          },
+        },
+        Forbidden: {
+          description: 'Authenticated but insufficient privileges (RBAC / four-eyes)',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/Error' },
+            },
+          },
+        },
+      },
     },
     security: [{ bearerAuth: [] }],
   },
-  apis: [],
+  apis: ['./src/docs/openapi.js'],
 };
 
 const swaggerSpec = swaggerJsdoc(options);

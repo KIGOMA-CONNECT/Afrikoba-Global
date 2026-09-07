@@ -263,6 +263,27 @@ app.get('/health/ready', async (req, res) => {
 });
 
 
+// Swagger UI - API documentation (production off - usitangaze API surface).
+// MUST be registered before the blanket authRequired in projectRoutes
+// (projectRoutes applies router.use(authRequired) to every /api/v1/* path).
+if (config.nodeEnv !== 'production') {
+  app.use('/api/v1/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
+    customSiteTitle: 'Afrikoba Global API',
+    customCss: '.swagger-ui .topbar { display: none }',
+  }));
+  app.get('/api/v1/docs.json', (req, res) => {
+    res.setHeader('Content-Type', 'application/json');
+    res.send(swaggerSpec);
+  });
+}
+
+// API version info (production: jibu sahili bila link za docs).
+// Registered with the docs mount (before the blanket authRequired router)
+// so /api/v1 stays publicly reachable.
+app.get('/api/v1', (req, res) => {
+  res.json({ success: true, version: '1.0.0', docs: config.nodeEnv === 'production' ? false : '/api/v1/docs' });
+});
+
 // API Routes - rate limited kwa jumla
 app.use('/api', apiLimiter);
 app.use('/api', requestTelemetry);
@@ -335,23 +356,6 @@ app.use(`${prefix}/disputes`, walletLimiter, disputeRoutes);
   app.use(`${prefix}/admin/four-eyes`, adminLimiter, fourEyesRoutes);
   app.use(`${prefix}/fraud-ops`, adminLimiter, fraudOpsRoutes);
 }
-
-// Swagger UI - API documentation (production off - usitangaze API surface)
-if (config.nodeEnv !== 'production') {
-  app.use('/api/v1/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
-    customSiteTitle: 'Afrikoba Global API',
-    customCss: '.swagger-ui .topbar { display: none }',
-  }));
-  app.get('/api/v1/docs.json', (req, res) => {
-    res.setHeader('Content-Type', 'application/json');
-    res.send(swaggerSpec);
-  });
-}
-
-// API version info (production: jibu sahili bila link za docs)
-app.get('/api/v1', (req, res) => {
-  res.json({ success: true, version: '1.0.0', docs: config.nodeEnv === 'production' ? false : '/api/v1/docs' });
-});
 
 // Deprecation header for non-versioned /api routes
 app.use('/api', (req, res, next) => {

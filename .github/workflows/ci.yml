@@ -97,6 +97,7 @@ jobs:
           node scripts/test-tracing.js
           node scripts/test-ai-insights.js
           node scripts/test-sar-filing.js
+          node scripts/test-openapi.js
 
       - name: Upload server log on failure
         if: failure()

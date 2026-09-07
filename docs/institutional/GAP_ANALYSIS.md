@@ -15,7 +15,7 @@ work and brings it under the canonical institutional structure; nothing below wa
 | 5 | Architecture Decision Records (AFK-INST-05) | YES — DRAFT | 0.1 | Yes | Partial | ADRs ADR-001..006 backfilled (ledger engine, OTel spans, partitions, multi-country, device binding, AI register) | Add future ADRs; approve | Enterprise Architect | 1 — HIGH ✅ delivered |
 | 6 | System Architecture Document (AFK-INST-06) | YES — DRAFT | 0.1 | Yes | No | Logical/data-flow/deployment topology incl. co-tenancy | Approve baseline | Enterprise Architect | 2 — MEDIUM ✅ delivered |
 | 7 | Data Architecture (AFK-INST-07) | YES — DRAFT | 0.1 | Yes | No | Domains, ownership, lineage, partitions, C1 supplier issue logged | Approve baseline | Data Architect | 1 — HIGH ✅ delivered |
-| 8 | API Specification (AFK-INST-08) | YES — DRAFT | 0.1 | Yes | No | Conventions, auth, module surface, C4 contracts standardised | Approve + generate OpenAPI | Platform Lead | 2 — MEDIUM ✅ delivered |
+| 8 | API Specification (AFK-INST-08) | YES — DRAFT | 0.2 | Yes | No | Conventions, auth, module surface, C4 contracts standardised; OpenAPI generated code-first (`src/docs/openapi.js` + swagger.js) → `/api/v1/docs.json` + UI, guarded by test-openapi | Approve baseline | Platform Lead | 2 — MEDIUM ✅ delivered |
 | 9 | Database Design (AFK-INST-09) | YES — DRAFT | 0.1 | Yes | No | Principles, core schema, indexing, partition/migration policy | Approve; ERD generation | Database Lead | 2 — MEDIUM ✅ delivered |
 | 10 | Security Architecture (AFK-INST-10) | YES — DRAFT | 0.1 | Yes | No | Control catalogue mapped from audit + implementation | Approve baseline | Security Lead | 1 — HIGH ✅ delivered |
 | 11 | Threat Model (AFK-INST-11) | YES — DRAFT | 0.1 | Yes | No | STRIDE asset/surface matrix + residual risks | Approve; annual re-eval | Security Lead | 1 — HIGH ✅ delivered |
@@ -71,18 +71,19 @@ work and brings it under the canonical institutional structure; nothing below wa
 **P1 — Foundation (DONE 2026-09-07):** AFK-INST-05 (ADR backfill ×6), 12 (risk register),
 13 (compliance matrix), 14 (data-governance source), 15 (AI governance), 16 (financial controls),
 20 (incident response), 26 (change management). C2 resolved 2026-09-07: published privacy/retention
-policies regenerated from AFK-INST-14 (7y financial, 30d backups). Remaining P1: SAR filing
-formalisation (AFK-INST-13 row).
+policies regenerated from AFK-INST-14 (7y financial, 30d backups). SAR filing formalised
+(095 + file-sar endpoint + test-sar-filing; AFK-INST-13 row → IMPLEMENTED).
 
 **P2 — Specs + engineering docs (DONE 2026-09-07):** AFK-INST-02/03 (requirements incl. new
 capabilities), 04 (SRS, FR/NFR traceable), 06 (system architecture), 07 (data architecture, logs C1),
 08 (API spec, standardises C4), 09 (database design), 10 (security architecture), 11 (threat model
-STRIDE), 17 (reconciliation), 21 (test strategy), 22 (release mgmt), 23 (ops runbook). Remaining P2:
-code-first OpenAPI generation (AFK-INST-08).
+STRIDE), 17 (reconciliation), 21 (test strategy), 22 (release mgmt), 23 (ops runbook). OpenAPI
+generated code-first 2026-09-07 (src/docs/openapi.js + swagger.js → /api/v1/docs + docs.json,
+guarded by test-openapi; AFK-INST-08 → 0.2).
 
 **P3 — Business terms (DONE 2026-09-07):** AFK-INST-01 (charter), 19 (BCP), 24 (SLA), 25 (vendor
-mgmt), 27 (audit program). The canonical 27-doc set is now DRAFT-complete; next is formal approval
-cycling per row owner and the OpenAPI generation item.
+mgmt), 27 (audit program). The canonical 27-doc set is DRAFT-complete and all code-side gaps are
+closed; next is formal approval cycling per row owner.
 
 Each delivery updates the registry `Status` → `DRAFT`, then `APPROVED` after the approval
 authority signs the revision; the change is recorded in the document Change History.

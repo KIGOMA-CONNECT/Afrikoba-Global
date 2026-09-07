@@ -4,7 +4,7 @@ Title: API Specification
 Purpose: Public/internal API contracts, versioning, auth, errors, rate limits and deprecation policy; canonical contracts to stop return-shape drift (Gap C4).
 Owner: Platform Lead
 Status: DRAFT
-Version: 0.1
+Version: 0.2
 Effective Date: 2026-09-07
 Last Review Date: 2026-09-07
 Related Systems/Modules: All route modules (see inventory); middleware; developer portal (049)
@@ -67,3 +67,4 @@ Approval Authority: Platform Lead / CAB for breaking changes
 | Version | Date | Author | Reason | Approval |
 |---------|------|--------|--------|----------|
 | 0.1 | 2026-09-07 | AI code review | Baseline from route inventory + standards audit; standardises C4 contracts | Platform Lead (pending) |
+| 0.2 | 2026-09-07 | AI code review | Code-first OpenAPI delivered: representative surface documented in `src/docs/openapi.js` via swagger-jsdoc, generated spec published at `/api/v1/docs.json` + UI at `/api/v1/docs` (non-prod); suite `scripts/test-openapi.js` guards C4 contracts + module surface | Platform Lead (pending) |
