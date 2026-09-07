@@ -20,9 +20,10 @@ class ApiClient {
     String path, {
     Map<String, dynamic>? body,
     bool withAuth = true,
+    Map<String, String>? extraHeaders,
   }) async {
     final uri = Uri.parse('$baseUrl$path');
-    final headers = <String, String>{'Content-Type': 'application/json'};
+    final headers = <String, String>{'Content-Type': 'application/json', ...?extraHeaders};
     if (withAuth) {
       final token = await _session.token();
       if (token != null) headers['Authorization'] = 'Bearer $token';
@@ -47,6 +48,9 @@ class ApiClient {
         res = await http
             .patch(uri, headers: headers, body: body == null ? null : jsonEncode(body))
             .timeout(const Duration(seconds: 20));
+        break;
+      case 'DELETE':
+        res = await http.delete(uri, headers: headers).timeout(const Duration(seconds: 20));
         break;
       default:
         throw Exception('Method haitambuliki: $method');
@@ -73,20 +77,25 @@ class ApiClient {
     return data;
   }
 
-  Future<Map<String, dynamic>> get(String path, {bool withAuth = true}) =>
-      _send('GET', path, withAuth: withAuth);
+  Future<Map<String, dynamic>> get(String path,
+          {bool withAuth = true, Map<String, String>? extraHeaders}) =>
+      _send('GET', path, withAuth: withAuth, extraHeaders: extraHeaders);
 
   Future<Map<String, dynamic>> post(String path, Map<String, dynamic>? body,
-          {bool withAuth = true}) =>
-      _send('POST', path, body: body, withAuth: withAuth);
+          {bool withAuth = true, Map<String, String>? extraHeaders}) =>
+      _send('POST', path, body: body, withAuth: withAuth, extraHeaders: extraHeaders);
 
   Future<Map<String, dynamic>> put(String path, Map<String, dynamic>? body,
-          {bool withAuth = true}) =>
-      _send('PUT', path, body: body, withAuth: withAuth);
+          {bool withAuth = true, Map<String, String>? extraHeaders}) =>
+      _send('PUT', path, body: body, withAuth: withAuth, extraHeaders: extraHeaders);
 
   Future<Map<String, dynamic>> patch(String path, Map<String, dynamic>? body,
-          {bool withAuth = true}) =>
-      _send('PATCH', path, body: body, withAuth: withAuth);
+          {bool withAuth = true, Map<String, String>? extraHeaders}) =>
+      _send('PATCH', path, body: body, withAuth: withAuth, extraHeaders: extraHeaders);
+
+  Future<Map<String, dynamic>> delete(String path,
+          {bool withAuth = true, Map<String, String>? extraHeaders}) =>
+      _send('DELETE', path, withAuth: withAuth, extraHeaders: extraHeaders);
 }
 
 class ApiException implements Exception {

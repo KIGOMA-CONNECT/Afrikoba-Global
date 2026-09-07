@@ -91,6 +91,8 @@ const Experiments = lazy(() => import('./pages/Experiments.jsx'));
 const FourEyes = lazy(() => import('./pages/FourEyes.jsx'));
 const Kyc = lazy(() => import('./pages/Kyc.jsx'));
 const Disputes = lazy(() => import('./pages/Disputes.jsx'));
+const FieldPartners = lazy(() => import('./pages/FieldPartners.jsx'));
+const Devices = lazy(() => import('./pages/Devices.jsx'));
 
 function RequireAuth({ children }) {
   const token = localStorage.getItem('afrikoba_token');
@@ -186,6 +188,8 @@ export default function App() {
             <Route path="four-eyes" element={<Page><FourEyes /></Page>} />
             <Route path="kyc" element={<Page><Kyc /></Page>} />
             <Route path="disputes" element={<Page><Disputes /></Page>} />
+            <Route path="field-partners" element={<Page><FieldPartners /></Page>} />
+            <Route path="devices" element={<Page><Devices /></Page>} />
         <Route path="settings" element={<Page><Settings /></Page>} />
       </Route>
         <Route path="/pay/:code" element={<Page><PaymentLinkPage /></Page>} />

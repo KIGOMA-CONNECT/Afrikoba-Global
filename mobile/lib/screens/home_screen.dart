@@ -15,6 +15,8 @@ import 'login_screen.dart';
 import 'notifications_screen.dart';
 import 'referrals_screen.dart';
 import 'settings_screen.dart';
+import 'field_partners_screen.dart';
+import 'devices_screen.dart';
 
 /// Nyumba ya programu (HomeShell) - drawer kama sidebar ya web.
 class HomeScreen extends StatefulWidget {
@@ -66,6 +68,8 @@ class _HomeScreenState extends State<HomeScreen> {
     AdminScreen(),
     NotificationsScreen(),
     ReferralsScreen(),
+    FieldPartnersScreen(),
+    DevicesScreen(),
     SettingsScreen(),
   ];
 
@@ -83,6 +87,8 @@ class _HomeScreenState extends State<HomeScreen> {
     'Utawala',
     'Arifa',
     'Referrals',
+    'Mashirika ya Uga',
+    'Vifaa na Usalama',
     'Mipangilio',
   ];
 
@@ -100,6 +106,8 @@ class _HomeScreenState extends State<HomeScreen> {
     Icons.admin_panel_settings_outlined,
     Icons.notifications_outlined,
     Icons.card_giftcard,
+    Icons.handshake_outlined,
+    Icons.devices_other,
     Icons.settings_outlined,
   ];
 
