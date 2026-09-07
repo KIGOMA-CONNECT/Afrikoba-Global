@@ -67,7 +67,7 @@ Each revision MUST record an entry in the document's **Change History** section:
 | AFK-INST-11 | Threat Model | Asset inventory, attack surfaces, threats, mitigations and residual risk. | Security Lead | DRAFT | 0.1 | 2026-09-07 | 2026-09-07 |
 | AFK-INST-12 | Risk Register | Consolidated risk ledger with likelihood, impact, owner and treatment. | Risk Officer | DRAFT | 0.1 | 2026-09-07 | 2026-09-07 |
 | AFK-INST-13 | Compliance Matrix | Regulatory/market obligations mapped to controls and evidence. | Compliance Officer | DRAFT | 0.1 | 2026-09-07 | 2026-09-07 |
-| AFK-INST-14 | Data Governance Framework | Data ownership, quality, classification, retention, DPIA and privacy operating rules. | Data Protection Officer | DRAFT | 0.2 | 2026-09-07 | 2026-09-07 |
+| AFK-INST-14 | Data Governance Framework | Data ownership, quality, classification, retention, DPIA and privacy operating rules (single source; C2 resolved). | Data Protection Officer | DRAFT | 0.3 | 2026-09-07 | 2026-09-07 |
 | AFK-INST-15 | AI Governance Framework | AI model lifecycle, transparency, bias, human-in-the-loop and auditability. | AI Ethics Lead | DRAFT | 0.1 | 2026-09-07 | 2026-09-07 |
 | AFK-INST-16 | Financial Control Framework | Financial controls, segregation of duties, reconciliation, fee/ledger rules. | Head of Finance | DRAFT | 0.2 | 2026-09-07 | 2026-09-07 |
 | AFK-INST-17 | Reconciliation Specification | Reconciliation flows, tolerance rules, break management and controls. | Head of Finance | DRAFT | 0.1 | 2026-09-07 | 2026-09-07 |

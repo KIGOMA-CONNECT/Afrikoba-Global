@@ -21,7 +21,7 @@ work and brings it under the canonical institutional structure; nothing below wa
 | 11 | Threat Model (AFK-INST-11) | YES — DRAFT | 0.1 | Yes | No | STRIDE asset/surface matrix + residual risks | Approve; annual re-eval | Security Lead | 1 — HIGH ✅ delivered |
 | 12 | Risk Register (AFK-INST-12) | YES — DRAFT | 0.1 | Yes | No | 14 risks defined L/I/owner/treatment | Keep current post reviews | Risk Officer | 1 — HIGH ✅ delivered |
 | 13 | Compliance Matrix (AFK-INST-13) | YES — DRAFT | 0.1 | Yes | No | Obligation→control→evidence rows \\+ evidence register | Keep per-market licence statuses current | Compliance Officer | 1 — HIGH ✅ delivered |
-| 14 | Data Governance Framework (AFK-INST-14) | YES — DRAFT | 0.2 | Yes | Yes | Standard headers done, DPIA + derivative doc plan; C2 still open (consolidate 3 policies) | Regenerate published policies from this source | DPO | 1 — HIGH ✅ delivered (reconcile C2) |
+| 14 | Data Governance Framework (AFK-INST-14) | YES — DRAFT | 0.3 | Yes | Yes | Standard headers done, DPIA + derivative-doc plan; C2 RESOLVED (single r/c schedule, published derivatives regenerated) | Approve as current DPO revision | DPO | 1 — HIGH ✅ delivered |
 | 15 | AI Governance Framework (AFK-INST-15) | YES — DRAFT | 0.1 | Yes | No | Model inventory, lifecycle, HITL, bias, DPIA; Secretary/Project-Intelligence slots pending | Version-track future models | AI Ethics Lead | 1 — HIGH ✅ delivered |
 | 16 | Financial Control Framework (AFK-INST-16) | YES — DRAFT | 0.2 | Yes | No | SoD matrix, controls, chart discipline (093) | Approve + periodic control testing | Head of Finance | 1 — HIGH ✅ delivered |
 | 17 | Reconciliation Specification (AFK-INST-17) | YES — DRAFT | 0.1 | Yes | No | Scope, tolerance, break flow, controls | Approve baseline | Head of Finance | 2 — MEDIUM ✅ delivered |
@@ -62,7 +62,7 @@ work and brings it under the canonical institutional structure; nothing below wa
 | # | Conflict | Evidence | Action |
 |---|---|---|---|
 | C1 | Suppliers schema ambiguity | `db/migrations/020` defines `suppliers(business_id,...)`; migration `047` `CREATE TABLE IF NOT EXISTS suppliers` is a silent no-op in DBs that ran 020 first, while `procurementService.js` queries `suppliers(owner_user_id,...)` | Flag for review: reconcile suppliers schema or procurement join (see AFK-INST-09). Do NOT auto-fix in code beyond what the AI-insights query work-around did (link financing via `request_id`+`business_id`). |
-| C2 | Docs vs. code ownership | Three overlap: `PRIVACY_POLICY.md`, `DATA_RETENTION_POLICY.md`, `docs/COMPLIANCE/DATA_PROTECTION_POLICY.md` — differing retention figures held in one place | Consolidate under AFK-INST-14; keep user-facing docs as published derivatives with single source of truth. |
+| C2 | Docs vs. code ownership | Three overlap: `PRIVACY_POLICY.md`, `DATA_RETENTION_POLICY.md`, `docs/COMPLIANCE/DATA_PROTECTION_POLICY.md` — differing retention figures (financial records 7y vs 10y; un-implemented weekly/monthly backup tiers) | RESOLVED 2026-09-07: single source is AFK-INST-14 §3 (authoritative schedule + code evidence); all three published docs regenerated as consistent controlled derivatives (7y financial, 30d daily backups). Keep user-facing docs as derivatives; any retention change lands in the framework first. |
 | C3 | No ADRs for major architecture | Central ledger, OTel tracing, partitioned journal, phone-key accounts, multi-country rails exist only in migration/service code | Backfill ADRs before further architectural drift (AFK-INST-05/P1). |
 | C4 | Return-shape drift | `register` returns `user.phone_number` (test asserts `user.phone` broke); wallet transfer response omits `balance` | Capture canonical API contracts in AFK-INST-08 to stop test guesswork. |
 
@@ -70,8 +70,9 @@ work and brings it under the canonical institutional structure; nothing below wa
 
 **P1 — Foundation (DONE 2026-09-07):** AFK-INST-05 (ADR backfill ×6), 12 (risk register),
 13 (compliance matrix), 14 (data-governance source), 15 (AI governance), 16 (financial controls),
-20 (incident response), 26 (change management). Remaining P1: consolidate C2 (regenerate published
-privacy/retention policies from AFK-INST-14) and SAR filing formalisation (AFK-INST-13 row).
+20 (incident response), 26 (change management). C2 resolved 2026-09-07: published privacy/retention
+policies regenerated from AFK-INST-14 (7y financial, 30d backups). Remaining P1: SAR filing
+formalisation (AFK-INST-13 row).
 
 **P2 — Specs + engineering docs (DONE 2026-09-07):** AFK-INST-02/03 (requirements incl. new
 capabilities), 04 (SRS, FR/NFR traceable), 06 (system architecture), 07 (data architecture, logs C1),

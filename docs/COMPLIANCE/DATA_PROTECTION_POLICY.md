@@ -1,8 +1,9 @@
 # AFRIKOBA GLOBAL — Data Protection & Privacy Policy
 
-**Version:** 1.0  
+**Version:** 1.1  
 **Status:** Formal  
 **Last Updated:** September 2026  
+**Derivative of:** [AFK-INST-14 Data Governance Framework](../institutional/AFK-INST-14-DATA-GOVERNANCE-FRAMEWORK.md) (single source of truth for data governance, retention and DPIA triggers). This document is a controlled derivative and must not diverge from the framework.  
 
 ## 1. Overview
 AFRIKOBA GLOBAL respects user privacy and complies with the **Tanzania Personal Data Protection Act (2022)**, **GDPR**, and other regional data protection laws.
@@ -29,7 +30,7 @@ AFRIKOBA GLOBAL respects user privacy and complies with the **Tanzania Personal 
 Users have the right to:
 1.  **Access:** Request a copy of their data.
 2.  **Rectification:** Correct inaccurate data.
-3.  **Erasure:** Request deletion (subject to 10-year financial record retention requirements).
+3.  **Erasure:** Request deletion (subject to the **7-year** financial record retention requirement per AFK-INST-14 §3).
 4.  **Portability:** Export their transaction history.
 
 ## 6. Third-party Sharing
@@ -41,3 +42,9 @@ Data is shared only with:
 
 ## 7. Data Breach Notification
 In the event of a significant data breach, AFRIKOBA will notify the relevant regulator and affected users within 72 hours.
+
+## 8. Retention Schedule
+See the authoritative retention schedule in AFK-INST-14 §3 (derivatives: `DATA_RETENTION_POLICY.md`,
+`PRIVACY_POLICY.md` §6). Key figures: financial/audit records 7 years; OTP 1 hour; idempotency keys
+24 hours; sessions/refresh tokens 24 hours; notifications 90 days; analytics events 2 years;
+telemetry traces 90 days; backups 30 days; KYC docs account-closure + 1 year.

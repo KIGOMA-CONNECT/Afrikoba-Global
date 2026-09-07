@@ -1,5 +1,9 @@
 # Privacy Policy — Afrikoba Global
 Effective Date: August 22, 2026
+Version: 2.0
+This policy is a controlled derivative of the Afrikoba Data Governance Framework
+(`docs/institutional/AFK-INST-14`), which is the single source of truth for data collection,
+handling and retention. It is published for users; the framework governs.
 
 ## 1. Introduction
 Afrikoba Global ("we", "our", "platform") is a pan-African digital banking platform providing VICOBA, ROSCA, P2P crowdfunding, wallet, and USSD services. This Privacy Policy explains how we collect, use, protect, and share your personal information.
@@ -82,15 +86,21 @@ We do not sell, rent, or trade your personal information to third parties for ma
 - Employee access restrictions
 
 ## 6. Data Retention
+Retention follows the authoritative schedule in AFK-INST-14 §3. Summary:
 
 | Data Type | Retention Period | Reason |
 |-----------|-----------------|--------|
-| User accounts | Until deletion + 30 days | Account management |
-| Transaction records | 7 years | Financial regulations |
-| Audit logs | 7 years | Regulatory compliance |
+| User accounts | Until deletion request + 30 days (grace) | Account management |
+| Transaction / ledger / audit records | 7 years | Financial regulations |
+| KYC documents | Account closure + 1 year | AML regulations |
 | OTP codes | 1 hour | Security |
-| Session data | 24 hours | Security |
+| Idempotency keys / session data | 24 hours | Security |
+| Notifications | 90 days | Storage management |
 | Analytics events | 2 years | Service improvement |
+| Telemetry traces | 90 days | Diagnostics |
+| Backups | 30 days (configurable) | Recovery |
+
+Full schedule with enforcement evidence: see the Data Governance Framework (AFK-INST-14).
 
 ## 7. Your Rights
 
