@@ -90,6 +90,7 @@ jobs:
           node scripts/test-partitions.js
           node scripts/test-ussd.js
           node scripts/test-multi-country.js
+          node scripts/test-ledger-integrity.js
 
       - name: Upload server log on failure
         if: failure()
