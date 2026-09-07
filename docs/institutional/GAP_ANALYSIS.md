@@ -8,10 +8,10 @@ work and brings it under the canonical institutional structure; nothing below wa
 
 | # | Document (ID) | Exists? | Current Version | Complete? | Conflicts? | Missing Sections | Required Update | Owner | Priority |
 |---|---|---|---|---|---|---|---|---|---|
-| 1 | Project Charter (AFK-INST-01) | Partial | n/a | No | No | Purpose/scope, stakeholders, success criteria, governance, charter authority | Draft from README.md + blueprint scope; formal sign-off | Programme Sponsor | 1 — HIGH |
+| 1 | Project Charter (AFK-INST-01) | YES — DRAFT | 0.1 | Yes | No | Mandate, scope, objectives, stakeholders, milestones | Approve baseline | Programme Sponsor | 1 — HIGH ✅ delivered |
 | 2 | Business Requirements Document (AFK-INST-02) | YES — DRAFT | 0.1 | Yes | No | Capability map, personas, acceptance themes, new-capability integration note | Approve baseline | Product Manager | 1 — HIGH ✅ delivered |
 | 3 | Product Requirements Document (AFK-INST-03) | YES — DRAFT | 0.1 | Yes | No | NFRs, release scope, flags/experiments | Approve baseline | Product Manager | 2 — MEDIUM ✅ delivered |
-| 4 | System Requirements Specification (AFK-INST-04) | Partial | n/a | No | No | Traceable SRS (FR/NFR per module), environment matrix | Derive from MASTER_BLUEPRINT_STATUS.md service/route inventory | Solutions Architect | 2 — MEDIUM |
+| 4 | System Requirements Specification (AFK-INST-04) | YES — DRAFT | 0.1 | Yes | No | Traceable FR+NFR per module with test evidence | Approve baseline | Solutions Architect | 2 — MEDIUM ✅ delivered |
 | 5 | Architecture Decision Records (AFK-INST-05) | YES — DRAFT | 0.1 | Yes | Partial | ADRs ADR-001..006 backfilled (ledger engine, OTel spans, partitions, multi-country, device binding, AI register) | Add future ADRs; approve | Enterprise Architect | 1 — HIGH ✅ delivered |
 | 6 | System Architecture Document (AFK-INST-06) | YES — DRAFT | 0.1 | Yes | No | Logical/data-flow/deployment topology incl. co-tenancy | Approve baseline | Enterprise Architect | 2 — MEDIUM ✅ delivered |
 | 7 | Data Architecture (AFK-INST-07) | YES — DRAFT | 0.1 | Yes | No | Domains, ownership, lineage, partitions, C1 supplier issue logged | Approve baseline | Data Architect | 1 — HIGH ✅ delivered |
@@ -26,15 +26,15 @@ work and brings it under the canonical institutional structure; nothing below wa
 | 16 | Financial Control Framework (AFK-INST-16) | YES — DRAFT | 0.2 | Yes | No | SoD matrix, controls, chart discipline (093) | Approve + periodic control testing | Head of Finance | 1 — HIGH ✅ delivered |
 | 17 | Reconciliation Specification (AFK-INST-17) | YES — DRAFT | 0.1 | Yes | No | Scope, tolerance, break flow, controls | Approve baseline | Head of Finance | 2 — MEDIUM ✅ delivered |
 | 18 | Disaster Recovery Plan (AFK-INST-18) | YES — APPROVED | 1.0 | Yes | No | (None critical) | Add OTel-incident linkage + restore verification test reference | DevSecOps Lead | 3 — LOW |
-| 19 | Business Continuity Plan (AFK-INST-19) | Partial | n/a | No | No | BIA, RTO/RPO per critical function, comms plan, staff/deputy coverage | Extend DR runbook into BCP; add VICOBA/payroll continuity | COO / Operations | 2 — MEDIUM |
+| 19 | Business Continuity Plan (AFK-INST-19) | YES — DRAFT | 0.1 | Yes | No | Tiers/RTO, restore priority, modes, comms, deputies | Approve baseline | COO / Operations | 2 — MEDIUM ✅ delivered |
 | 20 | Incident Response Plan (AFK-INST-20) | YES — DRAFT | 0.1 | Yes | No | Severity matrix, roles, procedure, notification; comms templates pending | Tabletop test annually | Security Lead | 1 — HIGH ✅ delivered |
 | 21 | Test Strategy (AFK-INST-21) | YES — DRAFT | 0.1 | Yes | No | Levels, CI gates, suite list (accurate to CI), flake policy | Approve baseline | QA Lead | 2 — MEDIUM ✅ delivered |
 | 22 | Release Management Plan (AFK-INST-22) | YES — DRAFT | 0.1 | Yes | No | Cadence, types/gates, go-no-go, rollback | Approve baseline | Release Manager | 2 — MEDIUM ✅ delivered |
 | 23 | Operations Runbook (AFK-INST-23) | YES — DRAFT | 0.1 | Yes | No | Monitoring, daily tasks, troubleshooting, DR pointer | Approve baseline | DevSecOps Lead | 2 — MEDIUM ✅ delivered |
-| 24 | Service Level Agreement (AFK-INST-24) | No | n/a | No | No | Availability/throughput targets, credits, escalation, measurement | Define per tier (wallet transfers, payouts, USSD latency) | COO / Operations | 3 — LOW |
-| 25 | Vendor Management Framework (AFK-INST-25) | No | n/a | No | No | Vendor register (Bamboo, AzamPay, Beem, NIDA, Sentry), due diligence, SLAs, exit | New; derive provider list from PRIVACY_POLICY §4.1 | Procurement Manager | 3 — LOW |
+| 24 | Service Level Agreement (AFK-INST-24) | YES — DRAFT | 0.1 | Yes | No | Availability/performance targets, escalation, exclusions, reporting | Approve baseline | COO / Operations | 3 — LOW ✅ delivered |
+| 25 | Vendor Management Framework (AFK-INST-25) | YES — DRAFT | 0.1 | Yes | No | Vendor classes, lifecycle, DPA/SLA, reviews | Approve baseline | Procurement Manager | 3 — LOW ✅ delivered |
 | 26 | Change Management Procedure (AFK-INST-26) | YES — DRAFT | 0.1 | Yes | No | Change tiers, RFC path, emergency path, deviation rule | Operationalise via CAB | Governance Lead | 1 — HIGH ✅ delivered |
-| 27 | Internal Audit Framework (AFK-INST-27) | Partial | n/a | No | No | Audit charter, schedule, sampling, evidence, independence | Re-frame GLOBAL_STANDARDS_AUDIT.md as recurring audit program | Internal Auditor | 2 — MEDIUM |
+| 27 | Internal Audit Framework (AFK-INST-27) | YES — DRAFT | 0.1 | Yes | No | Charter, scope/sampling, audit plan, reporting | Approve baseline | Internal Auditor | 2 — MEDIUM ✅ delivered |
 
 ## Existing Assets Mapped (no deletions)
 
@@ -74,13 +74,14 @@ work and brings it under the canonical institutional structure; nothing below wa
 privacy/retention policies from AFK-INST-14) and SAR filing formalisation (AFK-INST-13 row).
 
 **P2 — Specs + engineering docs (DONE 2026-09-07):** AFK-INST-02/03 (requirements incl. new
-capabilities), 06 (system architecture), 07 (data architecture, logs C1), 08 (API spec, standardises
-C4), 09 (database design), 10 (security architecture), 11 (threat model STRIDE), 17 (reconciliation),
-21 (test strategy), 22 (release mgmt), 23 (ops runbook). Remaining P2: AFK-INST-04 (SRS) and code-first
-OpenAPI generation (AFK-INST-08).
+capabilities), 04 (SRS, FR/NFR traceable), 06 (system architecture), 07 (data architecture, logs C1),
+08 (API spec, standardises C4), 09 (database design), 10 (security architecture), 11 (threat model
+STRIDE), 17 (reconciliation), 21 (test strategy), 22 (release mgmt), 23 (ops runbook). Remaining P2:
+code-first OpenAPI generation (AFK-INST-08).
 
-**P3 — Business terms (NEXT):** AFK-INST-01 (charter), 04 (SRS if not moved), 19 (BCP), 24 (SLA),
-25 (vendor mgmt), 27 (audit program).
+**P3 — Business terms (DONE 2026-09-07):** AFK-INST-01 (charter), 19 (BCP), 24 (SLA), 25 (vendor
+mgmt), 27 (audit program). The canonical 27-doc set is now DRAFT-complete; next is formal approval
+cycling per row owner and the OpenAPI generation item.
 
 Each delivery updates the registry `Status` → `DRAFT`, then `APPROVED` after the approval
 authority signs the revision; the change is recorded in the document Change History.
