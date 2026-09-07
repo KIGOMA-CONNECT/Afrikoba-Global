@@ -58,28 +58,28 @@ Each revision MUST record an entry in the document's **Change History** section:
 | AFK-INST-02 | Business Requirements Document | Business capabilities, user needs and acceptance criteria across all product lines. | Product Manager | GAP | 0.1 | TBD | TBD |
 | AFK-INST-03 | Product Requirements Document | Product scope, feature definitions, non-functional product requirements and release scope. | Product Manager | GAP | 0.1 | TBD | TBD |
 | AFK-INST-04 | System Requirements Specification | Traceable system-level functional and non-functional requirements. | Solutions Architect | GAP | 0.1 | TBD | TBD |
-| AFK-INST-05 | Architecture Decision Records | Immutable log of architecture decisions (ADRs) with context and consequences. | Enterprise Architect | GAP | 0.1 | TBD | TBD |
+| AFK-INST-05 | Architecture Decision Records | Immutable log of architecture decisions (ADRs) with context and consequences. | Enterprise Architect | DRAFT | 0.1 | 2026-09-07 | 2026-09-07 |
 | AFK-INST-06 | System Architecture Document | End-to-end system architecture: services, data flow, integration, deployment. | Enterprise Architect | GAP | 0.1 | TBD | TBD |
 | AFK-INST-07 | Data Architecture | Logical/physical data architecture, data flows, ownership, lineage. | Data Architect | GAP | 0.1 | TBD | TBD |
 | AFK-INST-08 | API Specification | Public/internal API contracts, versions, auth, errors, deprecation policy. | Platform Lead | GAP | 0.1 | TBD | TBD |
 | AFK-INST-09 | Database Design | Schema design, ERD, indexing, partitioning, retention, migration policy. | Database Lead | GAP | 0.1 | TBD | TBD |
 | AFK-INST-10 | Security Architecture | Security controls across layers: identity, transport, data, network, app. | Security Lead | GAP | 0.1 | TBD | TBD |
 | AFK-INST-11 | Threat Model | Asset inventory, attack surfaces, threats, mitigations and residual risk. | Security Lead | GAP | 0.1 | TBD | TBD |
-| AFK-INST-12 | Risk Register | Consolidated risk ledger with likelihood, impact, owner and treatment. | Risk Officer | GAP | 0.1 | TBD | TBD |
-| AFK-INST-13 | Compliance Matrix | Regulatory/market obligations mapped to controls and evidence. | Compliance Officer | GAP | 0.1 | TBD | TBD |
-| AFK-INST-14 | Data Governance Framework | Data ownership, quality, classification, retention, DPIA and privacy operating rules. | Data Protection Officer | PARTIAL | 1.0 | 2026-09 | 2026-09 |
-| AFK-INST-15 | AI Governance Framework | AI model lifecycle, transparency, bias, human-in-the-loop and auditability. | AI Ethics Lead | GAP | 0.1 | TBD | TBD |
-| AFK-INST-16 | Financial Control Framework | Financial controls, segregation of duties, reconciliation, fee/ledger rules. | Head of Finance | PARTIAL | 1.0 | 2026-09 | 2026-09 |
+| AFK-INST-12 | Risk Register | Consolidated risk ledger with likelihood, impact, owner and treatment. | Risk Officer | DRAFT | 0.1 | 2026-09-07 | 2026-09-07 |
+| AFK-INST-13 | Compliance Matrix | Regulatory/market obligations mapped to controls and evidence. | Compliance Officer | DRAFT | 0.1 | 2026-09-07 | 2026-09-07 |
+| AFK-INST-14 | Data Governance Framework | Data ownership, quality, classification, retention, DPIA and privacy operating rules. | Data Protection Officer | DRAFT | 0.2 | 2026-09-07 | 2026-09-07 |
+| AFK-INST-15 | AI Governance Framework | AI model lifecycle, transparency, bias, human-in-the-loop and auditability. | AI Ethics Lead | DRAFT | 0.1 | 2026-09-07 | 2026-09-07 |
+| AFK-INST-16 | Financial Control Framework | Financial controls, segregation of duties, reconciliation, fee/ledger rules. | Head of Finance | DRAFT | 0.2 | 2026-09-07 | 2026-09-07 |
 | AFK-INST-17 | Reconciliation Specification | Reconciliation flows, tolerance rules, break management and controls. | Head of Finance | GAP | 0.1 | TBD | TBD |
 | AFK-INST-18 | Disaster Recovery Plan | DR strategy, backup/restore, RTO/RPO and recovery procedures. | DevSecOps Lead | APPROVED | 1.0 | 2026-09 | 2026-09 |
 | AFK-INST-19 | Business Continuity Plan | Continuity of business operations under major disruption. | COO / Operations | GAP | 0.1 | TBD | TBD |
-| AFK-INST-20 | Incident Response Plan | IR procedures, severity, escalation, comms and lessons learned. | Security Lead | GAP | 0.1 | TBD | TBD |
+| AFK-INST-20 | Incident Response Plan | IR procedures, severity, escalation, comms and lessons learned. | Security Lead | DRAFT | 0.1 | 2026-09-07 | 2026-09-07 |
 | AFK-INST-21 | Test Strategy | Test levels, coverage targets, environments, CI gates and acceptance. | QA Lead | PARTIAL | 1.0 | 2026-09 | 2026-09 |
 | AFK-INST-22 | Release Management Plan | Release cadence, promotion, rollback and go/no-go rules. | Release Manager | PARTIAL | 1.0 | 2026-09 | 2026-09 |
 | AFK-INST-23 | Operations Runbook | Day-to-day operational procedures, monitoring, alerting and troubleshooting. | DevSecOps Lead | PARTIAL | 1.0 | 2026-09 | 2026-09 |
 | AFK-INST-24 | Service Level Agreement | Internal/external SLAs, availability targets and penalty/credit rules. | COO / Operations | GAP | 0.1 | TBD | TBD |
 | AFK-INST-25 | Vendor Management Framework | Supplier lifecycle, due diligence, contracts, SLAs and exit management. | Procurement Manager | GAP | 0.1 | TBD | TBD |
-| AFK-INST-26 | Change Management Procedure | Formal change control for the institutional set and production changes. | Governance Lead | GAP | 0.1 | TBD | TBD |
+| AFK-INST-26 | Change Management Procedure | Formal change control for the institutional set and production changes. | Governance Lead | DRAFT | 0.1 | 2026-09-07 | 2026-09-07 |
 | AFK-INST-27 | Internal Audit Framework | Audit charter, scope, schedule, sampling and reporting standards. | Internal Auditor | GAP | 0.1 | TBD | TBD |
 
 **Status legend:** `DRAFT` = in progress · `APPROVED` = board/policy approved · `REVIEW` =

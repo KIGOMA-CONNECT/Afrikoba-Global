@@ -166,6 +166,14 @@ Status legend: ✅ **built** · 🔶 **partial** · ⬜ **not built / next**.
   privacy-policy overlap, C3 missing ADRs, C4 API return-shape drift) and a 3-tier
   sequencing plan. Drafting of remaining P1–P3 documents is scheduled and tracked in
   the registry.
+
+- ✅ **P1 institutional documents drafted** (`docs/institutional/`): AFK-INST-05 ADRs (×6:
+  central ledger, OTel spans, partitions, multi-country rails, device binding, AI register),
+  AFK-INST-12 Risk Register (14 risks), AFK-INST-13 Compliance Matrix, AFK-INST-14 Data
+  Governance Framework, AFK-INST-15 AI Governance Framework, AFK-INST-16 Financial Control
+  Framework, AFK-INST-20 Incident Response Plan, AFK-INST-26 Change Management Procedure —
+  each with the mandatory metadata header + change history; registry + gap-analysis statuses
+  updated.
 - ✅ **Feature flags + experimentation framework built** (migration 080, `/api/features` + admin `/api/features/admin`, `FeatureFlags.jsx`).
 - ✅ **Fraud operations centre dashboard built** (`/api/fraud-ops`, `FraudOps.jsx`).
 - ✅ **Role-based four-eyes built + extended** (migration 081 + 082: `four_eyes_policies`/`four_eyes_requests`/`four_eyes_approvals`; maker-checker with role enforcement, no-self-approval, quorum 1–3, registered executors, retry; `/api/admin/four-eyes`, gated by `FOUR_EYES` flag, `FourEyes.jsx`). Executors: `ADMIN_PROMOTE_ROLE`, `ADMIN_DEMOTE_ROLE`, `ADMIN_LARGE_REFUND`, plus (migration 082) `VICOBA_LOAN_DISBURSE`, `VICOBA_SOCIAL_FUND_DISBURSE`, `CARD_ADMIN_SETTLE`, `CARD_ADMIN_REFUND`, `CREDIT_LOAN_DISBURSE`, `BUSINESS_LOAN_DISBURSE` with convenience launchers (`/actions/vicoba-loan-disburse|vicoba-social-disburse|card-settle|card-refund|credit-loan-disburse|business-loan-disburse`) — card settle/refund move money via `cardService` (capture/unlock), loan disburse wraps `savingsCreditService.adminDisburseMicroLoan` / `businessService.adminDisburseLoan`, VICOBA executors wrap `vicobaService.approveLoan`/`approveSocialFundDisbursement` (actor fallback = approving admin).

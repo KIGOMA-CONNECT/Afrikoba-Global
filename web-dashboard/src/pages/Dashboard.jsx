@@ -51,7 +51,17 @@ export default function Dashboard() {
       api.get('/currency/my-holdings').then((r) => setHoldings(r.data)).catch(() => {});
       api.get('/services/catalog').then((r) => setServices(r.data.catalog)).catch(() => {});
       api.get('/banking/analytics/health').then((r) => setHealth(r.data.health)).catch(() => {});
-      api.get('/ai/insights').then((r) => setAiInsights(r.data.insights || [])).catch(() => {});
+      api.get('/ai/insights').then(async (r) => {
+        const list = r.data.insights || [];
+        setAiInsights(list);
+        const NEW_TYPES = ['INVOICE_CASHFLOW', 'PAYROLL_HEALTH', 'PROCUREMENT_HEALTH'];
+        if (!NEW_TYPES.some((tp) => list.some((i) => i.insight_type === tp))) {
+          try {
+            const rf = await api.post('/ai/insights/refresh');
+            setAiInsights(rf.data.insights || []);
+          } catch (e) { /* keep existing */ }
+        }
+      }).catch(() => {});
     }
   }, [isAdmin]);
 
