@@ -25,10 +25,10 @@ work and brings it under the canonical institutional structure; nothing below wa
 | 15 | AI Governance Framework (AFK-INST-15) | YES — DRAFT | 0.1 | Yes | No | Model inventory, lifecycle, HITL, bias, DPIA; Secretary/Project-Intelligence slots pending | Version-track future models | AI Ethics Lead | 1 — HIGH ✅ delivered |
 | 16 | Financial Control Framework (AFK-INST-16) | YES — DRAFT | 0.2 | Yes | No | SoD matrix, controls, chart discipline (093) | Approve + periodic control testing | Head of Finance | 1 — HIGH ✅ delivered |
 | 17 | Reconciliation Specification (AFK-INST-17) | YES — DRAFT | 0.1 | Yes | No | Scope, tolerance, break flow, controls | Approve baseline | Head of Finance | 2 — MEDIUM ✅ delivered |
-| 18 | Disaster Recovery Plan (AFK-INST-18) | YES — APPROVED | 1.0 | Yes | No | (None critical) | Add OTel-incident linkage + restore verification test reference | DevSecOps Lead | 3 — LOW |
+| 18 | Disaster Recovery Plan (AFK-INST-18) | YES — APPROVED | 1.0 | Yes | No | OTel-incident linkage + automated restore verification (`scripts/test-restore-verify.js` 29 checks in CI) added | Restore verification now gated in CI; re-approval | DevSecOps Lead | 3 — LOW ✅ delivered |
 | 19 | Business Continuity Plan (AFK-INST-19) | YES — DRAFT | 0.1 | Yes | No | Tiers/RTO, restore priority, modes, comms, deputies | Approve baseline | COO / Operations | 2 — MEDIUM ✅ delivered |
 | 20 | Incident Response Plan (AFK-INST-20) | YES — DRAFT | 0.1 | Yes | No | Severity matrix, roles, procedure, notification; comms templates pending | Tabletop test annually | Security Lead | 1 — HIGH ✅ delivered |
-| 21 | Test Strategy (AFK-INST-21) | YES — DRAFT | 0.3 | Yes | No | Levels, CI gates, suite list (accurate to CI, 32 suites), flake policy | Approve baseline | QA Lead | 2 — MEDIUM ✅ delivered |
+| 21 | Test Strategy (AFK-INST-21) | YES — DRAFT | 0.4 | Yes | No | Levels, CI gates, suite list (accurate to CI, 33 suites), flake policy | Approve baseline | QA Lead | 2 — MEDIUM ✅ delivered |
 | 22 | Release Management Plan (AFK-INST-22) | YES — DRAFT | 0.1 | Yes | No | Cadence, types/gates, go-no-go, rollback | Approve baseline | Release Manager | 2 — MEDIUM ✅ delivered |
 | 23 | Operations Runbook (AFK-INST-23) | YES — DRAFT | 0.1 | Yes | No | Monitoring, daily tasks, troubleshooting, DR pointer | Approve baseline | DevSecOps Lead | 2 — MEDIUM ✅ delivered |
 | 24 | Service Level Agreement (AFK-INST-24) | YES — DRAFT | 0.1 | Yes | No | Availability/performance targets, escalation, exclusions, reporting | Approve baseline | COO / Operations | 3 — LOW ✅ delivered |
@@ -77,12 +77,14 @@ policies regenerated from AFK-INST-14 (7y financial, 30d backups). SAR filing fo
 **P2 — Specs + engineering docs (DONE 2026-09-07):** AFK-INST-02/03 (requirements incl. new
 capabilities), 04 (SRS, FR/NFR traceable), 06 (system architecture), 07 (data architecture; C1 → 0.2),
 08 (API spec, standardises C4), 09 (database design), 10 (security architecture), 11 (threat model
-STRIDE), 17 (reconciliation), 21 (test strategy; test-procurement + test-tcra-ussd → 32 suites), 22 (release mgmt),
+STRIDE), 17 (reconciliation), 21 (test strategy; test-procurement + test-tcra-ussd + test-restore-verify → 33 suites), 22 (release mgmt),
 23 (ops runbook). OpenAPI generated code-first 2026-09-07 (src/docs/openapi.js + swagger.js →
 /api/v1/docs + docs.json, guarded by test-openapi; AFK-INST-08 → 0.2). C1 suppliers schema reconciled
 2026-09-07 (096 union migration + partial unique index; test-procurement in CI; AFK-INST-07 → 0.2).
 TCRA USSD shortcode row closed 2026-09-07 (097 shortcode registry + admin lifecycle + test-tcra-ussd
 22/22 in CI; AFK-INST-13 → 0.3; all 14 compliance obligations now IMPLEMENTED/APPROVED).
+Restore verification closed 2026-09-08 (AFK-INST-18 materialised from runbook + test-restore-verify
+29/29 in CI; audit rec #5 resolved; suite count → 33).
 
 **P3 — Business terms (DONE 2026-09-07):** AFK-INST-01 (charter), 19 (BCP), 24 (SLA), 25 (vendor
 mgmt), 27 (audit program). The canonical 27-doc set is DRAFT-complete and all code-side gaps are

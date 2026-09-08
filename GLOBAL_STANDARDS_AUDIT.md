@@ -124,11 +124,11 @@ Afrikoba Global meets production-grade standards across security, reliability, s
 
 ## RECOMMENDATIONS
 
-1. **TCRA Registration**: Register USSD shortcode with Tanzania regulators
-2. **Payment Licenses**: Obtain necessary payment processing licenses
-3. **Load Testing**: Run k6 scripts on staging server before production
-4. **Monitoring**: Set up UptimeRobot/Pingdom after deployment
-5. **Backup Verification**: Test DB restore process before going live
+1. **TCRA Registration**: Register USSD shortcode with Tanzania regulators — **DONE (code side)**: shortcode registry migration 097 + admin lifecycle + `scripts/test-tcra-ussd.js` (22 checks); external filing tracked via `supported_countries.ussd_shortcode_status`.
+2. **Payment Licenses**: Obtain necessary payment processing licenses — per-market licence status tracked in `supported_countries.regulatory_license_*`; filing is a Compliance action (AFK-INST-13).
+3. **Load Testing**: Run k6 scripts on staging server before production — `scripts/load-test.js` + `scripts/security-test.js` present; schedule k6 on staging pre-go-live.
+4. **Monitoring**: Set up UptimeRobot/Pingdom after deployment — post-deployment ops action (AFK-INST-23/24).
+5. **Backup Verification**: Test DB restore process before going live — **DONE**: `scripts/test-restore-verify.js` (29 checks) proves pg_dump → restore → integrity in CI (migration `AFK-INST-18`).
 
 ## CONCLUSION
 

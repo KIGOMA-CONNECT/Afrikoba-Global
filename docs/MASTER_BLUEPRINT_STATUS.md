@@ -131,7 +131,7 @@ Status legend: ✅ **built** · 🔶 **partial** · ⬜ **not built / next**.
   propagation in `telemetry.js`, zero-dep `trace.js` span/trace-tree builder, financial
   engine instrumented (`fin.accountIdByCode`, `fin.postJournal`), `GET /api/ops/tracing/:traceId`
   tree view; `scripts/test-tracing.js` (19 checks with ROOT/CHILD/ERROR spans) in CI.
-- 🔶 Formal backup/DR runbooks = not built (DB container backup exists).
+- ✅ **Backup/DR formalised** (`docs/DISASTER_RECOVERY_RUNBOOK.md`, `backupService.js` automated daily backups with SQL integrity verification and retention management, `/api/admin/backup/*` management endpoints) + **automated restore verification** (`scripts/test-restore-verify.js` — 29 checks: pg_dump → scratch DB restore → structural/row parity, balanced journal, serial≥max id, partitions, migration replay → cleanup; wired into CI after test-tcra-ussd; canonical AFK-INST-18 materialised).
 
 ## 11. API / Developer Platform / Cross-Border (Sec 46–48, 81)
 - ✅ Public API surface exists (many `/api/*`), Swagger docs in non-prod.
@@ -193,6 +193,13 @@ Status legend: ✅ **built** · 🔶 **partial** · ⬜ **not built / next**.
 - ✅ **FIU SAR filing formalised** (migration 095 + `sar_filings` trail; `fileSar` records reference/agency
   and mirrors `REFERRED_TO_LRA` disposition; `POST /api/admin/aml/cases/:id/file-sar` + filings GET;
   `SAR_FILED` audit entry; `scripts/test-sar-filing.js` 20/20 in CI) — AFK-INST-13 SAR row → IMPLEMENTED.
+- ✅ **TCRA USSD shortcode registry** (migration 097 + `supported_countries.ussd_shortcode(_status)` with
+  PENDING|APPROVED CHECK, TZ seeded `*150*87`; admin PUT lifecycle + COUNTRY_UPDATED audit; surfaced in
+  `/api/countries` + `/me`; `scripts/test-tcra-ussd.js` 22/22 in CI) — last AFK-INST-13 ACTION REQUIRED
+  row → IMPLEMENTED; all 14 compliance obligations now IMPLEMENTED/APPROVED.
+- ✅ **DR restore verification** (AFK-INST-18 materialised + `scripts/test-restore-verify.js` 29/29 in CI):
+  pg_dump → scratch restore → structural/row parity, zero unbalanced groups, serial ≥ max id, partitions
+  intact, migration replay, cleanup) — GLOBAL_STANDARDS_AUDIT rec #5 resolved; CI suite count → 33.
 - ✅ **Code-first OpenAPI generated** (AFK-INST-08 v0.2): `src/docs/openapi.js` (swagger-jsdoc
   annotations covering the AFK-INST-08 module surface + C4 contracts + security schemes) wired into
   `src/config/swagger.js`; spec published at `/api/v1/docs.json` + swagger-ui at `/api/v1/docs`
