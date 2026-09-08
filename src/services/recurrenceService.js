@@ -5,7 +5,8 @@
  *   - AUTO_SAVINGS          : sweep a configured amount into a savings pool each cycle
  *   - CONTRIBUTION_CYCLE    : auto-create the next VICOBA contribution cycle when due
  *   - PAYROLL_RUN           : generate a payroll run for an active schedule each cycle
- *   - STANDING_INSTRUCTION  : generic recurring instruction placeholder
+ *   - STANDING_INSTRUCTION  : recurring wallet transfer (SI-<ref>: journal + txn + ledger), payload
+ *                             { fromUserId, toPhoneNumber, amount, note?, minAmount? }
  *
  * The executor is driven by an in-process interval; every due rule is dispatched
  * to the matching service and its completed execution is recorded for audit.
@@ -99,17 +100,80 @@ async function runPayroll(payload) {
   return { runId: result.run.id, payslips: result.payslips.length, total: result.run.total_amount };
 }
 
+async function runStandingInstruction(payload) {
+  const fin = require('./financialEngine');
+  const { generateReference, formatMoney } = require('../utils/helpers');
+  const { sendSMS } = require('./smsService');
+  const { logAudit } = require('./auditService');
+  const fromUserId = payload.fromUserId, toPhoneNumber = payload.toPhoneNumber, amount = Number(payload.amount);
+  const note = payload.note || 'Uhamisho wa mara kwa mara';
+  if (!fromUserId || !toPhoneNumber || !(amount > 0)) throw new Error('Standing instruction requires fromUserId, toPhoneNumber and amount');
+  if (amount < Number(payload.minAmount || 0)) return { skipped: true, reason: 'below_min_amount' };
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const fromRes = await client.query(
+      `SELECT id, wallet_balance, phone_number, full_name FROM users WHERE id = $1 FOR UPDATE`,
+      [fromUserId]
+    );
+    if (fromRes.rows.length === 0) throw Object.assign(new Error('Mtumiaji hajapatikana.'), { statusCode: 404 });
+    const from = fromRes.rows[0];
+
+    const toRes = await client.query(
+      `SELECT id, wallet_balance, phone_number, full_name FROM users WHERE phone_number = $1 FOR UPDATE`,
+      [toPhoneNumber.trim()]
+    );
+    if (toRes.rows.length === 0) throw Object.assign(new Error('Mpokeaji hajapatikana kwenye mfumo.'), { statusCode: 404 });
+    const to = toRes.rows[0];
+
+    if (from.id === to.id) throw Object.assign(new Error('Huwezi kutuma fedha kwako mwenyewe.'), { statusCode: 400 });
+    if (Number(from.wallet_balance) < amount) throw Object.assign(new Error('Salio lako halitoshi.'), { statusCode: 400 });
+
+    const referenceId = generateReference('SI');
+    const txResult = await client.query(
+      `INSERT INTO transactions
+        (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
+       VALUES ($1, $2, $3, 0, $3, 'SUCCESS', 'TRANSFER', $4)
+       RETURNING id`,
+      [referenceId, fromUserId, amount, JSON.stringify({ to_user_id: to.id, note, via: 'STANDING_INSTRUCTION' })]
+    );
+
+    const result = await fin.internalTransfer({ client, fromUserId: from.id, toUserId: to.id, amount, reference: referenceId, description: note, actor: 'recurrence:standing-instruction' });
+    if (result.dedup) { await client.query('ROLLBACK').catch(() => {}); return { skipped: true, reason: 'dedup', reference: result.reference }; }
+    await client.query(
+      `INSERT INTO wallet_ledger (transaction_id, reference_id, from_user_id, to_user_id, amount, description)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [txResult.rows[0].id, referenceId, from.id, to.id, amount, note]
+    );
+
+    await client.query('COMMIT');
+
+    await logAudit({ eventType: 'TRANSFER', action: 'CREATE', entityType: 'TRANSACTION', userId: from.id, referenceId, amount, afterData: { to_user_id: to.id, via: 'STANDING_INSTRUCTION' } });
+
+    const msg = `Habari ${to.full_name}, umepokea ${formatMoney(amount)} kutoka kwa ${from.full_name}. Ref: ${referenceId}`;
+    await sendSMS(to.phone_number, msg).catch((smsErr) => logger.error('RECURRENCE', `SMS post-transfer imefunga: ${smsErr.message}`));
+
+    return { transferred: amount, reference: referenceId, to_user_id: to.id };
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally { client.release(); }
+}
+
 // ===== Rule management =====
 
 async function createRule(adminId, data) {
   const { name, taskType, frequency, intervalStep, dayOfMonth, payload } = data;
   if (!name || !taskType || !frequency) throw Object.assign(new Error('Name, task type and frequency are required.'), { statusCode: 400 });
-  const nextRunAt = computeNextRun({ frequency, interval_step: intervalStep, day_of_month: dayOfMonth, next_run_at: new Date() });
+  const step = intervalStep || 1;
+  const nextRunAt = computeNextRun({ frequency, interval_step: step, day_of_month: dayOfMonth, next_run_at: new Date() });
   const res = await pool.query(
     `INSERT INTO recurrence_rules
        (name, task_type, frequency, interval_step, day_of_month, payload, next_run_at, created_by)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
-    [name, taskType, frequency, intervalStep || 1, dayOfMonth || null, JSON.stringify(payload || {}), nextRunAt, adminId]
+    [name, taskType, frequency, step, dayOfMonth || null, JSON.stringify(payload || {}), nextRunAt, adminId]
   );
   return res.rows[0];
 }
@@ -160,6 +224,7 @@ async function runDueTasks() {
           case 'AUTO_SAVINGS': result = await runAutoSavings(rule.payload); break;
           case 'CONTRIBUTION_CYCLE': result = await runContributionCycle(rule.payload); break;
           case 'PAYROLL_RUN': result = await runPayroll({ ...rule.payload, frequency: rule.frequency }); break;
+          case 'STANDING_INSTRUCTION': result = await runStandingInstruction(rule.payload); break;
           default: result = { note: `No dispatcher for ${rule.task_type}` };
         }
         detail = { result };
@@ -191,4 +256,5 @@ function startRecurrenceScheduler(intervalMs = 60000) {
 
 module.exports = {
   createRule, listRules, setRuleEnabled, executions, runDueTasks, startRecurrenceScheduler, computeNextRun,
+  runStandingInstruction,
 };

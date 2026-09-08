@@ -4,9 +4,9 @@ Title: System Requirements Specification
 Purpose: Traceable system-level functional and non-functional requirements (FR/NFR) mapped to Afrikoba's modules and evidence.
 Owner: Solutions Architect
 Status: DRAFT
-Version: 0.4
+Version: 0.5
 Effective Date: 2026-09-07
-Last Review Date: 2026-09-07
+Last Review Date: 2026-09-08
 Related Systems/Modules: All modules; see FR traceability matrix
 Related Regulatory Requirements: AFK-INST-13 (compliance), AFK-INST-14 (data)
 Approval Authority: Solutions Architect + CAB
@@ -64,7 +64,7 @@ Every FR links to: (1) Business capability (AFK-INST-02), (2) implementation evi
 
 | Env | DB | Flags | Tests |
 |-----|----|-------|-------|
-| CI | fresh seeded Postgres | RATE_LIMIT_DISABLED, DISABLE_CRON | 33 suites |
+| CI | fresh seeded Postgres | RATE_LIMIT_DISABLED, DISABLE_CRON | 34 suites |
 | Staging | mirrored prod subset | most flags | k6 load/security |
 | Prod | managed Postgres + replicas | flag-controlled rollout | smoke + monitoring |
 
