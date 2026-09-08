@@ -98,6 +98,7 @@ jobs:
           node scripts/test-ai-insights.js
           node scripts/test-sar-filing.js
           node scripts/test-openapi.js
+          node scripts/test-procurement.js
 
       - name: Upload server log on failure
         if: failure()

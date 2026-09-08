@@ -4,7 +4,7 @@ Title: Data Architecture
 Purpose: Logical/physical data architecture, data flows, ownership, lineage and quality controls across the Afrikoba platform.
 Owner: Data Architect
 Status: DRAFT
-Version: 0.1
+Version: 0.2
 Effective Date: 2026-09-07
 Last Review Date: 2026-09-07
 Related Systems/Modules: All migrations 001–094; ledger/partition (088), trace/telemetry (094), device (092), countries (089)
@@ -52,9 +52,14 @@ Approval Authority: Data Architect / CAB
 
 `db/migrations/020` defines `suppliers(business_id,name,phone,total_paid)`. Migration `047`
 `CREATE TABLE IF NOT EXISTS suppliers` is a silent no-op when 020 ran first, while
-`procurementService.js` queries `suppliers(owner_user_id,...)`. **Action:** reconcile in a new
-migration (095) or explicitly accepted via AFK-INST-26. Current AI-insights query works around it by
-linking financing through `request_id` + `business_id` (see AFK-INST-15/business insights).
+`procurementService.js` queries `suppliers(owner_user_id,...)`. **RESOLVED 2026-09-07 (096):** the
+047 procurement columns (`owner_user_id`, `business_name`, `category`, `description`, `rating`,
+`verified`) were unioned onto the commerce `suppliers` table idempotently — additive only, existing
+rows and FKs untouched — and the 020 NOT NULL on `business_id`/`name` relaxed (commerce callers
+always supply them). A partial unique index `uq_suppliers_procurement_profile` restores 047's
+`UNIQUE(owner_user_id,business_name)` among procurement profiles. Both feature sets now share one
+table; `test-procurement.js` proves end-to-end. The AI-insights query continues to link financing
+through `request_id` + `business_id` (see AFK-INST-15/business insights).
 
 ## 6. Backup & archival
 
@@ -66,3 +71,4 @@ linking financing through `request_id` + `business_id` (see AFK-INST-15/business
 | Version | Date | Author | Reason | Approval |
 |---------|------|--------|--------|----------|
 | 0.1 | 2026-09-07 | AI code review | Baseline from migrations + ledger/partition evidence; logs C1 | Data Architect (pending) |
+| 0.2 | 2026-09-07 | AI code review | C1 RESOLVED: 096 unions procurement columns onto `suppliers` (partial unique index); test-procurement added | Data Architect (pending) |

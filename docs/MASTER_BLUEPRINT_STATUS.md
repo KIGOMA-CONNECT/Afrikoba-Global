@@ -162,8 +162,9 @@ Status legend: ✅ **built** · 🔶 **partial** · ⬜ **not built / next**.
   controlled change control; `docs/institutional/GAP_ANALYSIS.md` maps every existing
   repo asset (README, roadmap, blueprint status, compliance/DR/privacy/legal docs,
   migrations, routes, CI tests) onto the 27 documents with exists/version/complete/
-  conflicts/missing/owner/priority, plus a conflict log (C1 suppliers schema, C2
-  privacy-policy overlap, C3 missing ADRs, C4 API return-shape drift) and a 3-tier
+  conflicts/missing/owner/priority, plus a conflict log (C1 suppliers schema — RESOLVED
+  via 096 union migration, C2 privacy-policy overlap — RESOLVED, C3 missing ADRs —
+  backfilled, C4 API return-shape drift — standardised + OpenAPI) and a 3-tier
   sequencing plan. Drafting of remaining P1–P3 documents is scheduled and tracked in
   the registry.
 
@@ -196,6 +197,12 @@ Status legend: ✅ **built** · 🔶 **partial** · ⬜ **not built / next**.
   annotations covering the AFK-INST-08 module surface + C4 contracts + security schemes) wired into
   `src/config/swagger.js`; spec published at `/api/v1/docs.json` + swagger-ui at `/api/v1/docs`
   (non-prod, registered before the blanket authRequired); `scripts/test-openapi.js` (42 checks) in CI.
+- ✅ **C1 suppliers schema reconciled** (migration 096): the procurement columns from the intended
+  047 design (owner_user_id/business_name/category/description/rating/verified) are unioned onto the
+  commerce `suppliers` table — additive, existing rows/FKs untouched, 020 NOT NULL on business_id/name
+  relaxed — with partial unique index `uq_suppliers_procurement_profile`. Commerce supplier payments
+  and procurement profiles/RFQ-bid-award/financing now share one table; `scripts/test-procurement.js`
+  (33 checks, incl. 409 duplicate-profile, ledger SUSPENSE→CUSTOMER_WALLET) in CI; GAP C1 → RESOLVED.
 - ✅ **Feature flags + experimentation framework built** (migration 080, `/api/features` + admin `/api/features/admin`, `FeatureFlags.jsx`).
 - ✅ **Fraud operations centre dashboard built** (`/api/fraud-ops`, `FraudOps.jsx`).
 - ✅ **Role-based four-eyes built + extended** (migration 081 + 082: `four_eyes_policies`/`four_eyes_requests`/`four_eyes_approvals`; maker-checker with role enforcement, no-self-approval, quorum 1–3, registered executors, retry; `/api/admin/four-eyes`, gated by `FOUR_EYES` flag, `FourEyes.jsx`). Executors: `ADMIN_PROMOTE_ROLE`, `ADMIN_DEMOTE_ROLE`, `ADMIN_LARGE_REFUND`, plus (migration 082) `VICOBA_LOAN_DISBURSE`, `VICOBA_SOCIAL_FUND_DISBURSE`, `CARD_ADMIN_SETTLE`, `CARD_ADMIN_REFUND`, `CREDIT_LOAN_DISBURSE`, `BUSINESS_LOAN_DISBURSE` with convenience launchers (`/actions/vicoba-loan-disburse|vicoba-social-disburse|card-settle|card-refund|credit-loan-disburse|business-loan-disburse`) — card settle/refund move money via `cardService` (capture/unlock), loan disburse wraps `savingsCreditService.adminDisburseMicroLoan` / `businessService.adminDisburseLoan`, VICOBA executors wrap `vicobaService.approveLoan`/`approveSocialFundDisbursement` (actor fallback = approving admin).

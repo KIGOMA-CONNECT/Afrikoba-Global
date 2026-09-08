@@ -14,7 +14,7 @@ work and brings it under the canonical institutional structure; nothing below wa
 | 4 | System Requirements Specification (AFK-INST-04) | YES — DRAFT | 0.1 | Yes | No | Traceable FR+NFR per module with test evidence | Approve baseline | Solutions Architect | 2 — MEDIUM ✅ delivered |
 | 5 | Architecture Decision Records (AFK-INST-05) | YES — DRAFT | 0.1 | Yes | Partial | ADRs ADR-001..006 backfilled (ledger engine, OTel spans, partitions, multi-country, device binding, AI register) | Add future ADRs; approve | Enterprise Architect | 1 — HIGH ✅ delivered |
 | 6 | System Architecture Document (AFK-INST-06) | YES — DRAFT | 0.1 | Yes | No | Logical/data-flow/deployment topology incl. co-tenancy | Approve baseline | Enterprise Architect | 2 — MEDIUM ✅ delivered |
-| 7 | Data Architecture (AFK-INST-07) | YES — DRAFT | 0.1 | Yes | No | Domains, ownership, lineage, partitions, C1 supplier issue logged | Approve baseline | Data Architect | 1 — HIGH ✅ delivered |
+| 7 | Data Architecture (AFK-INST-07) | YES — DRAFT | 0.2 | Yes | No | Domains, ownership, lineage, partitions; C1 suppliers schema RESOLVED via 096 (union migration) | Approve baseline | Data Architect | 1 — HIGH ✅ delivered |
 | 8 | API Specification (AFK-INST-08) | YES — DRAFT | 0.2 | Yes | No | Conventions, auth, module surface, C4 contracts standardised; OpenAPI generated code-first (`src/docs/openapi.js` + swagger.js) → `/api/v1/docs.json` + UI, guarded by test-openapi | Approve baseline | Platform Lead | 2 — MEDIUM ✅ delivered |
 | 9 | Database Design (AFK-INST-09) | YES — DRAFT | 0.1 | Yes | No | Principles, core schema, indexing, partition/migration policy | Approve; ERD generation | Database Lead | 2 — MEDIUM ✅ delivered |
 | 10 | Security Architecture (AFK-INST-10) | YES — DRAFT | 0.1 | Yes | No | Control catalogue mapped from audit + implementation | Approve baseline | Security Lead | 1 — HIGH ✅ delivered |
@@ -61,7 +61,7 @@ work and brings it under the canonical institutional structure; nothing below wa
 
 | # | Conflict | Evidence | Action |
 |---|---|---|---|
-| C1 | Suppliers schema ambiguity | `db/migrations/020` defines `suppliers(business_id,...)`; migration `047` `CREATE TABLE IF NOT EXISTS suppliers` is a silent no-op in DBs that ran 020 first, while `procurementService.js` queries `suppliers(owner_user_id,...)` | Flag for review: reconcile suppliers schema or procurement join (see AFK-INST-09). Do NOT auto-fix in code beyond what the AI-insights query work-around did (link financing via `request_id`+`business_id`). |
+| C1 | Suppliers schema ambiguity | `db/migrations/020` defines `suppliers(business_id,...)`; migration `047` `CREATE TABLE IF NOT EXISTS suppliers` is a silent no-op in DBs that ran 020 first, while `procurementService.js` queries `suppliers(owner_user_id,...)` | RESOLVED 2026-09-07 (096): unioned 047 procurement columns onto `suppliers` idempotently (additive; existing rows/FKs intact), relaxed 020 NOT NULL on business_id/name, added partial unique index uq_suppliers_procurement_profile; procurement + commerce suppliers both work on one table (test-procurement), AI-insights financing link unchanged. |
 | C2 | Docs vs. code ownership | Three overlap: `PRIVACY_POLICY.md`, `DATA_RETENTION_POLICY.md`, `docs/COMPLIANCE/DATA_PROTECTION_POLICY.md` — differing retention figures (financial records 7y vs 10y; un-implemented weekly/monthly backup tiers) | RESOLVED 2026-09-07: single source is AFK-INST-14 §3 (authoritative schedule + code evidence); all three published docs regenerated as consistent controlled derivatives (7y financial, 30d daily backups). Keep user-facing docs as derivatives; any retention change lands in the framework first. |
 | C3 | No ADRs for major architecture | Central ledger, OTel tracing, partitioned journal, phone-key accounts, multi-country rails exist only in migration/service code | Backfill ADRs before further architectural drift (AFK-INST-05/P1). |
 | C4 | Return-shape drift | `register` returns `user.phone_number` (test asserts `user.phone` broke); wallet transfer response omits `balance` | Capture canonical API contracts in AFK-INST-08 to stop test guesswork. |
@@ -75,15 +75,17 @@ policies regenerated from AFK-INST-14 (7y financial, 30d backups). SAR filing fo
 (095 + file-sar endpoint + test-sar-filing; AFK-INST-13 row → IMPLEMENTED).
 
 **P2 — Specs + engineering docs (DONE 2026-09-07):** AFK-INST-02/03 (requirements incl. new
-capabilities), 04 (SRS, FR/NFR traceable), 06 (system architecture), 07 (data architecture, logs C1),
+capabilities), 04 (SRS, FR/NFR traceable), 06 (system architecture), 07 (data architecture; C1 → 0.2),
 08 (API spec, standardises C4), 09 (database design), 10 (security architecture), 11 (threat model
-STRIDE), 17 (reconciliation), 21 (test strategy), 22 (release mgmt), 23 (ops runbook). OpenAPI
-generated code-first 2026-09-07 (src/docs/openapi.js + swagger.js → /api/v1/docs + docs.json,
-guarded by test-openapi; AFK-INST-08 → 0.2).
+STRIDE), 17 (reconciliation), 21 (test strategy; test-procurement added → 31 suites), 22 (release mgmt),
+23 (ops runbook). OpenAPI generated code-first 2026-09-07 (src/docs/openapi.js + swagger.js →
+/api/v1/docs + docs.json, guarded by test-openapi; AFK-INST-08 → 0.2). C1 suppliers schema reconciled
+2026-09-07 (096 union migration + partial unique index; test-procurement in CI; AFK-INST-07 → 0.2).
 
 **P3 — Business terms (DONE 2026-09-07):** AFK-INST-01 (charter), 19 (BCP), 24 (SLA), 25 (vendor
 mgmt), 27 (audit program). The canonical 27-doc set is DRAFT-complete and all code-side gaps are
-closed; next is formal approval cycling per row owner.
+closed: C1 (suppliers schema) RESOLVED via 096, C2 (retention) RESOLVED, C3 (ADRs) backfilled,
+C4 (API contracts) standardised + OpenAPI. Next is formal approval cycling per row owner.
 
 Each delivery updates the registry `Status` → `DRAFT`, then `APPROVED` after the approval
 authority signs the revision; the change is recorded in the document Change History.

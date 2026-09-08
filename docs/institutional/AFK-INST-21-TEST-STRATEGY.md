@@ -19,7 +19,7 @@ Approval Authority: QA Lead / CAB
 | Level | Scope | Where |
 |-------|-------|-------|
 | Unit | Services/utils (engine, ledger math, fee/split/WHT) | Node tests |
-| Integration/Regression | End-to-end API + DB against a seeded Postgres | `scripts/test-*.js` (30 suites) + CI |
+| Integration/Regression | End-to-end API + DB against a seeded Postgres | `scripts/test-*.js` (31 suites) + CI |
 | Frontend build | Web dashboard Vite build; Flutter analyze/test/build | CI |
 | Load/Security | k6 load + security scripts | staging |
 | UAT/Regression on release | Stable behaviour proof for money math | CI on `main` |
@@ -46,7 +46,7 @@ test-events-stage5, test-vicoba-inbox, test-features, test-four-eyes, test-exper
 test-kyc, test-lending-gates, test-kilimo-seasons, test-disputes, test-merchant-payouts,
 test-outbox, test-vault, test-caching, test-partitions, test-ussd, test-multi-country,
 test-ledger-integrity, test-field-partners, test-device-binding, test-chart-of-accounts,
-test-tracing, test-ai-insights, test-sar-filing, test-openapi.
+test-tracing, test-ai-insights, test-sar-filing, test-openapi, test-procurement.
 
 ## 5. Known flakiness & rerun policy
 
@@ -63,3 +63,4 @@ expected; dashboard UI wired; test proving money math; audit-log entry for money
 | Version | Date | Author | Reason | Approval |
 |---------|------|--------|--------|----------|
 | 0.1 | 2026-09-07 | AI code review | Baseline from CI workflow + suite inventory + standards audit | QA Lead (pending) |
+| 0.2 | 2026-09-07 | AI code review | Added test-procurement (C1 suppliers reconciliation / procurement lifecycle / financing) → 31 suites | QA Lead (pending) |

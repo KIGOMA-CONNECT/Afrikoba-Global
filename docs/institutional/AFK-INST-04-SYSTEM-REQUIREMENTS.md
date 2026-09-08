@@ -64,7 +64,7 @@ Every FR links to: (1) Business capability (AFK-INST-02), (2) implementation evi
 
 | Env | DB | Flags | Tests |
 |-----|----|-------|-------|
-| CI | fresh seeded Postgres | RATE_LIMIT_DISABLED, DISABLE_CRON | 30 suites |
+| CI | fresh seeded Postgres | RATE_LIMIT_DISABLED, DISABLE_CRON | 31 suites |
 | Staging | mirrored prod subset | most flags | k6 load/security |
 | Prod | managed Postgres + replicas | flag-controlled rollout | smoke + monitoring |
 
@@ -79,3 +79,4 @@ Every FR links to: (1) Business capability (AFK-INST-02), (2) implementation evi
 | Version | Date | Author | Reason | Approval |
 |---------|------|--------|--------|----------|
 | 0.1 | 2026-09-07 | AI code review | Baseline SRS from module/route/service inventory + suites + deployment env | Solutions Architect (pending) |
+| 0.2 | 2026-09-07 | AI code review | CI suite count 30→31 with test-procurement | Solutions Architect (pending) |

@@ -28,13 +28,20 @@ async function getSupplierForOwner(userId, supplierId, client = pool) {
 
 async function registerSupplier(userId, { business_name, category, description }) {
   if (!business_name) throw new ValidityError('Jina la biashara linahitajika.');
-  const r = await pool.query(
-    `INSERT INTO suppliers (owner_user_id, business_name, category, description)
-     VALUES ($1,$2,$3,$4) RETURNING *`,
-    [userId, business_name, category, description]
-  );
-  await logAudit({ eventType: 'SUPPLIER_REGISTER', action: 'CREATE', entityType: 'SUPPLIER', userId, entityId: r.rows[0].id });
-  return r.rows[0];
+  try {
+    const r = await pool.query(
+      `INSERT INTO suppliers (owner_user_id, business_name, category, description)
+       VALUES ($1,$2,$3,$4) RETURNING *`,
+      [userId, business_name, category, description]
+    );
+    await logAudit({ eventType: 'SUPPLIER_REGISTER', action: 'CREATE', entityType: 'SUPPLIER', userId, entityId: r.rows[0].id });
+    return r.rows[0];
+  } catch (e) {
+    if (e.code === '23505' && String(e.message || '').includes('uq_suppliers_procurement_profile')) {
+      throw new ValidityError('Wasifu wa msambazaji huu tayari upo.', 409);
+    }
+    throw e;
+  }
 }
 
 async function listSuppliers() {

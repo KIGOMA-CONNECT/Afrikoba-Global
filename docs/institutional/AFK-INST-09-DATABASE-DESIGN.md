@@ -37,7 +37,7 @@ design intent — migrations are authoritative.
 | `ai_insights`/`ai_model_register` | insight rows + versioned model register (046) |
 | `request_telemetry`/`trace_spans` | span_id/kind/operation + trace tree (094) |
 | `supported_countries` | WHT/caps/KYC doc/license per market (089) |
-| `suppliers` | **C1 conflict** — see Data Architecture §5 |
+| `suppliers` | unified commerce+procurement (096: 047 columns unioned onto 020 table; partial unique index uq_suppliers_procurement_profile) — see Data Architecture §5 |
 
 ## 4. Indexing plan
 
@@ -51,7 +51,7 @@ design intent — migrations are authoritative.
 
 ## 6. Migration policy
 
-- New feature needing schema → new numbered migration (next free: 095 after 094).
+- New feature needing schema → new numbered migration (next free: 096 after 095).
 - Destructive DDL requires CAB via AFK-INST-26; recreate/repair path documented before apply.
 - Sequence resync handled (090) after bulk loads.
 
@@ -60,3 +60,4 @@ design intent — migrations are authoritative.
 | Version | Date | Author | Reason | Approval |
 |---------|------|--------|--------|----------|
 | 0.1 | 2026-09-07 | AI code review | Baseline from migrations 001–094 + partition + chart numbering | DB Lead (pending) |
+| 0.2 | 2026-09-07 | AI code review | C1 RESOLVED via 096: procurement columns unioned onto `suppliers`; partial unique index added; next-free migration → 096 | DB Lead (pending) |
