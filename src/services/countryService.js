@@ -73,6 +73,10 @@ async function getRegulatoryConfig(country) {
       status: country.regulatory_license_status,
       name: country.regulatory_license_name
     },
+    ussd: {
+      shortcode: country.ussd_shortcode,
+      status: country.ussd_shortcode_status
+    },
     support: {
       phone: country.local_support_phone,
       email: country.local_compliance_email
@@ -131,20 +135,23 @@ async function recordDailyTransfer({ client, userId, countryCode, amount }) {
 async function addCountry({
   code, name, currency, region, min_fee, percent_fee,
   calling_code, max_daily_transfer_limit, withholding_tax_rate, kyc_doc_type_required,
-  regulatory_license_status, regulatory_license_name, local_support_phone, local_compliance_email
+  regulatory_license_status, regulatory_license_name, local_support_phone, local_compliance_email,
+  ussd_shortcode, ussd_shortcode_status
 }) {
   const result = await pool.query(
     `INSERT INTO supported_countries
       (code, name, currency, region, min_fee, percent_fee, calling_code,
        max_daily_transfer_limit, withholding_tax_rate, kyc_doc_type_required,
-       regulatory_license_status, regulatory_license_name, local_support_phone, local_compliance_email)
+       regulatory_license_status, regulatory_license_name, local_support_phone, local_compliance_email,
+       ussd_shortcode, ussd_shortcode_status)
      VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, ''),
              $8, COALESCE($9, 0), COALESCE($10, 'NATIONAL_ID'),
-             COALESCE($11, 'SANDBOX'), $12, $13, $14) RETURNING *`,
+             COALESCE($11, 'SANDBOX'), $12, $13, $14, $15, COALESCE($16, 'PENDING')) RETURNING *`,
     [code.toUpperCase(), name, currency.toUpperCase(), region, min_fee || 0, percent_fee || 0,
      calling_code || null, max_daily_transfer_limit ?? null, withholding_tax_rate ?? null,
      kyc_doc_type_required || null, regulatory_license_status || null, regulatory_license_name || null,
-     local_support_phone || null, local_compliance_email || null]
+     local_support_phone || null, local_compliance_email || null,
+     ussd_shortcode || null, ussd_shortcode_status || null]
   );
   return result.rows[0];
 }
@@ -153,7 +160,8 @@ async function updateCountry(id, updates) {
   const allowed = [
     'name', 'currency', 'region', 'is_active', 'min_fee', 'percent_fee',
     'calling_code', 'max_daily_transfer_limit', 'withholding_tax_rate', 'kyc_doc_type_required',
-    'regulatory_license_status', 'regulatory_license_name', 'local_support_phone', 'local_compliance_email'
+    'regulatory_license_status', 'regulatory_license_name', 'local_support_phone', 'local_compliance_email',
+    'ussd_shortcode', 'ussd_shortcode_status'
   ];
   const sets = [];
   const params = [];

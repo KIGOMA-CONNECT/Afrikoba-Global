@@ -19,6 +19,10 @@ router.get('/', authRequired, async (req, res, next) => {
         license: {
           status: c.regulatory_license_status,
           name: c.regulatory_license_name
+        },
+        ussd: {
+          shortcode: c.ussd_shortcode,
+          status: c.ussd_shortcode_status
         }
       }))
     });

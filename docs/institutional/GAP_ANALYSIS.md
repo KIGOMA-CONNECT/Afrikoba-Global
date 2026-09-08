@@ -20,7 +20,7 @@ work and brings it under the canonical institutional structure; nothing below wa
 | 10 | Security Architecture (AFK-INST-10) | YES — DRAFT | 0.1 | Yes | No | Control catalogue mapped from audit + implementation | Approve baseline | Security Lead | 1 — HIGH ✅ delivered |
 | 11 | Threat Model (AFK-INST-11) | YES — DRAFT | 0.1 | Yes | No | STRIDE asset/surface matrix + residual risks | Approve; annual re-eval | Security Lead | 1 — HIGH ✅ delivered |
 | 12 | Risk Register (AFK-INST-12) | YES — DRAFT | 0.1 | Yes | No | 14 risks defined L/I/owner/treatment | Keep current post reviews | Risk Officer | 1 — HIGH ✅ delivered |
-| 13 | Compliance Matrix (AFK-INST-13) | YES — DRAFT | 0.2 | Yes | No | 14 obligations→control→evidence; SAR row IMPLEMENTED (filing feature 095 + test-sar-filing) | Keep per-market licence statuses current | Compliance Officer | 1 — HIGH ✅ delivered |
+| 13 | Compliance Matrix (AFK-INST-13) | YES — DRAFT | 0.3 | Yes | No | 14 obligations→control→evidence; SAR row IMPLEMENTED (095 + test-sar-filing); TCRA USSD shortcode row IMPLEMENTED (097 registry + test-tcra-ussd 22/22) | Keep per-market licence/shortcode statuses current via admin API | Compliance Officer | 1 — HIGH ✅ delivered |
 | 14 | Data Governance Framework (AFK-INST-14) | YES — DRAFT | 0.3 | Yes | Yes | Standard headers done, DPIA + derivative-doc plan; C2 RESOLVED (single r/c schedule, published derivatives regenerated) | Approve as current DPO revision | DPO | 1 — HIGH ✅ delivered |
 | 15 | AI Governance Framework (AFK-INST-15) | YES — DRAFT | 0.1 | Yes | No | Model inventory, lifecycle, HITL, bias, DPIA; Secretary/Project-Intelligence slots pending | Version-track future models | AI Ethics Lead | 1 — HIGH ✅ delivered |
 | 16 | Financial Control Framework (AFK-INST-16) | YES — DRAFT | 0.2 | Yes | No | SoD matrix, controls, chart discipline (093) | Approve + periodic control testing | Head of Finance | 1 — HIGH ✅ delivered |
@@ -77,15 +77,18 @@ policies regenerated from AFK-INST-14 (7y financial, 30d backups). SAR filing fo
 **P2 — Specs + engineering docs (DONE 2026-09-07):** AFK-INST-02/03 (requirements incl. new
 capabilities), 04 (SRS, FR/NFR traceable), 06 (system architecture), 07 (data architecture; C1 → 0.2),
 08 (API spec, standardises C4), 09 (database design), 10 (security architecture), 11 (threat model
-STRIDE), 17 (reconciliation), 21 (test strategy; test-procurement added → 31 suites), 22 (release mgmt),
+STRIDE), 17 (reconciliation), 21 (test strategy; test-procurement + test-tcra-ussd → 32 suites), 22 (release mgmt),
 23 (ops runbook). OpenAPI generated code-first 2026-09-07 (src/docs/openapi.js + swagger.js →
 /api/v1/docs + docs.json, guarded by test-openapi; AFK-INST-08 → 0.2). C1 suppliers schema reconciled
 2026-09-07 (096 union migration + partial unique index; test-procurement in CI; AFK-INST-07 → 0.2).
+TCRA USSD shortcode row closed 2026-09-07 (097 shortcode registry + admin lifecycle + test-tcra-ussd
+22/22 in CI; AFK-INST-13 → 0.3; all 14 compliance obligations now IMPLEMENTED/APPROVED).
 
 **P3 — Business terms (DONE 2026-09-07):** AFK-INST-01 (charter), 19 (BCP), 24 (SLA), 25 (vendor
 mgmt), 27 (audit program). The canonical 27-doc set is DRAFT-complete and all code-side gaps are
 closed: C1 (suppliers schema) RESOLVED via 096, C2 (retention) RESOLVED, C3 (ADRs) backfilled,
-C4 (API contracts) standardised + OpenAPI. Next is formal approval cycling per row owner.
+C4 (API contracts) standardised + OpenAPI. TCRA USSD shortcode (the last ACTION REQUIRED row)
+closed via the 097 registry + test-tcra-ussd. Next is formal approval cycling per row owner.
 
 Each delivery updates the registry `Status` → `DRAFT`, then `APPROVED` after the approval
 authority signs the revision; the change is recorded in the document Change History.

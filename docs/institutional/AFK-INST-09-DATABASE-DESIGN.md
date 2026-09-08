@@ -51,7 +51,7 @@ design intent — migrations are authoritative.
 
 ## 6. Migration policy
 
-- New feature needing schema → new numbered migration (next free: 096 after 095).
+- New feature needing schema → new numbered migration (next free: 097 after 096).
 - Destructive DDL requires CAB via AFK-INST-26; recreate/repair path documented before apply.
 - Sequence resync handled (090) after bulk loads.
 
