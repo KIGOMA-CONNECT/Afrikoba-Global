@@ -12,6 +12,7 @@ const savingsGoalService = require('../services/savingsGoalService');
 const deviceService = require('../services/deviceService');
 const fraudDetectionService = require('../services/fraudDetectionService');
 const spendingAnalyticsService = require('../services/spendingAnalyticsService');
+const paymentRequestService = require('../services/paymentRequestService');
 
 const router = express.Router();
 
@@ -275,6 +276,50 @@ router.get('/analytics/averages', authRequired, async (req, res, next) => {
   try {
     const averages = await spendingAnalyticsService.getAverageTransaction(req.user.id, req.query.period);
     res.json({ success: true, averages });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ===== B12: PAYMENT REQUESTS (request-to-pay) =====
+
+router.post('/payment-requests', authRequired, async (req, res, next) => {
+  try {
+    const { payerPhone, amount, note, expiresInHours } = req.body;
+    const request = await paymentRequestService.createRequest(req.user.id, {
+      payerPhone,
+      amount,
+      note,
+      expiresInHours,
+    });
+    res.json({ success: true, request });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/payment-requests', authRequired, async (req, res, next) => {
+  try {
+    const requests = await paymentRequestService.listRequests(req.user.id);
+    res.json({ success: true, ...requests });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/payment-requests/:id/pay', authRequired, async (req, res, next) => {
+  try {
+    const result = await paymentRequestService.payRequest(req.user.id, parseInt(req.params.id), req.body.note);
+    res.json({ success: true, ...result });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/payment-requests/:id/cancel', authRequired, async (req, res, next) => {
+  try {
+    const request = await paymentRequestService.cancelRequest(req.user.id, parseInt(req.params.id));
+    res.json({ success: true, request });
   } catch (error) {
     next(error);
   }

@@ -48,8 +48,13 @@ Status legend: ✅ **built** · 🔶 **partial** · ⬜ **not built / next**.
 ## 4. Wallet System (Sec 9–10, 42, 44–45)
 - ✅ Deposit, withdrawal, transfer, transaction history, balance, locked funds,
   P2P, statements, multi-currency balances, cards (virtual+physical model), savings.
-- 🔶 Merchant/QR, scheduled transactions, beneficiaries, payment requests = partial.
-  ✅ Merchant QR + payment links now surfaced (see Sec 7).
+- ✅ Merchant QR + payment links now surfaced (see Sec 7).
+- ✅ **Payment requests (request-to-pay)** (migration 098: `payment_requests`). User asks a contact
+  (by phone) for money: `PRQ-*` request with 1–168h expiry, incoming/outgoing lists, requester cancel,
+  payer settle via the canonical wallet transfer path (TR-* journal transfer + transactions +
+  wallet_ledger + SMS + audit), already-paid is idempotent, stale requests auto-EXPIRED.
+  Routes at `/api/banking/payment-requests`. **`scripts/test-payment-requests.js` — 49 checks
+  (PRQ-* lifecycle, DR=CR settlement, idempotent re-pay, expiry, RBAC, audit) wired into CI.**
 - ✅ FX / multi-currency (`currencyService`): TZS primary + dynamic currencies +
   live FX preview (`/currency/rates/:from/:to`, `/currency/currencies`). (Sec 45)
 - ✅ Yield pool separated from wallet money (`YIELD_LIABILITY`). (Sec 44)
@@ -203,6 +208,7 @@ Status legend: ✅ **built** · 🔶 **partial** · ⬜ **not built / next**.
   pg_dump → scratch restore → structural/row parity, zero unbalanced groups, serial ≥ max id, partitions
   intact, migration replay, cleanup) — GLOBAL_STANDARDS_AUDIT rec #5 resolved; CI suite count → 33.
 - ✅ **Standing instructions** (`recurrenceService.STANDING_INSTRUCTION` now a real dispatcher + `scripts/test-recurrence.js` 43/43 in CI): migration 067's recurring-transfer placeholder is productionised — SI-* idempotent journal transfer (financialEngine), transactions + wallet_ledger + SMS + audit, insufficient-balance FAILED executions, disabled-rule skip; `POST /api/recurrence/sweep` re-runs prove no duplicate money movement. CI suite count → 34.
+- ✅ **Payment requests (request-to-pay)** (migration 098 + `src/services/paymentRequestService.js`; `scripts/test-payment-requests.js` 49/49 in CI): the remaining 🔶 "payment requests" wallet gap is closed — `PRQ-*` lifecycle (PENDING/PAID/CANCELLED/EXPIRED, 1–168h expiry), canonical-transfer settlement (payer pays → TR-* journal transfer + wallet_ledger + SMS + audit; requester credited, DR=CR balanced), idempotent re-pay, requester-only cancel. CI suite count → 35.
 - ✅ **Code-first OpenAPI generated** (AFK-INST-08 v0.2): `src/docs/openapi.js` (swagger-jsdoc
   annotations covering the AFK-INST-08 module surface + C4 contracts + security schemes) wired into
   `src/config/swagger.js`; spec published at `/api/v1/docs.json` + swagger-ui at `/api/v1/docs`
