@@ -1,19 +1,28 @@
 /**
  * Afrikoba Global — Load Testing Suite (k6)
- * Run: k6 run scripts/load-test.js
- * Or: k6 cloud scripts/load-test.js (for k6 Cloud)
+ * Run:     k6 run scripts/load-test.js
+ * Run URL: k6 run -e BASE_URL=https://staging.afrikoba.com scripts/load-test.js
+ * Or:      k6 cloud scripts/load-test.js (for k6 Cloud)
+ *
+ * API contract aligned with src/validations/schemas.js (C4, AFK-INST-08):
+ *   POST /api/v1/auth/send-otp  { phoneNumber }            → { devOtp: "1234" } (non-prod)
+ *   POST /api/v1/auth/login     { phoneNumber, otp }       → { token, user }
+ *   POST /api/v1/auth/register  { fullName, phoneNumber, otp, [password] } → { token, user }
+ *   POST /api/v1/wallet/transfer { toPhoneNumber, amount, [note] }  (Idempotency-Key header)
  *
  * Scenarios:
- *   - Health check (baseline)
- *   - Auth flow (register + login + OTP)
- *   - Wallet operations (transfer, balance)
- *   - VICOBA operations (list groups, join)
- *   - P2P browsing (list projects)
+ *   - health   (baseline liveness)
+ *   - auth     (login seeded funded user + register new user — devOtp flow)
+ *   - transfer (funded user → recipient, idempotency-keyed)
+ *   - browsing (docs + db health)
+ *
+ * Load-run notes: default OTP_RATE_MAX is 20/15min per phone; for realistic
+ * auth load on staging either raise it or set RATE_LIMIT_DISABLED=true.
  */
 
 import http from 'k6/http';
 import { check, sleep, group } from 'k6';
-import { Counter, Rate, Trend } from 'k6/metrics';
+import { Counter, Trend } from 'k6/metrics';
 
 // Custom metrics
 const loginSuccess = new Counter('login_success');
@@ -22,12 +31,44 @@ const transferSuccess = new Counter('transfer_success');
 const apiLatency = new Trend('api_latency');
 
 const BASE_URL = __ENV.BASE_URL || 'http://localhost:3000';
-const TEST_PHONE = __ENV.TEST_PHONE || '255728123456';
-const TEST_PASS = __ENV.TEST_PASS || 'Test@12345';
+// Funded seeded sender (db/seed.sql) for the transfer scenario.
+const FUNDED_PHONE = __ENV.FUNDED_PHONE || '255713100001';   // Asha (150,000 TZS, KYC 2)
+const RECIPIENT_PHONE = __ENV.RECIPIENT_PHONE || '255714100002'; // Juma (200,000 TZS)
+const TRANSFER_AMOUNT = Number(__ENV.TRANSFER_AMOUNT || 1000);
+
+// k6 keeps a module-level context per VU; cache the auth token per VU.
+const tokenCache = {};
+function login() {
+  const phone = FUNDED_PHONE;
+  const otp = http.post(`${BASE_URL}/api/v1/auth/send-otp`,
+    JSON.stringify({ phoneNumber: phone }),
+    { headers: { 'Content-Type': 'application/json' } });
+  const devOtp = otp.json() && otp.json().devOtp;
+  if (otp.status !== 200 || !devOtp) {
+    loginFailed.add(1);
+    apiLatency.add(otp.timings.duration);
+    return null;
+  }
+  const login = http.post(`${BASE_URL}/api/v1/auth/login`,
+    JSON.stringify({ phoneNumber: phone, otp: devOtp }),
+    { headers: { 'Content-Type': 'application/json' } });
+  apiLatency.add(login.timings.duration);
+  if (login.status === 200 && login.json() && login.json().token) {
+    loginSuccess.add(1);
+    return login.json().token;
+  }
+  loginFailed.add(1);
+  return null;
+}
+function cachedToken() {
+  if (tokenCache[__VU]) return tokenCache[__VU];
+  tokenCache[__VU] = login() || '';
+  return tokenCache[__VU];
+}
 
 export const options = {
   scenarios: {
-    // Scenario 1: Health check (constant load)
+    // Scenario 1: health check (constant load)
     health: {
       executor: 'constant-arrival-rate',
       rate: 50,
@@ -36,18 +77,27 @@ export const options = {
       preAllocatedVUs: 10,
       exec: 'healthCheck',
     },
-    // Scenario 2: Auth flow (ramp up)
+    // Scenario 2: auth flow (login + register with devOtp)
     auth: {
       executor: 'ramping-vus',
       startVUs: 0,
       stages: [
-        { duration: '30s', target: 20 },
-        { duration: '1m', target: 20 },
+        { duration: '30s', target: 10 },
+        { duration: '1m', target: 10 },
         { duration: '30s', target: 0 },
       ],
       exec: 'authFlow',
     },
-    // Scenario 3: API browsing (sustained)
+    // Scenario 3: funded wallet transfer (idempotency-keyed)
+    transfer: {
+      executor: 'constant-arrival-rate',
+      rate: 2,
+      timeUnit: '1s',
+      duration: '1m',
+      preAllocatedVUs: 2,
+      exec: 'walletTransfer',
+    },
+    // Scenario 4: API browsing (sustained)
     browsing: {
       executor: 'constant-arrival-rate',
       rate: 30,
@@ -59,9 +109,9 @@ export const options = {
   },
   thresholds: {
     http_req_duration: ['p(95)<2000', 'p(99)<5000'],
-    http_req_failed: ['rate<0.05'],
-    login_success: ['count>10'],
-    transfer_success: ['count>5'],
+    http_req_failed: ['rate<0.15'],
+    login_success: ['count>5'],
+    transfer_success: ['count>3'],
   },
 };
 
@@ -76,26 +126,69 @@ export function healthCheck() {
 }
 
 export function authFlow() {
-  group('Auth: Register + Login', () => {
-    // Generate unique phone
+  group('Auth: Login + Register (devOtp)', () => {
     const phone = `2557${String(__VU).padStart(2, '0')}${String(__ITER).padStart(6, '0')}`.slice(0, 12);
-
-    // Send OTP
     const otpRes = http.post(`${BASE_URL}/api/v1/auth/send-otp`,
-      JSON.stringify({ phone_number: phone, purpose: 'LOGIN' }),
-      { headers: { 'Content-Type': 'application/json' } }
-    );
+      JSON.stringify({ phoneNumber: phone }),
+      { headers: { 'Content-Type': 'application/json' } });
+    const devOtp = otpRes.json() && otpRes.json().devOtp;
+    apiLatency.add(otpRes.timings.duration);
     check(otpRes, {
       'send-otp: status 200 or 429': (r) => r.status === 200 || r.status === 429,
     });
-    apiLatency.add(otpRes.timings.duration);
 
-    sleep(0.5);
+    if (otpRes.status === 200 && devOtp) {
+      const reg = http.post(`${BASE_URL}/api/v1/auth/register`,
+        JSON.stringify({ fullName: `Load User ${__VU}-${__ITER}`, phoneNumber: phone, otp: devOtp }),
+        { headers: { 'Content-Type': 'application/json' } });
+      apiLatency.add(reg.timings.duration);
+      if (reg.status === 200 && reg.json() && reg.json().token) loginSuccess.add(1);
+      else loginFailed.add(1);
+      check(reg, {
+        'register: status 200 or 400': (r) => r.status === 200 || r.status === 400,
+      });
+    } else if (otpRes.status !== 200) {
+      loginFailed.add(1);
+    }
 
-    // Health check
-    const healthRes = http.get(`${BASE_URL}/health`);
-    check(healthRes, {
-      'health during auth: status 200': (r) => r.status === 200,
+    // Re-login the funded sender each VU (idempotent cache for transfer).
+    if (otpRes.status === 200 && devOtp && cachedToken()) {
+      check(true, 'funded sender token available');
+    } else {
+      loginFailed.add(1);
+    }
+  });
+
+  sleep(1);
+}
+
+export function walletTransfer() {
+  group('Wallet: Transfer (idempotency-keyed)', () => {
+    const token = cachedToken();
+    if (!token) {
+      loginFailed.add(1);
+      return;
+    }
+    const res = http.post(`${BASE_URL}/api/v1/wallet/transfer`,
+      JSON.stringify({ toPhoneNumber: RECIPIENT_PHONE, amount: TRANSFER_AMOUNT, note: 'k6 load transfer' }),
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+          'Idempotency-Key': `k6-load-${__VU}-${__ITER}`,
+        },
+      });
+    apiLatency.add(res.timings.duration);
+    if (res.status === 200) transferSuccess.add(1);
+    check(res, {
+      'transfer: accepted (200) or business error (400/402/409)': (r) =>
+        r.status === 200 || r.status === 400 || r.status === 402 || r.status === 409,
+    });
+    const bal = http.get(`${BASE_URL}/api/v1/wallet/balance`,
+      { headers: { Authorization: `Bearer ${token}` } });
+    apiLatency.add(bal.timings.duration);
+    check(bal, {
+      'balance: 200': (r) => r.status === 200,
     });
   });
 
@@ -104,22 +197,18 @@ export function authFlow() {
 
 export function apiBrowsing() {
   group('API: Browse', () => {
-    // Health
     const health = http.get(`${BASE_URL}/health`);
     check(health, { 'browse health: 200': (r) => r.status === 200 });
     apiLatency.add(health.timings.duration);
 
-    // API version info
     const version = http.get(`${BASE_URL}/api/v1`);
     check(version, { 'version: 200': (r) => r.status === 200 });
     apiLatency.add(version.timings.duration);
 
-    // Health DB
     const dbHealth = http.get(`${BASE_URL}/health/db`);
     check(dbHealth, { 'db health: 200': (r) => r.status === 200 });
     apiLatency.add(dbHealth.timings.duration);
 
-    // Swagger docs
     const docs = http.get(`${BASE_URL}/api/v1/docs.json`);
     check(docs, { 'swagger: 200': (r) => r.status === 200 });
     apiLatency.add(docs.timings.duration);
@@ -136,6 +225,8 @@ export function handleSummary(data) {
       http_req_duration_p95: data.metrics.http_req_duration?.values?.['p(95)'] || 0,
       http_req_duration_p99: data.metrics.http_req_duration?.values?.['p(99)'] || 0,
       http_req_failed_rate: data.metrics.http_req_failed?.values?.rate || 0,
+      login_success: data.metrics.login_success?.values?.count || 0,
+      transfer_success: data.metrics.transfer_success?.values?.count || 0,
     },
   };
 

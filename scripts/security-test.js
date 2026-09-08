@@ -9,6 +9,10 @@
  *   - Unauthorized access patterns
  *   - CORS enforcement
  *   - Input validation bypass
+ *
+ * API contract aligned with src/validations/schemas.js (C4, AFK-INST-08):
+ *   payloads use camelCase field names (phoneNumber / fullName) as the
+ *   zod schemas require.
  */
 
 import http from 'k6/http';
@@ -47,7 +51,7 @@ export default function () {
   group('SQL Injection', () => {
     for (const payload of SQL_PAYLOADS) {
       const res = http.post(`${BASE_URL}/api/v1/auth/send-otp`,
-        JSON.stringify({ phone_number: payload }),
+        JSON.stringify({ phoneNumber: payload }),
         { headers: { 'Content-Type': 'application/json' } }
       );
       check(res, {
@@ -62,8 +66,9 @@ export default function () {
     for (const payload of XSS_PAYLOADS) {
       const res = http.post(`${BASE_URL}/api/v1/auth/register`,
         JSON.stringify({
-          full_name: payload,
-          phone_number: '255789123456',
+          fullName: payload,
+          phoneNumber: '255789123456',
+          otp: '9999',
           password: 'Test@12345',
         }),
         { headers: { 'Content-Type': 'application/json' } }
@@ -106,7 +111,7 @@ export default function () {
     const results = [];
     for (let i = 0; i < 25; i++) {
       const res = http.post(`${BASE_URL}/api/v1/auth/send-otp`,
-        JSON.stringify({ phone_number: '255700000001', purpose: 'LOGIN' }),
+        JSON.stringify({ phoneNumber: '255700000001' }),
         { headers: { 'Content-Type': 'application/json' } }
       );
       results.push(res.status);
@@ -139,8 +144,9 @@ export default function () {
     const bigName = 'A'.repeat(500);
     const res = http.post(`${BASE_URL}/api/v1/auth/register`,
       JSON.stringify({
-        full_name: bigName,
-        phone_number: 'not_a_phone',
+        fullName: bigName,
+        phoneNumber: 'not_a_phone',
+        otp: '9999',
         password: 'weak',
       }),
       { headers: { 'Content-Type': 'application/json' } }
