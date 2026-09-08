@@ -4,10 +4,10 @@ Title: Architecture Decision Records
 Purpose: Immutable log of architecture decisions (ADRs) with context, options and consequences; the backfill baseline for decisions currently expressed only in migration/service code.
 Owner: Enterprise Architect
 Status: DRAFT
-Version: 0.1
+Version: 0.2
 Effective Date: 2026-09-07
-Last Review Date: 2026-09-07
-Related Systems/Modules: financialEngine, telemetry/trace, ledger partitions, multi-country rails, device security, procured AI
+Last Review Date: 2026-09-08
+Related Systems/Modules: financialEngine, telemetry/trace, ledger partitions, multi-country rails, device security, procured AI, four-eyes governance, outbox/event bus, chart of accounts, OpenAPI, field partners, SAR/TCRA regulatory surfaces
 Related Regulatory Requirements: None directly; ADR-004 feeds Compliance Matrix (WHT/migrations 089)
 Approval Authority: Governance Lead (CAB) per AFK-INST-26
 ---
@@ -26,6 +26,14 @@ authorised; new ADRs MUST be appended here and their status changed to APPROVED.
 | ADR-004 | Multi-country compliance rails (calling codes, WHT, caps) | ACCEPTED | 2026-09-07 |
 | ADR-005 | Trusted-device binding for high-risk money actions | ACCEPTED | 2026-09-07 |
 | ADR-006 | Self-hosted AI insight generation governed by model register | ACCEPTED | 2026-09-07 |
+| ADR-007 | Multi-signature + four-eyes dual-control governance for privileged money actions | ACCEPTED | 2026-09-08 |
+| ADR-008 | Feature flags + A/B experimentation layered on deterministic assignment | ACCEPTED | 2026-09-08 |
+| ADR-009 | Monthly-range partitioning of journal and audit tables (re-confirmed) + sequence resync | ACCEPTED | 2026-09-08 |
+| ADR-010 | Formal chart of accounts numbering (1000…5000) as classification overlay | ACCEPTED | 2026-09-08 |
+| ADR-011 | Code-first OpenAPI contract as the canonical API specification | ACCEPTED | 2026-09-08 |
+| ADR-012 | Transaction-aware outbox + event bus with exactly-once dedup | ACCEPTED | 2026-09-08 |
+| ADR-013 | Field-partner funding pool as a ledger-partner overlay (Kiva-style) | ACCEPTED | 2026-09-08 |
+| ADR-014 | FIU SAR filing trail + TCRA USSD shortcode registry as regulatory surfaces | ACCEPTED | 2026-09-08 |
 
 ## ADR-001 — Central double-entry ledger engine for all money movement
 
@@ -91,8 +99,102 @@ invoice/payroll/procurement health.
 **Consequences.** Models are versioned and auditable per AFK-INST-15; retraining/vision changes
 are backward-compatible by new model version; no user data leaves the platform.
 
+## ADR-007 — Multi-signature + four-eyes dual-control governance for privileged money actions
+
+**Context.** High-value transfers, loan disbursements, refunds and role changes were single-actor.
+**Decision.** Migration 052 gates high-value wallet transfers via an executor registry;
+migration 081 adds generalised `four_eyes_policies`/`four_eyes_requests`/`four_eyes_approvals`
+(role-enforced, no-self-approval, quorum 1–3, dispatches to registered executors, retry on FAILED);
+migration 058 provides N-of-M treasury multi-sig for internal treasuries.
+**Consequences.** Privileged actions are maker-checked with an immutable request/approval trail;
+new executors register in `fourEyesRoutes.js` and reuse the same lifecycle (ADMIN_PROMOTE_ROLE,
+ADMIN_DEMOLE_ROLE, ADMIN_LARGE_REFUND, VICOBA/CREDIT/BUSINESS loan disbursers, card settle/refund,
+lending-circle + kilimo disbursers). No-self-approval and role checks are DB- and service-enforced.
+
+## ADR-008 — Feature flags + A/B experimentation layered on deterministic assignment
+
+**Context.** Shipping risky features unscoped blocked safe rollout; product wanted measured launches.
+**Decision.** Migration 080 `feature_flags`/`flag_evaluations` (fail-closed, kill-switch, per-user
+overrides, role audience, expiry, SHA256 rollout bucket — every decision logged); migration 081
+`experiments`/`experiment_assignments`/`experiment_events` with deterministic weighted variant
+assignment (SHA256 bucket on `key:userId`, sticky via ON CONFLICT), lifecycle DRAFT→ARCHIVED and
+reporting with uplift/z-score/WIN-LOSS-NEUTRAL.
+**Consequences.** Features and experiments are governed centrally and testable in CI
+(`test-features.js` / `test-experiments.js`); RUNNING experiments require an enabled flag
+and immutable variants; rollout is auditable per user.
+
+## ADR-009 — Monthly-range partitioning of journal and audit tables (re-confirmed) + sequence resync
+
+**Context.** Migration 088 rebuilt `journal_entries`/`audit_logs` as monthly partitions; on DBs with
+a legacy same-named sequence the implicit new default bound to `*_seq1` that 088's setval missed —
+live sequence (429) lagged MAX(id) (1925), quietly breaking the serial contract in production-shaped DBs.
+**Decision.** This ADR adopts partitioning as accepted for the financial core AND mandates migration
+090 `sequence_resync`: name-agnostic `setval` of the sequence actually referenced by each table's
+`id` default, `GREATEST(max_id, last_value)` — idempotent, never lowers. `partitionService.js`
+ensures current+future partitions on boot + cron and supports DETACH-archive; healthy state is
+exposed at `GET /api/ops/partitions`, and `test-partitions.js` + `test-restore-verify.js` re-assert
+the serial contract post-migration.
+**Consequences.** Future partition/DDL rebuilds must apply the name-agnostic sequence resync pattern;
+CI now exercises the partitioned schema path; retention/compaction is DETACH-based, documented in AFK-INST-07/09.
+
+## ADR-010 — Formal chart of accounts numbering (1000…5000) as classification overlay
+
+**Context.** Ledger accounts carried semantic `account_type` but no standard accounting class numbering.
+**Decision.** Migration 093 adds `chart_number` with CHECK-aligned ranges (ASSET 1000–1999, LIABILITY
+2000–2999, EQUITY 3000–3999, REVENUE 4000–4999, EXPENSE 5000–5999), backfilled from `account_type`,
+unique when non-null. `chartOfAccountsService.js` exposes a grouped view with journal balances;
+`account_id` FKs are untouched — the number is a pure classification mirror.
+**Consequences.** Finance can produce standard-class chart reports without remodelling; a unique
+`chart_number` prevents double-classification; the overlay is additive (verified by test-chart-of-accounts).
+
+## ADR-011 — Code-first OpenAPI contract as the canonical API specification
+
+**Context.** Consumer/test return-shape drift (C4) recurred because contracts lived in prose and tests
+guessed shapes.
+**Decision.** `src/docs/openapi.js` (swagger-jsdoc annotations over the AFK-INST-08 module surface,
+C4 contracts and security schemes) is wired via `src/config/swagger.js`; spec published code-first at
+`/api/v1/docs.json` + swagger-ui (non-prod). `scripts/test-openapi.js` guards the spec. AFK-INST-08 §4
+records canonical shapes.
+**Consequences.** API documentation is generated from the same source as routes — drift is caught by CI;
+tests and consumers reference the spec instead of guessing; spec regeneration is a code change (reviewed like code).
+
+## ADR-012 — Transaction-aware outbox + event bus with exactly-once dedup
+
+**Context.** Distributed side-effects (SMS, merchant payout execution, notifications) after money
+movement were fire-and-forget — at-least-once retries risked duplicates or silent loss.
+**Decision.** Migration 087 `outbox_events` (status PENDING/DELIVERED/FAILED/DEAD, attempts, backoff,
+`reference_id UNIQUE` dedup): producers enqueue in the SAME DB transaction as the money movement;
+`outboxService.dispatchOutbox` claims due rows `FOR UPDATE SKIP LOCKED`, exponential backoff
+5s→30min cap, dead-letters past `max_attempts`, requeueable. Producers: VICOBA loan approval,
+merchant payout execution; consumers registered in `server.js`; cron + admin `/api/outbox`.
+**Consequences.** Exactly-once enqueue (dedup on reference) with at-least-once dispatch; money movement
+never blocks on side-effect failure (guard `.catch(() => {})`); observability via ledger + `outbox_events`.
+
+## ADR-013 — Field-partner funding pool as a ledger-partner overlay (Kiva-style)
+
+**Context.** External lending networks need partner-held funding pools disbursed to borrower wallets
+without mixing with customer or company money.
+**Decision.** Migration 091: `field_partners` overlay (`user_id` unique partial, operator, `available_balance`)
+and `field_partner_loans`/`field_partner_repayments`; `fieldPartnerService` funds/disburses/repays via
+`PARTNER_BALANCE` ↔ `CUSTOMER_WALLET`/`SUSPENSE` engine postings; invariant `available_balance` mirrors
+`PARTNER_BALANCE` net (test-field-partners 29 checks). Disbursements check the pool FOR UPDATE.
+**Consequences.** Partner capital is explicit in the ledger; a partner pool can never be over-disbursed;
+borrower-level money stays on-platform and ledger-integrity-tested.
+
+## ADR-014 — FIU SAR filing trail + TCRA USSD shortcode registry as regulatory surfaces
+
+**Context.** Regulatory obligations (AML SAR filing; TCRA USSD shortcode approval) had no system of record.
+**Decision.** Migration 095 `sar_filings` (multiple filings per `aml_cases`, reference/agency/summary,
+filed_by) mirror latest filing onto `aml_cases`; `POST /api/admin/aml/cases/:id/file-sar` + `SAR_FILED`
+audit. Migration 097 `supported_countries.ussd_shortcode`/`_status` (PENDING|APPROVED CHECK, TZ `*150*87`)
+with admin PUT lifecycle + `COUNTRY_UPDATED` audit, surfaced via `/api/countries` and `/me`.
+**Consequences.** SAR and shortcode posture are queryable and audit-trailed; AFK-INST-13 rows map to
+implemented controls with CI suites (test-sar-filing 20, test-tcra-ussd 22); field status lives in the
+country table and is administered, not hardcoded.
+
 ## Change History
 
 | Version | Date | Author | Reason | Approval |
 |---------|------|--------|--------|----------|
 | 0.1 | 2026-09-07 | AI code review | Backfill of six ADRs from migration/service evidence (Gap C3) | Governance Lead (pending) |
+| 0.2 | 2026-09-08 | AI code review | Backfill ADR-007..014 (four-eyes, flags/experiments, partition resync, chart numbering, code-first OpenAPI, outbox, field-partner pool, SAR/TCRA rails) from migration 052/058/080/081/087/088/090/091/093/095/097 + service evidence (Gap C3 continuation) | Governance Lead (pending) |

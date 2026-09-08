@@ -168,8 +168,10 @@ Status legend: ✅ **built** · 🔶 **partial** · ⬜ **not built / next**.
   sequencing plan. Drafting of remaining P1–P3 documents is scheduled and tracked in
   the registry.
 
-- ✅ **P1 institutional documents drafted** (`docs/institutional/`): AFK-INST-05 ADRs (×6:
-  central ledger, OTel spans, partitions, multi-country rails, device binding, AI register),
+- ✅ **P1 institutional documents drafted** (`docs/institutional/`): AFK-INST-05 ADRs (×14:
+  001–006 baseline ledger/OTel/partitions/multi-country/device-binding/AI-register + 007–014
+  four-eyes-governance/flags-experiments/partition-resync/chart-numbering/code-first-OpenAPI/
+  outbox/field-partner-pool/SAR+TCRA-rails — ADR backlog DRAFT-complete),
   AFK-INST-12 Risk Register (14 risks), AFK-INST-13 Compliance Matrix, AFK-INST-14 Data
   Governance Framework, AFK-INST-15 AI Governance Framework, AFK-INST-16 Financial Control
   Framework, AFK-INST-20 Incident Response Plan, AFK-INST-26 Change Management Procedure —
