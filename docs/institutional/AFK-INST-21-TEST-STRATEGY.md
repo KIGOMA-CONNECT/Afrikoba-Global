@@ -4,7 +4,7 @@ Title: Test Strategy
 Purpose: Test levels, coverage targets, environments, CI gates and acceptance criteria for Afrikoba Global.
 Owner: QA Lead
 Status: DRAFT
-Version: 0.9
+Version: 1.0
 Effective Date: 2026-09-07
 Last Review Date: 2026-09-09
 Related Systems/Modules: All; scripts/test-*.js; .github/workflows/ci.yml
@@ -19,9 +19,10 @@ Approval Authority: QA Lead / CAB
 | Level | Scope | Where |
 |-------|-------|-------|
 | Unit | Services/utils (engine, ledger math, fee/split/WHT) | Node tests |
-| Integration/Regression | End-to-end API + DB against a seeded Postgres | `scripts/test-*.js` (38 suites) + CI |
+| Integration/Regression | End-to-end API + DB against a seeded Postgres | `scripts/test-*.js` (39 suites) + CI |
 | Frontend build | Web dashboard Vite build; Flutter analyze/test/build | CI |
-| Load/Security | k6 load + security scripts | staging |
+| Load/Security | k6 load + security scripts (`.github/workflows/k6.yml`, manual vs staging) | staging |
+| Continuous monitoring | `uptime.yml` health probes sitting on `/health` + landing + `/api/v1/docs.json` | scheduled |
 | UAT/Regression on release | Stable behaviour proof for money math | CI on `main` |
 
 ## 2. Coverage targets
@@ -47,7 +48,8 @@ test-kyc, test-lending-gates, test-kilimo-seasons, test-disputes, test-merchant-
 test-outbox, test-vault, test-caching, test-partitions, test-ussd, test-multi-country,
 test-ledger-integrity, test-field-partners, test-device-binding, test-chart-of-accounts,
 test-tracing, test-ai-insights, test-sar-filing, test-openapi, test-procurement, test-tcra-ussd,
-test-recurrence, test-payment-requests, test-merchant-invoices, test-restore-verify.
+test-recurrence, test-payment-requests, test-merchant-invoices, test-marketplace,
+test-family-guardian, test-projection-cache, test-restore-verify.
 
 ## 5. Known flakiness & rerun policy
 
@@ -72,3 +74,4 @@ expected; dashboard UI wired; test proving money math; audit-log entry for money
 | 0.7 | 2026-09-08 | AI code review | Added test-merchant-invoices (migration 099 merchant invoices: INV-* lifecycle, canonical merchant-payment settlement MERCH-*, idempotent re-pay, overpay/cancel/expiry guards, RBAC) → 36 suites | QA Lead (pending) |
 | 0.8 | 2026-09-09 | AI code review | Added test-marketplace (marketplace money path: purchase→MARKETPLACE_ESCROW hold, evidence→settle, cancel→refund, dispute freeze + ADMIN BUYER_REFUND/SPLIT rulings with balanced journals, RBAC) → 37 suites | QA Lead (pending) |
 | 0.9 | 2026-09-09 | AI code review | Added test-family-guardian (family wallet guardian controls: can_spend/spending_limit enforcement, OWNER-only invite/remove, INVITED→ACTIVE lifecycle, contribute/spend/transfer ledger + RBAC) → 38 suites | QA Lead (pending) |
+| 1.0 | 2026-09-09 | AI code review | Added test-projection-cache (projection-cache audit: `wallet_balance` == `wallet_ledger` trail net across seed/transfer/PRQ/SI paths + drift-detection self-test) → 39 suites; suite list corrected to include test-marketplace/test-family-guardian; k6 + uptime CI workflows documented | QA Lead (pending) |

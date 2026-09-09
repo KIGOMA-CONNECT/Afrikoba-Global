@@ -1,0 +1,65 @@
+name: Uptime & Health Monitoring
+
+on:
+  schedule:
+    # Every 15 minutes during business hours UTC; use workflow_dispatch for ad-hoc checks.
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: 'Environment base URL to probe'
+        required: true
+        default: 'https://staging.afrikoba.com'
+
+# Continuous availability monitoring (AFK-INST-24 SLA core API >= 99.5% monthly,
+# AFK-INST-23 Operations Runbook "monitoring"): probes live endpoints and fails the
+# run on a sustained non-200 so status pages/alerts can key off this workflow.
+# Probe set (all GET, side-effect free):
+#   /health                - liveness + db check
+#   /                      - landing page (public)
+#   /api/v1/docs.json      - API spec published (non-prod gate)
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: Health probe
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve base URL
+        id: url
+        run: |
+          URL="${{ github.event.inputs.base_url }}"
+          if [ -z "$URL" ]; then URL="${{ vars.STAGING_BASE_URL }}"; fi
+          if [ -z "$URL" ]; then URL="https://staging.afrikoba.com"; fi
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+
+      - name: Probe /health
+        run: |
+          url=$(printf '%s' "${{ steps.url.outputs.url }}" | sed 's:/$::')
+          ok=0
+          for i in 1 2 3; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "$url/health") || true
+            if [ "$code" = "200" ]; then ok=1; echo "/health OK (attempt $i)"; break; fi
+            sleep 5
+          done
+          if [ "$ok" != "1" ]; then echo "::error::/health not 200 (last $code)"; exit 1; fi
+
+      - name: Probe landing page
+        run: |
+          url=$(printf '%s' "${{ steps.url.outputs.url }}" | sed 's:/$::')
+          code=$(curl -s -o /dev/null -w '%{http_code}' "$url/")
+          if [ "$code" != "200" ]; then echo "::error::landing page returned $code"; exit 1; fi
+          echo "landing OK"
+
+      - name: Probe API docs
+        run: |
+          url=$(printf '%s' "${{ steps.url.outputs.url }}" | sed 's:/$::')
+          code=$(curl -s -o /dev/null -w '%{http_code}' "$url/api/v1/docs.json")
+          if [ "$code" != "200" ]; then echo "::error::api docs returned $code"; exit 1; fi
+          echo "api specs OK"
+
+      - name: Latency snapshot
+        run: |
+          url=$(printf '%s' "${{ steps.url.outputs.url }}" | sed 's:/$::')
+          curl -s -o /dev/null -w 'health_latency_ms=%{time_total}\n' "$url/health"

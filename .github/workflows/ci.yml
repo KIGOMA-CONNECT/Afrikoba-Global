@@ -111,6 +111,7 @@ jobs:
           node scripts/test-merchant-invoices.js
           node scripts/test-marketplace.js
           node scripts/test-family-guardian.js
+          node scripts/test-projection-cache.js
           node scripts/test-restore-verify.js
 
       - name: Upload server log on failure

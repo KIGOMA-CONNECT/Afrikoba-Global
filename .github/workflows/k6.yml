@@ -1,0 +1,50 @@
+name: Staging Load & Security (k6)
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: 'Base URL of the staging environment under test'
+        required: true
+        default: 'https://staging.afrikoba.com'
+
+# The k6 suites (scripts/load-test.js, scripts/security-test.js) implement the
+# NFR-2 / Test-Strategy "k6 load + security" gate. Run this workflow manually
+# against a deployed staging environment (inputs.base_url). The suites:
+#   - load-test.js    : health, auth (login/register devOtp), idempotency-keyed
+#                       transfer, sustained browsing — scenarios + thresholds are
+#                       encoded in options (no -u/-d flags; they conflict with scenarios).
+#   - security-test.js: SQLi/XSS payloads, rate limiting, unauthorised access, CORS,
+#                       input-validation bypass.
+# Requirements on the target environment:
+#   - RATE_LIMIT_DISABLED=true (or raised OTP_RATE_MAX) so the auth scenario is not
+#     throttled; the transfer scenario uses seeded users 255713100001 / 255714100002
+#     from db/seed.sql.
+# See headers of scripts/load-test.js and scripts/security-test.js.
+permissions:
+  contents: read
+
+jobs:
+  k6:
+    name: k6 load + security
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Load test (health / auth / transfer / browsing)
+        uses: grafana/k6-action@v0.3.1
+        with:
+          script: scripts/load-test.js
+          flags: -e BASE_URL=${{ inputs.base_url }}
+
+      - name: Security test (SQLi / XSS / rate-limit / CORS / validation)
+        uses: grafana/k6-action@v0.3.1
+        with:
+          script: scripts/security-test.js
+          flags: -e BASE_URL=${{ inputs.base_url }}
+
+      - name: Summarize
+        run: |
+          echo "k6 load/security completed against ${{ inputs.base_url }}"
+          echo "- load scenarios + thresholds: encoded in scripts/load-test.js options"
+          echo "- security scenarios: scripts/security-test.js (5 VUs, 1m, <30% req failures)"

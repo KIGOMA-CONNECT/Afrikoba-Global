@@ -27,9 +27,12 @@ Status legend: ✅ **built** · 🔶 **partial** · ⬜ **not built / next**.
   (airtime, BAP, bills, business, cards, dispute, family, insurance, marketplace,
   merchant, mkoba/VICOBA, network, P2P, referral, reward, ROSCA, savings,
   split-payment, vault/yield, wallet, etc.).
-- 🔶 `users.wallet_balance` remains a **projection cache** (updated alongside journal
-  postings) — the ledger is authoritative; balance is derived. Some legacy direct
-  mutations may remain; a full audit of every money path is an ongoing task.
+- ✅ `users.wallet_balance` is a **projection cache** in CI-audited reconciliation: the
+  ledger + `wallet_ledger` trail are authoritative; `scripts/test-projection-cache.js`
+  (25 checks, suite 39) enforces `wallet_balance == SUM(trail.to) - SUM(trail.from)` after
+  every audited money path (seed with trail rows, transfer, payment-request settle,
+  standing-instruction sweep) AND proves the detector catches a ±9 TZS cache tamper,
+  so any drift between the cache and the authoritative trail fails CI permanently.
 - ✅ Reconciliation engine + exceptions (`reconciliation_exceptions`, migration 032).
 - ✅ **`transactions.total_charged` convention (documented)**: `total_charged` is flow-specific by design — **debit flows** (deposits, airtime, bills, transfers, savings, cross-border) store `wallet_amount + commission` (invariant: `wallet_amount > 0` & type ≠ ROSCA_PAYOUT ⇒ `total_charged == wallet_amount + commission`); **credit payouts** (`ROSCA_PAYOUT`) store the credited amount (`total_charged == wallet_amount`, fee in `commission`); **merchant flows** keep `wallet_amount = 0` (recipient is a merchant balance/MNO, not a customer wallet) — `MERCH-*` rows: `wallet_amount=0, commission=0, total_charged>0`; `MERCHANT_PAYOUT` (`MPO-*`): gross in `total_charged`, fee in `commission`. Ledger/journals are the source of truth; `scripts/test-ledger-integrity.js` encodes these invariants permanently.
 - ✅ **Ledger-integrity regression net** (`scripts/test-ledger-integrity.js`, wired into CI): zero unbalanced journal groups, zero orphan transaction FKs (`wallet_ledger`/`journal_entries`), no negative wallet balances, the `total_charged` conventions above, and serials ahead of table max ids. This suite caught a real migration 088 gap: on databases where a legacy sequence name existed, the rebuilt partitioned `journal_entries`/`audit_logs` default bound to PG-generated `_seq1` sequences that 088's `setval` never touched (live seq 429 vs MAX(id) 1925 — invisible in CI because fresh DBs have no legacy sequence). Fix: migration 090 `sequence_resync` — name-agnostic `setval` of the sequence actually referenced by each table's `id` default, `GREATEST(max_id, last_value)` (idempotent, never lowers).
@@ -129,7 +132,8 @@ Status legend: ✅ **built** · 🔶 **partial** · ⬜ **not built / next**.
 - ✅ `familyService` + `familyRoutes` — family wallet, members, allowances,
   family transfers (ledger-backed). Guardian controls enforced: `can_spend` +
   `spending_limit` block member spend/transfer, OWNER-only invite/remove,
-  INVITED→ACTIVE lifecycle (suite `test-family-guardian`, 38 suites).
+  INVITED→ACTIVE lifecycle (suite `test-family-guardian`); projection-cache
+  reconciliation audit added (`test-projection-cache`, suite 39 — see Sec 11).
   Dashboard surfaced: Family.jsx invite form now captures `can_spend` + `spending_limit`
   and the member table shows Spend role (Can Spend / No Spend + limit), sw/en i18n.
 
