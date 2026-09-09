@@ -2,7 +2,7 @@
 # AFRIKOBA GLOBAL - CI/CD
 # Triggers: push kwenye main + PRs
 # Jobs:
-#   1. backend   - lint + full integration test suite (36 suites)
+#   1. backend   - lint + full integration test suite (37 suites)
 #   2. dashboard - Vite build
 #   3. mobile    - flutter analyze/test + build web + debug APK
 # ============================================================
@@ -109,6 +109,7 @@ jobs:
           node scripts/test-recurrence.js
           node scripts/test-payment-requests.js
           node scripts/test-merchant-invoices.js
+          node scripts/test-marketplace.js
           node scripts/test-restore-verify.js
 
       - name: Upload server log on failure

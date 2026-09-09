@@ -116,9 +116,10 @@ Status legend: ✅ **built** · 🔶 **partial** · ⬜ **not built / next**.
   deactivate) wired to `/api/merchant`. Shareable payment link URLs at
   `/pay/:code` with a public `PaymentLink.jsx` page. Merchant.jsx surfaces both
   QR codes and payment links with copy-to-clipboard. (sw/en i18n, deployed).<span style="display:none">4
-- 🟡 Marketplace + escrow + disputes + seller verification exist (Phase 4/6 partial):
+- ✅ Marketplace + escrow + disputes + seller verification delivered (Phase 4/6):
   marketplace orders, escrow milestones, delivery evidence, admin-ruled escrow
-  disputes (migrations 038–041).
+  disputes (migrations 038–041). Money-path test suite `test-marketplace` (37
+  suites) proves hold → settle → refund → BUYER_REFUND/SPLIT with balanced journals.
 
 ## 8. Family Finance (Sec 14)
 - ✅ `familyService` + `familyRoutes` — family wallet, members, allowances,

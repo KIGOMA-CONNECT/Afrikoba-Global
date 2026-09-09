@@ -57,7 +57,7 @@ Each revision MUST record an entry in the document's **Change History** section:
 | AFK-INST-01 | Project Charter | Formal mandate, scope, objectives, stakeholders and success criteria for the Afrikoba Global program. | Programme Sponsor | DRAFT | 0.1 | 2026-09-07 | 2026-09-07 |
 | AFK-INST-02 | Business Requirements Document | Business capabilities, user needs and acceptance criteria across all product lines. | Product Manager | DRAFT | 0.1 | 2026-09-07 | 2026-09-07 |
 | AFK-INST-03 | Product Requirements Document | Product scope, feature definitions, non-functional product requirements and release scope. | Product Manager | DRAFT | 0.1 | 2026-09-07 | 2026-09-07 |
-| AFK-INST-04 | System Requirements Specification | Traceable system-level functional and non-functional requirements. | Solutions Architect | DRAFT | 0.7 | 2026-09-07 | 2026-09-08 |
+| AFK-INST-04 | System Requirements Specification | Traceable system-level functional and non-functional requirements. | Solutions Architect | DRAFT | 0.8 | 2026-09-07 | 2026-09-09 |
 | AFK-INST-05 | Architecture Decision Records | Immutable log of architecture decisions (ADRs) with context and consequences. | Enterprise Architect | DRAFT | 0.2 | 2026-09-07 | 2026-09-08 |
 | AFK-INST-06 | System Architecture Document | End-to-end system architecture: services, data flow, integration, deployment. | Enterprise Architect | DRAFT | 0.1 | 2026-09-07 | 2026-09-07 |
 | AFK-INST-07 | Data Architecture | Logical/physical data architecture, data flows, ownership, lineage. | Data Architect | DRAFT | 0.2 | 2026-09-07 | 2026-09-07 |
@@ -74,7 +74,7 @@ Each revision MUST record an entry in the document's **Change History** section:
 | AFK-INST-18 | Disaster Recovery Plan | DR strategy, backup/restore verification, RTO/RPO and recovery procedures. | DevSecOps Lead | APPROVED | 1.0 | 2026-09 | 2026-09-08 |
 | AFK-INST-19 | Business Continuity Plan | Continuity of business operations under major disruption. | COO / Operations | DRAFT | 0.1 | 2026-09-07 | 2026-09-07 |
 | AFK-INST-20 | Incident Response Plan | IR procedures, severity, escalation, comms and lessons learned. | Security Lead | DRAFT | 0.1 | 2026-09-07 | 2026-09-07 |
-| AFK-INST-21 | Test Strategy | Test levels, coverage targets, environments, CI gates and acceptance. | QA Lead | DRAFT | 0.7 | 2026-09-07 | 2026-09-08 |
+| AFK-INST-21 | Test Strategy | Test levels, coverage targets, environments, CI gates and acceptance. | QA Lead | DRAFT | 0.8 | 2026-09-07 | 2026-09-09 |
 | AFK-INST-22 | Release Management Plan | Release cadence, promotion, rollback and go/no-go rules. | Release Manager | DRAFT | 0.1 | 2026-09-07 | 2026-09-07 |
 | AFK-INST-23 | Operations Runbook | Day-to-day operational procedures, monitoring, alerting and troubleshooting. | DevSecOps Lead | DRAFT | 0.1 | 2026-09-07 | 2026-09-07 |
 | AFK-INST-24 | Service Level Agreement | Internal/external SLAs, availability targets and penalty/credit rules. | COO / Operations | DRAFT | 0.1 | 2026-09-07 | 2026-09-07 |

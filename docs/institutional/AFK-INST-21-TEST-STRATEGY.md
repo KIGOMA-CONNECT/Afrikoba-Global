@@ -4,7 +4,7 @@ Title: Test Strategy
 Purpose: Test levels, coverage targets, environments, CI gates and acceptance criteria for Afrikoba Global.
 Owner: QA Lead
 Status: DRAFT
-Version: 0.7
+Version: 0.8
 Effective Date: 2026-09-07
 Last Review Date: 2026-09-08
 Related Systems/Modules: All; scripts/test-*.js; .github/workflows/ci.yml
@@ -19,7 +19,7 @@ Approval Authority: QA Lead / CAB
 | Level | Scope | Where |
 |-------|-------|-------|
 | Unit | Services/utils (engine, ledger math, fee/split/WHT) | Node tests |
-| Integration/Regression | End-to-end API + DB against a seeded Postgres | `scripts/test-*.js` (36 suites) + CI |
+| Integration/Regression | End-to-end API + DB against a seeded Postgres | `scripts/test-*.js` (37 suites) + CI |
 | Frontend build | Web dashboard Vite build; Flutter analyze/test/build | CI |
 | Load/Security | k6 load + security scripts | staging |
 | UAT/Regression on release | Stable behaviour proof for money math | CI on `main` |
@@ -70,3 +70,4 @@ expected; dashboard UI wired; test proving money math; audit-log entry for money
 | 0.5 | 2026-09-08 | AI code review | Added test-recurrence (STANDING_INSTRUCTION recurring transfers: SI-* idempotent journal transfer, recurrence_executions, RBAC, disabled-skip) → 34 suites | QA Lead (pending) |
 | 0.6 | 2026-09-08 | AI code review | Added test-payment-requests (migration 098 request-to-pay: PRQ-* lifecycle, canonical transfer settlement TR-*, idempotent re-pay, cancel, expiry, RBAC, audit) → 35 suites | QA Lead (pending) |
 | 0.7 | 2026-09-08 | AI code review | Added test-merchant-invoices (migration 099 merchant invoices: INV-* lifecycle, canonical merchant-payment settlement MERCH-*, idempotent re-pay, overpay/cancel/expiry guards, RBAC) → 36 suites | QA Lead (pending) |
+| 0.8 | 2026-09-09 | AI code review | Added test-marketplace (marketplace money path: purchase→MARKETPLACE_ESCROW hold, evidence→settle, cancel→refund, dispute freeze + ADMIN BUYER_REFUND/SPLIT rulings with balanced journals, RBAC) → 37 suites | QA Lead (pending) |
