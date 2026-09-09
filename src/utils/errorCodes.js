@@ -63,6 +63,13 @@ const ERROR_CODES = {
   FP_REPAYMENT_EXCEEDS_DUE:      { status: 400, message: 'Malipo yanazidi deni lililobaki.' },
   FP_BORROWER_NOT_FOUND:         { status: 404, message: 'Mkopoaji hajapatikana.' },
 
+  // Support tickets (400/403/404)
+  SUPPORT_TICKET_NOT_FOUND:      { status: 404, message: 'Tikiti haipatikani.' },
+  SUPPORT_CATEGORY_INVALID:      { status: 400, message: 'Kategoria batili.' },
+  SUPPORT_STATUS_INVALID:        { status: 400, message: 'Hali batili.' },
+  SUPPORT_SUBJECT_REQUIRED:      { status: 400, message: 'Kichwa cha ujumbe kinahitajika.' },
+  SUPPORT_DESCRIPTION_REQUIRED:  { status: 400, message: 'Maelezo yanahitajika.' },
+
   // Device security (403/404/429)
   DEVICE_NOT_TRUSTED:            { status: 403, message: 'Kifaa hiki hakijakubaliwa. Dhibitisha kifaa chako.' },
   DEVICE_POLICY_INVALID:         { status: 400, message: 'Sera ya kifaa si sahihi.' },

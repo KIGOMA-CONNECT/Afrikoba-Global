@@ -181,7 +181,11 @@ Status legend: ✅ **built** · 🔶 **partial** · ⬜ **not built / next**.
   + "Procurement & Goods" page. Frontend procurement UI previously absent → now surfaced.
 
 ## 13. Governance / Risk / Docs (Sec 55–62, 83–90)
-- 🔶 Dispute lifecycle (`disputeService`), support cases partial.
+- ✅ Dispute lifecycle (`disputeService`); support cases built (migration 100 `resolved_at` +
+  index; member tickets/threads with `sender_phone`/`user_phone` joins, ownership 404 +
+  RBAC 403 guards, admin queue + stats + IN_PROGRESS→RESOLVED→CLOSED transitions with
+  `resolution`, reopen-on-message, dashboard Support console sw/en). `scripts/test-support.js`
+  — 38 checks wired in CI as suite 40.
 - ✅ **Canonical 27-document institutional set registry** (`docs/institutional/README.md`):
   the Afrikoba Master Project Blueprint Sec 85 set (Project Charter → Internal Audit
   Framework) registered with mandatory metadata header, source hierarchy, research-

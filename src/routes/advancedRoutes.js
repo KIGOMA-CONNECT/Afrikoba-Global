@@ -123,6 +123,9 @@ router.get('/support/tickets', authRequired, async (req, res, next) => {
 
 router.post('/support/tickets', authRequired, async (req, res, next) => {
   try {
+    const { subject, description } = req.body;
+    if (!subject) return res.status(400).json({ success: false, code: 'SUPPORT_SUBJECT_REQUIRED', message: 'Kichwa cha ujumbe kinahitajika.' });
+    if (!description) return res.status(400).json({ success: false, code: 'SUPPORT_DESCRIPTION_REQUIRED', message: 'Maelezo yanahitajika.' });
     const ticket = await supportService.createTicket(req.user.id, req.body);
     res.json({ success: true, ticket });
   } catch (error) { next(error); }
@@ -130,7 +133,7 @@ router.post('/support/tickets', authRequired, async (req, res, next) => {
 
 router.get('/support/tickets/:id', authRequired, async (req, res, next) => {
   try {
-    const detail = await supportService.getTicketDetail(parseInt(req.params.id), req.user.id);
+    const detail = await supportService.getTicketDetail(req.user.id, parseInt(req.params.id));
     res.json({ success: true, ...detail });
   } catch (error) { next(error); }
 });
