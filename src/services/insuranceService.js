@@ -5,6 +5,7 @@
 
 const pool = require('../config/db');
 const { generateReference } = require('../utils/helpers');
+const { createAppError } = require('../utils/errorCodes');
 const fin = require('./financialEngine');
 
 async function getProducts(category = null) {
@@ -18,11 +19,11 @@ async function getProducts(category = null) {
 
 async function purchasePolicy(userId, { product_id, age }) {
   const product = await pool.query(`SELECT * FROM insurance_products WHERE id = $1 AND is_active = TRUE`, [product_id]);
-  if (product.rows.length === 0) throw new Error('Bidhaa haipatikani.');
+  if (product.rows.length === 0) throw createAppError('INSURANCE_PRODUCT_NOT_FOUND');
 
   const p = product.rows[0];
   if (age && (age < p.min_age || age > p.max_age)) {
-    throw new Error(`Umri lazima uwe kati ya ${p.min_age} na ${p.max_age}.`);
+    throw createAppError('INSURANCE_AGE_INVALID');
   }
 
   // Check wallet for first premium
@@ -31,6 +32,11 @@ async function purchasePolicy(userId, { product_id, age }) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+
+    const payerRow = await client.query('SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE', [userId]);
+    if (Number(payerRow.rows[0]?.wallet_balance || 0) < parseFloat(p.premium_monthly)) {
+      throw createAppError('WALLET_INSUFFICIENT_FUNDS');
+    }
 
     await fin.debitWallet({
       client, userId, amount: parseFloat(p.premium_monthly), reference: ref,
@@ -45,8 +51,8 @@ async function purchasePolicy(userId, { product_id, age }) {
     );
 
     await client.query(
-      `INSERT INTO transactions (user_id, type, total_charged, commission, status, reference_id, meta)
-       VALUES ($1, 'WITHDRAWAL', $2, 0, 'SUCCESS', $3, $4)`,
+      `INSERT INTO transactions (user_id, type, total_charged, commission, status, reference_id, wallet_amount, meta)
+       VALUES ($1, 'WITHDRAWAL', $2, 0, 'SUCCESS', $3, $2, $4)`,
       [userId, p.premium_monthly, ref,
        JSON.stringify({ type: 'INSURANCE_PREMIUM', product: p.name })]
     );
@@ -75,12 +81,12 @@ async function getPolicies(userId) {
 
 async function renewPolicy(userId, policyId) {
   const policy = await pool.query(
-    `SELECT ip.*, ipr.premium_monthly FROM insurance_policies ip
+    `SELECT ip.*, ipr.premium_monthly, ipr.name AS product_name FROM insurance_policies ip
      JOIN insurance_products ipr ON ip.product_id = ipr.id
      WHERE ip.id = $1 AND ip.user_id = $2 AND ip.status = 'ACTIVE'`,
     [policyId, userId]
   );
-  if (policy.rows.length === 0) throw new Error('Sera haipatikani.');
+  if (policy.rows.length === 0) throw createAppError('INSURANCE_POLICY_NOT_FOUND');
 
   const p = policy.rows[0];
 
@@ -89,6 +95,11 @@ async function renewPolicy(userId, policyId) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+
+    const payerRow = await client.query('SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE', [userId]);
+    if (Number(payerRow.rows[0]?.wallet_balance || 0) < parseFloat(p.premium_monthly)) {
+      throw createAppError('WALLET_INSUFFICIENT_FUNDS');
+    }
 
     await fin.debitWallet({
       client, userId, amount: parseFloat(p.premium_monthly), reference: ref,
@@ -102,14 +113,14 @@ async function renewPolicy(userId, policyId) {
     );
 
     await client.query(
-      `INSERT INTO transactions (user_id, type, total_charged, commission, status, reference_id, meta)
-       VALUES ($1, 'WITHDRAWAL', $2, 0, 'SUCCESS', $3, $4)`,
+      `INSERT INTO transactions (user_id, type, total_charged, commission, status, reference_id, wallet_amount, meta)
+       VALUES ($1, 'WITHDRAWAL', $2, 0, 'SUCCESS', $3, $2, $4)`,
       [userId, p.premium_monthly, ref,
-       JSON.stringify({ type: 'INSURANCE_PREMIUM_RENEWAL', product: p.name })]
+       JSON.stringify({ type: 'INSURANCE_PREMIUM_RENEWAL', product: p.product_name })]
     );
 
     await client.query('COMMIT');
-    return { success: true, message: 'Sera imesh Renewed.' };
+    return { success: true, message: 'Sera imesasishwa.' };
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {});
     throw error;

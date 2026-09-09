@@ -82,6 +82,11 @@ const ERROR_CODES = {
   DEVICE_NOT_FOUND:              { status: 404, message: 'Kifaa hakijapatikana.' },
   DEVICE_RATE_LIMIT_EXCEEDED:    { status: 429, message: 'Ombi nyingi sana kutoka kifaa hiki.' },
 
+  // Insurance (400/404)
+  INSURANCE_PRODUCT_NOT_FOUND:   { status: 404, message: 'Bidhaa haipatikani.' },
+  INSURANCE_AGE_INVALID:         { status: 400, message: 'Umri haujazingatiwa kwa bidhaa hii.' },
+  INSURANCE_POLICY_NOT_FOUND:    { status: 404, message: 'Sera haipatikani.' },
+
   // Generic
   INTERNAL_ERROR:                { status: 500, message: 'Hitilafu ya ndani ya server.' },
 };
