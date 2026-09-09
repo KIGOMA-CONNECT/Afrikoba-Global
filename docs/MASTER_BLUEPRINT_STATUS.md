@@ -123,7 +123,9 @@ Status legend: ✅ **built** · 🔶 **partial** · ⬜ **not built / next**.
 
 ## 8. Family Finance (Sec 14)
 - ✅ `familyService` + `familyRoutes` — family wallet, members, allowances,
-  family transfers (ledger-backed). Extended UI/guardian controls = partial.
+  family transfers (ledger-backed). Guardian controls enforced: `can_spend` +
+  `spending_limit` block member spend/transfer, OWNER-only invite/remove,
+  INVITED→ACTIVE lifecycle (suite `test-family-guardian`, 38 suites).
 
 ## 9. Compliance / AML / KYC / Data Governance / RBAC / Audit (Sec 22–28)
 - ✅ Audit trail: `audit_logs` + `financial_audit_log` (append-only posture).
