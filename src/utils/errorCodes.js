@@ -53,6 +53,12 @@ const ERROR_CODES = {
   CURRENCY_TZS_COST_MISSING:     { status: 400, message: 'Salio la TZS halitoshi.' },
   FX_RATE_NOT_FOUND:             { status: 404, message: 'Kiwango cha ubadilishaji hakipatikani.' },
 
+  // QR code payments (400/404)
+  QR_CODE_NOT_FOUND:             { status: 404, message: 'Msimbo wa QR haipatikani.' },
+  QR_CODE_EXPIRED:               { status: 400, message: 'Msimbo wa QR umeisha muda.' },
+  QR_SELF_PAY_INVALID:           { status: 400, message: 'Huwezi kulipa QR code yako mwenyewe.' },
+  QR_AMOUNT_REQUIRED:            { status: 400, message: 'Kiasi kinahitajika.' },
+
   // Field Partners (Kiva-style)
   FIELD_PARTNER_NOT_FOUND:       { status: 404, message: 'Shirika la mshirika halijapatikana.' },
   FIELD_PARTNER_INACTIVE:        { status: 403, message: 'Shirika la mshirika halijawashwa.' },

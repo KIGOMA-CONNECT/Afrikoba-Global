@@ -106,8 +106,12 @@ Status legend: ✅ **built** · 🔶 **partial** · ⬜ **not built / next**.
 ## 7. Payments / Merchant / Business (Sec 11–13)
 - ✅ P2P, deposits, withdrawals, settlements, mobile-money callbacks (idempotent,
   HMAC-verified), provider abstraction (`azampayService`).
-- 🔶 Merchant platform: `merchantService`, `businessService`, cards exist; QR,
-  invoices, payroll, procurement = partial/not surfaced.
+- ✅ Merchant platform: `merchantService`, `businessService`, cards exist; QR
+  payments, invoices, payroll, procurement surfaced. QR lifecycle (`/api/merchant/qr*`
+  + `/api/eco/qr*`): STATIC/DYNAMIC create, ownership-scoped list, scan with payee
+  details (`phone_number`/`full_name` join), canonical-transfer pay with balanced
+  ledger + `qr_payments`, expiry/self-pay/insufficient-funds guards, owner-only
+  deactivate + CSRF. `scripts/test-qr.js` — 33 checks wired in CI as suite 42.
 - ✅ **Merchant invoices** (migration 099: `merchant_invoices`): merchants issue itemised
   `INV-*` invoices (line_items / amount / customer / 1–720h expiry); customers resolve and
   pay by code through the canonical merchant money path (`merchantService.payMerchant`

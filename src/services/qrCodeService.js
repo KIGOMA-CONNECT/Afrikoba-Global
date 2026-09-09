@@ -6,6 +6,7 @@
 const pool = require('../config/db');
 const crypto = require('crypto');
 const fin = require('./financialEngine');
+const { createAppError } = require('../utils/errorCodes');
 
 function generateQrCode() {
   return 'QR-' + crypto.randomBytes(8).toString('hex').toUpperCase();
@@ -33,21 +34,21 @@ async function getQrCodes(userId) {
 
 async function scanQrCode(code, payerId) {
   const qr = await pool.query(
-    `SELECT qc.*, u.phone AS payee_phone, u.name AS payee_name
+    `SELECT qc.*, u.phone_number AS payee_phone, u.full_name AS payee_name
      FROM qr_codes qc LEFT JOIN users u ON qc.user_id = u.id
      WHERE qc.code = $1 AND qc.is_active = TRUE`,
     [code]
   );
 
-  if (qr.rows.length === 0) throw new Error('QR code haipatikani.');
+  if (qr.rows.length === 0) throw createAppError('QR_CODE_NOT_FOUND');
   const q = qr.rows[0];
 
   if (q.expires_at && new Date(q.expires_at) < new Date()) {
-    throw new Error('QR code imeisha muda.');
+    throw createAppError('QR_CODE_EXPIRED');
   }
 
   if (q.user_id === payerId) {
-    throw new Error('Huwezi kulipa QR code yako mwenyewe.');
+    throw createAppError('QR_SELF_PAY_INVALID');
   }
 
   await pool.query(`UPDATE qr_codes SET scan_count = scan_count + 1 WHERE id = $1`, [q.id]);
@@ -63,17 +64,22 @@ async function scanQrCode(code, payerId) {
 
 async function payQrCode(qrCodeId, payerId, amount) {
   const qr = await pool.query(`SELECT * FROM qr_codes WHERE id = $1 AND is_active = TRUE`, [qrCodeId]);
-  if (qr.rows.length === 0) throw new Error('QR code haipatikani.');
+  if (qr.rows.length === 0) throw createAppError('QR_CODE_NOT_FOUND');
 
   const q = qr.rows[0];
   const payAmount = q.amount || amount;
-  if (!payAmount || payAmount <= 0) throw new Error('Kiasi kinahitajika.');
+  if (!payAmount || payAmount <= 0) throw createAppError('QR_AMOUNT_REQUIRED');
 
   const ref = `QR-${crypto.randomBytes(6).toString('hex').toUpperCase()}`;
 
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+
+    const payerRow = await client.query('SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE', [payerId]);
+    if (Number(payerRow.rows[0]?.wallet_balance || 0) < payAmount) {
+      throw createAppError('WALLET_INSUFFICIENT_FUNDS');
+    }
 
     await fin.internalTransfer({
       client, fromUserId: payerId, toUserId: q.user_id, amount: payAmount,
@@ -86,8 +92,8 @@ async function payQrCode(qrCodeId, payerId, amount) {
     );
 
     await client.query(
-      `INSERT INTO transactions (user_id, type, total_charged, commission, status, reference_id, meta)
-       VALUES ($1, 'TRANSFER', $2, 0, 'SUCCESS', $3, $4)`,
+      `INSERT INTO transactions (user_id, type, wallet_amount, total_charged, commission, status, reference_id, meta)
+       VALUES ($1, 'TRANSFER', $2, $2, 0, 'SUCCESS', $3, $4)`,
       [payerId, payAmount, ref, JSON.stringify({ type: 'QR_PAYMENT', qr_code: q.code, payee_id: q.user_id })]
     );
 
