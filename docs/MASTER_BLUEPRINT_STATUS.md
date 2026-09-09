@@ -166,13 +166,17 @@ Status legend: ✅ **built** · 🔶 **partial** · ⬜ **not built / next**.
   delivery log, sandbox ping) + `developerRoutes` mounted at `/api/developer`.
   `Developer.jsx` page with 3 tabs: API Keys, Sandbox, Webhooks. Key format
   `ak_live_*`, SHA-256 hashed. (sw/en i18n, deployed).
-- 🔶 Multi-currency + FX built (regional groundwork); country/regulator abstraction
+- ✅ Multi-currency + FX built (regional groundwork); country/regulator abstraction
   **built** (migration 051: `supported_countries` with currency/region/fee schedule;
   `countryService.quoteTransfer` — FX + fee quote for cross-border corridors;
-  seeded TZ/KE/UG/RW/BI/ZM/NG/GH; admin RiskOps Countries tab).
+  seeded TZ/KE/UG/RW/BI/ZM/NG/GH; admin RiskOps Countries tab). Multi-currency
+  wallet: `/currency/*` — identity/direct/inverse/triangulated rate resolution,
+  public convert, admin rate management (RBAC), display currency, ledgered
+  TZS↔foreign convert (`CURRENCY_CONVERT` txn with fx_rate + fx_base_currency),
+  holdings portfolio. `scripts/test-currency.js` — 41 checks wired in CI as suite 41.
 
 ## 12. Commerce / Procurement / Escrow / Marketplace (Sec 39–41, 80)
-- 🔶 Marketplace + escrow + disputes built (migrations 038–041).
+- ✅ Marketplace + escrow + disputes built (migrations 038–041).
 - ✅ Procurement & supplier network (Phase 9, migration 047): supplier onboarding
   (`suppliers`), RFQ requests + open bids (`procurement_requests`/`procurement_bids`)
   with publish→award workflow, and **supplier working-capital financing**
