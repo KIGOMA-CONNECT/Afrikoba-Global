@@ -103,6 +103,14 @@ Status legend: ✅ **built** · 🔶 **partial** · ⬜ **not built / next**.
   HMAC-verified), provider abstraction (`azampayService`).
 - 🔶 Merchant platform: `merchantService`, `businessService`, cards exist; QR,
   invoices, payroll, procurement = partial/not surfaced.
+- ✅ **Merchant invoices** (migration 099: `merchant_invoices`): merchants issue itemised
+  `INV-*` invoices (line_items / amount / customer / 1–720h expiry); customers resolve and
+  pay by code through the canonical merchant money path (`merchantService.payMerchant`
+  → MERCH-* reference, payer debited, merchant proceeds credited, `merchant_payments` row);
+  payment is idempotent (already-PAID returns the recorded ref); overpay/cancelled/expired
+  guarded; routes at `/api/merchant/invoices` (+ public `/invoices/:code` resolve).
+  **`scripts/test-merchant-invoices.js` — 38 checks (INV-* lifecycle, MERCH-* settlement,
+  idempotent re-pay, guards, RBAC) wired into CI.**
 - ✅ **Merchant QR + shareable payment links**: `qrCodeService` (create, scan,
   pay, deactivate) + `paymentLinkService` (create, list, resolve by code, pay,
   deactivate) wired to `/api/merchant`. Shareable payment link URLs at
@@ -209,6 +217,7 @@ Status legend: ✅ **built** · 🔶 **partial** · ⬜ **not built / next**.
   intact, migration replay, cleanup) — GLOBAL_STANDARDS_AUDIT rec #5 resolved; CI suite count → 33.
 - ✅ **Standing instructions** (`recurrenceService.STANDING_INSTRUCTION` now a real dispatcher + `scripts/test-recurrence.js` 43/43 in CI): migration 067's recurring-transfer placeholder is productionised — SI-* idempotent journal transfer (financialEngine), transactions + wallet_ledger + SMS + audit, insufficient-balance FAILED executions, disabled-rule skip; `POST /api/recurrence/sweep` re-runs prove no duplicate money movement. CI suite count → 34.
 - ✅ **Payment requests (request-to-pay)** (migration 098 + `src/services/paymentRequestService.js`; `scripts/test-payment-requests.js` 49/49 in CI): the remaining 🔶 "payment requests" wallet gap is closed — `PRQ-*` lifecycle (PENDING/PAID/CANCELLED/EXPIRED, 1–168h expiry), canonical-transfer settlement (payer pays → TR-* journal transfer + wallet_ledger + SMS + audit; requester credited, DR=CR balanced), idempotent re-pay, requester-only cancel. CI suite count → 35.
+- ✅ **Merchant invoices** (migration 099 + `src/services/invoiceService.js`; `scripts/test-merchant-invoices.js` 38/38 in CI): the last unsurfaced Sec 7 commerce gap is closed — `INV-*` itemised invoices with 1–720h expiry, public resolve-by-code, settlement through `merchantService.payMerchant` (MERCH-* canonical merchant rails: payer debited, proceeds credited, `merchant_payments` row), idempotent already-PAID, overpay/cancelled guards. CI suite count → 36.
 - ✅ **Code-first OpenAPI generated** (AFK-INST-08 v0.2): `src/docs/openapi.js` (swagger-jsdoc
   annotations covering the AFK-INST-08 module surface + C4 contracts + security schemes) wired into
   `src/config/swagger.js`; spec published at `/api/v1/docs.json` + swagger-ui at `/api/v1/docs`

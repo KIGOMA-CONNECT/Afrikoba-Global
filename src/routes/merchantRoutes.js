@@ -13,6 +13,7 @@ const merchantService = require('../services/merchantService');
 const merchantPayoutService = require('../services/merchantPayoutService');
 const qrCodeService = require('../services/qrCodeService');
 const paymentLinkService = require('../services/paymentLinkService');
+const invoiceService = require('../services/invoiceService');
 
 const router = express.Router();
 
@@ -120,6 +121,54 @@ router.post('/payment-links/:code/pay', authRequired, async (req, res, next) => 
 router.delete('/payment-links/:id', authRequired, async (req, res, next) => {
   try { res.json({ success: true, deleted: await paymentLinkService.deactivatePaymentLink(req.user.id, parseInt(req.params.id, 10)) }); }
   catch (e) { next(e); }
+});
+
+// ---- Invoices ----
+
+// My invoices
+router.get('/invoices', authRequired, async (req, res, next) => {
+  try {
+    const invoices = await invoiceService.listInvoices(req.user.id);
+    res.json({ success: true, invoices });
+  } catch (e) { next(e); }
+});
+
+// Issue an invoice
+router.post('/invoices', authRequired, async (req, res, next) => {
+  try {
+    const invoice = await invoiceService.createInvoice(req.user.id, req.body);
+    res.json({ success: true, invoice });
+  } catch (e) { next(e); }
+});
+
+// Resolve an invoice by code (public, auth not required)
+router.get('/invoices/:code', async (req, res, next) => {
+  try {
+    const invoice = await invoiceService.getInvoiceByCode(req.params.code);
+    res.json({ success: true, invoice });
+  } catch (e) {
+    if (e.message && e.message.includes('haipatikani')) return res.status(404).json({ success: false, message: e.message });
+    next(e);
+  }
+});
+
+// Pay an invoice by code
+router.post('/invoices/:code/pay', authRequired, async (req, res, next) => {
+  try {
+    const result = await invoiceService.payInvoice(req.user.id, req.params.code, req.body ? req.body.amount : null);
+    res.json(result);
+  } catch (e) {
+    if (e.message && e.message.includes('haipatikani')) return res.status(404).json({ success: false, message: e.message });
+    next(e);
+  }
+});
+
+// Cancel an issued invoice
+router.post('/invoices/:id/cancel', authRequired, async (req, res, next) => {
+  try {
+    const invoice = await invoiceService.cancelInvoice(req.user.id, parseInt(req.params.id, 10));
+    res.json({ success: true, invoice });
+  } catch (e) { next(e); }
 });
 
 // ---- Connected account + payouts (Stripe-Connect-style) ----

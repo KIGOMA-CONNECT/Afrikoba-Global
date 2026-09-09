@@ -4,7 +4,7 @@ Title: Test Strategy
 Purpose: Test levels, coverage targets, environments, CI gates and acceptance criteria for Afrikoba Global.
 Owner: QA Lead
 Status: DRAFT
-Version: 0.6
+Version: 0.7
 Effective Date: 2026-09-07
 Last Review Date: 2026-09-08
 Related Systems/Modules: All; scripts/test-*.js; .github/workflows/ci.yml
@@ -19,7 +19,7 @@ Approval Authority: QA Lead / CAB
 | Level | Scope | Where |
 |-------|-------|-------|
 | Unit | Services/utils (engine, ledger math, fee/split/WHT) | Node tests |
-| Integration/Regression | End-to-end API + DB against a seeded Postgres | `scripts/test-*.js` (35 suites) + CI |
+| Integration/Regression | End-to-end API + DB against a seeded Postgres | `scripts/test-*.js` (36 suites) + CI |
 | Frontend build | Web dashboard Vite build; Flutter analyze/test/build | CI |
 | Load/Security | k6 load + security scripts | staging |
 | UAT/Regression on release | Stable behaviour proof for money math | CI on `main` |
@@ -47,7 +47,7 @@ test-kyc, test-lending-gates, test-kilimo-seasons, test-disputes, test-merchant-
 test-outbox, test-vault, test-caching, test-partitions, test-ussd, test-multi-country,
 test-ledger-integrity, test-field-partners, test-device-binding, test-chart-of-accounts,
 test-tracing, test-ai-insights, test-sar-filing, test-openapi, test-procurement, test-tcra-ussd,
-test-recurrence, test-payment-requests, test-restore-verify.
+test-recurrence, test-payment-requests, test-merchant-invoices, test-restore-verify.
 
 ## 5. Known flakiness & rerun policy
 
@@ -69,3 +69,4 @@ expected; dashboard UI wired; test proving money math; audit-log entry for money
 | 0.4 | 2026-09-08 | AI code review | Added test-restore-verify (AFK-INST-18 DR: pg_dump→restore→integrity, 29 checks) → 33 suites | QA Lead (pending) |
 | 0.5 | 2026-09-08 | AI code review | Added test-recurrence (STANDING_INSTRUCTION recurring transfers: SI-* idempotent journal transfer, recurrence_executions, RBAC, disabled-skip) → 34 suites | QA Lead (pending) |
 | 0.6 | 2026-09-08 | AI code review | Added test-payment-requests (migration 098 request-to-pay: PRQ-* lifecycle, canonical transfer settlement TR-*, idempotent re-pay, cancel, expiry, RBAC, audit) → 35 suites | QA Lead (pending) |
+| 0.7 | 2026-09-08 | AI code review | Added test-merchant-invoices (migration 099 merchant invoices: INV-* lifecycle, canonical merchant-payment settlement MERCH-*, idempotent re-pay, overpay/cancel/expiry guards, RBAC) → 36 suites | QA Lead (pending) |
