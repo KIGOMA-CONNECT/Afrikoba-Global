@@ -31,6 +31,11 @@ export default function Merchant() {
   const [isAdmin, setIsAdmin] = useState(false);
   const [connForm, setConnForm] = useState({ payout_type: 'MNO_PHONE', payout_reference: '', bank_name: '', account_holder: '' });
   const [reqForm, setReqForm] = useState({ amount: '' });
+  const [invoices, setInvoices] = useState([]);
+  const [showInvoice, setShowInvoice] = useState(false);
+  const [invoiceForm, setInvoiceForm] = useState({ customerName: '', customerPhone: '', amount: '', currency: 'TZS', note: '', expiresInHours: '168' });
+  const [invPayCode, setInvPayCode] = useState('');
+  const [invLookup, setInvLookup] = useState(null);
   const error = (err) => setMsg({ type: 'err', text: err.response?.data?.message || t('merchant.error') });
 
   const load = () => {
@@ -42,6 +47,7 @@ export default function Merchant() {
     api.get('/merchant/payouts').then((r) => setPayouts(r.data.payouts)).catch(() => {});
     api.get('/merchant/admin/connected').then((r) => { setAdminAccounts(r.data.accounts); setIsAdmin(true); }).catch(() => {});
     api.get('/merchant/admin/payouts').then((r) => setAdminPayouts(r.data.payouts)).catch(() => {});
+    api.get('/merchant/invoices').then((r) => setInvoices(r.data.invoices || [])).catch(() => {});
   };
   useEffect(() => { load(); }, []);
 
@@ -163,6 +169,55 @@ export default function Merchant() {
       load();
     } catch (err) { error(err); }
   };
+
+  const createInvoice = async (e) => {
+    e.preventDefault();
+    try {
+      await api.post('/merchant/invoices', {
+        customerName: invoiceForm.customerName || undefined,
+        customerPhone: invoiceForm.customerPhone || undefined,
+        amount: Number(invoiceForm.amount),
+        currency: invoiceForm.currency,
+        note: invoiceForm.note || undefined,
+        expiresInHours: invoiceForm.expiresInHours ? Number(invoiceForm.expiresInHours) : undefined,
+      });
+      setMsg({ type: 'ok', text: t('merchant.invoice_ok') });
+      setShowInvoice(false);
+      setInvoiceForm({ customerName: '', customerPhone: '', amount: '', currency: 'TZS', note: '', expiresInHours: '168' });
+      load();
+    } catch (err) { error(err); }
+  };
+
+  const cancelInvoice = async (id) => {
+    try {
+      await api.post(`/merchant/invoices/${id}/cancel`, {});
+      setMsg({ type: 'ok', text: t('merchant.invoice_cancelled') });
+      load();
+    } catch (err) { error(err); }
+  };
+
+  const lookupAndPayInvoice = async (code) => {
+    const c = (code || invPayCode).trim();
+    if (!c) return;
+    try {
+      await api.post(`/merchant/invoices/${c}/pay`, {});
+      setMsg({ type: 'ok', text: t('merchant.invoice_paid') });
+      setInvPayCode('');
+      setInvLookup(null);
+      load();
+    } catch (err) { error(err); }
+  };
+
+  const lookupInvoice = async (code) => {
+    const c = (code || invPayCode).trim();
+    if (!c) return;
+    try {
+      const r = await api.get(`/merchant/invoices/${c}`);
+      setInvLookup(r.data.invoice);
+    } catch (err) { error(err); }
+  };
+
+  const invoiceStatusBadge = (status) => <span className={`badge ${status === 'PAID' ? 'success' : status === 'ISSUED' ? 'warning' : 'danger'}`}>{status}</span>;
 
   const connBadge = (status) => {
     const cls = status === 'ACTIVE' ? 'success' : status === 'SUSPENDED' ? 'danger' : 'neutral';
@@ -342,6 +397,87 @@ export default function Merchant() {
           </div>
         </div>
       )}
+
+      {/* Invoices */}
+      <div className="card" style={{ marginBottom: 24 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+          <h3 style={{ margin: 0 }}>{t('merchant.invoices_title')}</h3>
+          <button className="btn" onClick={() => setShowInvoice(!showInvoice)}>＋ {t('merchant.invoice_new')}</button>
+        </div>
+
+        {showInvoice && (
+          <div className="card" style={{ background: '#f8fafc', marginBottom: 16 }}>
+            <h4 style={{ marginBottom: 12 }}>{t('merchant.invoice_new')}</h4>
+            <form onSubmit={createInvoice} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(200px,1fr))', gap: 12 }}>
+              <label>{t('merchant.invoice_customer_name')}<input type="text" value={invoiceForm.customerName} onChange={(e) => setInvoiceForm({ ...invoiceForm, customerName: e.target.value })} placeholder={t('merchant.invoice_customer_name_ph')} /></label>
+              <label>{t('merchant.invoice_customer_phone')}<input type="text" value={invoiceForm.customerPhone} onChange={(e) => setInvoiceForm({ ...invoiceForm, customerPhone: e.target.value })} placeholder="2557..." /></label>
+              <label>{t('merchant.amount')}<input type="number" min="1" value={invoiceForm.amount} onChange={(e) => setInvoiceForm({ ...invoiceForm, amount: e.target.value })} required /></label>
+              <label>{t('merchant.invoice_currency')}
+                <select value={invoiceForm.currency} onChange={(e) => setInvoiceForm({ ...invoiceForm, currency: e.target.value })}>
+                  <option value="TZS">TZS</option><option value="USD">USD</option><option value="EUR">EUR</option><option value="KES">KES</option>
+                </select>
+              </label>
+              <label>{t('merchant.invoice_note')}<input type="text" value={invoiceForm.note} onChange={(e) => setInvoiceForm({ ...invoiceForm, note: e.target.value })} /></label>
+              <label>{t('merchant.invoice_expiry')}<input type="number" min="1" max="720" value={invoiceForm.expiresInHours} onChange={(e) => setInvoiceForm({ ...invoiceForm, expiresInHours: e.target.value })} /></label>
+              <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end' }}>
+                <button className="btn" type="submit">{t('merchant.invoice_issue')}</button>
+                <button className="btn btn-secondary" type="button" onClick={() => setShowInvoice(false)}>✕</button>
+              </div>
+            </form>
+          </div>
+        )}
+
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 14, alignItems: 'center' }}>
+          <input type="text" placeholder={t('merchant.invoice_pay_code_ph')} value={invPayCode} onChange={(e) => setInvPayCode(e.target.value)} style={{ flex: 1, minWidth: 200 }} />
+          <button className="btn btn-secondary" onClick={() => lookupInvoice(invPayCode)}>{t('merchant.invoice_lookup')}</button>
+          <button className="btn" onClick={() => lookupAndPayInvoice(invPayCode)}>{t('merchant.invoice_pay')}</button>
+        </div>
+
+        {invLookup && (
+          <div className="card" style={{ background: '#f8fafc', marginBottom: 14, padding: 12 }}>
+            <p style={{ margin: 0, fontSize: 14 }}>
+              <strong>{invLookup.code}</strong> · {formatMoney(invLookup.amount)} {invLookup.currency}
+              {invLookup.customer_name ? ` · ${invLookup.customer_name}` : ''} {invoiceStatusBadge(invLookup.status)}
+            </p>
+          </div>
+        )}
+
+        {invoices.length === 0 ? (
+          <p className="roles-tag">{t('merchant.invoice_empty')}</p>
+        ) : (
+          <div style={{ overflowX: 'auto' }}>
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>{t('merchant.invoice_code')}</th>
+                  <th>{t('merchant.invoice_customer')}</th>
+                  <th>{t('merchant.amount')}</th>
+                  <th>{t('merchant.status')}</th>
+                  <th>{t('merchant.invoice_expires')}</th>
+                  <th>{t('merchant.actions')}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {invoices.map((inv) => (
+                  <tr key={inv.id}>
+                    <td style={{ wordBreak: 'break-all' }}>{inv.code}</td>
+                    <td>{inv.customer_name || inv.customer_phone || '—'}</td>
+                    <td><strong>{formatMoney(inv.amount)} {inv.currency}</strong></td>
+                    <td>{invoiceStatusBadge(inv.status)}</td>
+                    <td>{inv.expires_at ? new Date(inv.expires_at).toLocaleDateString() : '—'}</td>
+                    <td>
+                      {inv.status === 'ISSUED' && (
+                        <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12, color: '#dc2626' }} onClick={() => cancelInvoice(inv.id)}>{t('merchant.invoice_cancel')}</button>
+                      )}
+                      {inv.status === 'PAID' && inv.transaction_reference && <span style={{ fontSize: 12, wordBreak: 'break-all' }}>{inv.transaction_reference}</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
 
       {/* Pay merchant */}
       <div style={{ display: 'flex', gap: 10, marginBottom: 24, flexWrap: 'wrap' }}>

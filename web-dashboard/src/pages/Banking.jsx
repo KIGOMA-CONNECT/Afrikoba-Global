@@ -16,6 +16,10 @@ export default function Banking() {
   const [alerts, setAlerts] = useState([]);
   const [msg, setMsg] = useState({ type: '', text: '' });
   const [bForm, setBForm] = useState({ phone: '', name: '', nickname: '' });
+  const [prIncoming, setPrIncoming] = useState([]);
+  const [prOutgoing, setPrOutgoing] = useState([]);
+  const [showPr, setShowPr] = useState(false);
+  const [prForm, setPrForm] = useState({ payerPhone: '', amount: '', note: '', expiresInHours: '48' });
 
   const error = (err) => setMsg({ type: 'err', text: err.response?.data?.message || t('banking.error') });
   const ok = (text) => { setMsg({ type: 'ok', text }); };
@@ -26,6 +30,7 @@ export default function Banking() {
     api.get('/banking/devices').then((r) => setDevices(r.data.devices || [])).catch(() => {});
     api.get('/banking/sessions').then((r) => setSessions(r.data.sessions || [])).catch(() => {});
     api.get('/banking/fraud/alerts').then((r) => setAlerts(r.data.alerts || [])).catch(() => {});
+    api.get('/banking/payment-requests').then((r) => { setPrIncoming(r.data.incoming || []); setPrOutgoing(r.data.outgoing || []); }).catch(() => {});
   };
   useEffect(() => { load(); }, []);
 
@@ -67,11 +72,46 @@ export default function Banking() {
     catch (err) { error(err); }
   };
 
+  const createPaymentRequest = async (e) => {
+    e.preventDefault();
+    try {
+      await api.post('/banking/payment-requests', {
+        payerPhone: prForm.payerPhone.trim(),
+        amount: Number(prForm.amount),
+        note: prForm.note || undefined,
+        expiresInHours: prForm.expiresInHours ? Number(prForm.expiresInHours) : undefined,
+      });
+      ok(t('banking.pr_created'));
+      setShowPr(false);
+      setPrForm({ payerPhone: '', amount: '', note: '', expiresInHours: '48' });
+      load();
+    } catch (err) { error(err); }
+  };
+
+  const payPaymentRequest = async (id) => {
+    try {
+      await api.post(`/banking/payment-requests/${id}/pay`, {});
+      ok(t('banking.pr_paid'));
+      load();
+    } catch (err) { error(err); }
+  };
+
+  const cancelPaymentRequest = async (id) => {
+    try {
+      await api.post(`/banking/payment-requests/${id}/cancel`, {});
+      ok(t('banking.pr_cancelled'));
+      load();
+    } catch (err) { error(err); }
+  };
+
+  const prStatusBadge = (status) => <span className={`badge ${status === 'PAID' ? 'success' : status === 'PENDING' ? 'warning' : status === 'CANCELLED' ? 'danger' : 'neutral'}`}>{status}</span>;
+
   const tabs = [
     { id: 'limits', label: t('banking.limits_tab') },
     { id: 'benef', label: t('banking.benef_tab') },
     { id: 'devices', label: t('banking.devices_tab') },
     { id: 'fraud', label: t('banking.fraud_tab') },
+    { id: 'requests', label: t('banking.requests_tab') },
   ];
 
   return (
@@ -286,6 +326,105 @@ export default function Banking() {
               </table>
             </div>
           )}
+        </div>
+      )}
+
+      {tab === 'requests' && (
+        <div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+            <h3 style={{ margin: 0 }}>{t('banking.requests_title')}</h3>
+            <button className="btn" onClick={() => setShowPr(!showPr)}>＋ {t('banking.pr_new')}</button>
+          </div>
+
+          {showPr && (
+            <div className="card" style={{ marginBottom: 24, maxWidth: 560 }}>
+              <h3 style={{ marginBottom: 12 }}>{t('banking.pr_new')}</h3>
+              <form onSubmit={createPaymentRequest} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <label>{t('banking.pr_payer_phone')}<input type="text" value={prForm.payerPhone} onChange={(e) => setPrForm({ ...prForm, payerPhone: e.target.value })} required placeholder="2557..." /></label>
+                <label>{t('banking.amount')}<input type="number" min="100" value={prForm.amount} onChange={(e) => setPrForm({ ...prForm, amount: e.target.value })} required /></label>
+                <label>{t('banking.pr_note')}<input type="text" value={prForm.note} onChange={(e) => setPrForm({ ...prForm, note: e.target.value })} placeholder={t('banking.pr_note_ph')} /></label>
+                <label>{t('banking.pr_expiry')}<input type="number" min="1" max="168" value={prForm.expiresInHours} onChange={(e) => setPrForm({ ...prForm, expiresInHours: e.target.value })} /></label>
+                <div style={{ display: 'flex', gap: 10 }}>
+                  <button className="btn" type="submit">{t('banking.pr_send')}</button>
+                  <button className="btn btn-secondary" type="button" onClick={() => setShowPr(false)}>✕</button>
+                </div>
+              </form>
+            </div>
+          )}
+
+          <h4 style={{ margin: '0 0 10px' }}>{t('banking.pr_incoming')}</h4>
+          <div className="card" style={{ marginBottom: 24 }}>
+            {prIncoming.length === 0 ? (
+              <p className="roles-tag">{t('banking.pr_empty_in')}</p>
+            ) : (
+              <div style={{ overflowX: 'auto' }}>
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>{t('banking.pr_requester')}</th>
+                      <th>{t('banking.amount')}</th>
+                      <th>{t('banking.pr_note')}</th>
+                      <th>{t('banking.pr_reference')}</th>
+                      <th>{t('banking.status')}</th>
+                      <th>{t('banking.actions')}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {prIncoming.map((r) => (
+                      <tr key={r.id}>
+                        <td>{r.requester_name}</td>
+                        <td><strong>{money(r.amount)}</strong></td>
+                        <td>{r.note || '—'}</td>
+                        <td style={{ wordBreak: 'break-all' }}>{r.reference}</td>
+                        <td>{prStatusBadge(r.status)}</td>
+                        <td>
+                          {r.status === 'PENDING' && (
+                            <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => payPaymentRequest(r.id)}>{t('banking.pr_pay')}</button>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          <h4 style={{ margin: '0 0 10px' }}>{t('banking.pr_outgoing')}</h4>
+          <div className="card">
+            {prOutgoing.length === 0 ? (
+              <p className="roles-tag">{t('banking.pr_empty_out')}</p>
+            ) : (
+              <div style={{ overflowX: 'auto' }}>
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>{t('banking.pr_payer')}</th>
+                      <th>{t('banking.amount')}</th>
+                      <th>{t('banking.pr_note')}</th>
+                      <th>{t('banking.status')}</th>
+                      <th>{t('banking.actions')}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {prOutgoing.map((r) => (
+                      <tr key={r.id}>
+                        <td>{r.payer_name}</td>
+                        <td><strong>{money(r.amount)}</strong></td>
+                        <td>{r.note || '—'}</td>
+                        <td>{prStatusBadge(r.status)}</td>
+                        <td>
+                          {r.status === 'PENDING' && (
+                            <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12, color: '#dc2626' }} onClick={() => cancelPaymentRequest(r.id)}>{t('banking.pr_cancel')}</button>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>

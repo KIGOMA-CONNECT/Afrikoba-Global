@@ -16,7 +16,7 @@ export default function Family() {
   const [showTransfer, setShowTransfer] = useState(false);
 
   const [createForm, setCreateForm] = useState({ name: '', currency: 'TZS', monthly_allowance_limit: '' });
-  const [invitePhone, setInvitePhone] = useState('');
+  const [inviteForm, setInviteForm] = useState({ phone: '', role: 'MEMBER', can_spend: true, spending_limit: '' });
   const [contribAmount, setContribAmount] = useState('');
   const [spendForm, setSpendForm] = useState({ amount: '', description: '' });
   const [transferForm, setTransferForm] = useState({ amount: '', phone: '', description: '' });
@@ -55,10 +55,15 @@ export default function Family() {
     e.preventDefault();
     if (!selectedWallet) return;
     try {
-      await api.post(`/family/${selectedWallet}/invite`, { phone: invitePhone });
+      await api.post(`/family/${selectedWallet}/invite`, {
+        phone: inviteForm.phone.trim(),
+        role: inviteForm.role,
+        can_spend: inviteForm.can_spend === true || inviteForm.can_spend === 'true',
+        spending_limit: inviteForm.spending_limit ? Number(inviteForm.spending_limit) : 0,
+      });
       setMsg({ type: 'ok', text: t('family.invited_ok') });
       setShowInvite(false);
-      setInvitePhone('');
+      setInviteForm({ phone: '', role: 'MEMBER', can_spend: true, spending_limit: '' });
       loadWalletDetails(selectedWallet);
     } catch (err) { error(err); }
   };
@@ -228,10 +233,25 @@ export default function Family() {
           {showInvite && (
             <div className="card" style={{ background: '#f8fafc', marginBottom: 16 }}>
               <h4>{t('family.invite_btn')}</h4>
-              <form onSubmit={inviteMember} style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 10 }}>
-                <input type="text" placeholder="2557..." value={invitePhone} onChange={(e) => setInvitePhone(e.target.value)} required style={{ flex: 1 }} />
-                <button className="btn" type="submit">{t('family.invite')}</button>
-                <button className="btn btn-secondary" type="button" onClick={() => setShowInvite(false)}>✕</button>
+              <form onSubmit={inviteMember} style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 10 }}>
+                <div style={{ display: 'flex', gap: 10 }}>
+                  <input type="text" placeholder="2557..." value={inviteForm.phone} onChange={(e) => setInviteForm({ ...inviteForm, phone: e.target.value })} required style={{ flex: 1 }} />
+                  <select value={inviteForm.role} onChange={(e) => setInviteForm({ ...inviteForm, role: e.target.value })}>
+                    <option value="MEMBER">MEMBER</option>
+                    <option value="OWNER">OWNER</option>
+                  </select>
+                </div>
+                <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 6, margin: 0 }}>
+                    <input type="checkbox" checked={inviteForm.can_spend} onChange={(e) => setInviteForm({ ...inviteForm, can_spend: e.target.checked })} />
+                    {t('family.can_spend')}
+                  </label>
+                  <input type="number" min="0" placeholder={t('family.spending_limit_ph')} value={inviteForm.spending_limit} onChange={(e) => setInviteForm({ ...inviteForm, spending_limit: e.target.value })} style={{ flex: 1 }} />
+                </div>
+                <div style={{ display: 'flex', gap: 10 }}>
+                  <button className="btn" type="submit">{t('family.invite')}</button>
+                  <button className="btn btn-secondary" type="button" onClick={() => setShowInvite(false)}>✕</button>
+                </div>
               </form>
             </div>
           )}
@@ -244,6 +264,7 @@ export default function Family() {
                   <th>{t('family.member_name')}</th>
                   <th>{t('family.member_phone')}</th>
                   <th>{t('family.role')}</th>
+                  <th>{t('family.spending')}</th>
                   <th>{t('family.status')}</th>
                   <th>{t('family.actions')}</th>
                 </tr>
@@ -254,6 +275,10 @@ export default function Family() {
                     <td><strong>{m.name || 'User'}</strong></td>
                     <td>{m.phone}</td>
                     <td><span className="badge info">{m.role}</span></td>
+                    <td>
+                      <span className={`badge ${m.can_spend ? 'success' : 'danger'}`}>{m.can_spend ? t('family.can_spend') : t('family.no_spend')}</span>
+                      {Number(m.spending_limit) > 0 && <span style={{ fontSize: 12, marginLeft: 6 }}>{formatMoney(m.spending_limit)}</span>}
+                    </td>
                     <td><span className={`badge ${m.status === 'ACTIVE' ? 'success' : 'warning'}`}>{m.status}</span></td>
                     <td>
                       {m.role !== 'OWNER' && (

@@ -52,12 +52,13 @@ export default function Recurrence() {
     PAYROLL_RUN: '{"scheduleId": 1}',
     AUTO_SAVINGS: '{"userId": 1, "amount": 5000, "description": "Auto savings"}',
     CONTRIBUTION_CYCLE: '{"groupId": 1}',
+    STANDING_INSTRUCTION: '{"fromUserId": 1, "toPhoneNumber": "255712345678", "amount": 5000, "note": "Malipo ya kila mwezi"}',
   };
 
   return (
     <div className="fade-in">
       <h2 className="text-xl font-semibold mb-1">Recurrence Automation</h2>
-      <p className="text-gray-500 text-sm mb-4">Scheduled auto-payroll, auto-savings & contribution cycles</p>
+      <p className="text-gray-500 text-sm mb-4">Scheduled auto-payroll, auto-savings, contribution cycles & standing instructions</p>
       {notice && <div className={`px-3 py-2 rounded mb-3 text-sm ${notice.ok ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>{notice.m}</div>}
 
       <div className="bg-white border rounded p-4 mb-4">
