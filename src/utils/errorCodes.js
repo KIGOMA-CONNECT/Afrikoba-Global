@@ -99,6 +99,18 @@ const ERROR_CODES = {
   CARD_OVER_DAILY_LIMIT:         { status: 400, message: 'Kiasi kinazidi kikomo cha siku (daily limit).' },
   CARD_AUTH_NOT_FOUND:           { status: 404, message: 'Authorization haipatikani au imeshawekwa.' },
 
+  // SACCOS foundation (400/403/404/409)
+  SACCOS_NAME_REQUIRED:          { status: 400, message: 'Jina la SACCOS linahitajika.' },
+  SACCOS_NAME_TAKEN:             { status: 409, message: 'Jina la SACCOS tayari limesajiliwa.' },
+  SACCOS_NOT_FOUND:              { status: 404, message: 'SACCOS haijapatikana.' },
+  SACCOS_NOT_MEMBER:             { status: 403, message: 'Huna uanachama wa SACCOS hii.' },
+  SACCOS_RBAC:                   { status: 403, message: 'Jukumu lako haliruhusu hatua hii ndani ya SACCOS.' },
+  SACCOS_ALREADY_MEMBER:         { status: 409, message: 'Mtumiaji huyu tayari ni mwanachama.' },
+  SACCOS_PHONE_NOT_FOUND:        { status: 404, message: 'Namba ya simu haijapatikana kwenye Afrikoba.' },
+  SACCOS_MEMBER_NOT_FOUND:       { status: 404, message: 'Mwanachama hajapatikana.' },
+  SACCOS_MEMBER_FORBIDDEN:       { status: 403, message: 'Huwezi kufanya hatua hii kwa mwanachama huyu.' },
+  SACCOS_MEMBER_STATUS_INVALID:  { status: 400, message: 'Hali ya uanachama hairuhusu hatua hii.' },
+
   // Generic
   INTERNAL_ERROR:                { status: 500, message: 'Hitilafu ya ndani ya server.' },
 };

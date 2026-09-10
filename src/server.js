@@ -65,6 +65,7 @@ const merchantRoutes = require('./routes/merchantRoutes');
 const budgetRoutes = require('./routes/budgetRoutes');
 const creditRoutes = require('./routes/creditRoutes');
 const cardRoutes = require('./routes/cardRoutes');
+const saccosRoutes = require('./routes/saccosRoutes');
 const secondaryRoutes = require('./routes/secondaryRoutes');
 const bapRoutes = require('./routes/bapRoutes');
 const publicStatsRoutes = require('./routes/publicStats');
@@ -330,6 +331,9 @@ for (const prefix of versionPrefixes) {
   app.use(`${prefix}/merchant`, walletLimiter, merchantRoutes);
   app.use(`${prefix}/credit`, walletLimiter, creditRoutes);
   app.use(`${prefix}/cards`, walletLimiter, cardRoutes);
+  if (process.env.SACCOS_ENABLED === 'true') {
+    app.use(`${prefix}/saccos`, walletLimiter, saccosRoutes);
+  }
   app.use(`${prefix}/bap`, walletLimiter, bapRoutes);
   app.use(`${prefix}/stats`, publicStatsRoutes);
   app.use(`${prefix}/passport`, walletLimiter, passportRoutes);

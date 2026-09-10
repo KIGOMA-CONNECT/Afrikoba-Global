@@ -4,9 +4,9 @@ Title: Test Strategy
 Purpose: Test levels, coverage targets, environments, CI gates and acceptance criteria for Afrikoba Global.
 Owner: QA Lead
 Status: DRAFT
-Version: 1.0
+Version: 1.6
 Effective Date: 2026-09-07
-Last Review Date: 2026-09-09
+Last Review Date: 2026-09-10
 Related Systems/Modules: All; scripts/test-*.js; .github/workflows/ci.yml
 Related Regulatory Requirements: AFK-INST-13 evidence (test suites prove controls)
 Approval Authority: QA Lead / CAB
@@ -19,7 +19,7 @@ Approval Authority: QA Lead / CAB
 | Level | Scope | Where |
 |-------|-------|-------|
 | Unit | Services/utils (engine, ledger math, fee/split/WHT) | Node tests |
-| Integration/Regression | End-to-end API + DB against a seeded Postgres | `scripts/test-*.js` (44 suites) + CI |
+| Integration/Regression | End-to-end API + DB against a seeded Postgres | `scripts/test-*.js` (45 suites) + CI |
 | Frontend build | Web dashboard Vite build; Flutter analyze/test/build | CI |
 | Load/Security | k6 load + security scripts (`.github/workflows/k6.yml`, manual vs staging) | staging |
 | Continuous monitoring | `uptime.yml` health probes sitting on `/health` + landing + `/api/v1/docs.json` | scheduled |
@@ -44,7 +44,8 @@ Approval Authority: QA Lead / CAB
 
 test-all, test-services, test-vicoba, test-rosca, test-p2p, test-events-stage4,
 test-events-stage5, test-vicoba-inbox, test-features, test-four-eyes, test-experiments,
-test-kyc, test-lending-gates, test-kilimo-seasons, test-disputes, test-support, test-currency, test-qr, test-insurance, test-cards, test-merchant-payouts,
+test-kyc, test-lending-gates, test-kilimo-seasons, test-disputes, test-support, test-currency, test-qr, test-insurance, test-cards, test-saccos-foundation,
+test-merchant-payouts,
 test-outbox, test-vault, test-caching, test-partitions, test-ussd, test-multi-country,
 test-ledger-integrity, test-field-partners, test-device-binding, test-chart-of-accounts,
 test-tracing, test-ai-insights, test-sar-filing, test-openapi, test-procurement, test-tcra-ussd,
@@ -80,3 +81,4 @@ expected; dashboard UI wired; test proving money math; audit-log entry for money
 | 1.3 | 2026-09-09 | AI code review | Added test-qr (QR payments: STATIC/DYNAMIC create + ownership list, scan with payee `phone_number` join + scan_count + self-pay/expiry/unknown guards, pay via canonical transfer with balanced ledger journal + `qr_payments` row + QR meta txn, insufficient funds pre-guard, CSRF on anonymous DELETE, owner-only deactivate; fixed `u.phone`→`u.phone_number`/`u.name`→`u.full_name` scan join + `wallet_amount` NOT NULL on the QR txn insert; 33 checks) → 42 suites | QA Lead (pending) |
 | 1.4 | 2026-09-09 | AI code review | Added test-insurance (micro-insurance: public product catalogue + category filter, purchase with canonical premium debit → balanced journal (DR CUSTOMER_WALLET = CR MNO_CLEARING) + `INSURANCE_PREMIUM` txn, product/age/insufficient-funds guards, ownership-scoped policies, renew advancing premium_paid + next_premium_date, failed renewal leaves policy intact; fixed `wallet_amount` NOT NULL on the premium + renewal txn inserts (was breaking purchase/renew end-to-end) + code-less 500s → `INSURANCE_*` 400/404 codes; 37 checks) → 43 suites | QA Lead (pending) |
 | 1.5 | 2026-09-09 | AI code review | Added test-cards (virtual cards J1-J6: Luhn-valid PAN + masked number + CVV-once issuance with sha256(PAN)/CVV hashing, scheme prefixes + default/custom limits, ownership-scoped list/detail/statement with no PAN/CVV leak, limits update, freeze/unfreeze/block state machine, authorize → AUTH_HOLD via `lockWallet` with balanced CUSTOMER_WALLET/CARD_HOLD journal + decline-reason logging (CVV/per-txn/daily/insufficient), admin-only settlement (`captureLock` → MNO_CLEARING) + refunds (`unlockWallet`) both idempotent on auth_reference, statement + monthly summary; code-less 400/403/404 badge errors → `CARD_*` codes + `WALLET_INSUFFICIENT_FUNDS`; 71 checks) → 44 suites | QA Lead (pending) |
+| 1.6 | 2026-09-10 | AI code review | Added test-saccos-foundation (SACCOS Digital Core increment 1, migration 101: org registration with unique code/name + config-driven JSONB setup + founder OWNER "0001" ACTIVE, compliance boundary row (regulatory_status TECH_INFRA, legal_entity), membership lifecycle invite-by-identity-phone with per-SACCOS member_number/accept/suspend/exit/re-invite-on-EXITED, GOV OWNER/BOARD/MEMBER RBAC (BOARD invites, OWNER-only activate/suspend), cross-entity isolation (non-member + cross-SACCOS reads 404, no enumeration), platform ADMIN oversight; routes env-gated `SACCOS_ENABLED=false` by default; 39 checks) → 45 suites | QA Lead (pending) |
