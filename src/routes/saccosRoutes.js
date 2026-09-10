@@ -7,6 +7,7 @@ const credit = require('../services/saccosCreditService');
 const governance = require('../services/saccosGovernanceService');
 const accounting = require('../services/saccosAccountingService');
 const investments = require('../services/saccosInvestmentsService');
+const dividends = require('../services/saccosDividendsService');
 
 const router = express.Router();
 
@@ -429,6 +430,48 @@ router.post('/:id/investments/:investmentId/redeem', authRequired, async (req, r
 router.get('/:id/investments/summary', authRequired, async (req, res, next) => {
   try {
     const out = await investments.investmentsSummary(req.user.id, Number(req.params.id));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/dividends', authRequired, async (req, res, next) => {
+  try {
+    const out = await dividends.declareDividend(req.user.id, Number(req.params.id), req.body);
+    res.status(201).json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.get('/:id/dividends', authRequired, async (req, res, next) => {
+  try {
+    const out = await dividends.listRuns(req.user.id, Number(req.params.id));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.get('/:id/dividends/runs/:runId/payouts', authRequired, async (req, res, next) => {
+  try {
+    const out = await dividends.listPayouts(req.user.id, Number(req.params.id), Number(req.params.runId));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/dividends/runs/:runId/distribute', authRequired, async (req, res, next) => {
+  try {
+    const out = await dividends.distributeDividend(req.user.id, Number(req.params.id), Number(req.params.runId));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.get('/:id/dividends/mine', authRequired, async (req, res, next) => {
+  try {
+    const out = await dividends.myDividends(req.user.id, Number(req.params.id));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.get('/:id/dividends/summary', authRequired, async (req, res, next) => {
+  try {
+    const out = await dividends.dividendsSummary(req.user.id, Number(req.params.id));
     res.json({ success: true, result: out });
   } catch (e) { next(e); }
 });

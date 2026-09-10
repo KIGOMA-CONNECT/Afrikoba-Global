@@ -168,6 +168,15 @@ const ERROR_CODES = {
   SACCOS_INV_BELOW_MIN:          { status: 400, message: 'Kiasi kiko chini ya kiwango cha chini.' },
   SACCOS_INV_ABOVE_MAX:          { status: 400, message: 'Kiasi kinazidi kiwango cha juu.' },
 
+  // SACCOS dividends (400/403/404)
+  SACCOS_DIV_RUN_NOT_FOUND:   { status: 404, message: 'Mgawanyo wa faida haujapatikana.' },
+  SACCOS_DIV_STATE:           { status: 400, message: 'Hali ya mgawanyo hairuhusu hatua hii.' },
+  SACCOS_DIV_PERIOD_CLOSED:   { status: 400, message: 'Lazima kipindi cha uhasibu kifungwe kabla ya kutangaza mgawanyo.' },
+  SACCOS_DIV_PERIOD_USED:     { status: 400, message: 'Mgawanyo wa faida kwa kipindi hiki umekwisha tangazwa.' },
+  SACCOS_DIV_NO_SHARES:       { status: 400, message: 'Hakuna wanachama wenye hisa zilizostahiki.' },
+  SACCOS_DIV_PER_SHARE:       { status: 400, message: 'Kiasi kwa hisa lazima kiwe chanya.' },
+  SACCOS_DIV_TOTAL:           { status: 400, message: 'Jumla ya fedha kwa mgawanyo lazima iwe chanya.' },
+
   // Generic
   INTERNAL_ERROR:                { status: 500, message: 'Hitilafu ya ndani ya server.' },
 };
