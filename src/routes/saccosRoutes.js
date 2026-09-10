@@ -6,6 +6,7 @@ const savings = require('../services/saccosSavingsService');
 const credit = require('../services/saccosCreditService');
 const governance = require('../services/saccosGovernanceService');
 const accounting = require('../services/saccosAccountingService');
+const investments = require('../services/saccosInvestmentsService');
 
 const router = express.Router();
 
@@ -365,6 +366,69 @@ router.get('/:id/accounting/balance-sheet', authRequired, async (req, res, next)
 router.get('/:id/accounting/summary', authRequired, async (req, res, next) => {
   try {
     const out = await accounting.accountingSummary(req.user.id, Number(req.params.id));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/investments/products', authRequired, async (req, res, next) => {
+  try {
+    const out = await investments.createProduct(req.user.id, Number(req.params.id), req.body);
+    res.status(201).json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.get('/:id/investments/products', authRequired, async (req, res, next) => {
+  try {
+    const out = await investments.listProducts(req.user.id, Number(req.params.id));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/investments/products/:productId/archive', authRequired, async (req, res, next) => {
+  try {
+    const out = await investments.archiveProduct(req.user.id, Number(req.params.id), Number(req.params.productId));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/investments/apply', authRequired, async (req, res, next) => {
+  try {
+    const out = await investments.applyInvestment(req.user.id, Number(req.params.id), req.body);
+    res.status(201).json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.get('/:id/investments/mine', authRequired, async (req, res, next) => {
+  try {
+    const out = await investments.listMine(req.user.id, Number(req.params.id));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/investments/:investmentId/approve', authRequired, async (req, res, next) => {
+  try {
+    const out = await investments.decideInvestment(req.user.id, Number(req.params.id), Number(req.params.investmentId), true);
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/investments/:investmentId/reject', authRequired, async (req, res, next) => {
+  try {
+    const out = await investments.decideInvestment(req.user.id, Number(req.params.id), Number(req.params.investmentId), false);
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/investments/:investmentId/redeem', authRequired, async (req, res, next) => {
+  try {
+    const out = await investments.redeemInvestment(req.user.id, Number(req.params.id), Number(req.params.investmentId));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.get('/:id/investments/summary', authRequired, async (req, res, next) => {
+  try {
+    const out = await investments.investmentsSummary(req.user.id, Number(req.params.id));
     res.json({ success: true, result: out });
   } catch (e) { next(e); }
 });

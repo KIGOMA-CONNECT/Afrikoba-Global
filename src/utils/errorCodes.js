@@ -156,6 +156,18 @@ const ERROR_CODES = {
   SACCOS_ACC_AMOUNT:               { status: 400, message: 'Kiasi lazima kiwe chanya.' },
   SACCOS_ACC_ACCOUNT_UNKNOWN:      { status: 400, message: 'Akaunti maalum haipatikani.' },
 
+  // SACCOS investments (400/403/404)
+  SACCOS_INV_PRODUCT_NOT_FOUND:  { status: 404, message: 'Bidhaa ya uwekezaji haijapatikana.' },
+  SACCOS_INV_PRODUCT_INACTIVE:   { status: 400, message: 'Bidhaa ya uwekezaji haifanyi kazi (IMEFUNGWA).' },
+  SACCOS_INV_NOT_FOUND:          { status: 404, message: 'Uwekezaji haujapatikana.' },
+  SACCOS_INV_STATE:              { status: 400, message: 'Hali ya uwekezaji hairuhusu hatua hii.' },
+  SACCOS_INV_NOT_MATURED:        { status: 400, message: 'Uwekezaji bado haujafikia ukomavu.' },
+  SACCOS_INV_NAME_REQUIRED:      { status: 400, message: 'Jina la bidhaa linahitajika.' },
+  SACCOS_INV_RATE_OR_TERM:       { status: 400, message: 'Kiwango au muda wa uwekezaji si sahihi.' },
+  SACCOS_INV_AMOUNT:             { status: 400, message: 'Kiasi cha uwekezaji lazima kiwe chanya.' },
+  SACCOS_INV_BELOW_MIN:          { status: 400, message: 'Kiasi kiko chini ya kiwango cha chini.' },
+  SACCOS_INV_ABOVE_MAX:          { status: 400, message: 'Kiasi kinazidi kiwango cha juu.' },
+
   // Generic
   INTERNAL_ERROR:                { status: 500, message: 'Hitilafu ya ndani ya server.' },
 };
