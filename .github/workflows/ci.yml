@@ -89,7 +89,7 @@ jobs:
           node scripts/test-lending-gates.js
           node scripts/test-kilimo-seasons.js
           node scripts/test-disputes.js
-          node scripts/test-support.js
+node scripts/test-support.js
           node scripts/test-currency.js
           node scripts/test-qr.js
           node scripts/test-insurance.js

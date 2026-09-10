@@ -87,6 +87,18 @@ const ERROR_CODES = {
   INSURANCE_AGE_INVALID:         { status: 400, message: 'Umri haujazingatiwa kwa bidhaa hii.' },
   INSURANCE_POLICY_NOT_FOUND:    { status: 404, message: 'Sera haipatikani.' },
 
+  // Cards (400/403/404)
+  CARD_NOT_FOUND:                { status: 404, message: 'Kadi haipatikani.' },
+  CARD_NOT_OWNER:                { status: 403, message: 'Hii kadi sio yako.' },
+  CARD_INACTIVE:                 { status: 403, message: 'Kadi haifanyi kazi (imefungwa au imeblock).' },
+  CARD_BLOCKED:                  { status: 403, message: 'Kadi imeblock.' },
+  CARD_MERCHANT_REQUIRED:        { status: 400, message: 'Jina la muuzaji ni lazima.' },
+  CARD_AMOUNT_INVALID:           { status: 400, message: 'Kiasi si sahihi.' },
+  CARD_INVALID_CVV:              { status: 400, message: 'CVV si sahihi.' },
+  CARD_OVER_PER_TXN_LIMIT:       { status: 400, message: 'Kiasi kinazidi kikomo cha miamala (per-txn limit).' },
+  CARD_OVER_DAILY_LIMIT:         { status: 400, message: 'Kiasi kinazidi kikomo cha siku (daily limit).' },
+  CARD_AUTH_NOT_FOUND:           { status: 404, message: 'Authorization haipatikani au imeshawekwa.' },
+
   // Generic
   INTERNAL_ERROR:                { status: 500, message: 'Hitilafu ya ndani ya server.' },
 };

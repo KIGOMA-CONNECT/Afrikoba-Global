@@ -7,6 +7,7 @@
 const crypto = require('crypto');
 const pool = require('../config/db');
 const { generateReference } = require('../utils/helpers');
+const { createAppError } = require('../utils/errorCodes');
 const { logAudit } = require('./auditService');
 const logger = require('../utils/logger');
 const fin = require('./financialEngine');
@@ -47,16 +48,12 @@ function parseAmount(amount) {
   return isFinite(n) ? n : NaN;
 }
 
-function badge(err, statusCode) {
-  return Object.assign(new Error(err), { statusCode });
-}
-
 async function assertCardOwner(cardId, userId, mode) {
   const res = await pool.query('SELECT * FROM virtual_cards WHERE id = $1', [cardId]);
-  if (!res.rows.length) throw badge('Kadi haipatikani.', 404);
+  if (!res.rows.length) throw createAppError('CARD_NOT_FOUND');
   const card = res.rows[0];
-  if (card.user_id !== userId) throw badge('Hii kadi sio yako.', 403);
-  if (mode === 'active' && card.status !== 'ACTIVE') throw badge('Kadi haifanyi kazi (imefungwa au imeblock).', 403);
+  if (card.user_id !== userId) throw createAppError('CARD_NOT_OWNER');
+  if (mode === 'active' && card.status !== 'ACTIVE') throw createAppError('CARD_INACTIVE');
   return card;
 }
 
@@ -121,7 +118,7 @@ async function getCard(userId, cardId) {
 
 async function setCardLimits(userId, cardId, data) {
   const card = await assertCardOwner(cardId, userId);
-  if (card.status === 'BLOCKED') throw badge('Kadi imeblock — haiwezi kuwekewa mipaka.', 403);
+  if (card.status === 'BLOCKED') throw createAppError('CARD_BLOCKED');
   await pool.query(
     `UPDATE virtual_cards SET daily_limit = COALESCE($1, daily_limit), per_txn_limit = COALESCE($2, per_txn_limit), updated_at = NOW() WHERE id = $3`,
     [data.daily_limit != null ? Number(data.daily_limit) : null, data.per_txn_limit != null ? Number(data.per_txn_limit) : null, cardId]
@@ -131,7 +128,7 @@ async function setCardLimits(userId, cardId, data) {
 
 async function freezeCard(userId, cardId, freeze) {
   const card = await assertCardOwner(cardId, userId);
-  if (card.status === 'BLOCKED') throw badge('Kadi imeblock.', 403);
+  if (card.status === 'BLOCKED') throw createAppError('CARD_BLOCKED');
   const status = freeze ? 'FROZEN' : 'ACTIVE';
   await pool.query(`UPDATE virtual_cards SET status = $1, updated_at = NOW() WHERE id = $2`, [status, cardId]);
   await logAudit(userId, 'CARD_FROZEN_STATE', `Kadi #${cardId} ${status}`).catch(() => {});
@@ -152,13 +149,13 @@ async function blockCard(userId, cardId) {
 async function authorizeCard(userId, cardId, data) {
   const { merchant_name, amount, cvv } = data;
   const amountNum = parseAmount(amount);
-  if (!merchant_name) throw badge('Jina la muuzaji ni lazima.', 400);
-  if (!amountNum || amountNum <= 0) throw badge('Kiasi si sahihi.', 400);
+  if (!merchant_name) throw createAppError('CARD_MERCHANT_REQUIRED');
+  if (!amountNum || amountNum <= 0) throw createAppError('CARD_AMOUNT_INVALID');
 
   const card = await pool.query('SELECT * FROM virtual_cards WHERE id = $1 FOR UPDATE', [cardId]);
-  if (!card.rows.length) throw badge('Kadi haipatikani.', 404);
+  if (!card.rows.length) throw createAppError('CARD_NOT_FOUND');
   const c = card.rows[0];
-  if (c.user_id !== userId) throw badge('Hii kadi sio yako.', 403);
+  if (c.user_id !== userId) throw createAppError('CARD_NOT_OWNER');
 
   const authRef = 'AUTH-' + generateReference().replace('undefined-', '');
 
@@ -174,20 +171,20 @@ async function authorizeCard(userId, cardId, data) {
 
   if (card.rows[0].status !== 'ACTIVE') {
     await declineWith(card.rows[0].status === 'FROZEN' ? 'CARD_FROZEN' : 'CARD_BLOCKED');
-    throw badge('Kadi haifanyi kazi (imefungwa au imeblock).', 403);
+    throw createAppError('CARD_INACTIVE');
   }
   if (!cvv || sha256(String(cvv).trim()) !== c.cvv_hash) {
     await declineWith('INVALID_CVV');
-    throw badge('CVV si sahihi.', 400);
+    throw createAppError('CARD_INVALID_CVV');
   }
   if (c.per_txn_limit && amountNum > Number(c.per_txn_limit)) {
     await declineWith('OVER_TRANSACTION_LIMIT');
-    throw badge(`Kiasi kinazidi kikomo cha miamala (${c.per_txn_limit}).`, 400);
+    throw createAppError('CARD_OVER_PER_TXN_LIMIT');
   }
   const spend = await todaySpend(cardId);
   if (c.daily_limit && (spend + amountNum) > Number(c.daily_limit)) {
     await declineWith('OVER_DAILY_LIMIT');
-    throw badge('Kiasi kinazidi kikomo cha siku (daily limit).', 400);
+    throw createAppError('CARD_OVER_DAILY_LIMIT');
   }
 
   const client = await pool.connect();
@@ -201,7 +198,7 @@ async function authorizeCard(userId, cardId, data) {
       await logCardTx(rc, userId, cardId, merchant_name, amountNum, 'DECLINED', authRef, 'INSUFFICIENT_FUNDS');
       await rc.query('COMMIT');
       rc.release();
-      throw badge('Salio lako halitoshi.', 400);
+      throw createAppError('WALLET_INSUFFICIENT_FUNDS');
     }
     await fin.lockWallet({ client, userId, amount: amountNum, reference: `${authRef}:LOCK`, description: 'Card authorization hold' });
     await logCardTx(client, userId, cardId, merchant_name, amountNum, 'AUTH_HOLD', authRef, null);
@@ -226,7 +223,7 @@ async function settleCardAuth(adminId, authReference) {
       "SELECT * FROM card_transactions WHERE auth_reference = $1 AND status = 'AUTH_HOLD' FOR UPDATE",
       [authReference]
     );
-    if (!tx.rows.length) throw badge('Authorization haipatikani au imeshawekwa.', 404);
+    if (!tx.rows.length) throw createAppError('CARD_AUTH_NOT_FOUND');
     const t = tx.rows[0];
     await fin.captureLock({ client, userId: t.user_id, amount: t.amount, reference: `${authReference}:CAPTURE`, toAccount: 'MNO_CLEARING', description: 'Card settlement' });
     await client.query(`UPDATE card_transactions SET status = 'SETTLED', settled_at = NOW() WHERE id = $1`, [t.id]);
@@ -247,7 +244,7 @@ async function refundCardAuth(adminId, authReference) {
       "SELECT * FROM card_transactions WHERE auth_reference = $1 AND status = 'AUTH_HOLD' FOR UPDATE",
       [authReference]
     );
-    if (!tx.rows.length) throw badge('Authorization haipatikani au imeshawekwa.', 404);
+    if (!tx.rows.length) throw createAppError('CARD_AUTH_NOT_FOUND');
     const t = tx.rows[0];
     await fin.unlockWallet({ client, userId: t.user_id, amount: t.amount, reference: `${authReference}:REFUND`, description: 'Card refund' });
     await client.query(`UPDATE card_transactions SET status = 'REFUNDED', settled_at = NOW() WHERE id = $1`, [t.id]);

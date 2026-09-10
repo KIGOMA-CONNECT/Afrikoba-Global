@@ -11,7 +11,7 @@ Status legend: ✅ **built** · 🔶 **partial** · ⬜ **not built / next**.
 
 ## 1. Executive Vision & Positioning (Sec 1–2)
 - ✅ Wallet + P2P + mobile-money + savings + VICOBA + ROSCA + yield + family + credit score + multi-currency.
-- 🔶 Merchant, cross-border, commerce = partial (cross-border remittance only via country carrier routes; merchant platform: `merchantService` + QR + invoices + payroll + procurement shipped; insurance shipped; cards shipped: Luhn-valid PAN/CVV-once issuance, holds via engine (CUSTOMER_WALLET/CARD_HOLD), admin settle/refund, statements — `scripts/test-cards.js` (59 checks) + `scripts/test-insurance.js` (37 checks) + `scripts/test-qr.js` (33 checks), suites 44/43/42).
+- 🔶 Merchant, cross-border, commerce = partial (cross-border remittance only via country carrier routes; merchant platform: `merchantService` + QR + invoices + payroll + procurement shipped; insurance shipped; cards shipped: Luhn-valid PAN/CVV-once issuance, sha256 hashing, limits, freeze/block, holds via engine (CUSTOMER_WALLET/CARD_HOLD + decline reasons), admin settle/refund idempotent on auth_reference, statements/summary — `scripts/test-cards.js` (71 checks) + `scripts/test-insurance.js` (37 checks) + `scripts/test-qr.js` (33 checks), suites 44/43/42).
 - ✅ Positioned as "financial operating system" (landing + product ecosystem).
 
 ## 2. Financial Core / Ledger (Sec 3–9) — **the blueprint's #1 priority**
