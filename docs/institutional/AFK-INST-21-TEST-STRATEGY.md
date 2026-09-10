@@ -4,7 +4,7 @@ Title: Test Strategy
 Purpose: Test levels, coverage targets, environments, CI gates and acceptance criteria for Afrikoba Global.
 Owner: QA Lead
 Status: DRAFT
-Version: 1.8
+Version: 1.9
 Effective Date: 2026-09-07
 Last Review Date: 2026-09-10
 Related Systems/Modules: All; scripts/test-*.js; .github/workflows/ci.yml
@@ -19,7 +19,7 @@ Approval Authority: QA Lead / CAB
 | Level | Scope | Where |
 |-------|-------|-------|
 | Unit | Services/utils (engine, ledger math, fee/split/WHT) | Node tests |
-| Integration/Regression | End-to-end API + DB against a seeded Postgres | `scripts/test-*.js` (47 suites) + CI |
+| Integration/Regression | End-to-end API + DB against a seeded Postgres | `scripts/test-*.js` (48 suites) + CI |
 | Frontend build | Web dashboard Vite build; Flutter analyze/test/build | CI |
 | Load/Security | k6 load + security scripts (`.github/workflows/k6.yml`, manual vs staging) | staging |
 | Continuous monitoring | `uptime.yml` health probes sitting on `/health` + landing + `/api/v1/docs.json` | scheduled |
@@ -44,7 +44,7 @@ Approval Authority: QA Lead / CAB
 
 test-all, test-services, test-vicoba, test-rosca, test-p2p, test-events-stage4,
 test-events-stage5, test-vicoba-inbox, test-features, test-four-eyes, test-experiments,
-test-kyc, test-lending-gates, test-kilimo-seasons, test-disputes, test-support, test-currency, test-qr, test-insurance, test-cards, test-saccos-foundation, test-saccos-shares, test-saccos-savings,
+test-kyc, test-lending-gates, test-kilimo-seasons, test-disputes, test-support, test-currency, test-qr, test-insurance, test-cards, test-saccos-foundation, test-saccos-shares, test-saccos-savings, test-saccos-credit,
 test-merchant-payouts,
 test-outbox, test-vault, test-caching, test-partitions, test-ussd, test-multi-country,
 test-ledger-integrity, test-field-partners, test-device-binding, test-chart-of-accounts,
@@ -84,3 +84,4 @@ expected; dashboard UI wired; test proving money math; audit-log entry for money
 | 1.6 | 2026-09-10 | AI code review | Added test-saccos-foundation (SACCOS Digital Core increment 1, migration 101: org registration with unique code/name + config-driven JSONB setup + founder OWNER "0001" ACTIVE, compliance boundary row (regulatory_status TECH_INFRA, legal_entity), membership lifecycle invite-by-identity-phone with per-SACCOS member_number/accept/suspend/exit/re-invite-on-EXITED, GOV OWNER/BOARD/MEMBER RBAC (BOARD invites, OWNER-only activate/suspend), cross-entity isolation (non-member + cross-SACCOS reads 404, no enumeration), platform ADMIN oversight; routes env-gated `SACCOS_ENABLED=false` by default; 39 checks) → 45 suites | QA Lead (pending) |
 | 1.7 | 2026-09-10 | AI code review | Added test-saccos-shares (SACCOS increment 2, migration 102: share subscription ledgered on the shared double-entry core — `debitWallet` DR CUSTOMER_WALLET / CR per-entity EQUITY `SACCOS<id>_SHARES_CAPITAL` + `financial_operations` claim + `SACCOS_SHARE_PURCHASE` txn + holdings base-cost motion; config-driven `shareStructure` {shareValue,minShares,maxShares,autoApprove}; PENDING/APPROVED/REJECTED lifecycle with OWNER/BOARD decisions; reject refunds via `creditWallet` on a fresh `-R` reference (DR equity / CR wallet) with txn marked `reversed_at`/`reversed_ref` (SUCCESS is terminal — no illegal status flip); summary totals; cross-entity isolation incl. per-entity equity codes; 38 checks) → 46 suites | QA Lead (pending) |
 | 1.8 | 2026-09-10 | AI code review | Added test-saccos-savings (SACCOS increment 3, migration 103: member savings on the shared double-entry core — deposit `debitWallet` DR CUSTOMER_WALLET / CR per-entity LIABILITY `SACCOS<id>_SAVINGS_LIABILITY` (auto-upserted) + `SACCOS_SAVINGS_DEPOSIT` txn + movement; config-driven `savings` {savingsType,minDeposit,maxDeposit,minBalanceToRetain,autoApproveWithdrawals}; auto-approved withdrawal releases via `creditWallet` DR liability / CR wallet with `SACCOS_SAVINGS_WITHDRAWAL` txn + balance decrement; PENDING gated withdrawals reserve funds (SUM pending) and move nothing until OWNER/BOARD approve (`creditWallet` + movement APPROVED) — rejections are free (no reversal journal, SUCCESS terminal preserved); `SAV-<saccosId>-<memberNo>` account numbers, member RBAC 403, cross-entity isolation 404 incl. distinct liability codes, platform ADMIN oversight, audit trail; 38 checks) → 47 suites | QA Lead (pending) |
+| 1.9 | 2026-09-10 | AI code review | Added test-saccos-credit (SACCOS increment 4, migration 104: loan applications SCL-* → OWNER/BOARD approval → disbursement on the shared double-entry core — `claimOperation` + `postJournal` DR per-entity ASSET `SACCOS<id>_LOANS_RECEIVABLE` / CR CUSTOMER_WALLET, `SACCOS_LOAN_DISBURSEMENT` txn; flat-interest `total_repayable = principal * (1 + rate% * months/12)` with proportional principal/interest repayment split — DR CUSTOMER_WALLET / CR LOANS_RECEIVABLE principal + CR `SACCOS<id>_INTEREST_INCOME` (REVENUE) — idempotent on REP-* refs, `WALLET_INSUFFICIENT_FUNDS` guard, close at zero outstanding (CLOSED + application REPAID); config-driven `lending` {interestRate,minAmount,maxAmount,maxTermMonths,maxActiveLoans,autoDisburse}; manual disburse + reject paths; member RBAC 403, cross-entity isolation 404 incl. distinct ASSET/REVENUE codes, platform ADMIN oversight, audit trail; 49 checks — caught + fixed a real summary bug (active_loans counted all loans, not only ACTIVE)) → 48 suites | QA Lead (pending) |

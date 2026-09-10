@@ -127,6 +127,19 @@ const ERROR_CODES = {
   SACCOS_SAVINGS_WITHDRAWAL_NOT_FOUND: { status: 404, message: 'Ombi la uondoaji halijapatikana.' },
   SACCOS_SAVINGS_DECIDED:         { status: 400, message: 'Ombi hili la uondoaji tayari limeamuliwa.' },
 
+  // SACCOS credit (400/403/404)
+  SACCOS_LOAN_AMOUNT_INVALID:      { status: 400, message: 'Kiasi cha mkopo hakikubaliki.' },
+  SACCOS_LOAN_BELOW_MIN:           { status: 400, message: 'Kiasi cha mkopo iko chini ya kiwango cha chini.' },
+  SACCOS_LOAN_ABOVE_MAX:           { status: 400, message: 'Kiasi cha mkopo kimezidi kiwango cha juu.' },
+  SACCOS_LOAN_TERM_TOO_LONG:       { status: 400, message: 'Muda wa mkopo haukubaliki kwa SACCOS hii.' },
+  SACCOS_LOANS_AT_LIMIT:           { status: 400, message: 'Umefikia kiwango cha juu cha mikopo hai.' },
+  SACCOS_LOAN_APPLICATION_NOT_FOUND: { status: 404, message: 'Ombi la mkopo halijapatikana.' },
+  SACCOS_LOAN_APPLICATION_DECIDED: { status: 400, message: 'Ombi hili la mkopo tayari limeamuliwa.' },
+  SACCOS_LOAN_NOT_FOUND:           { status: 404, message: 'Mkopo haujapatikana.' },
+  SACCOS_LOAN_NOT_DISBURSABLE:     { status: 400, message: 'Mkopo huu hauwezi kutolewa (haliko PENDING).' },
+  SACCOS_LOAN_ALREADY_CLOSED:      { status: 400, message: 'Mkopo huu tayari umekamilika.' },
+  SACCOS_LOAN_REPAY_EXCEEDS:       { status: 400, message: 'Kiasi cha rejesho kinazidi deni lililobaki.' },
+
   // Generic
   INTERNAL_ERROR:                { status: 500, message: 'Hitilafu ya ndani ya server.' },
 };

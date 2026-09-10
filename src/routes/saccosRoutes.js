@@ -3,6 +3,7 @@ const { authRequired, requireRoles } = require('../middleware/auth');
 const saccos = require('../services/saccosService');
 const shares = require('../services/saccosSharesService');
 const savings = require('../services/saccosSavingsService');
+const credit = require('../services/saccosCreditService');
 
 const router = express.Router();
 
@@ -166,6 +167,69 @@ router.post('/:id/savings/withdrawals/:withdrawalId/approve', authRequired, asyn
 router.post('/:id/savings/withdrawals/:withdrawalId/reject', authRequired, async (req, res, next) => {
   try {
     const out = await savings.decideWithdrawal(req.user.id, Number(req.params.id), Number(req.params.withdrawalId), 'REJECT');
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/loans/apply', authRequired, async (req, res, next) => {
+  try {
+    const out = await credit.applyLoan(req.user.id, Number(req.params.id), { amount: req.body.amount, termMonths: req.body.termMonths, purpose: req.body.purpose });
+    res.status(201).json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.get('/:id/loans/mine', authRequired, async (req, res, next) => {
+  try {
+    const out = await credit.listMyLoans(req.user.id, Number(req.params.id));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.get('/:id/loans/applications', authRequired, async (req, res, next) => {
+  try {
+    const out = await credit.listApplications(req.user.id, Number(req.params.id));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/loans/applications/:applicationId/approve', authRequired, async (req, res, next) => {
+  try {
+    const out = await credit.decideApplication(req.user.id, Number(req.params.id), Number(req.params.applicationId), 'APPROVE');
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/loans/applications/:applicationId/reject', authRequired, async (req, res, next) => {
+  try {
+    const out = await credit.decideApplication(req.user.id, Number(req.params.id), Number(req.params.applicationId), 'REJECT');
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/loans/:loanId/disburse', authRequired, async (req, res, next) => {
+  try {
+    const out = await credit.disburseLoan(req.user.id, Number(req.params.id), Number(req.params.loanId));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/loans/:loanId/repay', authRequired, async (req, res, next) => {
+  try {
+    const out = await credit.repayLoan(req.user.id, Number(req.params.id), Number(req.params.loanId), { amount: req.body.amount });
+    res.status(201).json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.get('/:id/loans/:loanId/repayments', authRequired, async (req, res, next) => {
+  try {
+    const out = await credit.listLoanRepayments(req.user.id, Number(req.params.id), Number(req.params.loanId));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.get('/:id/loans/summary', authRequired, async (req, res, next) => {
+  try {
+    const out = await credit.creditSummary(req.user.id, Number(req.params.id));
     res.json({ success: true, result: out });
   } catch (e) { next(e); }
 });
