@@ -111,6 +111,14 @@ const ERROR_CODES = {
   SACCOS_MEMBER_FORBIDDEN:       { status: 403, message: 'Huwezi kufanya hatua hii kwa mwanachama huyu.' },
   SACCOS_MEMBER_STATUS_INVALID:  { status: 400, message: 'Hali ya uanachama hairuhusu hatua hii.' },
 
+  // SACCOS shares (400/403/404)
+  SACCOS_SHARES_INVALID:         { status: 400, message: 'Idadi ya hisa haikubaliki.' },
+  SACCOS_SHARES_BELOW_MIN:       { status: 400, message: 'Idadi ya hisa iko chini ya kiwango cha chini.' },
+  SACCOS_SHARES_ABOVE_MAX:       { status: 400, message: 'Idadi ya hisa imezidi kiwango cha juu.' },
+  SACCOS_SHARES_NOT_ACTIVE:      { status: 400, message: 'SACCOS haijaanzishwa (haina hali ya ACTIVE).' },
+  SACCOS_SHARE_PURCHASE_NOT_FOUND: { status: 404, message: 'Ununuzi wa hisa haujapatikana.' },
+  SACCOS_SHARE_DECIDED:          { status: 400, message: 'Ununuzi huu wa hisa tayari umeamuliwa.' },
+
   // Generic
   INTERNAL_ERROR:                { status: 500, message: 'Hitilafu ya ndani ya server.' },
 };

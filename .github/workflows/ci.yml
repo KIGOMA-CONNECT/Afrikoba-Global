@@ -2,7 +2,7 @@
 # AFRIKOBA GLOBAL - CI/CD
 # Triggers: push kwenye main + PRs
 # Jobs:
-#   1. backend   - lint + full integration test suite (45 suites)
+#   1. backend   - lint + full integration test suite (46 suites)
 #   2. dashboard - Vite build
 #   3. mobile    - flutter analyze/test + build web + debug APK
 # ============================================================
@@ -95,6 +95,7 @@ node scripts/test-support.js
           node scripts/test-insurance.js
           node scripts/test-cards.js
           node scripts/test-saccos-foundation.js
+          node scripts/test-saccos-shares.js
           node scripts/test-merchant-payouts.js
           node scripts/test-outbox.js
           node scripts/test-vault.js

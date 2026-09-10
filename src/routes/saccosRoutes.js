@@ -1,6 +1,7 @@
 const express = require('express');
 const { authRequired, requireRoles } = require('../middleware/auth');
 const saccos = require('../services/saccosService');
+const shares = require('../services/saccosSharesService');
 
 const router = express.Router();
 
@@ -74,6 +75,48 @@ router.post('/:id/members/:memberId/exit', authRequired, async (req, res, next) 
   try {
     const membership = await saccos.exitMember(req.user.id, Number(req.params.id), Number(req.params.memberId));
     res.json({ success: true, result: membership });
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/shares/purchase', authRequired, async (req, res, next) => {
+  try {
+    const purchase = await shares.purchaseShares(req.user.id, Number(req.params.id), { shares: req.body.shares });
+    res.status(201).json({ success: true, result: purchase });
+  } catch (e) { next(e); }
+});
+
+router.get('/:id/shares/mine', authRequired, async (req, res, next) => {
+  try {
+    const out = await shares.listMyShares(req.user.id, Number(req.params.id));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.get('/:id/shares/purchases', authRequired, async (req, res, next) => {
+  try {
+    const purchases = await shares.listPurchases(req.user.id, Number(req.params.id));
+    res.json({ success: true, result: purchases });
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/shares/purchases/:purchaseId/approve', authRequired, async (req, res, next) => {
+  try {
+    const out = await shares.decidePurchase(req.user.id, Number(req.params.id), Number(req.params.purchaseId), 'APPROVE');
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/shares/purchases/:purchaseId/reject', authRequired, async (req, res, next) => {
+  try {
+    const out = await shares.decidePurchase(req.user.id, Number(req.params.id), Number(req.params.purchaseId), 'REJECT');
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.get('/:id/shares/summary', authRequired, async (req, res, next) => {
+  try {
+    const out = await shares.sharesSummary(req.user.id, Number(req.params.id));
+    res.json({ success: true, result: out });
   } catch (e) { next(e); }
 });
 

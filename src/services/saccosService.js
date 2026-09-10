@@ -242,4 +242,7 @@ module.exports = {
   suspendMember,
   exitMember,
   getCompliance,
+  assertVisible,
+  assertActiveRole,
+  assertMembershipCanAdminister,
 };
