@@ -64,7 +64,7 @@ Every FR links to: (1) Business capability (AFK-INST-02), (2) implementation evi
 
 | Env | DB | Flags | Tests |
 |-----|----|-------|-------|
-| CI | fresh seeded Postgres | RATE_LIMIT_DISABLED, DISABLE_CRON, SACCOS_ENABLED | 48 suites |
+| CI | fresh seeded Postgres | RATE_LIMIT_DISABLED, DISABLE_CRON, SACCOS_ENABLED | 49 suites |
 | Staging | mirrored prod subset | most flags | k6 load/security |
 | Prod | managed Postgres + replicas | flag-controlled rollout | smoke + monitoring |
 

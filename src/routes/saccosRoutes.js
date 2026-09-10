@@ -4,6 +4,7 @@ const saccos = require('../services/saccosService');
 const shares = require('../services/saccosSharesService');
 const savings = require('../services/saccosSavingsService');
 const credit = require('../services/saccosCreditService');
+const governance = require('../services/saccosGovernanceService');
 
 const router = express.Router();
 
@@ -230,6 +231,62 @@ router.get('/:id/loans/:loanId/repayments', authRequired, async (req, res, next)
 router.get('/:id/loans/summary', authRequired, async (req, res, next) => {
   try {
     const out = await credit.creditSummary(req.user.id, Number(req.params.id));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/governance/resolutions', authRequired, async (req, res, next) => {
+  try {
+    const out = await governance.createResolution(req.user.id, Number(req.params.id), req.body);
+    res.status(201).json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.get('/:id/governance/resolutions', authRequired, async (req, res, next) => {
+  try {
+    const out = await governance.listResolutions(req.user.id, Number(req.params.id));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.get('/:id/governance/resolutions/:resolutionId', authRequired, async (req, res, next) => {
+  try {
+    const out = await governance.resolutionDetail(req.user.id, Number(req.params.id), Number(req.params.resolutionId));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/governance/resolutions/:resolutionId/open', authRequired, async (req, res, next) => {
+  try {
+    const out = await governance.openResolution(req.user.id, Number(req.params.id), Number(req.params.resolutionId));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/governance/resolutions/:resolutionId/vote', authRequired, async (req, res, next) => {
+  try {
+    const out = await governance.castVote(req.user.id, Number(req.params.id), Number(req.params.resolutionId), { choice: req.body.choice });
+    res.status(201).json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/governance/resolutions/:resolutionId/close', authRequired, async (req, res, next) => {
+  try {
+    const out = await governance.closeResolution(req.user.id, Number(req.params.id), Number(req.params.resolutionId));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/governance/resolutions/:resolutionId/cancel', authRequired, async (req, res, next) => {
+  try {
+    const out = await governance.cancelResolution(req.user.id, Number(req.params.id), Number(req.params.resolutionId));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.get('/:id/governance/summary', authRequired, async (req, res, next) => {
+  try {
+    const out = await governance.governanceSummary(req.user.id, Number(req.params.id));
     res.json({ success: true, result: out });
   } catch (e) { next(e); }
 });

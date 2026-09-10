@@ -140,6 +140,12 @@ const ERROR_CODES = {
   SACCOS_LOAN_ALREADY_CLOSED:      { status: 400, message: 'Mkopo huu tayari umekamilika.' },
   SACCOS_LOAN_REPAY_EXCEEDS:       { status: 400, message: 'Kiasi cha rejesho kinazidi deni lililobaki.' },
 
+  // SACCOS governance (400/403/404)
+  SACCOS_GOV_RESOLUTION_NOT_FOUND: { status: 404, message: 'Azimio halijapatikana.' },
+  SACCOS_GOV_RESOLUTION_STATE:     { status: 400, message: 'Hali ya azimio hairuhusu hatua hii.' },
+  SACCOS_GOV_VOTE_INVALID:         { status: 400, message: 'Chaguo la kura halikubaliki.' },
+  SACCOS_GOV_VOTE_ALREADY:         { status: 400, message: 'Umekwisha piga kura kwenye azimio hili.' },
+
   // Generic
   INTERNAL_ERROR:                { status: 500, message: 'Hitilafu ya ndani ya server.' },
 };
