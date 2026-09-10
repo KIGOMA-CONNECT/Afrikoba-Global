@@ -5,6 +5,7 @@ const shares = require('../services/saccosSharesService');
 const savings = require('../services/saccosSavingsService');
 const credit = require('../services/saccosCreditService');
 const governance = require('../services/saccosGovernanceService');
+const accounting = require('../services/saccosAccountingService');
 
 const router = express.Router();
 
@@ -287,6 +288,83 @@ router.post('/:id/governance/resolutions/:resolutionId/cancel', authRequired, as
 router.get('/:id/governance/summary', authRequired, async (req, res, next) => {
   try {
     const out = await governance.governanceSummary(req.user.id, Number(req.params.id));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/accounting/periods', authRequired, async (req, res, next) => {
+  try {
+    const out = await accounting.openPeriod(req.user.id, Number(req.params.id), req.body);
+    res.status(201).json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.get('/:id/accounting/periods', authRequired, async (req, res, next) => {
+  try {
+    const out = await accounting.listPeriods(req.user.id, Number(req.params.id));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/accounting/periods/:periodId/close', authRequired, async (req, res, next) => {
+  try {
+    const out = await accounting.closePeriod(req.user.id, Number(req.params.id), Number(req.params.periodId));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/accounting/periods/:periodId/reopen', authRequired, async (req, res, next) => {
+  try {
+    const out = await accounting.reopenPeriod(req.user.id, Number(req.params.id), Number(req.params.periodId));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/accounting/entries', authRequired, async (req, res, next) => {
+  try {
+    const out = await accounting.bookEntry(req.user.id, Number(req.params.id), req.body);
+    res.status(201).json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.get('/:id/accounting/entries', authRequired, async (req, res, next) => {
+  try {
+    const out = await accounting.listEntries(req.user.id, Number(req.params.id), req.query.periodId ? Number(req.query.periodId) : null);
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.get('/:id/accounting/chart', authRequired, async (req, res, next) => {
+  try {
+    const out = await accounting.chart(req.user.id, Number(req.params.id));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.get('/:id/accounting/trial-balance', authRequired, async (req, res, next) => {
+  try {
+    const out = await accounting.trialBalance(req.user.id, Number(req.params.id));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.get('/:id/accounting/income-statement', authRequired, async (req, res, next) => {
+  try {
+    const out = await accounting.incomeStatement(req.user.id, Number(req.params.id));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.get('/:id/accounting/balance-sheet', authRequired, async (req, res, next) => {
+  try {
+    const out = await accounting.balanceSheet(req.user.id, Number(req.params.id));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.get('/:id/accounting/summary', authRequired, async (req, res, next) => {
+  try {
+    const out = await accounting.accountingSummary(req.user.id, Number(req.params.id));
     res.json({ success: true, result: out });
   } catch (e) { next(e); }
 });

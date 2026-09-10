@@ -146,6 +146,16 @@ const ERROR_CODES = {
   SACCOS_GOV_VOTE_INVALID:         { status: 400, message: 'Chaguo la kura halikubaliki.' },
   SACCOS_GOV_VOTE_ALREADY:         { status: 400, message: 'Umekwisha piga kura kwenye azimio hili.' },
 
+  // SACCOS accounting (400/403/404)
+  SACCOS_ACC_PERIOD_NOT_FOUND:     { status: 404, message: 'Kipindi cha uhasibu hakijapatikana.' },
+  SACCOS_ACC_PERIOD_STATE:         { status: 400, message: 'Hali ya kipindi hairuhusu hatua hii.' },
+  SACCOS_ACC_PERIOD_ALREADY_OPEN:  { status: 400, message: 'Kipindi kingine cha uhasibu kimekwisha funguliwa.' },
+  SACCOS_ACC_PERIOD_OPEN:          { status: 400, message: 'Fungua kipindi cha uhasibu kabla ya kuweka kumbukumbu.' },
+  SACCOS_ACC_PERIOD_RANGE:         { status: 400, message: 'Tarehe za kipindi hazina mpangilio sahihi.' },
+  SACCOS_ACC_ENTRY_KIND:           { status: 400, message: 'Aina ya kumbukumbu haikubaliki.' },
+  SACCOS_ACC_AMOUNT:               { status: 400, message: 'Kiasi lazima kiwe chanya.' },
+  SACCOS_ACC_ACCOUNT_UNKNOWN:      { status: 400, message: 'Akaunti maalum haipatikani.' },
+
   // Generic
   INTERNAL_ERROR:                { status: 500, message: 'Hitilafu ya ndani ya server.' },
 };
