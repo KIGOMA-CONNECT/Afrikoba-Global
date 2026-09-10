@@ -119,6 +119,14 @@ const ERROR_CODES = {
   SACCOS_SHARE_PURCHASE_NOT_FOUND: { status: 404, message: 'Ununuzi wa hisa haujapatikana.' },
   SACCOS_SHARE_DECIDED:          { status: 400, message: 'Ununuzi huu wa hisa tayari umeamuliwa.' },
 
+  // SACCOS savings (400/403/404)
+  SACCOS_SAVINGS_AMOUNT_INVALID:  { status: 400, message: 'Kiasi cha akiba hakikubaliki.' },
+  SACCOS_SAVINGS_BELOW_MIN_DEPOSIT: { status: 400, message: 'Kiasi kiko chini ya kiwango cha chini cha amana.' },
+  SACCOS_SAVINGS_ABOVE_MAX_DEPOSIT: { status: 400, message: 'Kiasi kimezidi kiwango cha juu cha amana.' },
+  SACCOS_SAVINGS_INSUFFICIENT:    { status: 400, message: 'Akiba haitoshi kwa uondoaji huu.' },
+  SACCOS_SAVINGS_WITHDRAWAL_NOT_FOUND: { status: 404, message: 'Ombi la uondoaji halijapatikana.' },
+  SACCOS_SAVINGS_DECIDED:         { status: 400, message: 'Ombi hili la uondoaji tayari limeamuliwa.' },
+
   // Generic
   INTERNAL_ERROR:                { status: 500, message: 'Hitilafu ya ndani ya server.' },
 };

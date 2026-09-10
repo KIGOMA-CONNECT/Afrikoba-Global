@@ -2,6 +2,7 @@ const express = require('express');
 const { authRequired, requireRoles } = require('../middleware/auth');
 const saccos = require('../services/saccosService');
 const shares = require('../services/saccosSharesService');
+const savings = require('../services/saccosSavingsService');
 
 const router = express.Router();
 
@@ -116,6 +117,55 @@ router.post('/:id/shares/purchases/:purchaseId/reject', authRequired, async (req
 router.get('/:id/shares/summary', authRequired, async (req, res, next) => {
   try {
     const out = await shares.sharesSummary(req.user.id, Number(req.params.id));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/savings/deposit', authRequired, async (req, res, next) => {
+  try {
+    const out = await savings.deposit(req.user.id, Number(req.params.id), { amount: req.body.amount });
+    res.status(201).json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/savings/withdraw', authRequired, async (req, res, next) => {
+  try {
+    const out = await savings.withdraw(req.user.id, Number(req.params.id), { amount: req.body.amount });
+    res.status(201).json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.get('/:id/savings/mine', authRequired, async (req, res, next) => {
+  try {
+    const out = await savings.listMySavings(req.user.id, Number(req.params.id));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.get('/:id/savings/accounts', authRequired, async (req, res, next) => {
+  try {
+    const out = await savings.listSavingsAccounts(req.user.id, Number(req.params.id));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.get('/:id/savings/summary', authRequired, async (req, res, next) => {
+  try {
+    const out = await savings.savingsSummary(req.user.id, Number(req.params.id));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/savings/withdrawals/:withdrawalId/approve', authRequired, async (req, res, next) => {
+  try {
+    const out = await savings.decideWithdrawal(req.user.id, Number(req.params.id), Number(req.params.withdrawalId), 'APPROVE');
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/savings/withdrawals/:withdrawalId/reject', authRequired, async (req, res, next) => {
+  try {
+    const out = await savings.decideWithdrawal(req.user.id, Number(req.params.id), Number(req.params.withdrawalId), 'REJECT');
     res.json({ success: true, result: out });
   } catch (e) { next(e); }
 });
