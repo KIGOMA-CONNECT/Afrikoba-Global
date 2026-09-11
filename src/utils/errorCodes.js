@@ -194,6 +194,10 @@ const ERROR_CODES = {
   SACCOS_LLR_STATE:          { status: 400, message: 'Hali ya akiba hii hairuhusu hatua hii.' },
   SACCOS_LLR_AMOUNT:         { status: 400, message: 'Kiasi cha akiba ya mkopo hakikubaliki.' },
 
+  // SACCOS member exit & settlement (400/404)
+  SACCOS_EXIT_ALREADY_SETTLED: { status: 400, message: 'Utaratibu wa kuondoka kwa mwanachama huyu umekwisha fanyika.' },
+  SACCOS_EXIT_NONE:          { status: 404, message: 'Hakuna utaratibu wa kuondoka.' },
+
   // Generic
   INTERNAL_ERROR:                { status: 500, message: 'Hitilafu ya ndani ya server.' },
 };
