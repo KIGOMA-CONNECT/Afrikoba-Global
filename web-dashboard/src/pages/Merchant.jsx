@@ -175,10 +175,10 @@ export default function Merchant() {
 
   const copyLink = (code) => {
     const url = `${window.location.origin}/pay/${code}`;
-    navigator.clipboard.writeText(url).then(() => {
+    (navigator.clipboard?.writeText(url) || Promise.resolve()).then(() => {
       setCopiedLink(code);
       setTimeout(() => setCopiedLink(''), 2000);
-    });
+    }).catch(() => {});
   };
 
   const payMerchant = async (e) => {
