@@ -177,6 +177,23 @@ const ERROR_CODES = {
   SACCOS_DIV_PER_SHARE:       { status: 400, message: 'Kiasi kwa hisa lazima kiwe chanya.' },
   SACCOS_DIV_TOTAL:           { status: 400, message: 'Jumla ya fedha kwa mgawanyo lazima iwe chanya.' },
 
+  // SACCOS fund management (400/404)
+  SACCOS_FUND_NOT_FOUND:     { status: 404, message: 'Hazina haijapatikana.' },
+  SACCOS_FUND_EXISTS:        { status: 400, message: 'Hazina yenye msimbo huu tayari ipo.' },
+  SACCOS_FUND_CODE:          { status: 400, message: 'Msimbo wa hazina haukubaliki.' },
+  SACCOS_FUND_STATE:         { status: 400, message: 'Hali ya hazina hairuhusu hatua hii.' },
+  SACCOS_FUND_HAS_BALANCE:   { status: 400, message: 'Hazina yenye salio haiwezi kufungwa.' },
+  SACCOS_FUND_INSUFFICIENT:  { status: 400, message: 'Salio la hazina halitoshi kwa uhamishaji huu.' },
+  SACCOS_FUND_SAME:          { status: 400, message: 'Huwezi kuhamisha hazina kwenda yenyewe.' },
+  SACCOS_FUND_AMOUNT:        { status: 400, message: 'Kiasi cha hazina lazima kiwe chanya.' },
+  SACCOS_FUND_TARGET:        { status: 400, message: 'Kiasi cha lengo lazima kiwe kisicho hasi.' },
+
+  // SACCOS loan-loss reserves (400/404)
+  SACCOS_LLR_NOT_FOUND:      { status: 404, message: 'Utoaji wa akiba ya mkopo haujapatikana.' },
+  SACCOS_LLR_EXISTS:         { status: 400, message: 'Akiba ya mkopo kwa mkopo huu imekwisha tolewa.' },
+  SACCOS_LLR_STATE:          { status: 400, message: 'Hali ya akiba hii hairuhusu hatua hii.' },
+  SACCOS_LLR_AMOUNT:         { status: 400, message: 'Kiasi cha akiba ya mkopo hakikubaliki.' },
+
   // Generic
   INTERNAL_ERROR:                { status: 500, message: 'Hitilafu ya ndani ya server.' },
 };

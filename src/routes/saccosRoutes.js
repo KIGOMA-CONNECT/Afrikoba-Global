@@ -8,6 +8,7 @@ const governance = require('../services/saccosGovernanceService');
 const accounting = require('../services/saccosAccountingService');
 const investments = require('../services/saccosInvestmentsService');
 const dividends = require('../services/saccosDividendsService');
+const funds = require('../services/saccosFundsService');
 
 const router = express.Router();
 
@@ -472,6 +473,90 @@ router.get('/:id/dividends/mine', authRequired, async (req, res, next) => {
 router.get('/:id/dividends/summary', authRequired, async (req, res, next) => {
   try {
     const out = await dividends.dividendsSummary(req.user.id, Number(req.params.id));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/funds', authRequired, async (req, res, next) => {
+  try {
+    const out = await funds.createFund(req.user.id, Number(req.params.id), req.body);
+    res.status(201).json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.get('/:id/funds', authRequired, async (req, res, next) => {
+  try {
+    const out = await funds.listFunds(req.user.id, Number(req.params.id));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/funds/:fundId/archive', authRequired, async (req, res, next) => {
+  try {
+    const out = await funds.archiveFund(req.user.id, Number(req.params.id), Number(req.params.fundId));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/funds/:fundId/contribute', authRequired, async (req, res, next) => {
+  try {
+    const out = await funds.contributeFund(req.user.id, Number(req.params.id), Number(req.params.fundId), req.body.amount);
+    res.status(201).json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/funds/transfers', authRequired, async (req, res, next) => {
+  try {
+    const out = await funds.transferFund(req.user.id, Number(req.params.id), req.body);
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.get('/:id/funds/transfers', authRequired, async (req, res, next) => {
+  try {
+    const out = await funds.listTransfers(req.user.id, Number(req.params.id));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.get('/:id/funds/contributions/mine', authRequired, async (req, res, next) => {
+  try {
+    const out = await funds.myContributions(req.user.id, Number(req.params.id));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.get('/:id/funds/summary', authRequired, async (req, res, next) => {
+  try {
+    const out = await funds.fundsSummary(req.user.id, Number(req.params.id));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/loan-loss/provision', authRequired, async (req, res, next) => {
+  try {
+    const out = await funds.provisionLoanLoss(req.user.id, Number(req.params.id), req.body);
+    res.status(201).json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/loan-loss/:llrId/release', authRequired, async (req, res, next) => {
+  try {
+    const out = await funds.releaseLoanLoss(req.user.id, Number(req.params.id), Number(req.params.llrId));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.get('/:id/loan-loss', authRequired, async (req, res, next) => {
+  try {
+    const out = await funds.listLoanLossReserves(req.user.id, Number(req.params.id));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.get('/:id/loan-loss/summary', authRequired, async (req, res, next) => {
+  try {
+    const out = await funds.loanLossSummary(req.user.id, Number(req.params.id));
     res.json({ success: true, result: out });
   } catch (e) { next(e); }
 });
