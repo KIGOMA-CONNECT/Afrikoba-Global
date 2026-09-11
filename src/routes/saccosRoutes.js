@@ -10,6 +10,7 @@ const investments = require('../services/saccosInvestmentsService');
 const dividends = require('../services/saccosDividendsService');
 const funds = require('../services/saccosFundsService');
 const exit = require('../services/saccosExitService');
+const reporting = require('../services/saccosReportingService');
 
 const router = express.Router();
 
@@ -579,6 +580,34 @@ router.get('/:id/exits', authRequired, async (req, res, next) => {
 router.get('/:id/exits/mine', authRequired, async (req, res, next) => {
   try {
     const out = await exit.myExit(req.user.id, Number(req.params.id));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.get('/:id/statements/mine', authRequired, async (req, res, next) => {
+  try {
+    const out = await reporting.myStatement(req.user.id, Number(req.params.id));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.get('/:id/members/:memberId/statement', authRequired, async (req, res, next) => {
+  try {
+    const out = await reporting.memberStatement(req.user.id, Number(req.params.id), Number(req.params.memberId));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.get('/:id/reports/regulatory', authRequired, async (req, res, next) => {
+  try {
+    const out = await reporting.regulatoryReport(req.user.id, Number(req.params.id));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.get('/:id/reports/management', authRequired, async (req, res, next) => {
+  try {
+    const out = await reporting.managementReport(req.user.id, Number(req.params.id), Number(req.query.months || 6));
     res.json({ success: true, result: out });
   } catch (e) { next(e); }
 });

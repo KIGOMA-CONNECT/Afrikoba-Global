@@ -40,17 +40,6 @@ async function fetchMembership(actorId, saccosId) {
   return membership;
 }
 
-async function ledgerBalance(client, accountCode) {
-  const r = await client.query(
-    `SELECT COALESCE(SUM(CASE WHEN direction = 'CR' THEN amount ELSE -amount END), 0)::numeric AS balance
-     FROM journal_entries je
-     JOIN ledger_accounts la ON la.id = je.account_id
-     WHERE la.account_code = $1`,
-    [accountCode]
-  );
-  return Number(r.rows[0].balance);
-}
-
 async function settleAndExit(actorId, saccosId) {
   const membership = await fetchMembership(actorId, saccosId);
   if (membership.status !== 'ACTIVE') throw createAppError('SACCOS_MEMBER_STATUS_INVALID');
@@ -68,8 +57,11 @@ async function settleAndExit(actorId, saccosId) {
   try {
     await client.query('BEGIN');
 
-    // 1. Savings balance (ledger projection) back to the member's wallet.
-    const sBalance = await ledgerBalance(client, savingsLiabilityCode(saccosId));
+    // 1. Savings balance back to the member's wallet - only the member's
+    //    own deposit book value (their savings account), not the whole
+    //    entity liability, which may include other members' funds.
+    const ownSav = await client.query('SELECT balance FROM saccos_savings_accounts WHERE member_id = $1', [membership.id]);
+    const sBalance = ownSav.rows.length ? Number(ownSav.rows[0].balance) : 0;
     if (sBalance > 0) {
       const ref = reference + ':SAV';
       const debit = await fin.creditWallet({
