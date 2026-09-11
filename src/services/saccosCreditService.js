@@ -28,6 +28,8 @@ const DEFAULT_LENDING_CONFIG = {
   autoDisburse: true,
   graceDays: 0,
   lateFeePercent: 2,
+  savingsBackingEnabled: false,
+  savingsBackingMultiple: 3,
 };
 
 function lendingConfig(saccos) {
@@ -159,6 +161,27 @@ async function countActiveLoans(saccosId, memberId) {
   return r.rows[0].c;
 }
 
+/** Collateral backing = member savings balance + share holdings book value. */
+async function memberBacking(saccosId, memberId, multiple, db = pool) {
+  const r = await db.query(
+    `SELECT COALESCE((SELECT SUM(balance) FROM saccos_savings_accounts WHERE saccos_id = $1 AND member_id = $2), 0)::numeric AS savings_balance,
+            COALESCE((SELECT total_value FROM saccos_share_holdings WHERE saccos_id = $1 AND member_id = $2), 0)::numeric AS share_value`,
+    [saccosId, memberId]
+  );
+  const savings_balance = Number(r.rows[0].savings_balance);
+  const share_value = Number(r.rows[0].share_value);
+  const backing_balance = round2(savings_balance + share_value);
+  const multipleN = Number(multiple) || 0;
+  return {
+    savings_balance: round2(savings_balance),
+    share_value: round2(share_value),
+    backing_balance,
+    multiple: multipleN,
+    enabled: multipleN > 0,
+    backing_limit: multipleN > 0 ? round2(backing_balance * multipleN) : 0,
+  };
+}
+
 async function applyLoan(actorId, saccosId, { amount, termMonths, purpose }) {
   const value = Number(amount);
   const term = Number(termMonths);
@@ -171,11 +194,17 @@ async function applyLoan(actorId, saccosId, { amount, termMonths, purpose }) {
   if (!Number.isInteger(term) || term < 1 || term > cfg.maxTermMonths) throw createAppError('SACCOS_LOAN_TERM_TOO_LONG');
   if (await countActiveLoans(saccosId, membership.id) >= cfg.maxActiveLoans) throw createAppError('SACCOS_LOANS_AT_LIMIT');
 
+  const backing = cfg.savingsBackingEnabled ? await memberBacking(saccosId, membership.id, cfg.savingsBackingMultiple) : null;
+  if (backing && value > backing.backing_limit) throw createAppError('SACCOS_LOAN_BACKING_INSUFFICIENT');
+
   const ref = newRef('SCL');
   const app = await pool.query(
-    `INSERT INTO saccos_loan_applications (saccos_id, member_id, reference_id, requested_amount, purpose, term_months, status, requires_approval)
-     VALUES ($1, $2, $3, $4, $5, $6, 'PENDING', TRUE) RETURNING *`,
-    [saccosId, membership.id, ref, value, purpose || null, term]
+    `INSERT INTO saccos_loan_applications
+       (saccos_id, member_id, reference_id, requested_amount, purpose, term_months, status, requires_approval,
+        backing_enabled, backing_multiple, backing_balance, backing_limit)
+     VALUES ($1, $2, $3, $4, $5, $6, 'PENDING', TRUE, $7, $8, $9, $10) RETURNING *`,
+    [saccosId, membership.id, ref, value, purpose || null, term,
+      backing ? backing.enabled : false, backing ? backing.multiple : 0, backing ? backing.backing_balance : 0, backing ? backing.backing_limit : 0]
   );
   await logAudit(actorId, 'SACCOS_LOAN_APPLICATION', { referenceId: saccosId, details: { applicationId: app.rows[0].id, amount: value } }).catch(() => {});
   return app.rows[0];
@@ -221,6 +250,14 @@ async function decideApplication(actorId, saccosId, applicationId, decision) {
         [actorId, applicationId]
       );
     } else {
+      if (cfg.savingsBackingEnabled) {
+        const live = await memberBacking(saccosId, app.member_id, cfg.savingsBackingMultiple, client);
+        if (Number(app.requested_amount) > live.backing_limit) throw createAppError('SACCOS_LOAN_BACKING_INSUFFICIENT');
+        await client.query(
+          `UPDATE saccos_loan_applications SET backing_balance = $1, backing_limit = $2 WHERE id = $3`,
+          [live.backing_balance, live.backing_limit, applicationId]
+        );
+      }
       const { interest, total } = repaymentMath(app.requested_amount, cfg.interestRate, app.term_months, app.requested_amount);
       const loan = await client.query(
         `INSERT INTO saccos_loans
@@ -327,7 +364,8 @@ async function repayLoan(actorId, saccosId, loanId, { amount }) {
 async function listMyLoans(actorId, saccosId) {
   const membership = await requireActiveMember(actorId, saccosId);
   const app = await pool.query(
-    `SELECT id, reference_id, requested_amount, purpose, term_months, status, created_at
+    `SELECT id, reference_id, requested_amount, purpose, term_months, status, created_at,
+            backing_enabled, backing_multiple, backing_balance, backing_limit
      FROM saccos_loan_applications WHERE saccos_id = $1 AND member_id = $2 ORDER BY created_at DESC`,
     [saccosId, membership.id]
   );
@@ -337,6 +375,15 @@ async function listMyLoans(actorId, saccosId) {
     [saccosId, membership.id]
   );
   return { applications: app.rows, loans: loans.rows };
+}
+
+/** Member reads their current lending capacity (savings + shares backing). */
+async function myBacking(actorId, saccosId) {
+  const membership = await requireActiveMember(actorId, saccosId);
+  const saccos = await fetchActiveOrg(actorId, saccosId);
+  const cfg = lendingConfig(saccos);
+  const backing = await memberBacking(saccosId, membership.id, cfg.savingsBackingEnabled ? cfg.savingsBackingMultiple : 0);
+  return { enabled: cfg.savingsBackingEnabled, savings_backing_multiple: backing.multiple, ...backing };
 }
 
 async function listApplications(actorId, saccosId) {
@@ -389,12 +436,16 @@ async function creditSummary(actorId, saccosId) {
     principal_repaid: Number(out.principal_repaid),
     interest_earned: Number(out.interest_earned),
     interestRate: cfg.interestRate,
+    savingsBackingEnabled: cfg.savingsBackingEnabled,
+    savingsBackingMultiple: cfg.savingsBackingMultiple,
     currency: 'TZS',
   };
 }
 
 module.exports = {
   applyLoan,
+  myBacking,
+  memberBacking,
   decideApplication,
   disburseLoan,
   repayLoan,

@@ -37,6 +37,9 @@ export default function Saccos() {
   const [minutesDone, setMinutesDone] = useState({});
   const [si, setSi] = useState({ summary: null, cycles: [], mine: null, detail: {} });
   const [siDetailId, setSiDetailId] = useState(null);
+  const [backing, setBacking] = useState(null);
+  const [welfare, setWelfare] = useState({ schemes: [], mine: [], claims: [], summary: null, form: { show: false, name: '', contribution: '', payout: '' } });
+  const [wClaim, setWClaim] = useState({});
   const [msg, setMsg] = useState({ type: '', text: '' });
   const [busy, setBusy] = useState({});
 
@@ -71,6 +74,7 @@ export default function Saccos() {
       arrears: '/loans/arrears',
       meetings: '/meetings/summary',
       savingsInterest: '/savings-interest/summary',
+      welfare: '/welfare/summary',
     };
     const out = {};
     Promise.all(Object.entries(picks).map(([k, p]) =>
@@ -93,6 +97,9 @@ export default function Saccos() {
     setMinutesDone({});
     setSi({ summary: null, cycles: [], mine: null, detail: {} });
     setSiDetailId(null);
+    setBacking(null);
+    setWelfare({ schemes: [], mine: [], claims: [], summary: null, form: { show: false, name: '', contribution: '', payout: '' } });
+    setWClaim({});
     api.get(`/saccos/${org.id}/loans/mine`).then((r) => {
       setLoans(r.data.result.loans || []);
       if (r.data.result.loans && r.data.result.loans.length) {
@@ -103,6 +110,8 @@ export default function Saccos() {
     api.get(`/saccos/${org.id}/statements/mine`).then((r) => setStatement(r.data.result)).catch(() => {});
     loadMeetings(org.id);
     loadSi(org.id, org.membership_role);
+    loadBacking(org.id);
+    loadWelfare(org.id, org.membership_role);
     loadChips(org.id, org.membership_role);
   };
 
@@ -157,6 +166,106 @@ export default function Saccos() {
     api.get(`/saccos/${selected.id}/savings-interest/cycles/${cycleId}`)
       .then((r) => setSi((s) => ({ ...s, detail: { ...s.detail, [cycleId]: r.data.result } })))
       .catch(() => {});
+  };
+
+  const loadBacking = (id) => {
+    api.get(`/saccos/${id}/loans/backing`)
+      .then((r) => setBacking(r.data.result))
+      .catch(() => setBacking(null));
+  };
+
+  const loadWelfare = (id, role) => {
+    api.get(`/saccos/${id}/welfare/schemes`)
+      .then((r) => setWelfare((w) => ({ ...w, schemes: r.data.result || [] })))
+      .catch(() => setWelfare((w) => ({ ...w, schemes: [] })));
+    api.get(`/saccos/${id}/welfare/contributions/mine`)
+      .then((r) => setWelfare((w) => ({ ...w, mine: r.data.result || [] })))
+      .catch(() => setWelfare((w) => ({ ...w, mine: [] })));
+    api.get(`/saccos/${id}/welfare/claims`)
+      .then((r) => setWelfare((w) => ({ ...w, claims: r.data.result || [] })))
+      .catch(() => setWelfare((w) => ({ ...w, claims: [] })));
+    if (user.role === 'ADMIN' || role === 'OWNER' || role === 'BOARD') {
+      api.get(`/saccos/${id}/welfare/summary`)
+        .then((r) => setWelfare((w) => ({ ...w, summary: r.data.result })))
+        .catch(() => {});
+    }
+  };
+
+  const reloadWelfare = () => loadWelfare(selected.id, selected.membership_role || selected.role);
+
+  const createScheme = async () => {
+    const f = welfare.form;
+    if (!f.name.trim() || !(Number(f.contribution) > 0) || !(Number(f.payout) > 0)) { show('err', t('saccos.wf_name')); return; }
+    setBusy((prev) => ({ ...prev, wSch: true }));
+    try {
+      await api.post(`/saccos/${selected.id}/welfare/schemes`, { name: f.name, contribution: Number(f.contribution), payout: Number(f.payout) });
+      show('ok', t('saccos.saved'));
+      setWelfare((w) => ({ ...w, form: { show: false, name: '', contribution: '', payout: '' } }));
+      reloadWelfare();
+      if (isGoverning()) loadChips(selected.id, selected.membership_role || selected.role);
+    } catch (err) {
+      show('err', err.response?.data?.message || t('saccos.error'));
+    } finally {
+      setBusy((prev) => ({ ...prev, wSch: false }));
+    }
+  };
+
+  const joinScheme = async (scheme) => {
+    setBusy((prev) => ({ ...prev, [`join${scheme.id}`]: true }));
+    try {
+      await api.post(`/saccos/${selected.id}/welfare/contributions`, { schemeId: scheme.id, amount: Number(scheme.contribution) });
+      show('ok', t('saccos.saved'));
+      reloadWelfare();
+    } catch (err) {
+      show('err', err.response?.data?.message || t('saccos.error'));
+    } finally {
+      setBusy((prev) => ({ ...prev, [`join${scheme.id}`]: false }));
+    }
+  };
+
+  const submitClaim = async (scheme) => {
+    const f = wClaim[scheme.id] || {};
+    if (!(f.event || '').trim() || !(Number(f.amount) > 0)) { show('err', t('saccos.wf_event')); return; }
+    setBusy((prev) => ({ ...prev, [`wClaim${scheme.id}`]: true }));
+    try {
+      await api.post(`/saccos/${selected.id}/welfare/claims`, { schemeId: scheme.id, event: f.event, details: f.details, amount: Number(f.amount) });
+      show('ok', t('saccos.saved'));
+      setWClaim((prev) => ({ ...prev, [scheme.id]: { event: '', details: '', amount: '' } }));
+      reloadWelfare();
+    } catch (err) {
+      show('err', err.response?.data?.message || t('saccos.error'));
+    } finally {
+      setBusy((prev) => ({ ...prev, [`wClaim${scheme.id}`]: false }));
+    }
+  };
+
+  const reviewClaim = async (claimId, decision) => {
+    const key = `rev${claimId}`;
+    setBusy((prev) => ({ ...prev, [key]: true }));
+    try {
+      await api.post(`/saccos/${selected.id}/welfare/claims/${claimId}/review`, { decision });
+      show('ok', t('saccos.saved'));
+      reloadWelfare();
+    } catch (err) {
+      show('err', err.response?.data?.message || t('saccos.error'));
+    } finally {
+      setBusy((prev) => ({ ...prev, [key]: false }));
+    }
+  };
+
+  const payClaim = async (claimId) => {
+    const key = `pay${claimId}`;
+    setBusy((prev) => ({ ...prev, [key]: true }));
+    try {
+      await api.post(`/saccos/${selected.id}/welfare/claims/${claimId}/pay`);
+      show('ok', t('saccos.saved'));
+      reloadWelfare();
+      if (isGoverning()) loadChips(selected.id, selected.membership_role || selected.role);
+    } catch (err) {
+      show('err', err.response?.data?.message || t('saccos.error'));
+    } finally {
+      setBusy((prev) => ({ ...prev, [key]: false }));
+    }
   };
 
   const loadMeetings = (id) => {
@@ -386,6 +495,7 @@ export default function Saccos() {
                     <Stat value={chips.arrears ? formatMoney(chips.arrears.late_fees_total) : '-'} label={t('saccos.chips_arrears_f')} />
                     <Stat value={chips.meetings ? `${chips.meetings.total || 0}` : '-'} label={t('saccos.chips_meetings')} />
                     <Stat value={chips.savingsInterest ? formatMoney(chips.savingsInterest.pending_total) : '-'} label={t('saccos.chips_si_pending')} />
+                    <Stat value={chips.welfare ? formatMoney(chips.welfare.fund_balance) : '-'} label={t('saccos.chips_wf')} />
                   </div>
                   {chips.arrears && Number(chips.arrears.overdue || 0) > 0 ? (
                     <div className="msg err" style={{ marginTop: 12, display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
@@ -402,6 +512,12 @@ export default function Saccos() {
 
           <div className="card">
             <h3>{t('saccos.my_loans')}</h3>
+            {backing && Number(backing.backing_limit) > 0 ? (
+              <div className="grid grid-2" style={{ marginBottom: 10 }}>
+                <Stat value={formatMoney(backing.backing_limit)} label={t('saccos.backing_limit')} />
+                <Stat value={`${formatMoney(backing.savings_balance)} + ${formatMoney(backing.share_value)}`} label={t('saccos.backing_base')} />
+              </div>
+            ) : null}
             {!loans.length ? (
               <div className="muted">{t('saccos.no_loans')}</div>
             ) : (
@@ -708,6 +824,123 @@ export default function Saccos() {
                   </>
                 )}
               </div>
+            )}
+          </div>
+
+          <div className="card">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
+              <h3 style={{ margin: 0 }}>{t('saccos.welfare')}</h3>
+              {isGoverning() ? (
+                <button className="btn ghost" onClick={() => setWelfare((w) => ({ ...w, form: { ...w.form, show: !w.form.show } }))}>
+                  {t('saccos.wf_new_scheme')}
+                </button>
+              ) : null}
+            </div>
+
+            {isGoverning() && welfare.form.show ? (
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10, margin: '12px 0', alignItems: 'center' }}>
+                <label className="muted">{t('saccos.wf_name')}
+                  <input value={welfare.form.name} onChange={(e) => setWelfare((w) => ({ ...w, form: { ...w.form, name: e.target.value } }))} />
+                </label>
+                <label className="muted">{t('saccos.wf_contribution')}
+                  <input type="number" value={welfare.form.contribution} onChange={(e) => setWelfare((w) => ({ ...w, form: { ...w.form, contribution: e.target.value } }))} />
+                </label>
+                <label className="muted">{t('saccos.wf_payout')}
+                  <input type="number" value={welfare.form.payout} onChange={(e) => setWelfare((w) => ({ ...w, form: { ...w.form, payout: e.target.value } }))} />
+                </label>
+                <div style={{ gridColumn: '1 / -1' }}>
+                  <button className="btn" disabled={!!busy.wSch} onClick={createScheme}>
+                    {busy.wSch ? t('saccos.loading') : t('saccos.wf_create')}
+                  </button>
+                </div>
+              </div>
+            ) : null}
+
+            {isGoverning() ? (
+              !welfare.summary ? (
+                <div className="muted" style={{ marginTop: 10 }}>{t('saccos.loading')}</div>
+              ) : (
+                <div className="grid grid-4" style={{ marginTop: 10 }}>
+                  <Stat value={formatMoney(welfare.summary.fund_balance)} label={t('saccos.wf_fund')} />
+                  <Stat value={formatMoney(welfare.summary.total_contributions)} label={t('saccos.wf_contributions')} />
+                  <Stat value={`${welfare.summary.pending_claims}`} label={t('saccos.wf_pending')} />
+                  <Stat value={formatMoney(welfare.summary.paid_amount)} label={t('saccos.wf_paid_sum')} />
+                </div>
+              )
+            ) : null}
+
+            <div className="muted" style={{ marginTop: 14, marginBottom: 6 }}>{t('saccos.wf_schemes')}</div>
+            {!welfare.schemes.length ? (
+              <div className="muted">{t('saccos.wf_none')}</div>
+            ) : (
+              welfare.schemes.map((s) => {
+                const claimDraft = wClaim[s.id] || { event: '', details: '', amount: '' };
+                return (
+                  <div key={s.id} style={{ borderTop: '1px solid var(--border, #e5e5e5)', padding: '12px 0' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+                      <div>
+                        <strong>{s.name}</strong>
+                        <span className="muted"> · {formatMoney(s.contribution)} → {formatMoney(s.payout)}</span>
+                        <span className="muted"> · {s.members_joined} {t('saccos.wf_members_joined')}</span>
+                      </div>
+                      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                        <StatusBadge status={s.status} />
+                        {s.joined ? <span className="badge success">{t('saccos.wf_joined')}</span> : null}
+                        {!isGoverning() && !s.joined && s.status === 'ACTIVE' ? (
+                          <button className="btn" disabled={!!busy[`join${s.id}`]} onClick={() => joinScheme(s)}>
+                            {busy[`join${s.id}`] ? t('saccos.loading') : t('saccos.wf_join')}
+                          </button>
+                        ) : null}
+                      </div>
+                    </div>
+
+                    {!isGoverning() && s.joined ? (
+                      <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                        <input placeholder={t('saccos.wf_event')} value={claimDraft.event}
+                          onChange={(e) => setWClaim((prev) => ({ ...prev, [s.id]: { ...claimDraft, event: e.target.value } }))} />
+                        <input type="number" placeholder={t('saccos.wf_claim')} value={claimDraft.amount}
+                          onChange={(e) => setWClaim((prev) => ({ ...prev, [s.id]: { ...claimDraft, amount: e.target.value } }))} />
+                        <button className="btn" disabled={!!busy[`wClaim${s.id}`]} onClick={() => submitClaim(s)}>
+                          {busy[`wClaim${s.id}`] ? t('saccos.loading') : t('saccos.wf_claim')}
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })
+            )}
+
+            <div className="muted" style={{ marginTop: 14, marginBottom: 6 }}>{t('saccos.wf_claims')}</div>
+            {!welfare.claims.length ? (
+              <div className="muted">{t('saccos.wf_no_claims')}</div>
+            ) : (
+              welfare.claims.map((c) => (
+                <div key={c.id} style={{ borderTop: '1px solid var(--border, #e5e5e5)', padding: '10px 0', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+                  <div>
+                    <strong>{c.event}</strong>
+                    <span className="muted"> · {c.scheme_name} · {formatMoney(c.amount)} · {toDate(c.created_at)}</span>
+                    {c.full_name ? <span className="muted"> · {c.full_name}</span> : null}
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <StatusBadge status={c.status} />
+                    {isGoverning() && c.status === 'SUBMITTED' ? (
+                      <>
+                        <button className="btn" disabled={!!busy[`rev${c.id}`]} onClick={() => reviewClaim(c.id, 'APPROVE')}>
+                          {t('saccos.wf_approve')}
+                        </button>
+                        <button className="btn ghost" disabled={!!busy[`rev${c.id}`]} onClick={() => reviewClaim(c.id, 'REJECT')}>
+                          {t('saccos.wf_reject')}
+                        </button>
+                      </>
+                    ) : null}
+                    {isGoverning() && c.status === 'APPROVED' ? (
+                      <button className="btn" disabled={!!busy[`pay${c.id}`]} onClick={() => payClaim(c.id)}>
+                        {busy[`pay${c.id}`] ? t('saccos.loading') : t('saccos.wf_pay')}
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+              ))
             )}
           </div>
         </>

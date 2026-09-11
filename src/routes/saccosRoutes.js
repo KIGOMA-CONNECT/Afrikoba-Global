@@ -14,6 +14,7 @@ const reporting = require('../services/saccosReportingService');
 const installments = require('../services/saccosInstallmentService');
 const meetings = require('../services/saccosMeetingsService');
 const savingsInterest = require('../services/saccosSavingsInterestService');
+const welfare = require('../services/saccosWelfareService');
 
 const router = express.Router();
 
@@ -191,6 +192,13 @@ router.post('/:id/loans/apply', authRequired, async (req, res, next) => {
 router.get('/:id/loans/mine', authRequired, async (req, res, next) => {
   try {
     const out = await credit.listMyLoans(req.user.id, Number(req.params.id));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.get('/:id/loans/backing', authRequired, async (req, res, next) => {
+  try {
+    const out = await credit.myBacking(req.user.id, Number(req.params.id));
     res.json({ success: true, result: out });
   } catch (e) { next(e); }
 });
@@ -751,6 +759,70 @@ router.get('/:id/savings-interest/summary', authRequired, async (req, res, next)
 router.get('/:id/savings-interest/mine', authRequired, async (req, res, next) => {
   try {
     const out = await savingsInterest.myInterest(req.user.id, Number(req.params.id));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+// --- Welfare / social fund (increment 16) ---
+router.post('/:id/welfare/schemes', authRequired, async (req, res, next) => {
+  try {
+    const out = await welfare.createScheme(req.user.id, Number(req.params.id), req.body);
+    res.status(201).json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.get('/:id/welfare/schemes', authRequired, async (req, res, next) => {
+  try {
+    const out = await welfare.listSchemes(req.user.id, Number(req.params.id));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/welfare/contributions', authRequired, async (req, res, next) => {
+  try {
+    const out = await welfare.contribute(req.user.id, Number(req.params.id), req.body);
+    res.status(201).json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.get('/:id/welfare/contributions/mine', authRequired, async (req, res, next) => {
+  try {
+    const out = await welfare.myContributions(req.user.id, Number(req.params.id));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/welfare/claims', authRequired, async (req, res, next) => {
+  try {
+    const out = await welfare.submitClaim(req.user.id, Number(req.params.id), req.body);
+    res.status(201).json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.get('/:id/welfare/claims', authRequired, async (req, res, next) => {
+  try {
+    const out = await welfare.listClaims(req.user.id, Number(req.params.id));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/welfare/claims/:claimId/review', authRequired, async (req, res, next) => {
+  try {
+    const out = await welfare.reviewClaim(req.user.id, Number(req.params.id), Number(req.params.claimId), req.body.decision);
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/welfare/claims/:claimId/pay', authRequired, async (req, res, next) => {
+  try {
+    const out = await welfare.payClaim(req.user.id, Number(req.params.id), Number(req.params.claimId));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.get('/:id/welfare/summary', authRequired, async (req, res, next) => {
+  try {
+    const out = await welfare.welfareSummary(req.user.id, Number(req.params.id));
     res.json({ success: true, result: out });
   } catch (e) { next(e); }
 });

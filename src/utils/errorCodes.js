@@ -169,6 +169,23 @@ const ERROR_CODES = {
   SACCOS_SAVINGS_INTEREST_POSTED:           { status: 400, message: 'Riba ya akiba tayari imetumwa (duplicate).' },
   SACCOS_SAVINGS_INTEREST_CYCLE_NOT_FOUND:  { status: 404, message: 'Mzunguko wa riba haujapatikana.' },
 
+  // SACCOS savings-backed lending (400)
+  SACCOS_LOAN_BACKING_INSUFFICIENT: { status: 400, message: 'Amana na hisa hazitoshi kuunga mkopo huu (limit = salio × multiple).' },
+
+  // SACCOS welfare fund (400/404)
+  SACCOS_WELFARE_SCHEME_NOT_FOUND:    { status: 404, message: 'Mpango wa ustawi haujapatikana.' },
+  SACCOS_WELFARE_SCHEME_EXISTS:       { status: 400, message: 'Mpango wa ustawi wenye jina hili tayari upo.' },
+  SACCOS_WELFARE_SCHEME_ARCHIVED:     { status: 400, message: 'Mpango huu wa ustawi umezimwa.' },
+  SACCOS_WELFARE_SCHEME_AMOUNT:       { status: 400, message: 'Kiasi cha mpango wa ustawi si sahihi.' },
+  SACCOS_WELFARE_ALREADY_JOINED:      { status: 400, message: 'Tayari umechangia kwenye mpango huu.' },
+  SACCOS_WELFARE_CONTRIBUTION_LOW:    { status: 400, message: 'Mchango wa chini wa mpango huu unahitajika.' },
+  SACCOS_WELFARE_CLAIM_NOT_FOUND:     { status: 404, message: 'Ombi la ustawi halijapatikana.' },
+  SACCOS_WELFARE_CLAIM_AMOUNT:        { status: 400, message: 'Kiasi cha ombi la ustawi si sahihi (hakizidi malipo ya mpango).' },
+  SACCOS_WELFARE_CLAIM_ACTIVE:        { status: 400, message: 'Tayari una ombi la ustawi linalosubiri au lililokubaliwa kwenye mpango huu.' },
+  SACCOS_WELFARE_CLAIM_STATE:         { status: 400, message: 'Hali ya ombi la ustawi hairuhusu hatua hii.' },
+  SACCOS_WELFARE_FUND_INSUFFICIENT:   { status: 400, message: 'Hazina ya ustawi haina fedha za kutosha kulipa ombi hili.' },
+  SACCOS_WELFARE_PAID:                { status: 400, message: 'Ombi hili la ustawi tayari limelipwa.' },
+
   // SACCOS accounting (400/403/404)
   SACCOS_ACC_PERIOD_NOT_FOUND:     { status: 404, message: 'Kipindi cha uhasibu hakijapatikana.' },
   SACCOS_ACC_PERIOD_STATE:         { status: 400, message: 'Hali ya kipindi hairuhusu hatua hii.' },
