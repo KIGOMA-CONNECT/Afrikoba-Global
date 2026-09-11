@@ -42,6 +42,15 @@ export default function Saccos() {
   const [wClaim, setWClaim] = useState({});
   const [msg, setMsg] = useState({ type: '', text: '' });
   const [busy, setBusy] = useState({});
+  const [guar, setGuar] = useState([]);
+  const [rest, setRest] = useState({ history: {}, form: {} });
+  const [wo, setWo] = useState({ list: [], form: {} });
+  const [so, setSo] = useState({
+    mine: [],
+    all: [],
+    targets: { funds: [], schemes: [], loans: [] },
+    form: { show: false, type: 'SAVINGS_DEPOSIT', amount: '', day: '1', targetId: '' },
+  });
 
   const show = (type, text) => {
     setMsg({ type, text });
@@ -75,6 +84,8 @@ export default function Saccos() {
       meetings: '/meetings/summary',
       savingsInterest: '/savings-interest/summary',
       welfare: '/welfare/summary',
+      standingOrders: '/standing-orders',
+      writeOffs: '/loans/write-offs',
     };
     const out = {};
     Promise.all(Object.entries(picks).map(([k, p]) =>
@@ -100,6 +111,10 @@ export default function Saccos() {
     setBacking(null);
     setWelfare({ schemes: [], mine: [], claims: [], summary: null, form: { show: false, name: '', contribution: '', payout: '' } });
     setWClaim({});
+    setGuar([]);
+    setRest({ history: {}, form: {} });
+    setWo({ list: [], form: {} });
+    setSo({ mine: [], all: [], targets: { funds: [], schemes: [], loans: [] }, form: { show: false, type: 'SAVINGS_DEPOSIT', amount: '', day: '1', targetId: '' } });
     api.get(`/saccos/${org.id}/loans/mine`).then((r) => {
       setLoans(r.data.result.loans || []);
       if (r.data.result.loans && r.data.result.loans.length) {
@@ -112,6 +127,9 @@ export default function Saccos() {
     loadSi(org.id, org.membership_role);
     loadBacking(org.id);
     loadWelfare(org.id, org.membership_role);
+    loadGuar(org.id);
+    loadWo(org.id, org.membership_role);
+    loadSo(org.id, org.membership_role);
     loadChips(org.id, org.membership_role);
   };
 
@@ -192,6 +210,186 @@ export default function Saccos() {
   };
 
   const reloadWelfare = () => loadWelfare(selected.id, selected.membership_role || selected.role);
+
+  const reloadLoans = () => {
+    api.get(`/saccos/${selected.id}/loans/mine`)
+      .then((r) => setLoans(r.data.result.loans || []))
+      .catch(() => {});
+    api.get(`/saccos/${selected.id}/statements/mine`).then((r) => setStatement(r.data.result)).catch(() => {});
+  };
+
+  const loadGuar = (id) => {
+    api.get(`/saccos/${id}/loans/guarantees/mine`)
+      .then((r) => setGuar(r.data.result || []))
+      .catch(() => setGuar([]));
+  };
+
+  const loadWo = (id, role) => {
+    if (user.role !== 'ADMIN' && role !== 'OWNER' && role !== 'BOARD') return;
+    api.get(`/saccos/${id}/loans/write-offs`)
+      .then((r) => setWo((w) => ({ ...w, list: r.data.result || [] })))
+      .catch(() => {});
+  };
+
+  const reloadWo = () => loadWo(selected.id, selected.membership_role || selected.role);
+
+  const loadSo = (id, role) => {
+    api.get(`/saccos/${id}/standing-orders/mine`)
+      .then((r) => setSo((s) => ({ ...s, mine: r.data.result || [] })))
+      .catch(() => setSo((s) => ({ ...s, mine: [] })));
+    if (user.role === 'ADMIN' || role === 'OWNER' || role === 'BOARD') {
+      api.get(`/saccos/${id}/standing-orders`)
+        .then((r) => setSo((s) => ({ ...s, all: r.data.result || [] })))
+        .catch(() => {});
+    }
+    api.get(`/saccos/${id}/funds`)
+      .then((r) => setSo((s) => ({ ...s, targets: { ...s.targets, funds: (r.data.result || []).filter((f) => f.status === 'ACTIVE') } })))
+      .catch(() => {});
+    api.get(`/saccos/${id}/welfare/schemes`)
+      .then((r) => setSo((s) => ({ ...s, targets: { ...s.targets, schemes: (r.data.result || []).filter((x) => x.status === 'ACTIVE') } })))
+      .catch(() => {});
+    api.get(`/saccos/${id}/loans/mine`)
+      .then((r) => setSo((s) => ({ ...s, targets: { ...s.targets, loans: (r.data.result.loans || []).filter((l) => l.status === 'ACTIVE') } })))
+      .catch(() => {});
+  };
+
+  const reloadSo = () => loadSo(selected.id, selected.membership_role || selected.role);
+
+  const guaranteeAction = async (g, action) => {
+    const key = `g${action}${g.id}`;
+    setBusy((prev) => ({ ...prev, [key]: true }));
+    try {
+      await api.post(`/saccos/${selected.id}/loans/guarantees/${g.id}/${action}`);
+      show('ok', t('saccos.saved'));
+      loadGuar(selected.id);
+    } catch (err) {
+      show('err', err.response?.data?.message || t('saccos.error'));
+    } finally {
+      setBusy((prev) => ({ ...prev, [key]: false }));
+    }
+  };
+
+  const toggleRestForm = (loanId) => setRest((prev) => ({ ...prev, form: { ...prev.form, [loanId]: { ...(prev.form[loanId] || {}), show: !(prev.form[loanId] || {}).show } } }));
+
+  const toggleRest = (loanId) => {
+    const open = !!rest.history[loanId];
+    setRest((prev) => ({ ...prev, history: { ...prev.history, [loanId]: open ? undefined : [] } }));
+    if (open) return;
+    api.get(`/saccos/${selected.id}/loans/${loanId}/restructures`)
+      .then((r) => setRest((prev) => ({ ...prev, history: { ...prev.history, [loanId]: r.data.result || [] } })))
+      .catch(() => {});
+  };
+
+  const doRestructure = async (loanId) => {
+    const f = rest.form[loanId] || {};
+    if (!(Number(f.term) > 0) || f.rate === '' || f.rate === undefined) { show('err', t('saccos.rest_term')); return; }
+    setBusy((prev) => ({ ...prev, [`rest${loanId}`]: true }));
+    try {
+      await api.post(`/saccos/${selected.id}/loans/${loanId}/restructure`, { newTermMonths: Number(f.term), newRatePercent: Number(f.rate), reason: f.reason || null });
+      show('ok', t('saccos.saved'));
+      setRest((prev) => ({ ...prev, form: { ...prev.form, [loanId]: {} } }));
+      reloadLoans();
+      if (isGoverning()) loadChips(selected.id, selected.membership_role || selected.role);
+    } catch (err) {
+      show('err', err.response?.data?.message || t('saccos.error'));
+    } finally {
+      setBusy((prev) => ({ ...prev, [`rest${loanId}`]: false }));
+    }
+  };
+
+  const toggleWoForm = (loanId) => setWo((prev) => ({ ...prev, form: { ...prev.form, [loanId]: { ...(prev.form[loanId] || {}), show: !(prev.form[loanId] || {}).show } } }));
+
+  const doWriteOff = async (loanId) => {
+    const f = wo.form[loanId] || {};
+    if (!(f.reason || '').trim()) { show('err', t('saccos.writeoff_reason')); return; }
+    setBusy((prev) => ({ ...prev, [`wo${loanId}`]: true }));
+    try {
+      await api.post(`/saccos/${selected.id}/loans/${loanId}/write-off`, { reason: f.reason });
+      show('ok', t('saccos.saved'));
+      setWo((prev) => ({ ...prev, form: { ...prev.form, [loanId]: {} } }));
+      reloadLoans();
+      reloadWo();
+      if (isGoverning()) loadChips(selected.id, selected.membership_role || selected.role);
+    } catch (err) {
+      show('err', err.response?.data?.message || t('saccos.error'));
+    } finally {
+      setBusy((prev) => ({ ...prev, [`wo${loanId}`]: false }));
+    }
+  };
+
+  const createSo = async () => {
+    const f = so.form;
+    const day = Number(f.day);
+    if (!(Number(f.amount) > 0) || !(day >= 1 && day <= 28)) { show('err', t('saccos.so_day')); return; }
+    if (f.type !== 'SAVINGS_DEPOSIT' && !f.targetId) { show('err', t('saccos.so_target')); return; }
+    setBusy((prev) => ({ ...prev, soNew: true }));
+    try {
+      await api.post(`/saccos/${selected.id}/standing-orders`, { targetType: f.type, targetId: f.targetId || null, amount: Number(f.amount), dayOfMonth: day });
+      show('ok', t('saccos.saved'));
+      setSo((s) => ({ ...s, form: { show: false, type: 'SAVINGS_DEPOSIT', amount: '', day: '1', targetId: '' } }));
+      reloadSo();
+      if (isGoverning()) loadChips(selected.id, selected.membership_role || selected.role);
+    } catch (err) {
+      show('err', err.response?.data?.message || t('saccos.error'));
+    } finally {
+      setBusy((prev) => ({ ...prev, soNew: false }));
+    }
+  };
+
+  const deactivateSo = async (id) => {
+    setBusy((prev) => ({ ...prev, [`soDe${id}`]: true }));
+    try {
+      await api.post(`/saccos/${selected.id}/standing-orders/${id}/deactivate`);
+      show('ok', t('saccos.saved'));
+      reloadSo();
+      if (isGoverning()) loadChips(selected.id, selected.membership_role || selected.role);
+    } catch (err) {
+      show('err', err.response?.data?.message || t('saccos.error'));
+    } finally {
+      setBusy((prev) => ({ ...prev, [`soDe${id}`]: false }));
+    }
+  };
+
+  const runSo = async () => {
+    setBusy((prev) => ({ ...prev, soRun: true }));
+    try {
+      const res = await api.post(`/saccos/${selected.id}/standing-orders/run`);
+      const r = res.data.result || {};
+      if (r.succeeded !== undefined) {
+        show('ok', `${r.succeeded}/${r.executed} ${t('saccos.so_success')}`);
+      } else {
+        show('ok', t('saccos.saved'));
+      }
+      reloadSo();
+      if (isGoverning()) loadChips(selected.id, selected.membership_role || selected.role);
+    } catch (err) {
+      show('err', err.response?.data?.message || t('saccos.error'));
+    } finally {
+      setBusy((prev) => ({ ...prev, soRun: false }));
+    }
+  };
+
+  const soTypeLabel = (type) => {
+    if (type === 'SAVINGS_DEPOSIT') return t('saccos.so_savings');
+    if (type === 'FUND_CONTRIBUTION') return t('saccos.so_fund');
+    if (type === 'WELFARE_CONTRIBUTION') return t('saccos.so_welfare');
+    if (type === 'LOAN_REPAYMENT') return t('saccos.so_loan');
+    return type;
+  };
+
+  const soTargetName = (o) => {
+    if (o.target_type === 'SAVINGS_DEPOSIT') return '-';
+    if (o.target_type === 'FUND_CONTRIBUTION') {
+      const f = so.targets.funds.find((x) => x.id === o.target_id);
+      return f ? `${f.name || f.code} (${f.code})` : `#${o.target_id}`;
+    }
+    if (o.target_type === 'WELFARE_CONTRIBUTION') {
+      const s = so.targets.schemes.find((x) => x.id === o.target_id);
+      return s ? s.name : `#${o.target_id}`;
+    }
+    const l = so.targets.loans.find((x) => x.id === o.target_id);
+    return l ? l.reference_id : `#${o.target_id}`;
+  };
 
   const createScheme = async () => {
     const f = welfare.form;
@@ -496,6 +694,8 @@ export default function Saccos() {
                     <Stat value={chips.meetings ? `${chips.meetings.total || 0}` : '-'} label={t('saccos.chips_meetings')} />
                     <Stat value={chips.savingsInterest ? formatMoney(chips.savingsInterest.pending_total) : '-'} label={t('saccos.chips_si_pending')} />
                     <Stat value={chips.welfare ? formatMoney(chips.welfare.fund_balance) : '-'} label={t('saccos.chips_wf')} />
+                    <Stat value={chips.standingOrders ? `${(chips.standingOrders || []).filter((o) => o.status === 'ACTIVE').length}` : '-'} label={t('saccos.chips_so')} />
+                    <Stat value={chips.writeOffs ? `${(chips.writeOffs || []).length}` : '-'} label={t('saccos.chips_wo')} />
                   </div>
                   {chips.arrears && Number(chips.arrears.overdue || 0) > 0 ? (
                     <div className="msg err" style={{ marginTop: 12, display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
@@ -531,12 +731,63 @@ export default function Saccos() {
                     <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
                       <span className="muted">{t('saccos.outstanding')}: <strong>{formatMoney(loan.amount_outstanding)}</strong></span>
                       <StatusBadge status={loan.status} />
+                      {isGoverning() && loan.status === 'ACTIVE' ? (
+                        <>
+                          <button className="btn ghost" onClick={() => toggleRestForm(loan.id)}>
+                            {rest.form[loan.id]?.show ? t('saccos.hide') : t('saccos.restructure')}
+                          </button>
+                          <button className="btn ghost" onClick={() => toggleWoForm(loan.id)}>
+                            {wo.form[loan.id]?.show ? t('saccos.hide') : t('saccos.writeoff')}
+                          </button>
+                        </>
+                      ) : null}
                       <button className="btn ghost" onClick={() => toggleInst(loan.id)}>
                         {openInst[loan.id] ? t('saccos.hide') : t('saccos.schedule')}
                       </button>
                     </div>
                   </div>
                   {openInst[loan.id] ? renderInstallments(loan) : null}
+                  {rest.form[loan.id]?.show && isGoverning() && loan.status === 'ACTIVE' ? (
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--border, #e5e5e5)' }}>
+                      <input type="number" placeholder={t('saccos.rest_term')}
+                        value={rest.form[loan.id].term || ''}
+                        onChange={(e) => setRest((prev) => ({ ...prev, form: { ...prev.form, [loan.id]: { ...(prev.form[loan.id] || {}), term: e.target.value } } }))} />
+                      <input type="number" placeholder={t('saccos.rest_rate')}
+                        value={rest.form[loan.id].rate || ''}
+                        onChange={(e) => setRest((prev) => ({ ...prev, form: { ...prev.form, [loan.id]: { ...(prev.form[loan.id] || {}), rate: e.target.value } } }))} />
+                      <input placeholder={t('saccos.rest_reason')}
+                        value={rest.form[loan.id].reason || ''}
+                        onChange={(e) => setRest((prev) => ({ ...prev, form: { ...prev.form, [loan.id]: { ...(prev.form[loan.id] || {}), reason: e.target.value } } }))} />
+                      <button className="btn" disabled={!!busy[`rest${loan.id}`]} onClick={() => doRestructure(loan.id)}>
+                        {busy[`rest${loan.id}`] ? t('saccos.loading') : t('saccos.rest_go')}
+                      </button>
+                      <button className="btn ghost" onClick={() => toggleRest(loan.id)}>{t('saccos.rest_history')}</button>
+                    </div>
+                  ) : null}
+                  {rest.history[loan.id] ? (
+                    <div style={{ marginTop: 8 }}>
+                      {!rest.history[loan.id].length ? (
+                        <div className="muted">{t('saccos.rest_none')}</div>
+                      ) : (
+                        rest.history[loan.id].map((h) => (
+                          <div key={h.id} className="muted" style={{ fontSize: 13 }}>
+                            {toDate(h.created_at)} · {formatMoney(h.previous_outstanding)} @ {h.previous_rate}% → {h.new_rate}% ({h.new_term_months} {t('saccos.months')}) → {formatMoney(h.new_total)}
+                            {h.reason ? ` · ${h.reason}` : ''}
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  ) : null}
+                  {wo.form[loan.id]?.show && isGoverning() && loan.status === 'ACTIVE' ? (
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--border, #e5e5e5)' }}>
+                      <input placeholder={t('saccos.writeoff_reason')}
+                        value={wo.form[loan.id].reason || ''}
+                        onChange={(e) => setWo((prev) => ({ ...prev, form: { ...prev.form, [loan.id]: { ...(prev.form[loan.id] || {}), reason: e.target.value } } }))} />
+                      <button className="btn" disabled={!!busy[`wo${loan.id}`]} onClick={() => doWriteOff(loan.id)}>
+                        {busy[`wo${loan.id}`] ? t('saccos.loading') : t('saccos.writeoff_go')}
+                      </button>
+                    </div>
+                  ) : null}
                 </div>
               ))
             )}
@@ -936,6 +1187,141 @@ export default function Saccos() {
                     {isGoverning() && c.status === 'APPROVED' ? (
                       <button className="btn" disabled={!!busy[`pay${c.id}`]} onClick={() => payClaim(c.id)}>
                         {busy[`pay${c.id}`] ? t('saccos.loading') : t('saccos.wf_pay')}
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+
+          <div className="card">
+            <h3>{t('saccos.guarantors')}</h3>
+            {!guar.length ? (
+              <div className="muted">{t('saccos.guar_none')}</div>
+            ) : (
+              guar.map((g) => (
+                <div key={g.id} style={{ borderTop: '1px solid var(--border, #e5e5e5)', padding: '10px 0', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+                  <div>
+                    <strong>{g.borrower_name}</strong>
+                    <span className="muted"> · {g.application_reference} · {t('saccos.guar_cover')}: {formatMoney(g.cover_amount)}</span>
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <StatusBadge status={g.status} />
+                    {g.status === 'PENDING' && g.application_status === 'PENDING' ? (
+                      <button className="btn" disabled={!!busy[`gaccept${g.id}`]} onClick={() => guaranteeAction(g, 'accept')}>
+                        {busy[`gaccept${g.id}`] ? t('saccos.loading') : t('saccos.guar_accept')}
+                      </button>
+                    ) : null}
+                    {['PENDING', 'ACCEPTED'].includes(g.status) ? (
+                      <button className="btn ghost" disabled={!!busy[`gremove${g.id}`]} onClick={() => guaranteeAction(g, 'remove')}>
+                        {busy[`gremove${g.id}`] ? t('saccos.loading') : t('saccos.guar_remove')}
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+
+          {isGoverning() ? (
+            <div className="card">
+              <h3>{t('saccos.writeoffs')}</h3>
+              {!wo.list.length ? (
+                <div className="muted">{t('saccos.writeoff_none')}</div>
+              ) : (
+                wo.list.map((w) => (
+                  <div key={w.id} style={{ borderTop: '1px solid var(--border, #e5e5e5)', padding: '10px 0' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+                      <div>
+                        <strong>{w.loan_reference}</strong>
+                        <span className="muted"> · {toDate(w.created_at)} · {formatMoney(w.previous_outstanding)}</span>
+                      </div>
+                      <span className="muted">{w.principal_written_off !== undefined ? `${t('saccos.wo_principal')}: ${formatMoney(w.principal_written_off)}` : `${t('saccos.wo_reserves')}: ${formatMoney(w.reserves_used)} · ${t('saccos.wo_expense')}: ${formatMoney(w.expense_used)}`}</span>
+                    </div>
+                    {w.reason ? <div className="muted" style={{ marginTop: 4 }}>{w.reason}</div> : null}
+                  </div>
+                ))
+              )}
+            </div>
+          ) : null}
+
+          <div className="card">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
+              <div>
+                <h3 style={{ margin: 0 }}>{t('saccos.standing_orders')}</h3>
+                <div className="muted" style={{ marginTop: 4 }}>{t('saccos.so_sub')}</div>
+              </div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {isGoverning() ? (
+                  <button className="btn" disabled={!!busy.soRun} onClick={runSo}>
+                    {busy.soRun ? t('saccos.so_running') : t('saccos.so_run')}
+                  </button>
+                ) : null}
+                <button className="btn ghost" onClick={() => setSo((s) => ({ ...s, form: { ...s.form, show: !s.form.show } }))}>
+                  {t('saccos.so_new')}
+                </button>
+              </div>
+            </div>
+
+            {so.form.show ? (
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, margin: '12px 0', alignItems: 'center' }}>
+                <label className="muted">{t('saccos.so_type')}
+                  <select value={so.form.type} onChange={(e) => setSo((s) => ({ ...s, form: { ...s.form, type: e.target.value, targetId: '' } }))}>
+                    <option value="SAVINGS_DEPOSIT">{t('saccos.so_savings')}</option>
+                    <option value="FUND_CONTRIBUTION">{t('saccos.so_fund')}</option>
+                    <option value="WELFARE_CONTRIBUTION">{t('saccos.so_welfare')}</option>
+                    <option value="LOAN_REPAYMENT">{t('saccos.so_loan')}</option>
+                  </select>
+                </label>
+                <label className="muted">{t('saccos.so_day')}
+                  <input type="number" min="1" max="28" value={so.form.day} onChange={(e) => setSo((s) => ({ ...s, form: { ...s.form, day: e.target.value } }))} />
+                </label>
+                <label className="muted">{t('saccos.so_amount')}
+                  <input type="number" value={so.form.amount} onChange={(e) => setSo((s) => ({ ...s, form: { ...s.form, amount: e.target.value } }))} />
+                </label>
+                {so.form.type !== 'SAVINGS_DEPOSIT' ? (
+                  <label className="muted">{t('saccos.so_target')}
+                    <select value={so.form.targetId} onChange={(e) => setSo((s) => ({ ...s, form: { ...s.form, targetId: e.target.value } }))}>
+                      <option value="">-</option>
+                      {so.form.type === 'FUND_CONTRIBUTION' ? so.targets.funds.map((f) => (
+                        <option key={f.id} value={f.id}>{f.name || f.code} ({f.code})</option>
+                      )) : null}
+                      {so.form.type === 'WELFARE_CONTRIBUTION' ? so.targets.schemes.map((s2) => (
+                        <option key={s2.id} value={s2.id}>{s2.name}</option>
+                      )) : null}
+                      {so.form.type === 'LOAN_REPAYMENT' ? so.targets.loans.map((l) => (
+                        <option key={l.id} value={l.id}>{l.reference_id}</option>
+                      )) : null}
+                    </select>
+                  </label>
+                ) : <span />}
+                <div style={{ gridColumn: '1 / -1' }}>
+                  <button className="btn" disabled={!!busy.soNew} onClick={createSo}>
+                    {busy.soNew ? t('saccos.loading') : t('saccos.so_create')}
+                  </button>
+                </div>
+              </div>
+            ) : null}
+
+            <div className="muted" style={{ marginTop: 14, marginBottom: 6 }}>{isGoverning() ? t('saccos.so_all') : t('saccos.so_mine')}</div>
+            {(!isGoverning() ? so.mine : so.all).length === 0 ? (
+              <div className="muted">{t('saccos.so_none')}</div>
+            ) : (
+              (isGoverning() ? so.all : so.mine).map((o) => (
+                <div key={o.id} style={{ borderTop: '1px solid var(--border, #e5e5e5)', padding: '10px 0', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+                  <div>
+                    <strong>{soTypeLabel(o.target_type)}</strong>
+                    <span className="muted"> · {formatMoney(o.amount)} · {t('saccos.so_day')}: {o.day_of_month} · {soTargetName(o)}</span>
+                    {isGoverning() && o.full_name ? <span className="muted"> · {o.full_name}</span> : null}
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <span className="muted">{t('saccos.so_next')}: {toDate(o.next_run_at)} · {o.total_runs || 0} ({o.success_runs || 0} {t('saccos.so_success')}{o.fail_runs ? ` / ${o.fail_runs} ${t('saccos.so_fail')}` : ''})</span>
+                    <StatusBadge status={o.status} />
+                    {o.last_error ? <span className="muted" title={o.last_error}>· {String(o.last_error).slice(0, 24)}…</span> : null}
+                    {o.status === 'ACTIVE' ? (
+                      <button className="btn ghost" disabled={!!busy[`soDe${o.id}`]} onClick={() => deactivateSo(o.id)}>
+                        {busy[`soDe${o.id}`] ? t('saccos.loading') : t('saccos.so_deactivate')}
                       </button>
                     ) : null}
                   </div>

@@ -356,6 +356,7 @@ async function loanLossSummary(actorId, saccosId) {
     `SELECT COUNT(*)::int AS total,
             COUNT(*) FILTER (WHERE status = 'PROVISIONED')::int AS provisioned,
             COUNT(*) FILTER (WHERE status = 'RELEASED')::int AS released,
+            COUNT(*) FILTER (WHERE status = 'UTILIZED')::int AS utilized,
             COALESCE(SUM(provision_amount) FILTER (WHERE status = 'PROVISIONED'), 0)::numeric AS provisioned_total
      FROM saccos_loan_loss_reserves WHERE saccos_id = $1`,
     [saccosId]

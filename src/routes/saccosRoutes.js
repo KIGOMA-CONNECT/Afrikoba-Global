@@ -15,6 +15,8 @@ const installments = require('../services/saccosInstallmentService');
 const meetings = require('../services/saccosMeetingsService');
 const savingsInterest = require('../services/saccosSavingsInterestService');
 const welfare = require('../services/saccosWelfareService');
+const loanWorkout = require('../services/saccosLoanWorkoutService');
+const standingOrders = require('../services/saccosStandingOrderService');
 
 const router = express.Router();
 
@@ -823,6 +825,115 @@ router.post('/:id/welfare/claims/:claimId/pay', authRequired, async (req, res, n
 router.get('/:id/welfare/summary', authRequired, async (req, res, next) => {
   try {
     const out = await welfare.welfareSummary(req.user.id, Number(req.params.id));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+// ---------- Loan guarantors / co-signers (increment 17) ----------
+router.post('/:id/loans/applications/:applicationId/guarantees', authRequired, async (req, res, next) => {
+  try {
+    const out = await credit.addGuarantor(req.user.id, Number(req.params.id), Number(req.params.applicationId), req.body);
+    res.status(201).json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.get('/:id/loans/applications/:applicationId/guarantees', authRequired, async (req, res, next) => {
+  try {
+    const out = await credit.listGuarantees(req.user.id, Number(req.params.id), Number(req.params.applicationId));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/loans/guarantees/:guaranteeId/accept', authRequired, async (req, res, next) => {
+  try {
+    const out = await credit.acceptGuarantee(req.user.id, Number(req.params.id), Number(req.params.guaranteeId));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/loans/guarantees/:guaranteeId/remove', authRequired, async (req, res, next) => {
+  try {
+    const out = await credit.removeGuarantee(req.user.id, Number(req.params.id), Number(req.params.guaranteeId));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.get('/:id/loans/guarantees/mine', authRequired, async (req, res, next) => {
+  try {
+    const out = await credit.myGuarantees(req.user.id, Number(req.params.id));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/loans/:loanId/guarantees/:guaranteeId/pay', authRequired, async (req, res, next) => {
+  try {
+    const out = await loanWorkout.payGuarantorArrears(req.user.id, Number(req.params.id), Number(req.params.loanId), Number(req.params.guaranteeId));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+// ---------- Loan restructure / reschedule (increment 17) ----------
+router.post('/:id/loans/:loanId/restructure', authRequired, async (req, res, next) => {
+  try {
+    const out = await loanWorkout.restructureLoan(req.user.id, Number(req.params.id), Number(req.params.loanId), req.body);
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.get('/:id/loans/:loanId/restructures', authRequired, async (req, res, next) => {
+  try {
+    const out = await loanWorkout.listRestructures(req.user.id, Number(req.params.id), Number(req.params.loanId));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+// ---------- Loan write-off (increment 17) ----------
+router.post('/:id/loans/:loanId/write-off', authRequired, async (req, res, next) => {
+  try {
+    const out = await loanWorkout.writeOffLoan(req.user.id, Number(req.params.id), Number(req.params.loanId), req.body);
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.get('/:id/loans/write-offs', authRequired, async (req, res, next) => {
+  try {
+    const out = await loanWorkout.listWriteOffs(req.user.id, Number(req.params.id));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+// ---------- Standing orders / recurring contributions (increment 17) ----------
+router.post('/:id/standing-orders', authRequired, async (req, res, next) => {
+  try {
+    const out = await standingOrders.createOrder(req.user.id, Number(req.params.id), req.body);
+    res.status(201).json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.get('/:id/standing-orders/mine', authRequired, async (req, res, next) => {
+  try {
+    const out = await standingOrders.listMyOrders(req.user.id, Number(req.params.id));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.get('/:id/standing-orders', authRequired, async (req, res, next) => {
+  try {
+    const out = await standingOrders.listOrders(req.user.id, Number(req.params.id));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/standing-orders/:orderId/deactivate', authRequired, async (req, res, next) => {
+  try {
+    const out = await standingOrders.deactivateOrder(req.user.id, Number(req.params.id), Number(req.params.orderId));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/standing-orders/run', authRequired, async (req, res, next) => {
+  try {
+    const out = await standingOrders.runDue(req.user.id, Number(req.params.id));
     res.json({ success: true, result: out });
   } catch (e) { next(e); }
 });

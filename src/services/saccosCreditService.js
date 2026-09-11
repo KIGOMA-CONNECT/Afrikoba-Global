@@ -30,6 +30,7 @@ const DEFAULT_LENDING_CONFIG = {
   lateFeePercent: 2,
   savingsBackingEnabled: false,
   savingsBackingMultiple: 3,
+  guaranteesRequired: 0,
 };
 
 function lendingConfig(saccos) {
@@ -182,6 +183,175 @@ async function memberBacking(saccosId, memberId, multiple, db = pool) {
   };
 }
 
+/* ============================================================
+ * Loan guarantors / co-signers (increment 17)
+ * ============================================================ */
+
+async function fetchGuarantee(saccosId, guaranteeId, db = pool) {
+  const r = await db.query(
+    'SELECT * FROM saccos_loan_guarantees WHERE id = $1 AND saccos_id = $2',
+    [guaranteeId, saccosId]
+  );
+  if (!r.rows.length) throw createAppError('SACCOS_LOAN_GUARANTOR_NOT_FOUND');
+  return r.rows[0];
+}
+
+/** A guarantor's own backing limit (0 when savings backing is off). */
+async function guarantorCover(saccosId, memberId, cfg, db = pool) {
+  const b = await memberBacking(saccosId, memberId, cfg.savingsBackingEnabled ? cfg.savingsBackingMultiple : 0, db);
+  return b.backing_limit;
+}
+
+/** Accepted-guarantee aggregate for an application. */
+async function acceptedCover(saccosId, applicationId, db = pool) {
+  const r = await db.query(
+    `SELECT COALESCE(SUM(cover_amount), 0)::numeric AS cover, COUNT(*)::int AS accepted
+       FROM saccos_loan_guarantees
+      WHERE saccos_id = $1 AND application_id = $2 AND status = 'ACCEPTED'`,
+    [saccosId, applicationId]
+  );
+  return { cover: round2(r.rows[0].cover), accepted: Number(r.rows[0].accepted) };
+}
+
+/** Nominate a co-signer (borrower or OWNER/BOARD) while the application is PENDING. */
+async function addGuarantor(actorId, saccosId, applicationId, { guarantorMemberId }) {
+  const app = await fetchApplication(saccosId, applicationId);
+  if (app.status !== 'PENDING') throw createAppError('SACCOS_LOAN_GUARANTOR_APP_CLOSED');
+  const membership = await requireActiveMember(actorId, saccosId);
+  const governing = ['OWNER', 'BOARD'].includes(membership.role);
+  if (app.member_id !== membership.id && !governing) throw createAppError('SACCOS_RBAC');
+  const gid = Number(guarantorMemberId);
+  if (!Number.isInteger(gid) || gid <= 0) throw createAppError('SACCOS_LOAN_GUARANTOR_NOT_MEMBER');
+  if (gid === app.member_id) throw createAppError('SACCOS_LOAN_GUARANTOR_SELF');
+  const gm = await pool.query(
+    `SELECT id FROM saccos_members WHERE id = $1 AND saccos_id = $2 AND status = 'ACTIVE'`,
+    [gid, saccosId]
+  );
+  if (!gm.rows.length) throw createAppError('SACCOS_LOAN_GUARANTOR_NOT_MEMBER');
+  const dup = await pool.query(
+    'SELECT 1 FROM saccos_loan_guarantees WHERE application_id = $1 AND guarantor_member_id = $2',
+    [applicationId, gid]
+  );
+  if (dup.rows.length) throw createAppError('SACCOS_LOAN_GUARANTOR_EXISTS');
+  const saccos = await fetchActiveOrg(actorId, saccosId);
+  const cfg = lendingConfig(saccos);
+  const cover = await guarantorCover(saccosId, gid, cfg);
+  const r = await pool.query(
+    `INSERT INTO saccos_loan_guarantees
+       (saccos_id, application_id, guarantor_member_id, reference_id, cover_amount, created_by)
+     VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+    [saccosId, applicationId, gid, newRef('GNT'), cover, actorId]
+  );
+  await logAudit(actorId, 'SACCOS_GUARANTOR_ADDED', {
+    referenceId: saccosId, details: { applicationId, guaranteeId: r.rows[0].id, guarantorMemberId: gid, cover },
+  }).catch(() => {});
+  return { ...r.rows[0], cover_amount: Number(r.rows[0].cover_amount), paid_amount: Number(r.rows[0].paid_amount) };
+}
+
+/** The nominated member accepts the guarantee (PENDING -> ACCEPTED). */
+async function acceptGuarantee(actorId, saccosId, guaranteeId) {
+  const membership = await requireActiveMember(actorId, saccosId);
+  const g = await fetchGuarantee(saccosId, guaranteeId);
+  if (g.guarantor_member_id !== membership.id) throw createAppError('SACCOS_RBAC');
+  if (g.status !== 'PENDING') throw createAppError('SACCOS_LOAN_GUARANTOR_STATE');
+  const app = await fetchApplication(saccosId, g.application_id);
+  if (app.status !== 'PENDING') throw createAppError('SACCOS_LOAN_GUARANTOR_APP_CLOSED');
+  const saccos = await fetchActiveOrg(actorId, saccosId);
+  const cfg = lendingConfig(saccos);
+  const cover = await guarantorCover(saccosId, membership.id, cfg);
+  const r = await pool.query(
+    `UPDATE saccos_loan_guarantees
+        SET status = 'ACCEPTED', cover_amount = $1, accepted_at = NOW()
+      WHERE id = $2 RETURNING *`,
+    [cover, guaranteeId]
+  );
+  await logAudit(actorId, 'SACCOS_GUARANTOR_ACCEPTED', {
+    referenceId: saccosId, details: { guaranteeId, applicationId: g.application_id, cover },
+  }).catch(() => {});
+  return { ...r.rows[0], cover_amount: Number(r.rows[0].cover_amount), paid_amount: Number(r.rows[0].paid_amount) };
+}
+
+/** Withdraw a guarantee before the loan is disbursed (borrower, guarantor or OWNER/BOARD). */
+async function removeGuarantee(actorId, saccosId, guaranteeId) {
+  const membership = await requireActiveMember(actorId, saccosId);
+  const governing = ['OWNER', 'BOARD'].includes(membership.role);
+  const g = await fetchGuarantee(saccosId, guaranteeId);
+  if (!['PENDING', 'ACCEPTED'].includes(g.status)) throw createAppError('SACCOS_LOAN_GUARANTOR_STATE');
+  const app = await fetchApplication(saccosId, g.application_id);
+  const allowed = app.member_id === membership.id || g.guarantor_member_id === membership.id || governing;
+  if (!allowed) throw createAppError('SACCOS_RBAC');
+  const r = await pool.query(
+    `UPDATE saccos_loan_guarantees SET status = 'RELEASED', released_at = NOW() WHERE id = $1 RETURNING *`,
+    [guaranteeId]
+  );
+  await logAudit(actorId, 'SACCOS_GUARANTOR_RELEASED', {
+    referenceId: saccosId, details: { guaranteeId, applicationId: g.application_id },
+  }).catch(() => {});
+  return { ...r.rows[0], cover_amount: Number(r.rows[0].cover_amount), paid_amount: Number(r.rows[0].paid_amount) };
+}
+
+/** Guarantees on one application (borrower or OWNER/BOARD). */
+async function listGuarantees(actorId, saccosId, applicationId) {
+  const membership = await requireActiveMember(actorId, saccosId);
+  const governing = ['OWNER', 'BOARD'].includes(membership.role);
+  const app = await fetchApplication(saccosId, applicationId);
+  if (app.member_id !== membership.id && !governing) throw createAppError('SACCOS_RBAC');
+  const r = await pool.query(
+    `SELECT g.*, m.member_number, u.full_name, u.phone_number
+       FROM saccos_loan_guarantees g
+       JOIN saccos_members m ON m.id = g.guarantor_member_id
+       JOIN users u ON u.id = m.user_id
+      WHERE g.saccos_id = $1 AND g.application_id = $2
+      ORDER BY g.created_at`,
+    [saccosId, applicationId]
+  );
+  return r.rows.map((x) => ({ ...x, cover_amount: Number(x.cover_amount), paid_amount: Number(x.paid_amount) }));
+}
+
+/** Guarantees this member has given (where they are the co-signer). */
+async function myGuarantees(actorId, saccosId) {
+  const membership = await requireActiveMember(actorId, saccosId);
+  const r = await pool.query(
+    `SELECT g.*, a.reference_id AS application_reference, a.requested_amount, a.status AS application_status,
+            u.full_name AS borrower_name
+       FROM saccos_loan_guarantees g
+       JOIN saccos_loan_applications a ON a.id = g.application_id
+       JOIN saccos_members bm ON bm.id = a.member_id
+       JOIN users u ON u.id = bm.user_id
+      WHERE g.saccos_id = $1 AND g.guarantor_member_id = $2
+      ORDER BY g.created_at DESC`,
+    [saccosId, membership.id]
+  );
+  return r.rows.map((x) => ({ ...x, cover_amount: Number(x.cover_amount), paid_amount: Number(x.paid_amount), requested_amount: Number(x.requested_amount) }));
+}
+
+/** Activate ACCEPTED guarantees when the loan disburses. */
+async function activateGuarantees(client, saccosId, applicationId, loanId) {
+  await client.query(
+    `UPDATE saccos_loan_guarantees SET status = 'ACTIVE', loan_id = $1
+      WHERE saccos_id = $2 AND application_id = $3 AND status = 'ACCEPTED'`,
+    [loanId, saccosId, applicationId]
+  );
+}
+
+/** Release not-yet-active guarantees when an application is rejected/withdrawn. */
+async function releaseGuaranteesForApplication(client, saccosId, applicationId) {
+  await client.query(
+    `UPDATE saccos_loan_guarantees SET status = 'RELEASED', released_at = NOW()
+      WHERE saccos_id = $1 AND application_id = $2 AND status IN ('PENDING', 'ACCEPTED')`,
+    [saccosId, applicationId]
+  );
+}
+
+/** Release ACTIVE guarantees when a loan is repaid, written off or restructured. */
+async function releaseGuaranteesForLoan(client, saccosId, loanId) {
+  await client.query(
+    `UPDATE saccos_loan_guarantees SET status = 'RELEASED', released_at = NOW()
+      WHERE saccos_id = $1 AND loan_id = $2 AND status = 'ACTIVE'`,
+    [saccosId, loanId]
+  );
+}
+
 async function applyLoan(actorId, saccosId, { amount, termMonths, purpose }) {
   const value = Number(amount);
   const term = Number(termMonths);
@@ -249,13 +419,24 @@ async function decideApplication(actorId, saccosId, applicationId, decision) {
         `UPDATE saccos_loan_applications SET status = 'REJECTED', decided_by = $1, decision_at = NOW() WHERE id = $2`,
         [actorId, applicationId]
       );
+      await releaseGuaranteesForApplication(client, saccosId, applicationId);
     } else {
+      const co = await acceptedCover(saccosId, applicationId, client);
+      if (Number(cfg.guaranteesRequired) > 0 && co.accepted < Number(cfg.guaranteesRequired)) {
+        throw createAppError('SACCOS_LOAN_GUARANTOR_REQUIRED');
+      }
       if (cfg.savingsBackingEnabled) {
         const live = await memberBacking(saccosId, app.member_id, cfg.savingsBackingMultiple, client);
-        if (Number(app.requested_amount) > live.backing_limit) throw createAppError('SACCOS_LOAN_BACKING_INSUFFICIENT');
+        const totalLimit = round2(live.backing_limit + co.cover);
+        if (Number(app.requested_amount) > totalLimit) throw createAppError('SACCOS_LOAN_BACKING_INSUFFICIENT');
         await client.query(
-          `UPDATE saccos_loan_applications SET backing_balance = $1, backing_limit = $2 WHERE id = $3`,
-          [live.backing_balance, live.backing_limit, applicationId]
+          `UPDATE saccos_loan_applications SET backing_balance = $1, backing_limit = $2, guaranteed_cover = $3 WHERE id = $4`,
+          [live.backing_balance, live.backing_limit, co.cover, applicationId]
+        );
+      } else if (co.cover > 0) {
+        await client.query(
+          `UPDATE saccos_loan_applications SET guaranteed_cover = $1 WHERE id = $2`,
+          [co.cover, applicationId]
         );
       }
       const { interest, total } = repaymentMath(app.requested_amount, cfg.interestRate, app.term_months, app.requested_amount);
@@ -270,6 +451,7 @@ async function decideApplication(actorId, saccosId, applicationId, decision) {
         `UPDATE saccos_loan_applications SET status = 'APPROVED', decided_by = $1, decision_at = NOW(), loan_id = $2 WHERE id = $3`,
         [actorId, loan.rows[0].id, applicationId]
       );
+      await activateGuarantees(client, saccosId, applicationId, loan.rows[0].id);
       if (cfg.autoDisburse) {
         await disburseInClient({ client, saccos, loan: loan.rows[0], actorId });
       }
@@ -312,6 +494,7 @@ async function repayLoan(actorId, saccosId, loanId, { amount }) {
   const membership = await requireActiveMember(actorId, saccosId);
   const loan = await fetchLoan(saccosId, loanId);
   if (loan.status === 'CLOSED') throw createAppError('SACCOS_LOAN_ALREADY_CLOSED');
+  if (loan.status === 'WRITTEN_OFF') throw createAppError('SACCOS_LOAN_WRITTEN_OFF');
   if (loan.member_id !== membership.id) throw createAppError('SACCOS_RBAC');
   if (Number(loan.amount_outstanding) <= 0) throw createAppError('SACCOS_LOAN_ALREADY_CLOSED');
 
@@ -336,7 +519,7 @@ async function repayLoan(actorId, saccosId, loanId, { amount }) {
     });
     const outstanding = round2(Number(loan.amount_outstanding) - pay);
     await client.query(
-      `UPDATE saccos_loans SET amount_outstanding = $1, status = CASE WHEN $2 <= 0 THEN 'CLOSED' ELSE status END, repaid_at = CASE WHEN $2 <= 0 THEN NOW() ELSE repaid_at END WHERE id = $3`,
+      `UPDATE saccos_loans SET amount_outstanding = $1::numeric, status = CASE WHEN $2::numeric <= 0 THEN 'CLOSED' ELSE status END, repaid_at = CASE WHEN $2::numeric <= 0 THEN NOW() ELSE repaid_at END WHERE id = $3`,
       [outstanding, outstanding, loanId]
     );
     await client.query(
@@ -346,6 +529,7 @@ async function repayLoan(actorId, saccosId, loanId, { amount }) {
     );
     if (outstanding <= 0) {
       await client.query(`UPDATE saccos_loan_applications SET status = 'REPAID', repaid_at = NOW() WHERE id = $1`, [loan.application_id]);
+      await releaseGuaranteesForLoan(client, saccosId, loanId);
     }
     await client.query('COMMIT');
     await logAudit(actorId, 'SACCOS_LOAN_REPAYMENT', { referenceId: saccosId, details: { loanId, amount: pay } }).catch(() => {});
@@ -459,4 +643,12 @@ module.exports = {
   lendingConfig,
   repaymentMath,
   ensureCreditAccounts,
+  // guarantor APIs (increment 17)
+  addGuarantor,
+  acceptGuarantee,
+  removeGuarantee,
+  listGuarantees,
+  myGuarantees,
+  releaseGuaranteesForLoan,
+  releaseGuaranteesForApplication,
 };

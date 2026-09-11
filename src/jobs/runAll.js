@@ -12,6 +12,7 @@ const { recomputeAll: recomputeSellerVerifications } = require('../services/sell
 const { runAutoInvestCycle } = require('../services/p2pMarketplaceService');
 const { dispatchOutbox } = require('../services/outboxService');
 const { ensureAll: ensurePartitions } = require('../services/partitionService');
+const { runDueStandingOrders } = require('../services/saccosStandingOrderService');
 const logger = require('../utils/logger');
 
 /**
@@ -128,6 +129,17 @@ function startAllJobs() {
       logger.info('CRON-PARTITION', 'Partitions ensured (journal_entries + audit_logs)');
     } catch (e) {
       logger.error('CRON-PARTITION', e.message);
+    }
+  });
+
+  // SACCOS standing orders - kila siku 10:00 asubuhi, tekeleza amri za mara kwa mara
+  // (recurring contributions) ambazo zimefikia tarehe yao.
+  cron.schedule('10 2 * * *', async () => {
+    try {
+      const r = await runDueStandingOrders();
+      if (r.executed > 0) logger.info('CRON-STANDING-ORDERS', `SACCOS standing orders executed: ${r.executed} across ${r.entities} entities`);
+    } catch (e) {
+      logger.error('CRON-STANDING-ORDERS', e.message);
     }
   });
 

@@ -234,6 +234,35 @@ const ERROR_CODES = {
   SACCOS_LLR_STATE:          { status: 400, message: 'Hali ya akiba hii hairuhusu hatua hii.' },
   SACCOS_LLR_AMOUNT:         { status: 400, message: 'Kiasi cha akiba ya mkopo hakikubaliki.' },
 
+  // SACCOS loan guarantors / co-signers (400/403/404)
+  SACCOS_LOAN_GUARANTOR_NOT_FOUND:  { status: 404, message: 'Mdhamini huyu hajapatikana.' },
+  SACCOS_LOAN_GUARANTOR_SELF:       { status: 400, message: 'Huwezi kudhamini mkopo wako mwenyewe.' },
+  SACCOS_LOAN_GUARANTOR_NOT_MEMBER: { status: 400, message: 'Mdhamini lazima awe mwanachama hai wa SACCOS hii.' },
+  SACCOS_LOAN_GUARANTOR_EXISTS:     { status: 400, message: 'Mwanachama huyu tayari amedhamini ombi hili.' },
+  SACCOS_LOAN_GUARANTOR_REQUIRED:   { status: 400, message: 'Idadi ya wadhamini inayohitajika haijafikiwa (guaranteesRequired).' },
+  SACCOS_LOAN_GUARANTOR_STATE:      { status: 400, message: 'Hali ya udhamini hairuhusu hatua hii.' },
+  SACCOS_LOAN_GUARANTOR_APP_CLOSED: { status: 400, message: 'Ombi hili la mkopo halipo tena PENDING.' },
+  SACCOS_LOAN_GUARANTOR_NO_ARREARS: { status: 400, message: 'Hakuna awamu zilizochelewa za kulipwa na mdhamini.' },
+  SACCOS_LOAN_GUARANTOR_REQUIRED_CAP: { status: 400, message: 'Udhamini unaohitajika haujakamilika (guaranteesRequired = 0).' },
+
+  // SACCOS loan restructure (400/403/404)
+  SACCOS_LOAN_RESTRUCTURE_STATE: { status: 400, message: 'Mkopo huu hauwezi kupangwa upya (unahitaji kuwa ACTIVE na kuwa na deni).' },
+  SACCOS_LOAN_RESTRUCTURE_TERM:  { status: 400, message: 'Muda mpya wa mkopo lazima uwe namba kamili kati ya 1 na 120.' },
+  SACCOS_LOAN_RESTRUCTURE_RATE:  { status: 400, message: 'Kiwango kipya cha riba lazima kiwe kikubwa kuliko au sawa na 0.' },
+
+  // SACCOS loan write-off (400/404)
+  SACCOS_LOAN_WRITE_OFF_STATE:   { status: 400, message: 'Mkopo huu hauwezi kufutwa (unahitaji kuwa ACTIVE na kuwa na deni).' },
+  SACCOS_LOAN_WRITE_OFF_REASON:  { status: 400, message: 'Sababu ya kufuta mkopo inahitajika.' },
+  SACCOS_LOAN_WRITTEN_OFF:       { status: 400, message: 'Mkopo huu umekwisha futwa.' },
+
+  // SACCOS standing orders / recurring contributions (400/404)
+  SACCOS_STANDING_ORDER_AMOUNT:  { status: 400, message: 'Kiasi cha amri ya mara kwa mara lazima kiwe chanya.' },
+  SACCOS_STANDING_ORDER_DAY:     { status: 400, message: 'Siku ya mwezi lazima iwe kati ya 1 na 28.' },
+  SACCOS_STANDING_ORDER_TYPE:    { status: 400, message: 'Aina ya lengo la amri haikubaliki.' },
+  SACCOS_STANDING_ORDER_TARGET:  { status: 400, message: 'Lengo la amri halipo, limezimwa, au si la mwanachama huyu.' },
+  SACCOS_STANDING_ORDER_NOT_FOUND: { status: 404, message: 'Amri ya mara kwa mara haijapatikana.' },
+  SACCOS_STANDING_ORDER_STATE:   { status: 400, message: 'Hali ya amri hii hairuhusu hatua hii.' },
+
   // SACCOS member exit & settlement (400/404)
   SACCOS_EXIT_ALREADY_SETTLED: { status: 400, message: 'Utaratibu wa kuondoka kwa mwanachama huyu umekwisha fanyika.' },
   SACCOS_EXIT_NONE:          { status: 404, message: 'Hakuna utaratibu wa kuondoka.' },

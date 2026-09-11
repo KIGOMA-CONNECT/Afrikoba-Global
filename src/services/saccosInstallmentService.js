@@ -233,7 +233,84 @@ async function listInstallments(actorId, saccosId, loanId) {
 /** Pay one installment: idempotent REPI-* claim, ordered guard, ledgered.
  *  An OVERDUE installment also charges its accrued late_fee (one extra
  *  CR to SACCOS<id>_LATE_FEE_INCOME); the fee is income - it never
- *  reduces amount_outstanding. */
+ *  reduces amount_outstanding.
+ *
+ *  Refactored (increment 17) into a shared core that can be called by
+ *  the guarantor-pay path without its own RBAC/txn wrappers. */
+async function payInstallmentCore({ client, saccosId, loan, installmentId, cfg, payerUserId, repaymentMemberId }) {
+  const owner = await loanOwner(client, saccosId, loan.member_id);
+  const payer = payerUserId || owner.user_id;
+  const repMember = repaymentMemberId || owner.member_id;
+
+  await markOverdue(client, saccosId, loan, cfg);
+  const inst = await fetchInstallment(client, saccosId, loan.id, installmentId);
+  if (inst.status === 'PAID') throw createAppError('SACCOS_LOAN_INSTALLMENT_ALREADY_PAID');
+  if (inst.status === 'CANCELLED') throw createAppError('SACCOS_LOAN_INSTALLMENT_NOT_FOUND');
+  const earlier = await client.query(
+    `SELECT id FROM saccos_loan_installments
+      WHERE loan_id = $1 AND installment_no < $2
+        AND status NOT IN ('PAID', 'CANCELLED')
+      LIMIT 1`,
+    [loan.id, inst.installment_no]
+  );
+  if (earlier.rows.length) throw createAppError('SACCOS_LOAN_INSTALLMENT_ORDER');
+
+  const lateFee = inst.status === 'OVERDUE' ? round2(Number(inst.late_fee)) : 0;
+  const amountN = round2(Number(inst.total) + lateFee);
+  const ref = 'REPI-' + crypto.randomBytes(5).toString('hex').toUpperCase();
+  const op = await fin.claimOperation({ client, operationType: 'DEBIT', reference: ref, userId: payer, amount: amountN });
+  if (!op.claimed) throw createAppError('SACCOS_LOAN_INSTALLMENT_ALREADY_PAID');
+
+  const before = Number((await client.query('SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE', [payer])).rows[0].wallet_balance);
+  if (before < amountN) throw createAppError('WALLET_INSUFFICIENT_FUNDS');
+
+  const lines = [
+    { accountCode: 'CUSTOMER_WALLET', direction: 'DR', amount: amountN },
+    { accountCode: credit.loansReceivableCode(saccosId), direction: 'CR', amount: round2(inst.principal_part) },
+    { accountCode: credit.interestIncomeCode(saccosId), direction: 'CR', amount: round2(inst.interest_part) },
+  ];
+  if (lateFee > 0) lines.push({ accountCode: lateFeeIncomeCode(saccosId), direction: 'CR', amount: lateFee });
+  await fin.postJournal({
+    client,
+    lines,
+    referenceId: ref, description: `Awamu ya mkopo SACCOS #${saccosId}`, postedBy: 'saccos:credit:installment:pay',
+  });
+  await client.query('UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2', [amountN, payer]);
+  await client.query(
+    `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
+     VALUES ($1, $2, $3, 0, $3, 'SUCCESS', 'SACCOS_LOAN_INSTALLMENT_PAYMENT', $4)`,
+    [ref, payer, amountN, JSON.stringify({ saccosId, loanId: loan.id, installmentId, lateFee })]
+  );
+  await client.query(
+    `INSERT INTO saccos_loan_repayments (saccos_id, loan_id, member_id, reference_id, amount, principal_part, interest_part, status)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, 'APPROVED')`,
+    [saccosId, loan.id, repMember, ref, amountN, round2(inst.principal_part), round2(inst.interest_part)]
+  );
+  await client.query(
+    `UPDATE saccos_loan_installments SET status = 'PAID', paid_at = NOW(), reference_id = $1 WHERE id = $2`,
+    [ref, inst.id]
+  );
+  const cur = await client.query(
+    `UPDATE saccos_loans SET
+            amount_outstanding = amount_outstanding - $1::numeric,
+            status = CASE WHEN (amount_outstanding - $1::numeric) <= 0 THEN 'CLOSED' ELSE status END,
+            repaid_at = CASE WHEN (amount_outstanding - $1::numeric) <= 0 THEN NOW() ELSE repaid_at END
+      WHERE id = $2
+      RETURNING amount_outstanding`,
+    [round2(inst.total), loan.id]
+  );
+  const outstanding = round2(Number(cur.rows[0].amount_outstanding));
+  if (outstanding <= 0 && loan.application_id) {
+    await client.query(`UPDATE saccos_loan_applications SET status = 'REPAID', repaid_at = NOW() WHERE id = $1`, [loan.application_id]);
+    await credit.releaseGuaranteesForLoan(client, saccosId, loan.id);
+  }
+  return {
+    reference: ref, installmentId: inst.id, installmentNo: inst.installment_no,
+    amount: amountN, lateFee, principalPart: round2(inst.principal_part), interestPart: round2(inst.interest_part),
+    outstanding, closed: outstanding <= 0,
+  };
+}
+
 async function payInstallment(actorId, saccosId, loanId, installmentId) {
   const membership = await requireActiveMember(actorId, saccosId);
   const governing = ['OWNER', 'BOARD'].includes(membership.role);
@@ -242,77 +319,19 @@ async function payInstallment(actorId, saccosId, loanId, installmentId) {
     await client.query('BEGIN');
     await credit.ensureCreditAccounts(client, saccosId);
     await ensureLateFeeAccount(client, saccosId);
-const loan = await fetchLoan(saccosId, loanId);
+    const loan = await fetchLoan(saccosId, loanId);
     if (loan.status === 'CLOSED') throw createAppError('SACCOS_LOAN_ALREADY_CLOSED');
+    if (loan.status === 'WRITTEN_OFF') throw createAppError('SACCOS_LOAN_WRITTEN_OFF');
     if (loan.member_id !== membership.id && !governing) throw createAppError('SACCOS_RBAC');
-    const cfg = await arrearsConfig(client, saccosId);
-    await markOverdue(client, saccosId, loan, cfg);
-    const inst = await fetchInstallment(client, saccosId, loanId, installmentId);
-    if (inst.status === 'PAID') throw createAppError('SACCOS_LOAN_INSTALLMENT_ALREADY_PAID');
-    const earlier = await client.query(
-      'SELECT id FROM saccos_loan_installments WHERE loan_id = $1 AND installment_no < $2 AND status != \'PAID\' LIMIT 1',
-      [loan.id, inst.installment_no]
-    );
-    if (earlier.rows.length) throw createAppError('SACCOS_LOAN_INSTALLMENT_ORDER');
     if (Number(loan.amount_outstanding) <= 0) throw createAppError('SACCOS_LOAN_ALREADY_CLOSED');
-
-    const lateFee = inst.status === 'OVERDUE' ? round2(Number(inst.late_fee)) : 0;
-    const amountN = round2(Number(inst.total) + lateFee);
-    const owner = await loanOwner(client, saccosId, loan.member_id);
-    const payerUserId = owner.user_id;
-    const repaymentMemberId = owner.member_id;
-    const ref = 'REPI-' + crypto.randomBytes(5).toString('hex').toUpperCase();
-    const op = await fin.claimOperation({
-      client, operationType: 'DEBIT', reference: ref, userId: payerUserId, amount: amountN,
-    });
-    if (!op.claimed) throw createAppError('SACCOS_LOAN_INSTALLMENT_ALREADY_PAID');
-
-    const before = Number((await client.query('SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE', [payerUserId])).rows[0].wallet_balance);
-    if (before < amountN) throw createAppError('WALLET_INSUFFICIENT_FUNDS');
-    const lines = [
-      { accountCode: 'CUSTOMER_WALLET', direction: 'DR', amount: amountN },
-      { accountCode: credit.loansReceivableCode(saccosId), direction: 'CR', amount: round2(inst.principal_part) },
-      { accountCode: credit.interestIncomeCode(saccosId), direction: 'CR', amount: round2(inst.interest_part) },
-    ];
-    if (lateFee > 0) lines.push({ accountCode: lateFeeIncomeCode(saccosId), direction: 'CR', amount: lateFee });
-    await fin.postJournal({
-      client,
-      lines,
-      referenceId: ref, description: `Awamu ya mkopo SACCOS #${saccosId}`, postedBy: 'saccos:credit:installment:pay',
-    });
-    await client.query('UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2', [amountN, payerUserId]);
-    await client.query(
-      `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
-       VALUES ($1, $2, $3, 0, $3, 'SUCCESS', 'SACCOS_LOAN_INSTALLMENT_PAYMENT', $4)`,
-      [ref, payerUserId, amountN, JSON.stringify({ saccosId, loanId, installmentId, lateFee })]
-    );
-    await client.query(
-      `INSERT INTO saccos_loan_repayments (saccos_id, loan_id, member_id, reference_id, amount, principal_part, interest_part, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, 'APPROVED')`,
-      [saccosId, loan.id, repaymentMemberId, ref, amountN, round2(inst.principal_part), round2(inst.interest_part)]
-    );
-    await client.query(
-      `UPDATE saccos_loan_installments SET status = 'PAID', paid_at = NOW(), reference_id = $1 WHERE id = $2`,
-      [ref, inst.id]
-    );
-    const outstanding = round2(Number(loan.amount_outstanding) - Number(inst.total));
-    await client.query(
-      `UPDATE saccos_loans SET amount_outstanding = $1, status = CASE WHEN $2 <= 0 THEN 'CLOSED' ELSE status END, repaid_at = CASE WHEN $2 <= 0 THEN NOW() ELSE repaid_at END WHERE id = $3`,
-      [outstanding, outstanding, loan.id]
-    );
-    if (outstanding <= 0 && loan.application_id) {
-      await client.query(`UPDATE saccos_loan_applications SET status = 'REPAID', repaid_at = NOW() WHERE id = $1`, [loan.application_id]);
-    }
+    const cfg = await arrearsConfig(client, saccosId);
+    const res = await payInstallmentCore({ client, saccosId, loan, installmentId, cfg });
     await client.query('COMMIT');
     await logAudit(actorId, 'SACCOS_LOAN_INSTALLMENT_PAYMENT', {
       referenceId: saccosId,
-      details: { loanId, installmentId, amount: amountN, lateFee, reference: ref },
+      details: { loanId, installmentId, amount: res.amount, lateFee: res.lateFee, reference: res.reference },
     }).catch(() => {});
-    return {
-      reference: ref, installmentId: inst.id, installmentNo: inst.installment_no,
-      amount: amountN, lateFee, principalPart: round2(inst.principal_part), interestPart: round2(inst.interest_part),
-      outstanding, closed: outstanding <= 0,
-    };
+    return res;
   } catch (e) {
     await client.query('ROLLBACK').catch(() => {});
     throw e;
@@ -420,6 +439,7 @@ module.exports = {
   generateInstallments,
   listInstallments,
   payInstallment,
+  payInstallmentCore,
   installmentSummary,
   recomputeArrears,
   arrearsSummary,
@@ -427,4 +447,6 @@ module.exports = {
   ensureSchedule,
   fetchInstallment,
   markOverdue,
+  arrearsConfig,
+  ensureLateFeeAccount,
 };
