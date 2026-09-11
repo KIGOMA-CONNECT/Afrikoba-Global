@@ -3,9 +3,11 @@ import QRCode from 'qrcode';
 import api from '../api/client.js';
 import { formatMoney } from '../components/ui.jsx';
 import { useT } from '../i18n/LangProvider.jsx';
+import useStepUp from '../hooks/useStepUp.js';
 
 export default function Merchant() {
   const { t } = useT();
+  const stepup = useStepUp();
   const [merchant, setMerchant] = useState(null);
   const [codes, setCodes] = useState([]);
   const [payments, setPayments] = useState([]);
@@ -36,6 +38,12 @@ export default function Merchant() {
   const [invoiceForm, setInvoiceForm] = useState({ customerName: '', customerPhone: '', amount: '', currency: 'TZS', note: '', expiresInHours: '168' });
   const [invPayCode, setInvPayCode] = useState('');
   const [invLookup, setInvLookup] = useState(null);
+  const [paySchedules, setPaySchedules] = useState([]);
+  const [payRuns, setPayRuns] = useState([]);
+  const [payRunSlips, setPayRunSlips] = useState([]);
+  const [paySchedForm, setPaySchedForm] = useState({ name: '', frequency: 'MONTHLY' });
+  const [payEntryForm, setPayEntryForm] = useState({ scheduleId: '', userId: '', baseAmount: '', role: '', taxable: true, adjustments: '' });
+  const [payRunForm, setPayRunForm] = useState({ scheduleId: '', periodStart: '', periodEnd: '' });
   const error = (err) => setMsg({ type: 'err', text: err.response?.data?.message || t('merchant.error') });
 
   const load = () => {
@@ -48,8 +56,66 @@ export default function Merchant() {
     api.get('/merchant/admin/connected').then((r) => { setAdminAccounts(r.data.accounts); setIsAdmin(true); }).catch(() => {});
     api.get('/merchant/admin/payouts').then((r) => setAdminPayouts(r.data.payouts)).catch(() => {});
     api.get('/merchant/invoices').then((r) => setInvoices(r.data.invoices || [])).catch(() => {});
+    api.get('/merchant/payroll/schedules').then((r) => setPaySchedules(r.data.schedules || [])).catch(() => {});
+    api.get('/merchant/payroll/runs').then((r) => setPayRuns(r.data.runs || [])).catch(() => {});
   };
   useEffect(() => { load(); }, []);
+
+  const createPaySched = async (e) => {
+    e.preventDefault();
+    try {
+      await api.post('/merchant/payroll/schedules', paySchedForm);
+      setMsg({ type: 'ok', text: t('merchant.payroll_sched_created') });
+      setPaySchedForm({ name: '', frequency: 'MONTHLY' });
+      load();
+    } catch (err) { error(err); }
+  };
+
+  const addPayEntry = async (e) => {
+    e.preventDefault();
+    try {
+      const adjustments = payEntryForm.adjustments.trim()
+        ? payEntryForm.adjustments.split(',').map((a) => { const p = a.split(':'); return { type: Number(p[1]) < 0 ? 'deduction' : 'bonus', amount: Number(p[1]), label: p[0] || '' }; })
+        : [];
+      await api.post(`/merchant/payroll/schedules/${payEntryForm.scheduleId}/entries`, {
+        userId: Number(payEntryForm.userId),
+        baseAmount: Number(payEntryForm.baseAmount),
+        role: payEntryForm.role || null,
+        taxable: payEntryForm.taxable,
+        adjustments,
+      });
+      setMsg({ type: 'ok', text: t('merchant.payroll_entry_added') });
+      setPayEntryForm({ scheduleId: '', userId: '', baseAmount: '', role: '', taxable: true, adjustments: '' });
+      load();
+    } catch (err) { error(err); }
+  };
+
+  const startPayRun = async (e) => {
+    e.preventDefault();
+    try {
+      await api.post('/merchant/payroll/runs', { scheduleId: Number(payRunForm.scheduleId), periodStart: payRunForm.periodStart, periodEnd: payRunForm.periodEnd });
+      setMsg({ type: 'ok', text: t('merchant.payroll_run_ok') });
+      load();
+    } catch (err) { error(err); }
+  };
+
+  const approvePayRun = async (runId) => {
+    try {
+      const res = await stepup.run((cfg) => api.post(`/merchant/payroll/runs/${runId}/approve`, { stepupToken: cfg.headers ? cfg.headers['x-stepup-token'] : undefined }, cfg.headers || {}));
+      if (res && res.__stepup) return;
+      if (res && res.data && res.data.status === 'PAID') { setMsg({ type: 'ok', text: t('merchant.payroll_paid') }); }
+      load();
+    } catch (err) { error(err); }
+  };
+
+  const viewPaySlips = async (runId) => {
+    try {
+      const r = await api.get(`/merchant/payroll/runs/${runId}/payslips`);
+      setPayRunSlips(r.data.payslips || []);
+    } catch (err) { setPayRunSlips([]); error(err); }
+  };
+
+  const payStatusBadge = (st) => <span className={`badge ${st === 'PAID' ? 'success' : st === 'PENDING_APPROVAL' ? 'neutral' : st === 'PAUSED' ? 'warning' : 'danger'}`}>{st}</span>;
 
   const register = async (e) => {
     e.preventDefault();
@@ -701,6 +767,192 @@ export default function Merchant() {
             </table>
           </div>
         )}
+      </div>
+    {/* Payroll */}
+      <div className="card" style={{ marginBottom: 24 }}>
+        <h3 style={{ marginBottom: 14 }}>{t('merchant.payroll_title')}</h3>
+        <p className="roles-tag" style={{ marginBottom: 12 }}>{t('merchant.payroll_sub')}</p>
+
+        {!merchant ? (
+          <p className="roles-tag">{t('merchant.register_first')}</p>
+        ) : (
+          <>
+            <div style={{ background: '#f8fafc', padding: 14, borderRadius: 8, marginBottom: 14 }}>
+              <form onSubmit={createPaySched} style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <input placeholder={t('merchant.payroll_sched_name')} value={paySchedForm.name} onChange={(e) => setPaySchedForm({ ...paySchedForm, name: e.target.value })} required />
+                <select value={paySchedForm.frequency} onChange={(e) => setPaySchedForm({ ...paySchedForm, frequency: e.target.value })}>
+                  <option value="MONTHLY">MONTHLY</option>
+                  <option value="WEEKLY">WEEKLY</option>
+                  <option value="BIWEEKLY">BIWEEKLY</option>
+                  <option value="DAILY">DAILY</option>
+                </select>
+                <button type="submit" className="btn">{t('merchant.payroll_new_sched')}</button>
+              </form>
+              <p className="roles-tag" style={{ margin: '8px 0 0' }}>{t('merchant.payroll_tax_note')}</p>
+            </div>
+
+            {paySchedules.length === 0 ? (
+              <p className="roles-tag">{t('merchant.no_schedules')}</p>
+            ) : (
+              <>
+                <div style={{ overflowX: 'auto' }}>
+                  <table className="table">
+                    <thead>
+                      <tr>
+                        <th>{t('merchant.payroll_sched')}</th>
+                        <th>{t('merchant.payroll_currency')}</th>
+                        <th>{t('merchant.payroll_frequency')}</th>
+                        <th>{t('merchant.payroll_headcount')}</th>
+                        <th>{t('merchant.status')}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {paySchedules.map((sc) => (
+                        <tr key={sc.id}>
+                          <td><strong>{sc.name}</strong></td>
+                          <td>{sc.currency || 'TZS'}</td>
+                          <td>{sc.frequency}</td>
+                          <td>{sc.headcount}</td>
+                          <td>{payStatusBadge(sc.status)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div style={{ background: '#f8fafc', padding: 14, borderRadius: 8, margin: '12px 0' }}>
+                  <form onSubmit={addPayEntry} style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                    <select value={payEntryForm.scheduleId} onChange={(e) => setPayEntryForm({ ...payEntryForm, scheduleId: e.target.value })}>
+                      <option value="">{t('merchant.payroll_pick_sched')}</option>
+                      {paySchedules.map((sc) => <option key={sc.id} value={sc.id}>{sc.name}</option>)}
+                    </select>
+                    <input placeholder={t('merchant.payroll_user_id')} value={payEntryForm.userId} onChange={(e) => setPayEntryForm({ ...payEntryForm, userId: e.target.value })} />
+                    <input placeholder={t('merchant.payroll_base')} type="number" min="1" value={payEntryForm.baseAmount} onChange={(e) => setPayEntryForm({ ...payEntryForm, baseAmount: e.target.value })} required />
+                    <input placeholder={t('merchant.payroll_adjust_ph')} value={payEntryForm.adjustments} onChange={(e) => setPayEntryForm({ ...payEntryForm, adjustments: e.target.value })} />
+                    <label style={{ fontSize: 12 }}><input type="checkbox" checked={payEntryForm.taxable} onChange={(e) => setPayEntryForm({ ...payEntryForm, taxable: e.target.checked })} /> {t('merchant.payroll_taxable')}</label>
+                    <button type="submit" className="btn">{t('merchant.payroll_add_entry')}</button>
+                  </form>
+                </div>
+
+                <div style={{ background: '#f8fafc', padding: 14, borderRadius: 8, marginBottom: 12 }}>
+                  <form onSubmit={startPayRun} style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                    <select value={payRunForm.scheduleId} onChange={(e) => setPayRunForm({ ...payRunForm, scheduleId: e.target.value })}>
+                      <option value="">{t('merchant.payroll_pick_sched')}</option>
+                      {paySchedules.map((sc) => <option key={sc.id} value={sc.id}>{sc.name}</option>)}
+                    </select>
+                    <input type="date" value={payRunForm.periodStart} onChange={(e) => setPayRunForm({ ...payRunForm, periodStart: e.target.value })} required />
+                    <input type="date" value={payRunForm.periodEnd} onChange={(e) => setPayRunForm({ ...payRunForm, periodEnd: e.target.value })} required />
+                    <button type="submit" className="btn">{t('merchant.payroll_start_run')}</button>
+                  </form>
+                </div>
+
+                {payRuns.length > 0 && (
+                  <div style={{ overflowX: 'auto' }}>
+                    <table className="table">
+                      <thead>
+                        <tr>
+                          <th>{t('merchant.payroll_sched')}</th>
+                          <th>{t('merchant.payroll_period')}</th>
+                          <th>{t('merchant.payroll_gross')}</th>
+                          <th>{t('merchant.payroll_tax')}</th>
+                          <th>{t('merchant.payroll_net_run')}</th>
+                          <th>{t('merchant.status')}</th>
+                          <th>{t('merchant.actions')}</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {payRuns.map((r) => (
+                          <tr key={r.id}>
+                            <td>{r.schedule_name}</td>
+                            <td>{r.period_start} → {r.period_end}</td>
+                            <td>{formatMoney(r.total_amount)}</td>
+                            <td>{formatMoney(r.tax_total)}</td>
+                            <td><strong>{formatMoney(r.net_total)}</strong></td>
+                            <td>{payStatusBadge(r.status)}</td>
+                            <td>
+                              <button className="btn" style={{ padding: '4px 10px', fontSize: 12, marginRight: 6 }} onClick={() => viewPaySlips(r.id)}>{t('merchant.payroll_slips')}</button>
+                              {String(r.status) === 'PENDING_APPROVAL' && <button className="btn" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => approvePayRun(r.id)}>{t('merchant.payroll_approve')}</button>}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+
+                {payRunSlips.length > 0 && (
+                  <div style={{ overflowX: 'auto', marginTop: 12 }}>
+                    <table className="table">
+                      <thead>
+                        <tr>
+                          <th>{t('merchant.payroll_employee')}</th>
+                          <th>{t('merchant.payroll_gross')}</th>
+                          <th>{t('merchant.payroll_tax')}</th>
+                          <th>{t('merchant.payroll_ded')}</th>
+                          <th>{t('merchant.payroll_net')}</th>
+                          <th>{t('merchant.status')}</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {payRunSlips.map((ps) => (
+                          <tr key={ps.id}>
+                            <td>{ps.employee_name || ps.full_name}</td>
+                            <td>{formatMoney(ps.gross_amount)}</td>
+                            <td>{formatMoney(ps.tax_amount)}</td>
+                            <td>{formatMoney(ps.deductions_total)}</td>
+                            <td><strong>{formatMoney(ps.net_amount)}</strong></td>
+                            <td>{payStatusBadge(ps.status)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </>
+            )}
+          </>
+        )}
+      </div>
+
+      {stepup.modal && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 60 }}>
+          <div className="card" style={{ width: 360, padding: 20 }}>
+            <h3 style={{ margin: '0 0 12px' }}>{t('merchant.payroll_stepup')}</h3>
+            <StepUpForm
+              onConfirm={async (code) => {
+                try { await stepup.confirmCode(code); setMsg({ type: 'ok', text: t('merchant.payroll_paid') }); load(); }
+                catch (err) { error(err); }
+              }}
+              onCancel={stepup.close}
+            />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StepUpForm({ onConfirm, onCancel }) {
+  const [code, setCode] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [msg, setMsg] = useState('');
+
+  const submit = async () => {
+    setLoading(true); setMsg('');
+    try {
+      const result = await onConfirm(code);
+      if (result && result.success === false) setMsg(result.message || 'Invalid code');
+    } catch (e) { setMsg('Verification failed'); }
+    finally { setLoading(false); }
+  };
+
+  return (
+    <div>
+      <input value={code} onChange={(e) => setCode(e.target.value)} placeholder="6-digit code" style={{ width: '100%', marginBottom: 8 }} />
+      {msg && <div style={{ color: '#b42318', fontSize: 12, marginBottom: 8 }}>{msg}</div>}
+      <div style={{ display: 'flex', gap: 8 }}>
+        <button onClick={submit} disabled={loading || code.length < 4} className="btn" style={{ flex: 1 }}>{loading ? 'Verifying…' : 'Confirm'}</button>
+        <button onClick={onCancel} className="btn" style={{ background: '#64748b' }}>Cancel</button>
       </div>
     </div>
   );

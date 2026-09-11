@@ -14,8 +14,10 @@ const merchantPayoutService = require('../services/merchantPayoutService');
 const qrCodeService = require('../services/qrCodeService');
 const paymentLinkService = require('../services/paymentLinkService');
 const invoiceService = require('../services/invoiceService');
+const merchantPayrollRouter = require('./merchantPayrollRoutes');
 
 const router = express.Router();
+router.use('/payroll', merchantPayrollRouter);
 
 // My merchant profile
 router.get('/my', authRequired, async (req, res, next) => {
