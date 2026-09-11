@@ -30,6 +30,7 @@ class _SaccosScreenState extends State<SaccosScreen> {
 
   // loans
   List<Map<String, dynamic>> _myLoans = [];
+  List<Map<String, dynamic>> _loanProducts = [];
 
   // guarantees
   List<Map<String, dynamic>> _myGuarantees = [];
@@ -104,6 +105,7 @@ class _SaccosScreenState extends State<SaccosScreen> {
         api.get('/saccos/$id/dividends/mine'),
         api.get('/saccos/$id/standing-orders/mine'),
         api.get('/saccos/$id/statements/mine'),
+        api.get('/saccos/$id/loans/products'),
       ]);
       if (!mounted) return;
       setState(() {
@@ -117,6 +119,7 @@ class _SaccosScreenState extends State<SaccosScreen> {
         _myDividends = (results[7]['result'] as List? ?? []).cast<Map<String, dynamic>>();
         _myStandingOrders = (results[8]['result'] as List? ?? []).cast<Map<String, dynamic>>();
         _statement = (results[9]['result'] as List? ?? []).cast<Map<String, dynamic>>();
+        _loanProducts = (results[10]['result'] as List? ?? []).cast<Map<String, dynamic>>();
         _loading = false;
       });
     } on ApiException catch (e) {
@@ -236,6 +239,8 @@ class _SaccosScreenState extends State<SaccosScreen> {
     final amtCtl = TextEditingController();
     final termCtl = TextEditingController();
     final purposeCtl = TextEditingController();
+    int? productId;
+    final activeProducts = _loanProducts.where((p) => p['status'] == 'ACTIVE').toList();
     final saved = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -244,6 +249,28 @@ class _SaccosScreenState extends State<SaccosScreen> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
+              if (activeProducts.isNotEmpty) ...[
+                StatefulBuilder(
+                  builder: (ctx2, setLocalState) => DropdownButtonFormField<int?>(
+                    key: ValueKey('loanProduct'),
+                    initialValue: null,
+                    isDense: true,
+                    decoration: const InputDecoration(
+                      labelText: 'Bidhaa ya mkopo (hiari)',
+                      border: OutlineInputBorder(),
+                    ),
+                    items: [
+                      const DropdownMenuItem<int?>(value: null, child: Text('Bidhaa ya msingi (SACCOS)')),
+                      ...activeProducts.map((p) => DropdownMenuItem<int?>(
+                        value: (p['id'] as num).toInt(),
+                        child: Text('${p['code']} - ${p['name']}'),
+                      )),
+                    ],
+                    onChanged: (v) => setLocalState(() => productId = v),
+                  ),
+                ),
+                const SizedBox(height: 10),
+              ],
               TextField(
                 controller: amtCtl,
                 keyboardType: const TextInputType.numberWithOptions(decimal: true),
@@ -278,11 +305,13 @@ class _SaccosScreenState extends State<SaccosScreen> {
       _toast('Kiasi na muda ni lazima.', error: true); return;
     }
     try {
-      await AppState.instance.api.post('/saccos/$_selectedSaccosId/loans/apply', {
+      final body = <String, dynamic>{
         'amount': amtCtl.text.trim(),
         'termMonths': term,
         'purpose': purposeCtl.text.trim(),
-      });
+      };
+      if (productId != null) body['productId'] = productId;
+      await AppState.instance.api.post('/saccos/$_selectedSaccosId/loans/apply', body);
       _toast('Ombi la mkopo limetumwa.');
       await _refresh();
     } on ApiException catch (e) { _toast(e.message, error: true); }

@@ -51,6 +51,11 @@ export default function Saccos() {
     targets: { funds: [], schemes: [], loans: [] },
     form: { show: false, type: 'SAVINGS_DEPOSIT', amount: '', day: '1', targetId: '' },
   });
+  const [lp, setLp] = useState({
+    list: [],
+    form: { show: false, code: '', name: '', desc: '', rate: '', min: '', max: '', term: '' },
+    apply: { show: false, productId: '', amount: '', term: '', purpose: '' },
+  });
 
   const show = (type, text) => {
     setMsg({ type, text });
@@ -115,6 +120,8 @@ export default function Saccos() {
     setRest({ history: {}, form: {} });
     setWo({ list: [], form: {} });
     setSo({ mine: [], all: [], targets: { funds: [], schemes: [], loans: [] }, form: { show: false, type: 'SAVINGS_DEPOSIT', amount: '', day: '1', targetId: '' } });
+    setLp({ list: [], form: { show: false, code: '', name: '', desc: '', rate: '', min: '', max: '', term: '' }, apply: { show: false, productId: '', amount: '', term: '', purpose: '' } });
+    loadProducts(org.id);
     api.get(`/saccos/${org.id}/loans/mine`).then((r) => {
       setLoans(r.data.result.loans || []);
       if (r.data.result.loans && r.data.result.loans.length) {
@@ -216,6 +223,70 @@ export default function Saccos() {
       .then((r) => setLoans(r.data.result.loans || []))
       .catch(() => {});
     api.get(`/saccos/${selected.id}/statements/mine`).then((r) => setStatement(r.data.result)).catch(() => {});
+  };
+
+  const loadProducts = (id) => {
+    api.get(`/saccos/${id}/loans/products`)
+      .then((r) => setLp((prev) => ({ ...prev, list: r.data.result || [] })))
+      .catch(() => setLp((prev) => ({ ...prev, list: [] })));
+  };
+
+  const reloadProducts = () => loadProducts(selected.id);
+
+  const toggleLpForm = () => setLp((prev) => ({ ...prev, form: { ...prev.form, show: !prev.form.show } }));
+
+  const createProduct = async () => {
+    const f = lp.form;
+    if (!(f.code || '').trim() || !(f.name || '').trim() || !(Number(f.rate) >= 0) || !(Number(f.term) >= 1)) { show('err', t('saccos.error')); return; }
+    setBusy((prev) => ({ ...prev, lpNew: true }));
+    try {
+      await api.post(`/saccos/${selected.id}/loans/products`, {
+        code: f.code, name: f.name, description: f.desc || null,
+        interestRatePercent: Number(f.rate), minAmount: Number(f.min || 0),
+        maxAmount: f.max ? Number(f.max) : null, maxTermMonths: Number(f.term),
+      });
+      show('ok', t('saccos.saved'));
+      setLp((prev) => ({ ...prev, form: { show: false, code: '', name: '', desc: '', rate: '', min: '', max: '', term: '' } }));
+      reloadProducts();
+    } catch (err) {
+      show('err', err.response?.data?.message || t('saccos.error'));
+    } finally {
+      setBusy((prev) => ({ ...prev, lpNew: false }));
+    }
+  };
+
+  const archiveProduct = async (productId) => {
+    setBusy((prev) => ({ ...prev, [`lpArc${productId}`]: true }));
+    try {
+      await api.post(`/saccos/${selected.id}/loans/products/${productId}/archive`);
+      show('ok', t('saccos.saved'));
+      reloadProducts();
+    } catch (err) {
+      show('err', err.response?.data?.message || t('saccos.error'));
+    } finally {
+      setBusy((prev) => ({ ...prev, [`lpArc${productId}`]: false }));
+    }
+  };
+
+  const openLoanApply = (productId) => setLp((prev) => ({ ...prev, apply: { show: true, productId: productId || '', amount: '', term: '', purpose: '' } }));
+
+  const doLoanApply = async () => {
+    const f = lp.apply;
+    if (!(Number(f.amount) > 0) || !(Number(f.term) >= 1)) { show('err', t('saccos.error')); return; }
+    setBusy((prev) => ({ ...prev, lpApply: true }));
+    try {
+      await api.post(`/saccos/${selected.id}/loans/apply`, {
+        amount: Number(f.amount), termMonths: Number(f.term), purpose: f.purpose || null,
+        productId: f.productId ? Number(f.productId) : undefined,
+      });
+      show('ok', t('saccos.saved'));
+      setLp((prev) => ({ ...prev, apply: { show: false, productId: '', amount: '', term: '', purpose: '' } }));
+      reloadLoans();
+    } catch (err) {
+      show('err', err.response?.data?.message || t('saccos.error'));
+    } finally {
+      setBusy((prev) => ({ ...prev, lpApply: false }));
+    }
   };
 
   const loadGuar = (id) => {
@@ -788,6 +859,101 @@ export default function Saccos() {
                       </button>
                     </div>
                   ) : null}
+                </div>
+              ))
+            )}
+          </div>
+
+          <div className="card">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
+              <h3 style={{ margin: 0 }}>{t('saccos.lp_title')}</h3>
+              {isGoverning() ? (
+                <button className="btn ghost" onClick={toggleLpForm}>
+                  {busy.lpNew ? t('saccos.loading') : t('saccos.lp_new')}
+                </button>
+              ) : null}
+            </div>
+            {lp.apply.show ? (
+              <div style={{ marginTop: 12, padding: 14, border: '1px solid var(--border, #e5e5e5)', borderRadius: 8 }}>
+                <h4 style={{ marginTop: 0 }}>{t('saccos.lp_app_title')}</h4>
+                <select
+                  value={lp.apply.productId}
+                  onChange={(e) => setLp((prev) => ({ ...prev, apply: { ...prev.apply, productId: e.target.value } }))}
+                >
+                  <option value="">{t('saccos.lp_flat')}</option>
+                  {lp.list.filter((p) => p.status === 'ACTIVE').map((p) => (
+                    <option key={p.id} value={p.id}>{p.code} — {p.name} ({p.interest_rate_percent}%)</option>
+                  ))}
+                </select>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
+                  <input type="number" placeholder={t('saccos.lp_app_amount')}
+                    value={lp.apply.amount}
+                    onChange={(e) => setLp((prev) => ({ ...prev, apply: { ...prev.apply, amount: e.target.value } }))} />
+                  <input type="number" placeholder={t('saccos.lp_app_term')}
+                    value={lp.apply.term}
+                    onChange={(e) => setLp((prev) => ({ ...prev, apply: { ...prev.apply, term: e.target.value } }))} />
+                  <input placeholder={t('saccos.lp_app_purpose')}
+                    value={lp.apply.purpose}
+                    onChange={(e) => setLp((prev) => ({ ...prev, apply: { ...prev.apply, purpose: e.target.value } }))} />
+                  <button className="btn" disabled={busy.lpApply} onClick={doLoanApply}>
+                    {busy.lpApply ? t('saccos.loading') : t('saccos.lp_apply_go')}
+                  </button>
+                  <button className="btn ghost" onClick={() => setLp((prev) => ({ ...prev, apply: { ...prev.apply, show: false } }))}>
+                    {t('saccos.hide')}
+                  </button>
+                </div>
+              </div>
+            ) : null}
+            {lp.form.show && isGoverning() ? (
+              <div style={{ marginTop: 12, padding: 14, border: '1px solid var(--border, #e5e5e5)', borderRadius: 8 }}>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                  <input placeholder={t('saccos.lp_code')} style={{ width: 130 }}
+                    value={lp.form.code} onChange={(e) => setLp((prev) => ({ ...prev, form: { ...prev.form, code: e.target.value } }))} />
+                  <input placeholder={t('saccos.lp_name')}
+                    value={lp.form.name} onChange={(e) => setLp((prev) => ({ ...prev, form: { ...prev.form, name: e.target.value } }))} />
+                  <input placeholder={t('saccos.lp_desc')}
+                    value={lp.form.desc} onChange={(e) => setLp((prev) => ({ ...prev, form: { ...prev.form, desc: e.target.value } }))} />
+                  <input type="number" step="0.01" placeholder={t('saccos.lp_rate')} style={{ width: 110 }}
+                    value={lp.form.rate} onChange={(e) => setLp((prev) => ({ ...prev, form: { ...prev.form, rate: e.target.value } }))} />
+                  <input type="number" placeholder={t('saccos.lp_min')} style={{ width: 120 }}
+                    value={lp.form.min} onChange={(e) => setLp((prev) => ({ ...prev, form: { ...prev.form, min: e.target.value } }))} />
+                  <input type="number" placeholder={t('saccos.lp_max')} style={{ width: 160 }}
+                    value={lp.form.max} onChange={(e) => setLp((prev) => ({ ...prev, form: { ...prev.form, max: e.target.value } }))} />
+                  <input type="number" placeholder={t('saccos.lp_term')} style={{ width: 110 }}
+                    value={lp.form.term} onChange={(e) => setLp((prev) => ({ ...prev, form: { ...prev.form, term: e.target.value } }))} />
+                  <button className="btn" disabled={busy.lpNew} onClick={createProduct}>
+                    {busy.lpNew ? t('saccos.loading') : t('saccos.lp_go')}
+                  </button>
+                </div>
+              </div>
+            ) : null}
+            {!lp.list.length ? (
+              <div className="muted" style={{ marginTop: 10 }}>{t('saccos.lp_none')}</div>
+            ) : (
+              lp.list.map((p) => (
+                <div key={p.id} style={{ borderTop: '1px solid var(--border, #e5e5e5)', padding: '12px 0', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+                  <div>
+                    <strong>{p.code}</strong> — {p.name}
+                    <span className="muted">
+                      {' '}<em>{p.description}</em>
+                    </span>
+                    <div className="muted" style={{ fontSize: 13 }}>
+                      {t('saccos.lp_rate')}: {p.interest_rate_percent}% · {t('saccos.lp_band')}: {formatMoney(p.min_amount)}{p.max_amount ? ` - ${formatMoney(p.max_amount)}` : ' +'} · {t('saccos.lp_term')}: {p.max_term_months}
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <StatusBadge status={p.status} />
+                    {p.status === 'ACTIVE' ? (
+                      <>
+                        <button className="btn ghost" onClick={() => openLoanApply(p.id)}>{t('saccos.lp_apply')}</button>
+                        {isGoverning() ? (
+                          <button className="btn ghost" disabled={!!busy[`lpArc${p.id}`]} onClick={() => archiveProduct(p.id)}>
+                            {busy[`lpArc${p.id}`] ? t('saccos.loading') : t('saccos.lp_archive')}
+                          </button>
+                        ) : null}
+                      </>
+                    ) : null}
+                  </div>
                 </div>
               ))
             )}

@@ -184,9 +184,31 @@ router.post('/:id/savings/withdrawals/:withdrawalId/reject', authRequired, async
   } catch (e) { next(e); }
 });
 
+// ---------- Lending products config (increment 19) ----------
+router.get('/:id/loans/products', authRequired, async (req, res, next) => {
+  try {
+    const out = await credit.listProducts(req.user.id, Number(req.params.id));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/loans/products', authRequired, async (req, res, next) => {
+  try {
+    const out = await credit.createProduct(req.user.id, Number(req.params.id), req.body);
+    res.status(201).json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/loans/products/:productId/archive', authRequired, async (req, res, next) => {
+  try {
+    const out = await credit.archiveProduct(req.user.id, Number(req.params.id), Number(req.params.productId));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
 router.post('/:id/loans/apply', authRequired, async (req, res, next) => {
   try {
-    const out = await credit.applyLoan(req.user.id, Number(req.params.id), { amount: req.body.amount, termMonths: req.body.termMonths, purpose: req.body.purpose });
+    const out = await credit.applyLoan(req.user.id, Number(req.params.id), { amount: req.body.amount, termMonths: req.body.termMonths, purpose: req.body.purpose, productId: req.body.productId });
     res.status(201).json({ success: true, result: out });
   } catch (e) { next(e); }
 });

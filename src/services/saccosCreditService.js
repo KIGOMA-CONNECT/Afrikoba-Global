@@ -154,6 +154,91 @@ async function fetchLoan(saccosId, loanId) {
   return r.rows[0];
 }
 
+/* ============================================================
+ * Lending products (increment 19) - OWNER/BOARD-defined loan
+ * schemes: a named product carries its own flat interest rate,
+ * amount band and max tenor; applications reference it via
+ * productId and the loan snapshots the product rate at approval.
+ * ============================================================ */
+
+function productShape(p) {
+  return {
+    id: Number(p.id),
+    saccos_id: Number(p.saccos_id),
+    code: p.code,
+    name: p.name,
+    description: p.description,
+    interest_rate_percent: Number(p.interest_rate_percent),
+    min_amount: Number(p.min_amount),
+    max_amount: p.max_amount === null ? null : Number(p.max_amount),
+    max_term_months: Number(p.max_term_months),
+    status: p.status,
+    created_at: p.created_at,
+  };
+}
+
+async function fetchProduct(saccosId, productId) {
+  const r = await pool.query(
+    'SELECT * FROM saccos_lending_products WHERE id = $1 AND saccos_id = $2',
+    [productId, saccosId]
+  );
+  if (!r.rows.length) throw createAppError('SACCOS_LOAN_PRODUCT_NOT_FOUND');
+  return r.rows[0];
+}
+
+/** Active product required at application time (ARCHIVED rejected). */
+async function fetchActiveProduct(saccosId, productId) {
+  const product = await fetchProduct(saccosId, productId);
+  if (product.status !== 'ACTIVE') throw createAppError('SACCOS_LOAN_PRODUCT_ARCHIVED');
+  return product;
+}
+
+async function createProduct(actorId, saccosId, { code, name, description, interestRatePercent, minAmount, maxAmount, maxTermMonths }) {
+  await saccosCore.assertActiveRole(actorId, saccosId, ['OWNER', 'BOARD']);
+  const c = String(code || '').trim().toUpperCase().replace(/\s+/g, '_').slice(0, 32);
+  const n = String(name || '').trim();
+  const rate = Number(interestRatePercent);
+  const min = Number(minAmount) || 0;
+  const max = maxAmount === null || maxAmount === undefined || maxAmount === '' ? null : Number(maxAmount);
+  const term = Number(maxTermMonths);
+  if (!c || !n) throw createAppError('SACCOS_LOAN_PRODUCT_INVALID');
+  if (!Number.isFinite(rate) || rate < 0 || rate > 100) throw createAppError('SACCOS_LOAN_PRODUCT_INVALID');
+  if (!Number.isFinite(min) || min < 0) throw createAppError('SACCOS_LOAN_PRODUCT_INVALID');
+  if (max !== null && (!Number.isFinite(max) || max <= 0 || max < min)) throw createAppError('SACCOS_LOAN_PRODUCT_INVALID');
+  if (!Number.isInteger(term) || term < 1 || term > 120) throw createAppError('SACCOS_LOAN_PRODUCT_INVALID');
+  const dup = await pool.query('SELECT 1 FROM saccos_lending_products WHERE saccos_id = $1 AND code = $2', [saccosId, c]);
+  if (dup.rows.length) throw createAppError('SACCOS_LOAN_PRODUCT_CODE_TAKEN');
+  const r = await pool.query(
+    `INSERT INTO saccos_lending_products
+       (saccos_id, code, name, description, interest_rate_percent, min_amount, max_amount, max_term_months, created_by)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+    [saccosId, c, n, description || null, rate, min, max, term, actorId]
+  );
+  await logAudit(actorId, 'SACCOS_LOAN_PRODUCT_CREATED', { referenceId: saccosId, details: { productId: r.rows[0].id, code: c } }).catch(() => {});
+  return productShape(r.rows[0]);
+}
+
+async function listProducts(actorId, saccosId) {
+  await saccosCore.assertVisible(actorId, saccosId);
+  const r = await pool.query(
+    `SELECT * FROM saccos_lending_products WHERE saccos_id = $1 ORDER BY (status = 'ARCHIVED'), created_at, id`,
+    [saccosId]
+  );
+  return r.rows.map(productShape);
+}
+
+async function archiveProduct(actorId, saccosId, productId) {
+  await saccosCore.assertActiveRole(actorId, saccosId, ['OWNER', 'BOARD']);
+  const product = await fetchProduct(saccosId, productId);
+  if (product.status === 'ARCHIVED') throw createAppError('SACCOS_LOAN_PRODUCT_ARCHIVED');
+  const r = await pool.query(
+    `UPDATE saccos_lending_products SET status = 'ARCHIVED', updated_at = NOW() WHERE id = $1 RETURNING *`,
+    [productId]
+  );
+  await logAudit(actorId, 'SACCOS_LOAN_PRODUCT_ARCHIVED', { referenceId: saccosId, details: { productId, code: product.code } }).catch(() => {});
+  return productShape(r.rows[0]);
+}
+
 async function countActiveLoans(saccosId, memberId) {
   const r = await pool.query(
     `SELECT COUNT(*)::int AS c FROM saccos_loans WHERE saccos_id = $1 AND member_id = $2 AND status = 'ACTIVE'`,
@@ -352,16 +437,31 @@ async function releaseGuaranteesForLoan(client, saccosId, loanId) {
   );
 }
 
-async function applyLoan(actorId, saccosId, { amount, termMonths, purpose }) {
+async function applyLoan(actorId, saccosId, { amount, termMonths, purpose, productId }) {
   const value = Number(amount);
   const term = Number(termMonths);
   if (!Number.isFinite(value) || value <= 0) throw createAppError('SACCOS_LOAN_AMOUNT_INVALID');
   const saccos = await fetchActiveOrg(actorId, saccosId);
   const membership = await requireActiveMember(actorId, saccosId);
   const cfg = lendingConfig(saccos);
-  if (value < cfg.minAmount) throw createAppError('SACCOS_LOAN_BELOW_MIN');
-  if (cfg.maxAmount !== null && value > cfg.maxAmount) throw createAppError('SACCOS_LOAN_ABOVE_MAX');
-  if (!Number.isInteger(term) || term < 1 || term > cfg.maxTermMonths) throw createAppError('SACCOS_LOAN_TERM_TOO_LONG');
+
+  // Product (if supplied) overrides the flat saccos-wide lending bounds.
+  let product = null;
+  let rate = cfg.interestRate;
+  let minAmount = cfg.minAmount;
+  let maxAmount = cfg.maxAmount;
+  let maxTermMonths = cfg.maxTermMonths;
+  if (productId !== null && productId !== undefined && productId !== '') {
+    product = await fetchActiveProduct(saccosId, Number(productId));
+    rate = Number(product.interest_rate_percent);
+    minAmount = Number(product.min_amount);
+    maxAmount = product.max_amount === null ? null : Number(product.max_amount);
+    maxTermMonths = Number(product.max_term_months);
+  }
+
+  if (value < minAmount) throw createAppError('SACCOS_LOAN_BELOW_MIN');
+  if (maxAmount !== null && value > maxAmount) throw createAppError('SACCOS_LOAN_ABOVE_MAX');
+  if (!Number.isInteger(term) || term < 1 || term > maxTermMonths) throw createAppError('SACCOS_LOAN_TERM_TOO_LONG');
   if (await countActiveLoans(saccosId, membership.id) >= cfg.maxActiveLoans) throw createAppError('SACCOS_LOANS_AT_LIMIT');
 
   const backing = cfg.savingsBackingEnabled ? await memberBacking(saccosId, membership.id, cfg.savingsBackingMultiple) : null;
@@ -371,12 +471,13 @@ async function applyLoan(actorId, saccosId, { amount, termMonths, purpose }) {
   const app = await pool.query(
     `INSERT INTO saccos_loan_applications
        (saccos_id, member_id, reference_id, requested_amount, purpose, term_months, status, requires_approval,
-        backing_enabled, backing_multiple, backing_balance, backing_limit)
-     VALUES ($1, $2, $3, $4, $5, $6, 'PENDING', TRUE, $7, $8, $9, $10) RETURNING *`,
+        backing_enabled, backing_multiple, backing_balance, backing_limit, product_id, rate_percent)
+     VALUES ($1, $2, $3, $4, $5, $6, 'PENDING', TRUE, $7, $8, $9, $10, $11, $12) RETURNING *`,
     [saccosId, membership.id, ref, value, purpose || null, term,
-      backing ? backing.enabled : false, backing ? backing.multiple : 0, backing ? backing.backing_balance : 0, backing ? backing.backing_limit : 0]
+      backing ? backing.enabled : false, backing ? backing.multiple : 0, backing ? backing.backing_balance : 0, backing ? backing.backing_limit : 0,
+      product ? product.id : null, rate]
   );
-  await logAudit(actorId, 'SACCOS_LOAN_APPLICATION', { referenceId: saccosId, details: { applicationId: app.rows[0].id, amount: value } }).catch(() => {});
+  await logAudit(actorId, 'SACCOS_LOAN_APPLICATION', { referenceId: saccosId, details: { applicationId: app.rows[0].id, amount: value, productId: product ? product.id : null } }).catch(() => {});
   return app.rows[0];
 }
 
@@ -439,13 +540,14 @@ async function decideApplication(actorId, saccosId, applicationId, decision) {
           [co.cover, applicationId]
         );
       }
-      const { interest, total } = repaymentMath(app.requested_amount, cfg.interestRate, app.term_months, app.requested_amount);
+      const rate = app.rate_percent != null ? Number(app.rate_percent) : cfg.interestRate;
+      const { total } = repaymentMath(app.requested_amount, rate, app.term_months, app.requested_amount);
       const loan = await client.query(
         `INSERT INTO saccos_loans
-           (saccos_id, member_id, application_id, reference_id, principal, interest_rate, total_repayable, amount_outstanding, term_months, status)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'PENDING')
+           (saccos_id, member_id, application_id, reference_id, principal, interest_rate, total_repayable, amount_outstanding, term_months, status, product_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'PENDING', $10)
          RETURNING *`,
-        [saccosId, app.member_id, app.id, newRef('LNS'), app.requested_amount, cfg.interestRate, total, total, app.term_months]
+        [saccosId, app.member_id, app.id, newRef('LNS'), app.requested_amount, rate, total, total, app.term_months, app.product_id]
       );
       await client.query(
         `UPDATE saccos_loan_applications SET status = 'APPROVED', decided_by = $1, decision_at = NOW(), loan_id = $2 WHERE id = $3`,
@@ -548,14 +650,20 @@ async function repayLoan(actorId, saccosId, loanId, { amount }) {
 async function listMyLoans(actorId, saccosId) {
   const membership = await requireActiveMember(actorId, saccosId);
   const app = await pool.query(
-    `SELECT id, reference_id, requested_amount, purpose, term_months, status, created_at,
-            backing_enabled, backing_multiple, backing_balance, backing_limit
-     FROM saccos_loan_applications WHERE saccos_id = $1 AND member_id = $2 ORDER BY created_at DESC`,
+    `SELECT a.id, a.reference_id, a.requested_amount, a.purpose, a.term_months, a.status, a.created_at,
+            a.backing_enabled, a.backing_multiple, a.backing_balance, a.backing_limit,
+            p.code AS product_code, p.name AS product_name
+     FROM saccos_loan_applications a
+     LEFT JOIN saccos_lending_products p ON p.id = a.product_id
+     WHERE a.saccos_id = $1 AND a.member_id = $2 ORDER BY a.created_at DESC`,
     [saccosId, membership.id]
   );
   const loans = await pool.query(
-    `SELECT id, reference_id, principal, interest_rate, total_repayable, amount_outstanding, term_months, status, disbursed_at
-     FROM saccos_loans WHERE saccos_id = $1 AND member_id = $2 ORDER BY created_at DESC`,
+    `SELECT l.id, l.reference_id, l.principal, l.interest_rate, l.total_repayable, l.amount_outstanding, l.term_months, l.status, l.disbursed_at,
+            p.code AS product_code, p.name AS product_name
+     FROM saccos_loans l
+     LEFT JOIN saccos_lending_products p ON p.id = l.product_id
+     WHERE l.saccos_id = $1 AND l.member_id = $2 ORDER BY l.created_at DESC`,
     [saccosId, membership.id]
   );
   return { applications: app.rows, loans: loans.rows };
@@ -574,10 +682,11 @@ async function listApplications(actorId, saccosId) {
   await saccosCore.assertMembershipCanAdminister(actorId, saccosId);
   const r = await pool.query(
     `SELECT a.id, a.reference_id, a.requested_amount, a.purpose, a.term_months, a.status, a.requires_approval, a.decided_by, a.decision_at, a.disbursed_at, a.repaid_at, a.created_at,
-            m.member_number, u.full_name, u.phone_number
+            m.member_number, u.full_name, u.phone_number, p.code AS product_code, p.name AS product_name
      FROM saccos_loan_applications a
      JOIN saccos_members m ON m.id = a.member_id
      JOIN users u ON u.id = m.user_id
+     LEFT JOIN saccos_lending_products p ON p.id = a.product_id
      WHERE a.saccos_id = $1
      ORDER BY a.created_at DESC`,
     [saccosId]
@@ -651,4 +760,9 @@ module.exports = {
   myGuarantees,
   releaseGuaranteesForLoan,
   releaseGuaranteesForApplication,
+  // lending products (increment 19)
+  createProduct,
+  listProducts,
+  archiveProduct,
+  fetchActiveProduct,
 };

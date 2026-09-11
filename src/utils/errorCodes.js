@@ -255,6 +255,12 @@ const ERROR_CODES = {
   SACCOS_LOAN_WRITE_OFF_REASON:  { status: 400, message: 'Sababu ya kufuta mkopo inahitajika.' },
   SACCOS_LOAN_WRITTEN_OFF:       { status: 400, message: 'Mkopo huu umekwisha futwa.' },
 
+  // SACCOS lending products - OWNER/BOARD-defined loan schemes (increment 19)
+  SACCOS_LOAN_PRODUCT_NOT_FOUND: { status: 404, message: 'Bidhaa ya mkopo haijapatikana.' },
+  SACCOS_LOAN_PRODUCT_ARCHIVED:  { status: 400, message: 'Bidhaa hii ya mkopo imezimwa (ARCHIVED).' },
+  SACCOS_LOAN_PRODUCT_CODE_TAKEN:{ status: 400, message: 'Msimbo wa bidhaa ya mkopo tayari upo.' },
+  SACCOS_LOAN_PRODUCT_INVALID:   { status: 400, message: 'Taarifa za bidhaa ya mkopo hazikubaliki (riba 0-100%, muda 1-120, min < max).' },
+
   // SACCOS standing orders / recurring contributions (400/404)
   SACCOS_STANDING_ORDER_AMOUNT:  { status: 400, message: 'Kiasi cha amri ya mara kwa mara lazima kiwe chanya.' },
   SACCOS_STANDING_ORDER_DAY:     { status: 400, message: 'Siku ya mwezi lazima iwe kati ya 1 na 28.' },
