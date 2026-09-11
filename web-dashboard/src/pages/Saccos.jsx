@@ -35,6 +35,8 @@ export default function Saccos() {
   const [meetDetail, setMeetDetail] = useState({});
   const [minutesDraft, setMinutesDraft] = useState({});
   const [minutesDone, setMinutesDone] = useState({});
+  const [si, setSi] = useState({ summary: null, cycles: [], mine: null, detail: {} });
+  const [siDetailId, setSiDetailId] = useState(null);
   const [msg, setMsg] = useState({ type: '', text: '' });
   const [busy, setBusy] = useState({});
 
@@ -68,6 +70,7 @@ export default function Saccos() {
       accounting: '/accounting/summary',
       arrears: '/loans/arrears',
       meetings: '/meetings/summary',
+      savingsInterest: '/savings-interest/summary',
     };
     const out = {};
     Promise.all(Object.entries(picks).map(([k, p]) =>
@@ -88,6 +91,8 @@ export default function Saccos() {
     setMeetDetail({});
     setMinutesDraft({});
     setMinutesDone({});
+    setSi({ summary: null, cycles: [], mine: null, detail: {} });
+    setSiDetailId(null);
     api.get(`/saccos/${org.id}/loans/mine`).then((r) => {
       setLoans(r.data.result.loans || []);
       if (r.data.result.loans && r.data.result.loans.length) {
@@ -97,7 +102,61 @@ export default function Saccos() {
     }).catch(() => {});
     api.get(`/saccos/${org.id}/statements/mine`).then((r) => setStatement(r.data.result)).catch(() => {});
     loadMeetings(org.id);
+    loadSi(org.id, org.membership_role);
     loadChips(org.id, org.membership_role);
+  };
+
+  const loadSi = (id, role) => {
+    api.get(`/saccos/${id}/savings-interest/mine`)
+      .then((r) => setSi((s) => ({ ...s, mine: r.data.result })))
+      .catch(() => {});
+    if (user.role === 'ADMIN' || role === 'OWNER' || role === 'BOARD') {
+      api.get(`/saccos/${id}/savings-interest/summary`)
+        .then((r) => setSi((s) => ({ ...s, summary: r.data.result })))
+        .catch(() => {});
+      api.get(`/saccos/${id}/savings-interest/cycles`)
+        .then((r) => setSi((s) => ({ ...s, cycles: r.data.result || [] })))
+        .catch(() => {});
+    }
+  };
+
+  const reloadSi = () => loadSi(selected.id, selected.membership_role || selected.role);
+
+  const prepareSi = async () => {
+    setBusy((prev) => ({ ...prev, siPrep: true }));
+    try {
+      const res = await api.post(`/saccos/${selected.id}/savings-interest/prepare`);
+      const r = res.data.result || {};
+      show('ok', r.cycle ? `${r.awards || 0} ${t('saccos.si_members')} · ${formatMoney(r.total_interest)}` : t('saccos.saved'));
+      reloadSi();
+    } catch (err) {
+      show('err', err.response?.data?.message || t('saccos.error'));
+    } finally {
+      setBusy((prev) => ({ ...prev, siPrep: false }));
+    }
+  };
+
+  const postSi = async (cycleId) => {
+    const key = `siPost${cycleId}`;
+    setBusy((prev) => ({ ...prev, [key]: true }));
+    try {
+      const res = await api.post(`/saccos/${selected.id}/savings-interest/cycles/${cycleId}/post`);
+      show('ok', res.data.message || t('saccos.saved'));
+      reloadSi();
+      api.get(`/saccos/${selected.id}/statements/mine`).then((r) => setStatement(r.data.result)).catch(() => {});
+    } catch (err) {
+      show('err', err.response?.data?.message || t('saccos.error'));
+    } finally {
+      setBusy((prev) => ({ ...prev, [key]: false }));
+    }
+  };
+
+  const toggleSiDetail = (cycleId) => {
+    if (siDetailId === cycleId) { setSiDetailId(null); return; }
+    setSiDetailId(cycleId);
+    api.get(`/saccos/${selected.id}/savings-interest/cycles/${cycleId}`)
+      .then((r) => setSi((s) => ({ ...s, detail: { ...s.detail, [cycleId]: r.data.result } })))
+      .catch(() => {});
   };
 
   const loadMeetings = (id) => {
@@ -326,6 +385,7 @@ export default function Saccos() {
                     <Stat value={chips.arrears ? formatMoney(chips.arrears.arrears_total) : '-'} label={t('saccos.chips_arrears_t')} />
                     <Stat value={chips.arrears ? formatMoney(chips.arrears.late_fees_total) : '-'} label={t('saccos.chips_arrears_f')} />
                     <Stat value={chips.meetings ? `${chips.meetings.total || 0}` : '-'} label={t('saccos.chips_meetings')} />
+                    <Stat value={chips.savingsInterest ? formatMoney(chips.savingsInterest.pending_total) : '-'} label={t('saccos.chips_si_pending')} />
                   </div>
                   {chips.arrears && Number(chips.arrears.overdue || 0) > 0 ? (
                     <div className="msg err" style={{ marginTop: 12, display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
@@ -548,6 +608,106 @@ export default function Saccos() {
                   </div>
                 );
               })
+            )}
+          </div>
+
+          <div className="card">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
+              <h3 style={{ margin: 0 }}>{t('saccos.savings_interest')}</h3>
+              {isGoverning() && si.summary && si.summary.rate ? (
+                <span className="muted">{t('saccos.si_rate')}: {si.summary.rate}%</span>
+              ) : null}
+            </div>
+
+            {isGoverning() ? (
+              <>
+                {!si.summary ? (
+                  <div className="muted" style={{ marginTop: 10 }}>{t('saccos.loading')}</div>
+                ) : (
+                  <>
+                    <div className="grid grid-3" style={{ marginTop: 10 }}>
+                      <Stat value={si.summary.rate ? `${si.summary.rate}%` : '-'} label={t('saccos.si_rate')} />
+                      <Stat value={formatMoney(si.summary.posted_this_year)} label={t('saccos.si_this_year')} />
+                      <Stat value={formatMoney(si.summary.pending_total)} label={t('saccos.si_pending')} />
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+                      <button className="btn" disabled={!!busy.siPrep} onClick={prepareSi}>
+                        {busy.siPrep ? t('saccos.si_preparing') : t('saccos.si_prepare')}
+                      </button>
+                      {si.summary.latest && si.summary.latest.status === 'PENDING' ? (
+                        <button className="btn" disabled={!!busy[`siPost${si.summary.latest.id}`]} onClick={() => postSi(si.summary.latest.id)}>
+                          {busy[`siPost${si.summary.latest.id}`] ? t('saccos.si_posting') : t('saccos.si_post')}
+                        </button>
+                      ) : null}
+                    </div>
+                  </>
+                )}
+
+                <div style={{ marginTop: 12 }}>
+                  <div className="muted" style={{ marginBottom: 6 }}>{t('saccos.si_cycles')}</div>
+                  {!si.cycles.length ? (
+                    <div className="muted">{t('saccos.si_no_data')}</div>
+                  ) : (
+                    si.cycles.map((c) => {
+                      const d = si.detail[c.id];
+                      const open = siDetailId === c.id;
+                      return (
+                        <div key={c.id} style={{ borderTop: '1px solid var(--border, #e5e5e5)', padding: '10px 0' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+                            <div>
+                              <strong>{toDate(c.period)}</strong>
+                              <span className="muted"> · {c.rate_percent}%</span>
+                              <span className="muted"> · {formatMoney(c.total_interest)}</span>
+                            </div>
+                            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                              <span className="muted">{c.posted_awards}/{c.total_awards}</span>
+                              <StatusBadge status={c.status} />
+                              <button className="btn ghost" onClick={() => toggleSiDetail(c.id)}>
+                                {open ? t('saccos.hide') : t('saccos.si_members')}
+                              </button>
+                            </div>
+                          </div>
+                          {open && d ? (
+                            <ul style={{ marginTop: 8 }}>
+                              {d.awards.map((a) => (
+                                <li key={a.id}>
+                                  {a.full_name} <span className="muted">· {a.member_number} · {t('saccos.si_basis')} {formatMoney(a.basis_balance)} → {formatMoney(a.interest)}</span>
+                                  <StatusBadge status={a.status} />
+                                </li>
+                              ))}
+                            </ul>
+                          ) : null}
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </>
+            ) : (
+              <div style={{ marginTop: 10 }}>
+                {!si.mine ? (
+                  <div className="muted">{t('saccos.loading')}</div>
+                ) : (
+                  <>
+                    <div className="grid grid-2">
+                      <Stat value={formatMoney(si.mine.total_posted)} label={t('saccos.si_mine_total')} />
+                      <Stat value={`${si.mine.awards.length}`} label={t('saccos.si_mine_awards')} />
+                    </div>
+                    {si.mine.awards.length ? (
+                      <ul style={{ marginTop: 8 }}>
+                        {si.mine.awards.map((a) => (
+                          <li key={a.id}>
+                            {a.period} <span className="muted">· {t('saccos.si_basis')} {formatMoney(a.basis_balance)} → {formatMoney(a.interest)}</span>
+                            <StatusBadge status={a.cycle_status} />
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <div className="muted" style={{ marginTop: 8 }}>{t('saccos.si_no_data')}</div>
+                    )}
+                  </>
+                )}
+              </div>
             )}
           </div>
         </>

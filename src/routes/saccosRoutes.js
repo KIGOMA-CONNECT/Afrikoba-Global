@@ -13,6 +13,7 @@ const exit = require('../services/saccosExitService');
 const reporting = require('../services/saccosReportingService');
 const installments = require('../services/saccosInstallmentService');
 const meetings = require('../services/saccosMeetingsService');
+const savingsInterest = require('../services/saccosSavingsInterestService');
 
 const router = express.Router();
 
@@ -708,6 +709,48 @@ router.post('/:id/meetings/:meetingId/close', authRequired, async (req, res, nex
 router.post('/:id/meetings/:meetingId/minutes', authRequired, async (req, res, next) => {
   try {
     const out = await meetings.publishMinutes(req.user.id, Number(req.params.id), Number(req.params.meetingId), req.body);
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/savings-interest/prepare', authRequired, async (req, res, next) => {
+  try {
+    const out = await savingsInterest.prepareCycle(req.user.id, Number(req.params.id));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.get('/:id/savings-interest/cycles', authRequired, async (req, res, next) => {
+  try {
+    const out = await savingsInterest.listCycles(req.user.id, Number(req.params.id));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.get('/:id/savings-interest/cycles/:cycleId', authRequired, async (req, res, next) => {
+  try {
+    const out = await savingsInterest.cycleDetail(req.user.id, Number(req.params.id), Number(req.params.cycleId));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/savings-interest/cycles/:cycleId/post', authRequired, async (req, res, next) => {
+  try {
+    const out = await savingsInterest.postCycle(req.user.id, Number(req.params.id), Number(req.params.cycleId));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.get('/:id/savings-interest/summary', authRequired, async (req, res, next) => {
+  try {
+    const out = await savingsInterest.interestSummary(req.user.id, Number(req.params.id));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.get('/:id/savings-interest/mine', authRequired, async (req, res, next) => {
+  try {
+    const out = await savingsInterest.myInterest(req.user.id, Number(req.params.id));
     res.json({ success: true, result: out });
   } catch (e) { next(e); }
 });

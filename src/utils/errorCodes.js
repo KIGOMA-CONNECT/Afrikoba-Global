@@ -161,6 +161,14 @@ const ERROR_CODES = {
   SACCOS_MEETING_MINUTES_REQUIRED:    { status: 400, message: 'Maandishi ya maelezo ya mkutano (minutes) yanahitajika.' },
   SACCOS_MEETING_ATTENDANCE_STATE:    { status: 400, message: 'Hali ya hudhurio haikubaliki (PRESENT/ABSENT/EXCUSED).' },
 
+  // SACCOS savings interest (400/404)
+  SACCOS_SAVINGS_INTEREST_RATE:             { status: 400, message: 'Kiwango cha riba ya akiba hakijawekwa (savings.interestRatePercent).' },
+  SACCOS_SAVINGS_INTEREST_CYCLE_EXISTS:     { status: 400, message: 'Mzunguko wa riba wa mwezi huu tayari umetumwa.' },
+  SACCOS_SAVINGS_INTEREST_STATE:            { status: 400, message: 'Hali ya mzunguko hairuhusu hatua hii.' },
+  SACCOS_SAVINGS_INTEREST_NO_AWARDS:        { status: 400, message: 'Hakuna wastahiki wa riba ya akiba.' },
+  SACCOS_SAVINGS_INTEREST_POSTED:           { status: 400, message: 'Riba ya akiba tayari imetumwa (duplicate).' },
+  SACCOS_SAVINGS_INTEREST_CYCLE_NOT_FOUND:  { status: 404, message: 'Mzunguko wa riba haujapatikana.' },
+
   // SACCOS accounting (400/403/404)
   SACCOS_ACC_PERIOD_NOT_FOUND:     { status: 404, message: 'Kipindi cha uhasibu hakijapatikana.' },
   SACCOS_ACC_PERIOD_STATE:         { status: 400, message: 'Hali ya kipindi hairuhusu hatua hii.' },
