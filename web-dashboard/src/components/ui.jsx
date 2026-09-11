@@ -10,12 +10,12 @@ export function StatusBadge({ status }) {
   const s = String(status || '').toUpperCase();
   const cls = [
     'SUCCESS', 'VERIFIED_ACTIVE', 'ACTIVE', 'DISBURSED', 'PASSED', 'RELEASED',
-    'CONFIRMED', 'PAID', 'RESOLVED', 'COMPLETED',
+    'CONFIRMED', 'PAID', 'RESOLVED', 'COMPLETED', 'MINUTES_PUBLISHED',
   ].includes(s)
     ? 'success'
     : [
       'PENDING', 'WAITING_MEMBERS', 'PENDING_AUDIT', 'LOCKED', 'ESCROW_HELD',
-      'OPEN', 'UNDER_REVIEW', 'PARTIAL',
+      'OPEN', 'UNDER_REVIEW', 'PARTIAL', 'DRAFT',
     ].includes(s)
       ? 'pending'
       : ['FAILED', 'REJECTED', 'SKIPPED', 'DEFAULTED', 'CANCELLED', 'OVERDUE'].includes(s)

@@ -29,6 +29,12 @@ export default function Saccos() {
   const [instData, setInstData] = useState({});
   const [statement, setStatement] = useState(null);
   const [chips, setChips] = useState(null);
+  const [meetings, setMeetings] = useState([]);
+  const [meetForm, setMeetForm] = useState({ show: false, title: '', when: '', where: '', quorum: '50', agenda: '' });
+  const [meetDetailId, setMeetDetailId] = useState(null);
+  const [meetDetail, setMeetDetail] = useState({});
+  const [minutesDraft, setMinutesDraft] = useState({});
+  const [minutesDone, setMinutesDone] = useState({});
   const [msg, setMsg] = useState({ type: '', text: '' });
   const [busy, setBusy] = useState({});
 
@@ -61,6 +67,7 @@ export default function Saccos() {
       funds: '/funds/summary',
       accounting: '/accounting/summary',
       arrears: '/loans/arrears',
+      meetings: '/meetings/summary',
     };
     const out = {};
     Promise.all(Object.entries(picks).map(([k, p]) =>
@@ -76,6 +83,11 @@ export default function Saccos() {
     setInstData({});
     setStatement(null);
     setChips(null);
+    setMeetings([]);
+    setMeetDetailId(null);
+    setMeetDetail({});
+    setMinutesDraft({});
+    setMinutesDone({});
     api.get(`/saccos/${org.id}/loans/mine`).then((r) => {
       setLoans(r.data.result.loans || []);
       if (r.data.result.loans && r.data.result.loans.length) {
@@ -84,7 +96,70 @@ export default function Saccos() {
       }
     }).catch(() => {});
     api.get(`/saccos/${org.id}/statements/mine`).then((r) => setStatement(r.data.result)).catch(() => {});
+    loadMeetings(org.id);
     loadChips(org.id, org.membership_role);
+  };
+
+  const loadMeetings = (id) => {
+    api.get(`/saccos/${id}/meetings`)
+      .then((r) => setMeetings(r.data.result || []))
+      .catch(() => setMeetings([]));
+  };
+
+  const reloadMeetings = () => loadMeetings(selected.id);
+
+  const meetAction = async (meetingId, action, extra) => {
+    const key = `m${meetingId}${action}`;
+    setBusy((prev) => ({ ...prev, [key]: true }));
+    try {
+      const res = await api.post(`/saccos/${selected.id}/meetings/${meetingId}/${action}`, extra);
+      show('ok', res.data.message || t('saccos.saved'));
+      reloadMeetings();
+      if (isGoverning()) loadChips(selected.id, selected.membership_role || selected.role);
+    } catch (err) {
+      show('err', err.response?.data?.message || t('saccos.error'));
+    } finally {
+      setBusy((prev) => ({ ...prev, [key]: false }));
+    }
+  };
+
+  const createMeeting = async () => {
+    if (!meetForm.title.trim()) { show('err', t('saccos.meet_title')); return; }
+    setBusy((prev) => ({ ...prev, meetNew: true }));
+    try {
+      const agenda = meetForm.agenda.split('\n').map((l) => l.trim()).filter(Boolean).map((title) => ({ title }));
+      await api.post(`/saccos/${selected.id}/meetings`, {
+        title: meetForm.title,
+        scheduledAt: new Date(meetForm.when).toISOString(),
+        location: meetForm.where,
+        quorumPct: Number(meetForm.quorum) || 50,
+        agenda,
+      });
+      show('ok', t('saccos.meet_created'));
+      setMeetForm({ show: false, title: '', when: '', where: '', quorum: '50', agenda: '' });
+      reloadMeetings();
+      if (isGoverning()) loadChips(selected.id, selected.membership_role || selected.role);
+    } catch (err) {
+      show('err', err.response?.data?.message || t('saccos.error'));
+    } finally {
+      setBusy((prev) => ({ ...prev, meetNew: false }));
+    }
+  };
+
+  const toggleMeetDetail = (meetingId) => {
+    if (meetDetailId === meetingId) { setMeetDetailId(null); return; }
+    setMeetDetailId(meetingId);
+    api.get(`/saccos/${selected.id}/meetings/${meetingId}`)
+      .then((r) => setMeetDetail((prev) => ({ ...prev, [meetingId]: r.data.result })))
+      .catch(() => {});
+  };
+
+  const toggleDone = (meetingId, itemId) => {
+    setMinutesDone((prev) => {
+      const s = new Set(prev[meetingId] || []);
+      if (s.has(itemId)) s.delete(itemId); else s.add(itemId);
+      return { ...prev, [meetingId]: s };
+    });
   };
 
   const fetchInstallments = (orgId, loanId) => {
@@ -250,6 +325,7 @@ export default function Saccos() {
                     <Stat value={chips.arrears ? `${chips.arrears.overdue || 0}` : '-'} label={t('saccos.chips_arrears_o')} />
                     <Stat value={chips.arrears ? formatMoney(chips.arrears.arrears_total) : '-'} label={t('saccos.chips_arrears_t')} />
                     <Stat value={chips.arrears ? formatMoney(chips.arrears.late_fees_total) : '-'} label={t('saccos.chips_arrears_f')} />
+                    <Stat value={chips.meetings ? `${chips.meetings.total || 0}` : '-'} label={t('saccos.chips_meetings')} />
                   </div>
                   {chips.arrears && Number(chips.arrears.overdue || 0) > 0 ? (
                     <div className="msg err" style={{ marginTop: 12, display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
@@ -307,6 +383,171 @@ export default function Saccos() {
                   {statement.member_number ? ` · ${t('saccos.member_no')}: ${statement.member_number}` : ''}
                 </div>
               </>
+            )}
+          </div>
+
+          <div className="card">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
+              <h3 style={{ margin: 0 }}>{t('saccos.meetings')}</h3>
+              {isGoverning() ? (
+                <button className="btn ghost" onClick={() => setMeetForm((f) => ({ ...f, show: !f.show }))}>
+                  {t('saccos.meet_new')}
+                </button>
+              ) : null}
+            </div>
+
+            {meetForm.show && isGoverning() ? (
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, margin: '12px 0', alignItems: 'center' }}>
+                <label className="muted">{t('saccos.meet_title')}
+                  <input value={meetForm.title} onChange={(e) => setMeetForm((f) => ({ ...f, title: e.target.value }))} placeholder={t('saccos.meet_title')} />
+                </label>
+                <label className="muted">{t('saccos.meet_when')}
+                  <input type="datetime-local" value={meetForm.when} onChange={(e) => setMeetForm((f) => ({ ...f, when: e.target.value }))} />
+                </label>
+                <label className="muted">{t('saccos.meet_where')}
+                  <input value={meetForm.where} onChange={(e) => setMeetForm((f) => ({ ...f, where: e.target.value }))} placeholder={t('saccos.meet_where')} />
+                </label>
+                <label className="muted">{t('saccos.meet_quorum')}
+                  <input type="number" min="1" max="100" value={meetForm.quorum} onChange={(e) => setMeetForm((f) => ({ ...f, quorum: e.target.value }))} />
+                </label>
+                <label className="muted" style={{ gridColumn: '1 / -1' }}>{t('saccos.meet_agenda')}
+                  <textarea rows={3} value={meetForm.agenda} onChange={(e) => setMeetForm((f) => ({ ...f, agenda: e.target.value }))} />
+                </label>
+                <div style={{ gridColumn: '1 / -1' }}>
+                  <button className="btn" disabled={!!busy.meetNew} onClick={createMeeting}>
+                    {busy.meetNew ? t('saccos.loading') : t('saccos.meet_create')}
+                  </button>
+                </div>
+              </div>
+            ) : null}
+
+            {!meetings.length ? (
+              <div className="muted" style={{ marginTop: 10 }}>{t('saccos.meetings_none')}</div>
+            ) : (
+              meetings.map((m) => {
+                const detail = meetDetail[m.id];
+                const open = meetDetailId === m.id;
+                const depKey = (a) => `m${m.id}${a}`;
+                const mins = minutesDraft[m.id] || '';
+                return (
+                  <div key={m.id} style={{ borderTop: '1px solid var(--border, #e5e5e5)', padding: '12px 0' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+                      <div>
+                        <strong>{m.title}</strong>
+                        <span className="muted"> · {toDate(m.scheduled_at)}</span>
+                        {m.location ? <span className="muted"> · {m.location}</span> : null}
+                      </div>
+                      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                        {m.present_count !== undefined ? (
+                          <span className="muted">{m.present_count} {t('saccos.meet_present')}</span>
+                        ) : null}
+                        <StatusBadge status={m.status} />
+                        {m.status === 'CLOSED' ? (
+                          m.quorum_met ? (
+                            <span className="badge success">{t('saccos.meet_q_met')}</span>
+                          ) : (
+                            <span className="badge failed">{t('saccos.meet_q_missed')}</span>
+                          )
+                        ) : null}
+                        {m.status === 'OPEN' ? (
+                          <button
+                            className="btn"
+                            disabled={!!busy[depKey('checkin')]}
+                            onClick={() => meetAction(m.id, 'checkin')}
+                          >
+                            {busy[depKey('checkin')] ? t('saccos.loading') : (m.my_status ? t('saccos.meet_checked') : t('saccos.meet_checkin'))}
+                          </button>
+                        ) : null}
+                        {isGoverning() && m.status === 'DRAFT' ? (
+                          <button className="btn" disabled={!!busy[depKey('open')]} onClick={() => meetAction(m.id, 'open')}>
+                            {busy[depKey('open')] ? t('saccos.loading') : t('saccos.meet_open')}
+                          </button>
+                        ) : null}
+                        {isGoverning() && m.status === 'OPEN' ? (
+                          <button className="btn" disabled={!!busy[depKey('close')]} onClick={() => meetAction(m.id, 'close')}>
+                            {busy[depKey('close')] ? t('saccos.loading') : t('saccos.meet_close')}
+                          </button>
+                        ) : null}
+                        {isGoverning() && m.status === 'CLOSED' ? (
+                          <button className="btn ghost" onClick={() => toggleMeetDetail(m.id)}>
+                            {t('saccos.meet_minutes')}
+                          </button>
+                        ) : (
+                          <button className="btn ghost" onClick={() => toggleMeetDetail(m.id)}>
+                            {open ? t('saccos.hide') : t('saccos.meet_attendance')}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    {open && detail ? (
+                      <div style={{ marginTop: 10, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+                        <div>
+                          <div className="muted" style={{ marginBottom: 6 }}>{t('saccos.meet_agenda_items')}</div>
+                          {detail.agenda.length ? (
+                            <ul>
+                              {detail.agenda.map((a) => (
+                                <li key={a.id} style={a.is_complete ? { textDecoration: 'line-through', color: 'var(--muted, #999)' } : {}}>
+                                  {a.title}{a.notes ? <span className="muted"> — {a.notes}</span> : null}
+                                </li>
+                              ))}
+                            </ul>
+                          ) : <div className="muted">-</div>}
+                        </div>
+                        <div>
+                          <div className="muted" style={{ marginBottom: 6 }}>{t('saccos.meet_attendance')} ({detail.attendance.length})</div>
+                          {detail.attendance.length ? (
+                            <ul>
+                              {detail.attendance.map((a) => (
+                                <li key={a.member_id}>
+                                  {a.name} <span className="muted">· {a.member_number}</span> {a.is_me ? <span className="muted">({t('saccos.meet_my')})</span> : null}
+                                  <StatusBadge status={a.status} />
+                                </li>
+                              ))}
+                            </ul>
+                          ) : <div className="muted">-</div>}
+                        </div>
+                      </div>
+                    ) : null}
+
+                    {open && isGoverning() && m.status === 'CLOSED' && detail ? (
+                      <div style={{ marginTop: 12, borderTop: '1px solid var(--border, #e5e5e5)', paddingTop: 10 }}>
+                        <div className="muted" style={{ marginBottom: 6 }}>{t('saccos.meet_agenda_items')} → {t('saccos.meet_minutes')}</div>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginBottom: 8 }}>
+                          {detail.agenda.map((a) => (
+                            <label key={a.id} className="btn ghost" style={{ margin: 0 }}>
+                              <input
+                                type="checkbox"
+                                checked={(minutesDone[m.id] || new Set()).has(a.id)}
+                                onChange={() => toggleDone(m.id, a.id)}
+                              />
+                              {' '}{a.title}
+                            </label>
+                          ))}
+                        </div>
+                        <textarea
+                          rows={3}
+                          placeholder={t('saccos.meet_minutes')}
+                          value={mins}
+                          onChange={(e) => setMinutesDraft((prev) => ({ ...prev, [m.id]: e.target.value }))}
+                          style={{ width: '100%', boxSizing: 'border-box', marginBottom: 8 }}
+                        />
+                        <button
+                          className="btn"
+                          disabled={!!busy[depKey('minutes')] || !mins.trim()}
+                          onClick={() => meetAction(m.id, 'minutes', { minutes: mins, agenda: [...(minutesDone[m.id] || [])] })}
+                        >
+                          {busy[depKey('minutes')] ? t('saccos.meet_publishing') : t('saccos.meet_minutes')}
+                        </button>
+                      </div>
+                    ) : null}
+
+                    {open && m.status === 'MINUTES_PUBLISHED' && detail && detail.meeting.minutes ? (
+                      <div className="msg ok" style={{ marginTop: 10 }}>{detail.meeting.minutes}</div>
+                    ) : null}
+                  </div>
+                );
+              })
             )}
           </div>
         </>

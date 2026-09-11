@@ -12,6 +12,7 @@ const funds = require('../services/saccosFundsService');
 const exit = require('../services/saccosExitService');
 const reporting = require('../services/saccosReportingService');
 const installments = require('../services/saccosInstallmentService');
+const meetings = require('../services/saccosMeetingsService');
 
 const router = express.Router();
 
@@ -644,6 +645,69 @@ router.get('/:id/loans/arrears', authRequired, async (req, res, next) => {
 router.post('/:id/loans/recompute-arrears', authRequired, async (req, res, next) => {
   try {
     const out = await installments.recomputeArrears(req.user.id, Number(req.params.id));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/meetings', authRequired, async (req, res, next) => {
+  try {
+    const out = await meetings.createMeeting(req.user.id, Number(req.params.id), req.body);
+    res.status(201).json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.get('/:id/meetings', authRequired, async (req, res, next) => {
+  try {
+    const out = await meetings.listMeetings(req.user.id, Number(req.params.id));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.get('/:id/meetings/summary', authRequired, async (req, res, next) => {
+  try {
+    const out = await meetings.meetingsSummary(req.user.id, Number(req.params.id));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.get('/:id/meetings/:meetingId', authRequired, async (req, res, next) => {
+  try {
+    const out = await meetings.meetingDetail(req.user.id, Number(req.params.id), Number(req.params.meetingId));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/meetings/:meetingId/open', authRequired, async (req, res, next) => {
+  try {
+    const out = await meetings.openMeeting(req.user.id, Number(req.params.id), Number(req.params.meetingId));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/meetings/:meetingId/checkin', authRequired, async (req, res, next) => {
+  try {
+    const out = await meetings.checkIn(req.user.id, Number(req.params.id), Number(req.params.meetingId));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/meetings/:meetingId/attendance', authRequired, async (req, res, next) => {
+  try {
+    const out = await meetings.markAttendance(req.user.id, Number(req.params.id), Number(req.params.meetingId), Number(req.body.memberId), req.body.status);
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/meetings/:meetingId/close', authRequired, async (req, res, next) => {
+  try {
+    const out = await meetings.closeMeeting(req.user.id, Number(req.params.id), Number(req.params.meetingId));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/meetings/:meetingId/minutes', authRequired, async (req, res, next) => {
+  try {
+    const out = await meetings.publishMinutes(req.user.id, Number(req.params.id), Number(req.params.meetingId), req.body);
     res.json({ success: true, result: out });
   } catch (e) { next(e); }
 });

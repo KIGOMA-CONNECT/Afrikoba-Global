@@ -152,6 +152,15 @@ const ERROR_CODES = {
   SACCOS_GOV_VOTE_INVALID:         { status: 400, message: 'Chaguo la kura halikubaliki.' },
   SACCOS_GOV_VOTE_ALREADY:         { status: 400, message: 'Umekwisha piga kura kwenye azimio hili.' },
 
+  // SACCOS meetings (400/403/404)
+  SACCOS_MEETING_NOT_FOUND:           { status: 404, message: 'Mkutano haujapatikana.' },
+  SACCOS_MEETING_TITLE:               { status: 400, message: 'Jina la mkutano linahitajika.' },
+  SACCOS_MEETING_DATES:               { status: 400, message: 'Tarehe ya mkutano si sahihi.' },
+  SACCOS_MEETING_QUORUM:              { status: 400, message: 'Asilimia ya uhalali (quorum) si sahihi (1-100).' },
+  SACCOS_MEETING_STATE:               { status: 400, message: 'Hali ya mkutano hairuhusu hatua hii.' },
+  SACCOS_MEETING_MINUTES_REQUIRED:    { status: 400, message: 'Maandishi ya maelezo ya mkutano (minutes) yanahitajika.' },
+  SACCOS_MEETING_ATTENDANCE_STATE:    { status: 400, message: 'Hali ya hudhurio haikubaliki (PRESENT/ABSENT/EXCUSED).' },
+
   // SACCOS accounting (400/403/404)
   SACCOS_ACC_PERIOD_NOT_FOUND:     { status: 404, message: 'Kipindi cha uhasibu hakijapatikana.' },
   SACCOS_ACC_PERIOD_STATE:         { status: 400, message: 'Hali ya kipindi hairuhusu hatua hii.' },
