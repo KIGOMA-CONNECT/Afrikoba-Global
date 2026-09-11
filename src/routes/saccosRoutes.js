@@ -17,6 +17,7 @@ const savingsInterest = require('../services/saccosSavingsInterestService');
 const welfare = require('../services/saccosWelfareService');
 const loanWorkout = require('../services/saccosLoanWorkoutService');
 const standingOrders = require('../services/saccosStandingOrderService');
+const treasury = require('../services/saccosTreasuryService');
 
 const router = express.Router();
 
@@ -963,6 +964,28 @@ router.post('/:id/standing-orders/run', authRequired, async (req, res, next) => 
 router.get('/:id/reports/management', authRequired, async (req, res, next) => {
   try {
     const out = await reporting.managementReport(req.user.id, Number(req.params.id), Number(req.query.months || 6));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+// ---------- Treasury & liquidity panel (increment 20) ----------
+router.get('/:id/treasury', authRequired, async (req, res, next) => {
+  try {
+    const out = await treasury.getTreasury(req.user.id, Number(req.params.id));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/treasury/snapshot', authRequired, async (req, res, next) => {
+  try {
+    const out = await treasury.snapshotTreasury(req.user.id, Number(req.params.id));
+    res.status(201).json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.get('/:id/treasury/history', authRequired, async (req, res, next) => {
+  try {
+    const out = await treasury.treasuryHistory(req.user.id, Number(req.params.id));
     res.json({ success: true, result: out });
   } catch (e) { next(e); }
 });

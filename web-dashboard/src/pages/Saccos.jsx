@@ -56,6 +56,7 @@ export default function Saccos() {
     form: { show: false, code: '', name: '', desc: '', rate: '', min: '', max: '', term: '' },
     apply: { show: false, productId: '', amount: '', term: '', purpose: '' },
   });
+  const [tr, setTr] = useState({ position: null, history: [] });
 
   const show = (type, text) => {
     setMsg({ type, text });
@@ -121,7 +122,9 @@ export default function Saccos() {
     setWo({ list: [], form: {} });
     setSo({ mine: [], all: [], targets: { funds: [], schemes: [], loans: [] }, form: { show: false, type: 'SAVINGS_DEPOSIT', amount: '', day: '1', targetId: '' } });
     setLp({ list: [], form: { show: false, code: '', name: '', desc: '', rate: '', min: '', max: '', term: '' }, apply: { show: false, productId: '', amount: '', term: '', purpose: '' } });
+    setTr({ position: null, history: [] });
     loadProducts(org.id);
+    loadTreasury(org.id);
     api.get(`/saccos/${org.id}/loans/mine`).then((r) => {
       setLoans(r.data.result.loans || []);
       if (r.data.result.loans && r.data.result.loans.length) {
@@ -286,6 +289,29 @@ export default function Saccos() {
       show('err', err.response?.data?.message || t('saccos.error'));
     } finally {
       setBusy((prev) => ({ ...prev, lpApply: false }));
+    }
+  };
+
+  const loadTreasury = (id) => {
+    api.get(`/saccos/${id}/treasury`)
+      .then((r) => setTr((s) => ({ ...s, position: r.data.result })))
+      .catch(() => setTr((s) => ({ ...s, position: null })));
+    api.get(`/saccos/${id}/treasury/history`)
+      .then((r) => setTr((s) => ({ ...s, history: r.data.result || [] })))
+      .catch(() => setTr((s) => ({ ...s, history: [] })));
+  };
+
+  const doSnapshot = async () => {
+    if (!isGoverning()) return;
+    setBusy((prev) => ({ ...prev, trSnap: true }));
+    try {
+      await api.post(`/saccos/${selected.id}/treasury/snapshot`);
+      show('ok', t('saccos.saved'));
+      loadTreasury(selected.id);
+    } catch (err) {
+      show('err', err.response?.data?.message || t('saccos.error'));
+    } finally {
+      setBusy((prev) => ({ ...prev, trSnap: false }));
     }
   };
 
@@ -958,6 +984,65 @@ export default function Saccos() {
               ))
             )}
           </div>
+
+          {isGoverning() ? (
+            <div className="card">
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
+                <h3 style={{ margin: 0 }}>{t('saccos.tr_title')}</h3>
+                <button className="btn ghost" disabled={!!busy.trSnap} onClick={doSnapshot}>
+                  {busy.trSnap ? t('saccos.loading') : t('saccos.tr_snapshot')}
+                </button>
+              </div>
+              {!tr.position ? (
+                <div className="muted" style={{ marginTop: 10 }}>{t('saccos.loading')}</div>
+              ) : (
+                <>
+                  <div className="muted" style={{ fontSize: 13, margin: '10px 0' }}>
+                    {t('saccos.tr_asof')}: {tr.position.as_of}
+                  </div>
+                  {(tr.position.alerts || []).map((a) => (
+                    <div key={a.code} style={{ padding: '8px 10px', borderRadius: 6, marginBottom: 6, borderLeft: `4px solid ${a.severity === 'CRITICAL' ? '#dc2626' : '#f59e0b'}`, background: '#f8faf9', fontSize: 13 }}>
+                      <span className="badge" style={{ background: a.severity === 'CRITICAL' ? '#dc262622' : '#f59e0b22', color: a.severity === 'CRITICAL' ? '#dc2626' : '#d97706', border: `1px solid ${a.severity === 'CRITICAL' ? '#dc2626' : '#f59e0b'}55` }}>{a.severity}</span>
+                      {' '}{a.code} · {a.message} — {t('saccos.tr_value')} {a.value} / {a.threshold}
+                    </div>
+                  ))}
+                  {!tr.position.alerts?.length ? (
+                    <div className="muted" style={{ fontSize: 13, marginBottom: 6 }}>{t('saccos.tr_healthy')}</div>
+                  ) : null}
+                  <div className="grid grid-4">
+                    <Stat value={formatMoney(tr.position.credit.gross_loans_receivable)} label={t('saccos.tr_gross_loans')} />
+                    <Stat value={formatMoney(tr.position.credit.loan_loss_reserves)} label={t('saccos.tr_llr')} />
+                    <Stat value={formatMoney(tr.position.credit.net_loans_receivable)} label={t('saccos.tr_net_loans')} />
+                    <Stat value={formatMoney(tr.position.member_deposits.total)} label={t('saccos.tr_deposits')} />
+                  </div>
+                  <div className="grid grid-4" style={{ marginTop: 10 }}>
+                    <Stat value={formatMoney(tr.position.cash_and_liquid.operating_cash)} label={t('saccos.tr_cash')} />
+                    <Stat value={formatMoney(tr.position.cash_and_liquid.funds)} label={t('saccos.tr_funds')} />
+                    <Stat value={formatMoney(tr.position.cash_and_liquid.welfare_fund)} label={t('saccos.tr_welfare')} />
+                    <Stat value={formatMoney(tr.position.cash_and_liquid.total)} label={t('saccos.tr_liquid_total')} />
+                  </div>
+                  <div className="muted" style={{ fontSize: 13, marginTop: 12 }}>
+                    {t('saccos.tr_funding')}: {tr.position.ratios.funding_ratio == null ? '—' : tr.position.ratios.funding_ratio} · {t('saccos.tr_llr_cov')}: {tr.position.ratios.llr_coverage_percent == null ? '—' : `${tr.position.ratios.llr_coverage_percent}%`} · {t('saccos.tr_buffer')}: {tr.position.ratios.buffer_percent == null ? '—' : `${tr.position.ratios.buffer_percent}%`}
+                    <div style={{ marginTop: 4 }}>
+                      {t('saccos.tr_thresholds')}: {t('saccos.tr_max_funding')} {tr.position.config.max_funding_ratio} · {t('saccos.tr_min_buffer')} {tr.position.config.min_buffer_ratio * 100}% · {t('saccos.tr_min_llr')} {tr.position.config.min_llr_coverage_percent}%
+                    </div>
+                  </div>
+                  <div style={{ marginTop: 12 }}>
+                    <div className="muted" style={{ marginBottom: 4 }}>{t('saccos.tr_history')}</div>
+                    {!tr.history.length ? (
+                      <div className="muted">{t('saccos.tr_no_snapshots')}</div>
+                    ) : (
+                      tr.history.map((h) => (
+                        <div key={h.id} style={{ fontSize: 13, padding: '4px 0' }}>
+                          {h.reference_id} · {h.as_of} · {toDate(h.created_at)}
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+          ) : null}
 
           <div className="card">
             <h3>{t('saccos.my_statement')}</h3>
