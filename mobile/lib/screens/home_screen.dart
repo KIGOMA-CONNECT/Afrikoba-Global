@@ -17,6 +17,7 @@ import 'referrals_screen.dart';
 import 'settings_screen.dart';
 import 'field_partners_screen.dart';
 import 'devices_screen.dart';
+import 'saccos_screen.dart';
 
 /// Nyumba ya programu (HomeShell) - drawer kama sidebar ya web.
 class HomeScreen extends StatefulWidget {
@@ -58,6 +59,7 @@ class _HomeScreenState extends State<HomeScreen> {
     DashboardScreen(),
     WalletScreen(),
     MerchantScreen(),
+    SaccosScreen(),
     VaultScreen(),
     ServicesScreen(),
     PromotionsScreen(),
@@ -77,6 +79,7 @@ class _HomeScreenState extends State<HomeScreen> {
     'DahShabari',
     'Wallet',
     'Mfanyabiashara',
+    'SACCOS',
     'Vaults (Akiba)',
     'Huduma Zangu',
     'Matangazo',
@@ -96,6 +99,7 @@ class _HomeScreenState extends State<HomeScreen> {
     Icons.dashboard_outlined,
     Icons.account_balance_wallet_outlined,
     Icons.storefront_outlined,
+    Icons.account_balance,
     Icons.savings_outlined,
     Icons.grid_view_outlined,
     Icons.campaign_outlined,
@@ -152,7 +156,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 child: ListView(
                   children: [
                     for (var i = 0; i < _titles.length; i++)
-                      if (!(i == 10 && !_isAdmin))
+                      if (!(i == 11 && !_isAdmin))
                         ListTile(
                           leading: Icon(_icons[i]),
                           title: Text(_titles[i]),
