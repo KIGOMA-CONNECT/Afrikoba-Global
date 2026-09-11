@@ -26,6 +26,8 @@ const DEFAULT_LENDING_CONFIG = {
   maxTermMonths: 12,
   maxActiveLoans: 1,
   autoDisburse: true,
+  graceDays: 0,
+  lateFeePercent: 2,
 };
 
 function lendingConfig(saccos) {
@@ -38,6 +40,9 @@ function loansReceivableCode(saccosId) {
 }
 function interestIncomeCode(saccosId) {
   return `SACCOS${saccosId}_INTEREST_INCOME`;
+}
+function lateFeeIncomeCode(saccosId) {
+  return `SACCOS${saccosId}_LATE_FEE_INCOME`;
 }
 
 function newRef(prefix) {
@@ -399,6 +404,8 @@ module.exports = {
   creditSummary,
   loansReceivableCode,
   interestIncomeCode,
+  lateFeeIncomeCode,
+  lendingConfig,
   repaymentMath,
   ensureCreditAccounts,
 };

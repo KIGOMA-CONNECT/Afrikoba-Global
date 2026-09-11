@@ -18,7 +18,7 @@ export function StatusBadge({ status }) {
       'OPEN', 'UNDER_REVIEW', 'PARTIAL',
     ].includes(s)
       ? 'pending'
-      : ['FAILED', 'REJECTED', 'SKIPPED', 'DEFAULTED', 'CANCELLED'].includes(s)
+      : ['FAILED', 'REJECTED', 'SKIPPED', 'DEFAULTED', 'CANCELLED', 'OVERDUE'].includes(s)
         ? 'failed'
         : 'info';
   return <span className={`badge ${cls}`}>{status}</span>;

@@ -60,6 +60,7 @@ export default function Saccos() {
       dividends: '/dividends/summary',
       funds: '/funds/summary',
       accounting: '/accounting/summary',
+      arrears: '/loans/arrears',
     };
     const out = {};
     Promise.all(Object.entries(picks).map(([k, p]) =>
@@ -111,6 +112,7 @@ export default function Saccos() {
       fetchInstallments(selected.id, loanId);
       api.get(`/saccos/${selected.id}/loans/mine`).then((r) => setLoans(r.data.result.loans || [])).catch(() => {});
       api.get(`/saccos/${selected.id}/statements/mine`).then((r) => setStatement(r.data.result)).catch(() => {});
+      if (isGoverning()) loadChips(selected.id, selected.membership_role || selected.role);
     } catch (err) {
       show('err', err.response?.data?.message || t('saccos.error'));
     } finally {
@@ -118,10 +120,24 @@ export default function Saccos() {
     }
   };
 
+  const recomputeArrears = async () => {
+    setBusy((prev) => ({ ...prev, arrears: true }));
+    try {
+      const res = await api.post(`/saccos/${selected.id}/loans/recompute-arrears`);
+      const r = res.data.result || {};
+      show('ok', `${r.overdue || 0} ${t('saccos.arrears_overdue')} · ${formatMoney(r.arrears_total)}`);
+      loadChips(selected.id, selected.membership_role || selected.role);
+    } catch (err) {
+      show('err', err.response?.data?.message || t('saccos.error'));
+    } finally {
+      setBusy((prev) => ({ ...prev, arrears: false }));
+    }
+  };
+
   const renderInstallments = (loan) => {
     const data = instData[loan.id];
     if (!data) return null;
-    const firstUnpaid = data.installments.findIndex((inst) => inst.status === 'PENDING');
+    const firstUnpaid = data.installments.findIndex((inst) => inst.status !== 'PAID');
     return (
       <div style={{ padding: '10px 0 4px' }}>
         <div className="grid grid-3" style={{ marginBottom: 10 }}>
@@ -129,6 +145,11 @@ export default function Saccos() {
           <Stat value={formatMoney(data.outstanding)} label={t('saccos.outstanding')} />
           <Stat value={`${data.summary.paidCount}/${data.summary.total}`} label={t('saccos.paid')} />
         </div>
+        {data.summary.overdue > 0 ? (
+          <div className="msg err" style={{ marginBottom: 10 }}>
+            {data.summary.overdue} {t('saccos.arrears_overdue')} · {t('saccos.fine')}: {formatMoney(data.summary.lateFees)}
+          </div>
+        ) : null}
         <table>
           <thead>
             <tr>
@@ -137,13 +158,15 @@ export default function Saccos() {
               <th>{t('saccos.p_principal')}</th>
               <th>{t('saccos.p_interest')}</th>
               <th>{t('saccos.p_total')}</th>
+              <th>{t('saccos.fine')}</th>
               <th>{t('saccos.status')}</th>
               <th></th>
             </tr>
           </thead>
           <tbody>
             {data.installments.map((inst, idx) => {
-              const can = loan.status === 'ACTIVE' && inst.status === 'PENDING' && idx === firstUnpaid;
+              const can = loan.status === 'ACTIVE' && inst.status !== 'PAID' && idx === firstUnpaid;
+              const hasFee = Number(inst.late_fee || 0) > 0;
               return (
                 <tr key={inst.id}>
                   <td>{inst.installment_no}</td>
@@ -151,12 +174,22 @@ export default function Saccos() {
                   <td>{formatMoney(inst.principal_part)}</td>
                   <td>{formatMoney(inst.interest_part)}</td>
                   <td>{formatMoney(inst.total)}</td>
+                  <td style={hasFee ? { color: 'var(--danger, #c0392b)', fontWeight: 600 } : {}}>
+                    {hasFee ? formatMoney(inst.late_fee) : '-'}
+                  </td>
                   <td><StatusBadge status={inst.status} /></td>
                   <td>
                     {can ? (
-                      <button className="btn" disabled={!!busy[inst.id]} onClick={() => payInstallment(loan.id, inst.id)}>
-                        {busy[inst.id] ? t('saccos.paying') : t('saccos.pay')}
-                      </button>
+                      <>
+                        {inst.status === 'OVERDUE' ? (
+                          <span className="muted" style={{ marginRight: 8 }}>
+                            {t('saccos.pay_with_fee')}: {formatMoney(Number(inst.total) + Number(inst.late_fee || 0))}
+                          </span>
+                        ) : null}
+                        <button className="btn" disabled={!!busy[inst.id]} onClick={() => payInstallment(loan.id, inst.id)}>
+                          {busy[inst.id] ? t('saccos.paying') : hasFee ? t('saccos.pay_with_fee') : t('saccos.pay')}
+                        </button>
+                      </>
                     ) : null}
                   </td>
                 </tr>
@@ -207,13 +240,26 @@ export default function Saccos() {
               {!chips ? (
                 <div className="muted">{t('saccos.loading')}</div>
               ) : (
-                <div className="grid grid-2">
-                  <Stat value={chips.loans ? `${chips.loans.active_loans || 0}` : '-'} label={t('saccos.chips_l_loans')} />
-                  <Stat value={chips.loans ? formatMoney(chips.loans.outstanding) : '-'} label={t('saccos.chips_l_out')} />
-                  <Stat value={chips.savings ? formatMoney(chips.savings.liability || chips.savings.total_deposits) : '-'} label={t('saccos.chips_savings')} />
-                  <Stat value={chips.funds ? formatMoney(chips.funds.total_balance) : '-'} label={t('saccos.chips_funds')} />
-                  <Stat value={chips.dividends ? formatMoney(chips.dividends.distributed || 0) : '-'} label={t('saccos.chips_dividends')} />
-                </div>
+                <>
+                  <div className="grid grid-2">
+                    <Stat value={chips.loans ? `${chips.loans.active_loans || 0}` : '-'} label={t('saccos.chips_l_loans')} />
+                    <Stat value={chips.loans ? formatMoney(chips.loans.outstanding) : '-'} label={t('saccos.chips_l_out')} />
+                    <Stat value={chips.savings ? formatMoney(chips.savings.liability || chips.savings.total_deposits) : '-'} label={t('saccos.chips_savings')} />
+                    <Stat value={chips.funds ? formatMoney(chips.funds.total_balance) : '-'} label={t('saccos.chips_funds')} />
+                    <Stat value={chips.dividends ? formatMoney(chips.dividends.distributed || 0) : '-'} label={t('saccos.chips_dividends')} />
+                    <Stat value={chips.arrears ? `${chips.arrears.overdue || 0}` : '-'} label={t('saccos.chips_arrears_o')} />
+                    <Stat value={chips.arrears ? formatMoney(chips.arrears.arrears_total) : '-'} label={t('saccos.chips_arrears_t')} />
+                    <Stat value={chips.arrears ? formatMoney(chips.arrears.late_fees_total) : '-'} label={t('saccos.chips_arrears_f')} />
+                  </div>
+                  {chips.arrears && Number(chips.arrears.overdue || 0) > 0 ? (
+                    <div className="msg err" style={{ marginTop: 12, display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
+                      <span>{chips.arrears.overdue} {t('saccos.arrears_overdue')} · {formatMoney(chips.arrears.arrears_total)}</span>
+                      <button className="btn" disabled={!!busy.arrears} onClick={recomputeArrears}>
+                        {busy.arrears ? t('saccos.recomputing') : t('saccos.recompute')}
+                      </button>
+                    </div>
+                  ) : null}
+                </>
               )}
             </div>
           )}

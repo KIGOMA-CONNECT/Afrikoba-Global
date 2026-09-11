@@ -634,6 +634,20 @@ router.get('/:id/loans/installments/summary', authRequired, async (req, res, nex
   } catch (e) { next(e); }
 });
 
+router.get('/:id/loans/arrears', authRequired, async (req, res, next) => {
+  try {
+    const out = await installments.arrearsSummary(req.user.id, Number(req.params.id));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/loans/recompute-arrears', authRequired, async (req, res, next) => {
+  try {
+    const out = await installments.recomputeArrears(req.user.id, Number(req.params.id));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
 router.get('/:id/reports/management', authRequired, async (req, res, next) => {
   try {
     const out = await reporting.managementReport(req.user.id, Number(req.params.id), Number(req.query.months || 6));
