@@ -14,14 +14,21 @@ function money(v) {
   return (Number(v) || 0).toLocaleString('en-US', { maximumFractionDigits: 2 });
 }
 
+function statusBadge(status) {
+  const cls = status === 'PICKED_UP' ? 'success' : (status === 'PENDING' ? 'info' : 'danger');
+  return <span className={`badge ${cls}`}>{status}</span>;
+}
+
 export default function Remittance() {
   const { t } = useT();
   const [tab, setTab] = useState('remit');
   const [corridors, setCorridors] = useState([]);
   const [history, setHistory] = useState([]);
+  const [beneficiaries, setBeneficiaries] = useState([]);
   const [webhooks, setWebhooks] = useState([]);
+  const [quote, setQuote] = useState(null);
   const [msg, setMsg] = useState({ type: '', text: '' });
-  const [sendForm, setSendForm] = useState({ recipient_phone: '', recipient_name: '', recipient_country: 'KE', from_amount: '' });
+  const [sendForm, setSendForm] = useState({ recipient_phone: '', recipient_name: '', recipient_country: 'KE', from_amount: '', payout_method: 'MNO', beneficiary_id: '' });
   const [pickupForm, setPickupForm] = useState({ pickup_code: '', recipient_phone: '', recipient_name: '' });
   const [whForm, setWhForm] = useState({ url: '', events: 'TRANSFER.COMPLETED' });
 
@@ -31,16 +38,43 @@ export default function Remittance() {
   const loadRemit = () => {
     api.get('/network/remittance/corridors').then((r) => setCorridors(r.data.corridors || [])).catch(() => {});
     api.get('/network/remittance/history').then((r) => setHistory(r.data.transfers || [])).catch(() => {});
+    api.get('/banking/beneficiaries').then((r) => setBeneficiaries(r.data.beneficiaries || [])).catch(() => {});
     api.get('/network/webhooks').then((r) => setWebhooks(r.data.webhooks || [])).catch(() => {});
   };
   useEffect(() => { loadRemit(); }, []);
 
+  const onSendField = (patch) => { setQuote(null); setSendForm({ ...sendForm, ...patch }); };
+
+  const useBeneficiary = (benId) => {
+    const b = beneficiaries.find((x) => String(x.id) === String(benId));
+    if (!b) return;
+    setQuote(null);
+    setSendForm({
+      ...sendForm,
+      beneficiary_id: b.id,
+      recipient_phone: b.phone,
+      recipient_name: b.name,
+      recipient_country: b.country_code || 'KE',
+      payout_method: b.payout_method || 'WALLET',
+    });
+  };
+
+  const getQuote = async (e) => {
+    e && e.preventDefault();
+    try {
+      const res = await api.post('/network/remittance/quote', { to_country: sendForm.recipient_country, from_amount: sendForm.from_amount });
+      setQuote(res.data.result);
+    } catch (err) { error(err); }
+  };
+
   const send = async (e) => {
     e.preventDefault();
     try {
-      const res = await api.post('/network/remittance/send', sendForm);
+      const body = { ...sendForm, quote_id: quote ? quote.quote_id : undefined };
+      const res = await api.post('/network/remittance/send', body);
       ok(`${t('remit.sent_ok')} ${t('remit.pickup_code')}: ${res.data.result.pickup_code}`);
-      setSendForm({ recipient_phone: '', recipient_name: '', recipient_country: 'KE', from_amount: '' });
+      setSendForm({ recipient_phone: '', recipient_name: '', recipient_country: 'KE', from_amount: '', payout_method: 'MNO', beneficiary_id: '' });
+      setQuote(null);
       loadRemit();
     } catch (err) { error(err); }
   };
@@ -51,6 +85,15 @@ export default function Remittance() {
       await api.post('/network/remittance/pickup', pickupForm);
       ok(t('remit.picked_ok'));
       setPickupForm({ pickup_code: '', recipient_phone: '', recipient_name: '' });
+      loadRemit();
+    } catch (err) { error(err); }
+  };
+
+  const cancel = async (row) => {
+    try {
+      await api.post(`/network/remittance/${row.reference}/cancel`);
+      ok(t('remit.cancelled_ok'));
+      loadRemit();
     } catch (err) { error(err); }
   };
 
@@ -76,6 +119,8 @@ export default function Remittance() {
     { id: 'remit', label: t('remit.remit_tab') },
     { id: 'webhooks', label: t('remit.wh_tab') },
   ];
+
+  const currencyOf = (country) => COUNTRY_META[country]?.currency || 'TZS';
 
   return (
     <div>
@@ -122,18 +167,48 @@ export default function Remittance() {
             <div className="card">
               <h3 style={{ marginBottom: 12 }}>{t('remit.send_title')}</h3>
               <form onSubmit={send} className="form">
+                <label>{t('remit.beneficiary')}
+                  <select value={sendForm.beneficiary_id || ''} onChange={(e) => useBeneficiary(e.target.value)}>
+                    <option value="">{t('remit.no_beneficiary')}</option>
+                    {beneficiaries.map((b) => (
+                      <option key={b.id} value={b.id}>{b.name} ({b.phone}) {b.country_code ? `· ${COUNTRY_META[b.country_code]?.name || b.country_code}` : ''}</option>
+                    ))}
+                  </select>
+                </label>
                 <label>{t('remit.recipient_country')}
-                  <select value={sendForm.recipient_country} onChange={(e) => setSendForm({ ...sendForm, recipient_country: e.target.value })}>
+                  <select value={sendForm.recipient_country} onChange={(e) => onSendField({ recipient_country: e.target.value, beneficiary_id: '' })}>
                     <option value="KE">Kenya (KES)</option>
                     <option value="UG">Uganda (UGX)</option>
                     <option value="RW">Rwanda (RWF)</option>
                     <option value="BI">Burundi (BIF)</option>
                   </select>
                 </label>
-                <label>{t('remit.recipient_name')}<input value={sendForm.recipient_name} onChange={(e) => setSendForm({ ...sendForm, recipient_name: e.target.value })} required /></label>
-                <label>{t('remit.recipient_phone')}<input value={sendForm.recipient_phone} onChange={(e) => setSendForm({ ...sendForm, recipient_phone: e.target.value })} required /></label>
-                <label>{t('remit.amount_tzs')}<input type="number" value={sendForm.from_amount} onChange={(e) => setSendForm({ ...sendForm, from_amount: e.target.value })} required /></label>
-                <button className="btn" type="submit">✈️ {t('remit.send_btn')}</button>
+                <label>{t('remit.recipient_name')}<input value={sendForm.recipient_name} onChange={(e) => onSendField({ recipient_name: e.target.value })} required /></label>
+                <label>{t('remit.recipient_phone')}<input value={sendForm.recipient_phone} onChange={(e) => onSendField({ recipient_phone: e.target.value })} required /></label>
+                <label>{t('remit.amount_tzs')}<input type="number" value={sendForm.from_amount} onChange={(e) => onSendField({ from_amount: e.target.value })} required /></label>
+                <label>{t('remit.payout_method')}
+                  <select value={sendForm.payout_method} onChange={(e) => onSendField({ payout_method: e.target.value })}>
+                    <option value="MNO">MNO (mobile money)</option>
+                    <option value="WALLET">WALLET (Afrikoba balance)</option>
+                    <option value="AGENT">AGENT (cash pickup)</option>
+                  </select>
+                </label>
+
+                {quote && (
+                  <div style={{ background: '#f0f9ff', border: '1px solid #bae6fd', borderRadius: 10, padding: '10px 12px', marginBottom: 12 }}>
+                    <strong>{t('remit.quote_title')}</strong>
+                    <div style={{ fontSize: 13, marginTop: 6 }}>
+                      <div>{t('remit.quote_receives')}: <strong>{money(quote.amount_out)} {COUNTRY_META[quote.to_country]?.currency || quote.to_currency}</strong> ({t('remit.rate')} {money(quote.exchange_rate)})</div>
+                      <div>{t('remit.fee')}: {money(quote.fee)} {quote.from_currency} · {quote.fee_percentage}%</div>
+                      <div>{t('remit.quote_expires')}: {new Date(quote.expires_at).toLocaleString()}</div>
+                    </div>
+                  </div>
+                )}
+
+                <div style={{ display: 'flex', gap: 10 }}>
+                  <button className="btn" type="submit">✈️ {t('remit.send_btn')}</button>
+                  <button className="btn btn-secondary" type="button" onClick={getQuote} disabled={!sendForm.from_amount}>🧮 {t('remit.quote_btn')}</button>
+                </div>
               </form>
             </div>
 
@@ -165,7 +240,9 @@ export default function Remittance() {
                       <th>{t('remit.sent')}</th>
                       <th>{t('remit.received')}</th>
                       <th>{t('remit.pickup_code')}</th>
+                      <th>{t('remit.payout')}</th>
                       <th>{t('remit.status')}</th>
+                      <th>{t('remit.actions')}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -177,7 +254,20 @@ export default function Remittance() {
                         <td>{money(h.from_amount)}</td>
                         <td>{money(h.to_amount)} {COUNTRY_META[h.recipient_country]?.currency}</td>
                         <td><code>{h.pickup_code}</code></td>
-                        <td><span className={`badge ${h.status === 'PICKED_UP' ? 'success' : 'info'}`}>{h.status}</span></td>
+                        <td>
+                          {h.payout_provider ? (
+                            <span className="roles-tag">{h.payout_method} · {h.payout_provider}</span>
+                          ) : h.payout_method ? (
+                            <span className="roles-tag">{h.payout_method}</span>
+                          ) : '-'}
+                        </td>
+                        <td>{statusBadge(h.status)}</td>
+                        <td>
+                          {h.status === 'PENDING' && (
+                            <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => cancel(h)}>{t('remit.cancel_btn')}</button>
+                          )}
+                          {h.refund_reference && <span className="roles-tag" title={`${t('remit.refunded')}: ${h.refund_reference}`}>{t('remit.refunded')}</span>}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -194,7 +284,7 @@ export default function Remittance() {
             <h3 style={{ marginBottom: 12 }}>{t('remit.wh_create')}</h3>
             <form onSubmit={createWh} className="form" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
               <label>Webhook URL<input type="url" value={whForm.url} onChange={(e) => setWhForm({ ...whForm, url: e.target.value })} required placeholder="https://your-app.com/hook" /></label>
-              <label>{t('remit.wh_events')}<input value={whForm.events} onChange={(e) => setWhForm({ ...whForm, events: e.target.value })} required placeholder="TRANSFER.COMPLETED,DEPOSIT.CREDIT" /></label>
+              <label>{t('remit.wh_events')}<input value={whForm.events} onChange={(e) => setWhForm({ ...whForm, events: e.target.value })} required placeholder="REMITTANCE.SENT,REMITTANCE.PICKED_UP" /></label>
               <button className="btn" type="submit">{t('remit.wh_add')}</button>
             </form>
           </div>

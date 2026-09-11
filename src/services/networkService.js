@@ -2,6 +2,7 @@ const pool = require('../config/db');
 const config = require('../config');
 const { sendSMS } = require('./smsService');
 const { generateReference, formatMoney } = require('../utils/helpers');
+const { createAppError } = require('../utils/errorCodes');
 const { logAudit } = require('./auditService');
 const logger = require('../utils/logger');
 const fin = require('../services/financialEngine');
@@ -353,56 +354,390 @@ async function ensureCorridors() {
   }
 }
 
+const ROUND2 = (n) => Math.round(n * 100) / 100;
+const QUOTE_TTL = "interval '5 minutes'";
+const PICKUP_TTL = "interval '24 hours'";
+
+const PAYOUT_PROVIDERS = {
+  WALLET: { provider: 'PLATFORM_WALLET' },
+  MNO: { provider: 'SIMULATED_MNO' },
+  AGENT: { provider: 'SIMULATED_AGENT' },
+};
+
+function currencyForCountry(country) {
+  return country === 'KE' ? 'KES' : country === 'UG' ? 'UGX' : country === 'RW' ? 'RWF' : country === 'BI' ? 'BIF' : 'USD';
+}
+
+async function findPlatformUserByPhone(client, phone) {
+  const digits = String(phone).replace(/\D/g, '');
+  const res = await client.query(
+    `SELECT id, full_name AS name FROM users WHERE phone_number IS NOT NULL AND REPLACE(REPLACE(phone_number, '+', ''), ' ', '') = $1`,
+    [digits]
+  );
+  return res.rows[0] || null;
+}
+
+// Reverse a funded but un-picked-up remittance (refund principal + fee, flag payouts).
+async function reverseTransfer(client, transfer, newStatus, refundTag, reason) {
+  const amountN = Number(transfer.from_amount);
+  const feeN = Number(transfer.fee);
+  const refundReference = generateReference('RR');
+  await fin.creditWallet({
+    client, userId: transfer.sender_id, amount: amountN, reference: `${transfer.reference}:${refundTag}AMT`,
+    fromAccount: 'MNO_CLEARING', description: `Remittance ${reason} refund: ${transfer.reference}`
+  });
+  if (feeN > 0) {
+    await fin.creditWallet({
+      client, userId: transfer.sender_id, amount: feeN, reference: `${transfer.reference}:${refundTag}FEE`,
+      fromAccount: 'PLATFORM_FEES', description: `Remittance ${reason} refund fee`
+    });
+  }
+  await client.query(
+    `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
+     VALUES ($1,$2,$3,0,$3,'SUCCESS','REMITTANCE_REFUND',$4)`,
+    [refundReference, transfer.sender_id, amountN + feeN, JSON.stringify({ cause: reason, original_reference: transfer.reference })]
+  );
+  await client.query(
+    `UPDATE remittance_transfers SET status = $1, refunded_at = NOW(), refund_reference = $2 WHERE id = $3`,
+    [newStatus, refundReference, transfer.id]
+  );
+  if (newStatus === 'CANCELLED') {
+    await client.query(`UPDATE remittance_transfers SET cancelled_at = NOW() WHERE id = $1`, [transfer.id]);
+  }
+  await client.query(`UPDATE remittance_payouts SET status = 'CANCELLED' WHERE transfer_id = $1 AND status = 'PENDING'`, [transfer.id]);
+  return refundReference;
+}
+
+async function fireRemittanceEvent(eventType, transfer) {
+  try {
+    await triggerWebhookEvent(eventType, {
+      reference: transfer.reference,
+      pickup_code: transfer.pickup_code,
+      status: transfer.status,
+      from_amount: Number(transfer.from_amount),
+      to_amount: Number(transfer.to_amount),
+      fee: Number(transfer.fee),
+      recipient_country: transfer.recipient_country,
+      payout_method: transfer.payout_method,
+      expires_at: transfer.expires_at,
+    });
+  } catch (e) {
+    logger.warn(`webhook:${eventType}`, e.message);
+  }
+}
+
+// F4.1: Rate-locked quote (5-minute expiry, RMQ-* reference)
+async function quoteRemittance(userId, data) {
+  await ensureCorridors();
+  const toCountry = String(data.to_country || data.toCountry || '').toUpperCase();
+  const amountNum = Number(data.from_amount ?? data.amount);
+  if (!Number.isFinite(amountNum) || amountNum <= 0) throw createAppError('REMITTANCE_AMOUNT_INVALID');
+  if (!toCountry) throw createAppError('REMITTANCE_CORRIDOR_NOT_FOUND');
+  const corridor = await pool.query('SELECT * FROM remittance_corridors WHERE from_country = $1 AND to_country = $2 AND is_active = TRUE', ['TZ', toCountry]);
+  if (!corridor.rows.length) throw createAppError('REMITTANCE_CORRIDOR_NOT_FOUND');
+  const c = corridor.rows[0];
+  if (amountNum < Number(c.min_amount) || amountNum > Number(c.max_amount)) throw createAppError('REMITTANCE_AMOUNT_OUT_OF_RANGE');
+  const fee = ROUND2((amountNum * Number(c.fee_percentage)) / 100);
+  const amountOut = ROUND2((amountNum - fee) * Number(c.exchange_rate));
+  const ref = generateReference('RMQ');
+  const ins = await pool.query(
+    `INSERT INTO remittance_quotes (reference_id, user_id, from_country, to_country, from_currency, to_currency, amount_in, fee, fee_percentage, exchange_rate, amount_out, status, expires_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'ACTIVE', NOW() + ${QUOTE_TTL}) RETURNING *`,
+    [ref, userId, 'TZ', c.to_country, c.from_currency, c.to_currency, amountNum, fee, c.fee_percentage, c.exchange_rate, amountOut]
+  );
+  const q = ins.rows[0];
+  return {
+    quote_id: q.id,
+    reference_id: q.reference_id,
+    from_country: q.from_country,
+    to_country: q.to_country,
+    from_currency: q.from_currency,
+    to_currency: q.to_currency,
+    amount_in: Number(q.amount_in),
+    fee: Number(q.fee),
+    fee_percentage: Number(q.fee_percentage),
+    exchange_rate: Number(q.exchange_rate),
+    amount_out: Number(q.amount_out),
+    status: q.status,
+    expires_at: q.expires_at,
+  };
+}
+
+async function listQuotes(userId) {
+  const res = await pool.query(
+    `SELECT id, reference_id, to_country, from_currency, to_currency, amount_in, fee, fee_percentage, exchange_rate, amount_out, status, expires_at
+     FROM remittance_quotes WHERE user_id = $1 AND status = 'ACTIVE' AND expires_at > NOW() ORDER BY created_at DESC LIMIT 20`,
+    [userId]
+  );
+  return res.rows;
+}
+
 async function sendRemittance(senderId, data) {
   await ensureCorridors();
-  const { recipient_phone, recipient_name, recipient_country, from_amount } = data;
+  let { recipient_phone, recipient_name, recipient_country, from_amount } = data;
   const amountNum = Number(from_amount);
-  if (!amountNum || amountNum <= 0) throw Object.assign(new Error('Kiasi si sahihi.'), { statusCode: 400 });
+  if (!Number.isFinite(amountNum) || amountNum <= 0) throw createAppError('REMITTANCE_AMOUNT_INVALID');
+
+  let beneficiary = null;
+  if (data.beneficiary_id) {
+    const bres = await pool.query('SELECT * FROM beneficiaries WHERE id = $1 AND user_id = $2', [Number(data.beneficiary_id), senderId]);
+    if (!bres.rows.length) throw createAppError('REMITTANCE_BENEFICIARY_NOT_FOUND');
+    beneficiary = bres.rows[0];
+    recipient_phone = recipient_phone || beneficiary.phone;
+    recipient_name = recipient_name || beneficiary.name;
+    recipient_country = recipient_country || beneficiary.country_code;
+  }
+  const payoutMethod = String(data.payout_method || (beneficiary && beneficiary.payout_method) || 'MNO').toUpperCase();
+  if (!['WALLET', 'MNO', 'AGENT'].includes(payoutMethod)) throw createAppError('REMITTANCE_INVALID_PAYOUT');
+
+  let c = null;
+  let quoteRow = null;
+  if (data.quote_id) {
+    const qres = await pool.query('SELECT * FROM remittance_quotes WHERE id = $1 AND user_id = $2', [Number(data.quote_id), senderId]);
+    if (!qres.rows.length) throw createAppError('REMITTANCE_QUOTE_NOT_FOUND');
+    const q = qres.rows[0];
+    if (q.status === 'USED') throw createAppError('REMITTANCE_QUOTE_USED');
+    if (q.status === 'EXPIRED' || Number(new Date(q.expires_at)) <= Date.now()) {
+      await pool.query("UPDATE remittance_quotes SET status = 'EXPIRED' WHERE id = $1", [q.id]);
+      throw createAppError('REMITTANCE_QUOTE_EXPIRED');
+    }
+    if (Number(q.amount_in) !== amountNum) throw createAppError('REMITTANCE_AMOUNT_INVALID');
+    if (String(recipient_country).toUpperCase() !== q.to_country) throw createAppError('REMITTANCE_CORRIDOR_NOT_FOUND');
+    c = { exchange_rate: q.exchange_rate, fee_percentage: q.fee_percentage, from_currency: q.from_currency, to_currency: q.to_currency, to_country: q.to_country };
+    quoteRow = q;
+    if (!recipient_country) recipient_country = q.to_country;
+  } else {
+    const corridor = await pool.query('SELECT * FROM remittance_corridors WHERE from_country = $1 AND to_country = $2 AND is_active = TRUE', ['TZ', String(recipient_country || '').toUpperCase()]);
+    if (!corridor.rows.length) throw createAppError('REMITTANCE_CORRIDOR_NOT_FOUND');
+    const cc = corridor.rows[0];
+    if (amountNum < Number(cc.min_amount) || amountNum > Number(cc.max_amount)) throw createAppError('REMITTANCE_AMOUNT_OUT_OF_RANGE');
+    c = cc;
+  }
   if (!recipient_phone || !recipient_name || !recipient_country) throw Object.assign(new Error('Maelezo ya mpokeaji ni lazima.'), { statusCode: 400 });
-  const corridor = await pool.query('SELECT * FROM remittance_corridors WHERE from_country = $1 AND to_country = $2 AND is_active = TRUE', ['TZ', recipient_country]);
-  if (!corridor.rows.length) throw Object.assign(new Error('Korido haipo.'), { statusCode: 400 });
-  const c = corridor.rows[0];
-  if (amountNum < Number(c.min_amount) || amountNum > Number(c.max_amount)) throw Object.assign(new Error('Kiasi kiko nje ya mipaka.'), { statusCode: 400 });
-  const fee = (amountNum * Number(c.fee_percentage)) / 100;
-  const toAmount = (amountNum - fee) * Number(c.exchange_rate);
+
+  const fee = ROUND2((amountNum * Number(c.fee_percentage)) / 100);
+  const toAmount = ROUND2((amountNum - fee) * Number(c.exchange_rate));
 
   const client = await pool.connect();
+  let transfer = null;
+  let quoteId = quoteRow ? quoteRow.id : null;
   try {
     await client.query('BEGIN');
     const sender = await client.query('SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE', [senderId]);
-    if (Number(sender.rows[0].wallet_balance) < amountNum + fee) throw Object.assign(new Error('Salio halitoshi (pamoja na ada).'), { statusCode: 400 });
+    if (Number(sender.rows[0].wallet_balance) < amountNum + fee) throw new Error('Salio halitoshi (pamoja na ada).');
+
+    if (!quoteId) {
+      const qref = generateReference('RMQ');
+      const ins = await client.query(
+        `INSERT INTO remittance_quotes (reference_id, user_id, from_country, to_country, from_currency, to_currency, amount_in, fee, fee_percentage, exchange_rate, amount_out, status, used_at, expires_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'USED',NOW(), NOW() + ${QUOTE_TTL}) RETURNING id`,
+        [qref, senderId, 'TZ', c.to_country, c.from_currency, c.to_currency, amountNum, fee, c.fee_percentage, c.exchange_rate, toAmount]
+      );
+      quoteId = ins.rows[0].id;
+    } else {
+      const upd = await client.query("UPDATE remittance_quotes SET status = 'USED', used_at = NOW() WHERE id = $1 AND status = 'ACTIVE' RETURNING id", [quoteId]);
+      if (!upd.rows.length) throw createAppError('REMITTANCE_QUOTE_USED');
+    }
+
     const reference = generateReference('RM');
     const pickup = Math.random().toString(36).toUpperCase().slice(2, 8);
     await client.query(
       `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
        VALUES ($1,$2,$3,$4,$5,'SUCCESS','REMITTANCE', $6)`,
-      [reference, senderId, amountNum, fee, amountNum + fee, JSON.stringify({ recipient_phone, recipient_country, to_amount: toAmount })]
+      [reference, senderId, amountNum, fee, amountNum + fee, JSON.stringify({ recipient_phone, recipient_country, to_amount: toAmount, payout_method: payoutMethod })]
     );
     await fin.debitWallet({ client, userId: senderId, amount: amountNum, reference: `${reference}:AMT`, toAccount: 'MNO_CLEARING', description: 'Remittance' });
     if (fee > 0) {
       await fin.debitWallet({ client, userId: senderId, amount: fee, reference: `${reference}:FEE`, toAccount: 'PLATFORM_FEES', description: 'Remittance fee' });
     }
-    await client.query(
-      `INSERT INTO remittance_transfers (sender_id, recipient_phone, recipient_name, recipient_country, from_amount, to_amount, exchange_rate, fee, reference, status, pickup_code)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'COMPLETED',$10) RETURNING *`,
-      [senderId, recipient_phone, recipient_name, recipient_country, amountNum, toAmount, c.exchange_rate, fee, reference, pickup]
+    const ins = await client.query(
+      `INSERT INTO remittance_transfers (sender_id, recipient_phone, recipient_name, recipient_country, from_amount, to_amount, exchange_rate, fee, reference, status, pickup_code, quote_id, beneficiary_id, payout_method, expires_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'PENDING',$10,$11,$12,$13, NOW() + ${PICKUP_TTL}) RETURNING *`,
+      [senderId, recipient_phone, recipient_name, recipient_country, amountNum, toAmount, c.exchange_rate, fee, reference, pickup, quoteId, beneficiary ? beneficiary.id : null, payoutMethod]
     );
+    transfer = ins.rows[0];
+    if (beneficiary) {
+      await client.query('UPDATE beneficiaries SET usage_count = usage_count + 1, updated_at = NOW() WHERE id = $1', [beneficiary.id]);
+    }
     await client.query('COMMIT');
-    return { success: true, reference, pickup_code: pickup, to_amount: toAmount, fee, message: 'Fedha zimetumwa. Mpokeaji atatumiwa pickup code.' };
-  } finally { client.release(); }
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+
+  await fireRemittanceEvent('remittance.sent', transfer);
+  return {
+    success: true,
+    reference: transfer.reference,
+    quote_id: quoteId,
+    pickup_code: transfer.pickup_code,
+    payout_method: payoutMethod,
+    to_amount: toAmount,
+    fee,
+    expires_at: transfer.expires_at,
+    message: 'Fedha zimetumwa. Mpokeaji atatumiwa pickup code.'
+  };
 }
 
+// F4.2: Pickup via payout adapter (WALLET credits a platform member; MNO/AGENT simulated rails)
 async function pickupRemittance(pickupCode, recipientPhone, recipientName) {
-  const res = await pool.query('SELECT * FROM remittance_transfers WHERE pickup_code = $1 AND recipient_phone = $2 AND status = $3', [pickupCode, recipientPhone, 'COMPLETED']);
-  if (!res.rows.length) throw Object.assign(new Error('Uhamisho haujapatikana au tayari umechukuliwa.'), { statusCode: 404 });
+  await expireStaleRemittances();
+  const res = await pool.query('SELECT * FROM remittance_transfers WHERE pickup_code = $1 AND recipient_phone = $2', [pickupCode, recipientPhone]);
+  if (!res.rows.length) throw createAppError('REMITTANCE_TRANSFER_NOT_FOUND');
   const r = res.rows[0];
+  if (r.status === 'PICKED_UP') throw createAppError('REMITTANCE_ALREADY_PICKED_UP');
+  if (r.status !== 'PENDING') throw createAppError('REMITTANCE_TRANSFER_STATE');
   if (r.recipient_name.toLowerCase() !== String(recipientName).toLowerCase()) throw Object.assign(new Error('Jina la mpokeaji halilingani.'), { statusCode: 400 });
-  await pool.query("UPDATE remittance_transfers SET status = 'PICKED_UP', completed_at = NOW() WHERE id = $1", [r.id]);
-  return { success: true, amount: r.to_amount, currency: r.recipient_country === 'KE' ? 'KES' : r.recipient_country === 'UG' ? 'UGX' : r.recipient_country === 'RW' ? 'RWF' : 'BIF', message: 'Fedha zimechukuliwa.' };
+  if (r.expires_at && Number(new Date(r.expires_at)) <= Date.now()) throw createAppError('REMITTANCE_TRANSFER_STATE');
+
+  const payoutMethod = String(r.payout_method || 'MNO').toUpperCase();
+  if (!['WALLET', 'MNO', 'AGENT'].includes(payoutMethod)) throw createAppError('REMITTANCE_INVALID_PAYOUT');
+
+  const client = await pool.connect();
+  let payout = null;
+  let pickedUp = null;
+  try {
+    await client.query('BEGIN');
+    const locked = await client.query('SELECT * FROM remittance_transfers WHERE id = $1 FOR UPDATE', [r.id]);
+    const t = locked.rows[0];
+    if (t.status === 'PICKED_UP') throw createAppError('REMITTANCE_ALREADY_PICKED_UP');
+    if (t.status !== 'PENDING') throw createAppError('REMITTANCE_TRANSFER_STATE');
+    if (t.expires_at && Number(new Date(t.expires_at)) <= Date.now()) {
+      await reverseTransfer(client, t, 'EXPIRED', 'EXPR', 'expired');
+      await client.query('COMMIT');
+      throw createAppError('REMITTANCE_TRANSFER_STATE');
+    }
+
+    const currency = currencyForCountry(t.recipient_country);
+    const providerName = PAYOUT_PROVIDERS[payoutMethod].provider;
+    let walletPayee = null;
+    if (payoutMethod === 'WALLET') {
+      walletPayee = await findPlatformUserByPhone(client, t.recipient_phone);
+    }
+    const effectiveProvider = (payoutMethod === 'WALLET' && !walletPayee) ? 'SIMULATED_EXTERNAL' : providerName;
+
+    if (payoutMethod === 'WALLET' && walletPayee) {
+      await fin.creditWallet({
+        client, userId: walletPayee.id, amount: Number(t.to_amount), reference: `${t.reference}:PAYOUT`,
+        fromAccount: 'MNO_CLEARING', description: 'Remittance payout'
+      });
+      await client.query(
+        `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
+         VALUES ($1,$2,$3,0,$3,'SUCCESS','REMITTANCE_PAYOUT',$4)`,
+        [`${t.reference}:PAYOUT`, walletPayee.id, Number(t.to_amount), JSON.stringify({ payout: 'WALLET', original_reference: t.reference })]
+      );
+    }
+
+    const ins = await client.query(
+      `INSERT INTO remittance_payouts (transfer_id, payout_method, provider, amount, currency, status, instruction, reference, processed_at)
+       VALUES ($1,$2,$3,$4,$5,'PROCESSED',$6,$7,NOW()) RETURNING *`,
+      [t.id, payoutMethod, effectiveProvider, Number(t.to_amount), currency, t.recipient_phone, `${t.reference}:PAYOUT`]
+    );
+    payout = ins.rows[0];
+    const upd = await client.query(
+      `UPDATE remittance_transfers SET status = 'PICKED_UP', picked_up_at = NOW(), completed_at = NOW() WHERE id = $1 RETURNING *`,
+      [t.id]
+    );
+    pickedUp = upd.rows[0];
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+
+  await fireRemittanceEvent('remittance.picked_up', pickedUp);
+  return {
+    success: true,
+    amount: Number(pickedUp.to_amount),
+    currency: currencyForCountry(pickedUp.recipient_country),
+    status: pickedUp.status,
+    payout_method: payoutMethod,
+    payout: { provider: payout.provider, status: payout.status, reference: payout.reference },
+    message: 'Fedha zimechukuliwa.'
+  };
+}
+
+// F4.3: Sender cancels a pending transfer (full refund of principal + fee)
+async function cancelRemittance(userId, reference) {
+  const res = await pool.query('SELECT * FROM remittance_transfers WHERE reference = $1 AND sender_id = $2', [reference, userId]);
+  if (!res.rows.length) throw createAppError('REMITTANCE_TRANSFER_NOT_FOUND');
+  const t = res.rows[0];
+  if (t.status !== 'PENDING') throw createAppError('REMITTANCE_TRANSFER_STATE');
+
+  const client = await pool.connect();
+  let cancelled = null;
+  try {
+    await client.query('BEGIN');
+    const locked = await client.query('SELECT * FROM remittance_transfers WHERE id = $1 FOR UPDATE', [t.id]);
+    const row = locked.rows[0];
+    if (row.status !== 'PENDING') throw createAppError('REMITTANCE_TRANSFER_STATE');
+    await reverseTransfer(client, row, 'CANCELLED', 'REF', 'cancel');
+    const upd = await client.query(`UPDATE remittance_transfers SET status = 'CANCELLED' WHERE id = $1 RETURNING *`, [row.id]);
+    cancelled = upd.rows[0];
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+
+  await fireRemittanceEvent('remittance.cancelled', cancelled);
+  return {
+    success: true,
+    reference: cancelled.reference,
+    status: 'CANCELLED',
+    refund_reference: cancelled.refund_reference,
+    refunded_amount: Number(cancelled.from_amount) + Number(cancelled.fee),
+    message: 'Uhamisho umefutwa na fedha zimerudishwa.'
+  };
+}
+
+// F4.4: Lazy expiry — refunds any PENDING transfer past its 24-hour redemption window
+async function expireStaleRemittances() {
+  const stale = await pool.query("SELECT * FROM remittance_transfers WHERE status = 'PENDING' AND expires_at IS NOT NULL AND expires_at < NOW() LIMIT 50");
+  let expired = 0;
+  for (const t of stale.rows) {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const locked = await client.query('SELECT * FROM remittance_transfers WHERE id = $1 FOR UPDATE', [t.id]);
+      const row = locked.rows[0];
+      if (row.status === 'PENDING') {
+        await reverseTransfer(client, row, 'EXPIRED', 'EXPR', 'expired');
+        await client.query('COMMIT');
+        await fireRemittanceEvent('remittance.expired', { ...row, status: 'EXPIRED' });
+        expired += 1;
+      } else {
+        await client.query('COMMIT');
+      }
+    } catch (e) {
+      await client.query('ROLLBACK').catch(() => {});
+      logger.warn('expireStaleRemittances', e.message);
+    } finally {
+      client.release();
+    }
+  }
+  return expired;
 }
 
 async function getRemittanceHistory(userId) {
-  const res = await pool.query('SELECT * FROM remittance_transfers WHERE sender_id = $1 ORDER BY created_at DESC', [userId]);
+  await expireStaleRemittances();
+  const res = await pool.query(
+    `SELECT t.*, q.reference_id AS quote_reference, q.status AS quote_status,
+            p.provider AS payout_provider, p.status AS payout_status, p.reference AS payout_reference,
+            b.name AS beneficiary_name, b.country_code AS beneficiary_country_code
+     FROM remittance_transfers t
+     LEFT JOIN remittance_quotes q ON q.id = t.quote_id
+     LEFT JOIN remittance_payouts p ON p.transfer_id = t.id
+     LEFT JOIN beneficiaries b ON b.id = t.beneficiary_id
+     WHERE t.sender_id = $1 ORDER BY t.created_at DESC LIMIT 50`,
+    [userId]
+  );
   return res.rows;
 }
 
@@ -647,7 +982,7 @@ module.exports = {
   applyAgent, listAgents, getAgentByUser, getNearbyAgents, verifyAgent, agentCashIn, agentCashOut, agentSettlement, agentDashboard,
   createBulkBatch, getBulkBatch, processBulkBatch, listUserBatches,
   createScheduledPayment, listScheduledPayments, cancelScheduledPayment, processDueScheduledPayments,
-  listCorridors, sendRemittance, pickupRemittance, getRemittanceHistory,
+  listCorridors, quoteRemittance, listQuotes, sendRemittance, pickupRemittance, cancelRemittance, expireStaleRemittances, getRemittanceHistory,
   createWebhook, listWebhooks, triggerWebhookEvent, testWebhook, getWebhookDeliveries,
   createLoyaltyProgram, joinLoyaltyProgram, earnLoyaltyPoints, redeemLoyaltyPoints, getLoyaltyBalance,
   generateSpendingPrediction, getInsights,

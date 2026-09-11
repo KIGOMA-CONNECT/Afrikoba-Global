@@ -100,6 +100,14 @@ router.get('/remittance/corridors', authRequired, async (req, res, next) => {
   try { res.json({ success: true, corridors: await networkService.listCorridors() }); }
   catch (e) { next(e); }
 });
+router.post('/remittance/quote', authRequired, async (req, res, next) => {
+  try { res.json({ success: true, result: await networkService.quoteRemittance(req.user.id, req.body) }); }
+  catch (e) { next(e); }
+});
+router.get('/remittance/quotes', authRequired, async (req, res, next) => {
+  try { res.json({ success: true, quotes: await networkService.listQuotes(req.user.id) }); }
+  catch (e) { next(e); }
+});
 router.post('/remittance/send', authRequired, async (req, res, next) => {
   try { res.json({ success: true, result: await networkService.sendRemittance(req.user.id, req.body) }); }
   catch (e) { next(e); }
@@ -112,6 +120,14 @@ router.post('/remittance/pickup', async (req, res, next) => {
 });
 router.get('/remittance/history', authRequired, async (req, res, next) => {
   try { res.json({ success: true, transfers: await networkService.getRemittanceHistory(req.user.id) }); }
+  catch (e) { next(e); }
+});
+router.post('/remittance/:reference/cancel', authRequired, async (req, res, next) => {
+  try { res.json({ success: true, result: await networkService.cancelRemittance(req.user.id, req.params.reference) }); }
+  catch (e) { next(e); }
+});
+router.post('/remittance/expire', authRequired, requireRoles('ADMIN'), async (req, res, next) => {
+  try { res.json({ success: true, expired: await networkService.expireStaleRemittances() }); }
   catch (e) { next(e); }
 });
 

@@ -282,6 +282,19 @@ const ERROR_CODES = {
   SACCOS_EXIT_ALREADY_SETTLED: { status: 400, message: 'Utaratibu wa kuondoka kwa mwanachama huyu umekwisha fanyika.' },
   SACCOS_EXIT_NONE:          { status: 404, message: 'Hakuna utaratibu wa kuondoka.' },
 
+  // Cross-border remittance lifecycle (increment 21c) (400/404)
+  REMITTANCE_CORRIDOR_NOT_FOUND:  { status: 404, message: 'Korido haipo.' },
+  REMITTANCE_AMOUNT_INVALID:      { status: 400, message: 'Kiasi si sahihi.' },
+  REMITTANCE_AMOUNT_OUT_OF_RANGE: { status: 400, message: 'Kiasi kiko nje ya mipaka ya korido.' },
+  REMITTANCE_QUOTE_NOT_FOUND:     { status: 404, message: 'Nukuu haipatikani.' },
+  REMITTANCE_QUOTE_EXPIRED:       { status: 400, message: 'Nukuu imeisha muda wake. Tafadhali tengeneza nukuu mpya.' },
+  REMITTANCE_QUOTE_USED:          { status: 400, message: 'Nukuu hii tayari imetumika.' },
+  REMITTANCE_BENEFICIARY_NOT_FOUND: { status: 404, message: 'Mpokeaji wa mara kwa mara hajapatikana.' },
+  REMITTANCE_TRANSFER_NOT_FOUND:  { status: 404, message: 'Uhamisho haujapatikana.' },
+  REMITTANCE_TRANSFER_STATE:      { status: 400, message: 'Hali ya uhamisho hairuhusu hatua hii.' },
+  REMITTANCE_INVALID_PAYOUT:      { status: 400, message: 'Njia ya malipo haikubaliki.' },
+  REMITTANCE_ALREADY_PICKED_UP:   { status: 400, message: 'Uhamisho tayari umechukuliwa.' },
+
   // Generic
   INTERNAL_ERROR:                { status: 500, message: 'Hitilafu ya ndani ya server.' },
 };

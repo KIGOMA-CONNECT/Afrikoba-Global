@@ -54,11 +54,11 @@ router.get('/beneficiaries', authRequired, async (req, res, next) => {
 
 router.post('/beneficiaries', authRequired, async (req, res, next) => {
   try {
-    const { phone, name, nickname } = req.body;
+    const { phone, name, nickname, country_code, currency_code, payout_method } = req.body;
     if (!phone || !name) {
       return res.status(400).json({ success: false, message: 'Simu na jina vinahitajika.' });
     }
-    const beneficiary = await beneficiaryService.addBeneficiary(req.user.id, phone, name, nickname);
+    const beneficiary = await beneficiaryService.addBeneficiary(req.user.id, phone, name, nickname, { country_code, currency_code, payout_method });
     res.json({ success: true, beneficiary });
   } catch (error) {
     next(error);
