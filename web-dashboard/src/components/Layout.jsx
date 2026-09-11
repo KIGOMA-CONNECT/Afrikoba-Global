@@ -76,7 +76,7 @@ export default function Layout() {
     { to: '/dashboard/recurrence', key: 'nav.recurrence', admin: true },
     { to: '/dashboard/ops', key: 'nav.ops', admin: true },
     { to: '/dashboard/features', key: 'nav.features', admin: true },
-    { to: '/dashboard/fraud-ops', key: 'nav.fraud_ops', admin: true },
+    { to: '/dashboard/fraud-ops', key: 'nav.fraud_ops', roles: ['ADMIN', 'COMPLIANCE'] },
     { to: '/dashboard/experiments', key: 'nav.experiments', admin: true },
     { to: '/dashboard/four-eyes', key: 'nav.four_eyes', admin: true },
     { to: '/dashboard/settings', key: 'nav.settings', always: true },
@@ -99,6 +99,7 @@ export default function Layout() {
         <nav className="nav">
           {navItems.map((item) => {
             if (item.admin && !isAdmin) return null;
+            if (item.roles && !item.roles.includes(user.role)) return null;
             if (item.svc && !activeServices.includes(item.svc)) return null;
             return (
               <NavLink

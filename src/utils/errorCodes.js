@@ -99,6 +99,12 @@ const ERROR_CODES = {
   CARD_OVER_DAILY_LIMIT:         { status: 400, message: 'Kiasi kinazidi kikomo cha siku (daily limit).' },
   CARD_AUTH_NOT_FOUND:           { status: 404, message: 'Authorization haipatikani au imeshawekwa.' },
 
+  // AML / wallet freezes (400/403)
+  AML_ACCOUNT_FROZEN:           { status: 403, message: 'Akaunti imefungwa kwa sababu za kufuata sheria. Wasiliana na huduma kwa wateja.' },
+  AML_FREEZE_ALREADY_ACTIVE:    { status: 400, message: 'Akaunti hii tayari imefungwa.' },
+  AML_FREEZE_NOT_ACTIVE:        { status: 400, message: 'Kufunga huku si tena ACTIVE.' },
+  AML_FREEZE_NOT_FOUND:         { status: 404, message: 'Kufunga haikupatikana.' },
+
   // SACCOS foundation (400/403/404/409)
   SACCOS_NAME_REQUIRED:          { status: 400, message: 'Jina la SACCOS linahitajika.' },
   SACCOS_NAME_TAKEN:             { status: 409, message: 'Jina la SACCOS tayari limesajiliwa.' },

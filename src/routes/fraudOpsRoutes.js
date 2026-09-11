@@ -6,12 +6,13 @@ const { logAction } = require('../services/auditService');
 const fraudOps = require('../services/fraudOpsService');
 const fraudService = require('../services/fraudDetectionService');
 const gov = require('../services/governanceService');
+const freezes = require('../services/walletFreezesService');
 
 // Fraud Operations Centre — every route here is bundled under the
 // FRAUD_OPS_DASHBOARD feature flag (kill-switch + rollout) as a live demo
 // of the feature-flag framework.
 router.use(authRequired);
-router.use(requireRoles('ADMIN'));
+router.use(requireRoles('ADMIN', 'COMPLIANCE'));
 router.use(requireFeature('FRAUD_OPS_DASHBOARD'));
 
 router.get('/dashboard', async (req, res, next) => {
@@ -119,6 +120,42 @@ router.post('/cases/:id/notes', async (req, res, next) => {
   } catch (e) {
     next(e);
   }
+});
+
+// ---------- Wallet Freezes (AML compliance) ----------
+
+router.get('/freezes', async (req, res, next) => {
+  try {
+    const list = await freezes.listFreezes({
+      status: req.query.status || null,
+      userId: req.query.userId ? Number(req.query.userId) : null,
+      limit: req.query.limit,
+      offset: req.query.offset,
+    });
+    res.json({ freezes: list });
+  } catch (e) { next(e); }
+});
+
+router.get('/freezes/:id', async (req, res, next) => {
+  try {
+    const freeze = await freezes.getFreeze(Number(req.params.id));
+    res.json({ freeze });
+  } catch (e) { next(e); }
+});
+
+router.post('/freezes', async (req, res, next) => {
+  try {
+    const { userId, reason, caseId } = req.body;
+    const freeze = await freezes.freezeWallet(req.user.id, Number(userId), { reason, caseId: caseId ? Number(caseId) : null });
+    res.status(201).json({ freeze });
+  } catch (e) { next(e); }
+});
+
+router.post('/freezes/:id/lift', async (req, res, next) => {
+  try {
+    const freeze = await freezes.liftFreeze(req.user.id, Number(req.params.id), { comment: req.body.comment });
+    res.json({ freeze });
+  } catch (e) { next(e); }
 });
 
 module.exports = router;

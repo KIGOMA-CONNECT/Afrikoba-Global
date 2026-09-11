@@ -3,6 +3,7 @@ const pool = require('../config/db');
 const walletService = require('../services/walletService');
 const limitService = require('../services/limitService');
 const fraudDetectionService = require('../services/fraudDetectionService');
+const walletFreezesService = require('../services/walletFreezesService');
 const governanceService = require('../services/governanceService');
 const { authRequired, requireKycLevel } = require('../middleware/auth');
 const { enforceDeviceTrust } = require('../middleware/deviceGuard');
@@ -69,6 +70,7 @@ router.post('/transfer', enforceDeviceTrust, validate(schemas.wallet.transfer), 
     }
 
     // B9: Run fraud detection
+    await walletFreezesService.assertNotFrozen(req.user.id);
     const fraudCheck = await fraudDetectionService.runFraudChecks(req.user.id, {
       amount: parseFloat(amount),
       recipient_phone: toPhoneNumber,
@@ -129,6 +131,7 @@ router.post('/withdraw', enforceDeviceTrust, requireKycLevel(1), validate(schema
     }
 
     // B9: Run fraud detection
+    await walletFreezesService.assertNotFrozen(req.user.id);
     const fraudCheck = await fraudDetectionService.runFraudChecks(req.user.id, {
       amount: parseFloat(amount),
       ipAddress: req.ip,

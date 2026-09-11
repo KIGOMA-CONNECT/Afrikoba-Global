@@ -17,6 +17,9 @@ export default function FraudOps() {
   const [noteForm, setNoteForm] = useState('');
   const [showNewCase, setShowNewCase] = useState(false);
   const [caseForm, setCaseForm] = useState({ user_id: '', alert_id: '', case_type: 'SUSPICIOUS_ACTIVITY', risk_level: 'MEDIUM', summary: '', assigned_to: '' });
+  const [freezes, setFreezes] = useState([]);
+  const [freezeForm, setFreezeForm] = useState({ user_id: '', reason: '', case_id: '' });
+  const [frozenMap, setFrozenMap] = useState({});
 
   const error = (err) => setMsg({ type: 'err', text: err.response?.data?.message || t('fraudops.error') });
 
@@ -25,6 +28,12 @@ export default function FraudOps() {
     api.get('/fraud-ops/alerts', { params: { open: true } }).then((r) => setAlerts(r.data.alerts)).catch(() => {});
     api.get('/fraud-ops/cases').then((r) => setCases(r.data.cases)).catch(() => {});
     api.get('/fraud-ops/risk-profiles', { params: { limit: 50 } }).then((r) => setProfiles(r.data.profiles)).catch(() => {});
+    api.get('/fraud-ops/freezes').then((r) => {
+      setFreezes(r.data.freezes);
+      const m = {};
+      r.data.freezes.filter((f) => f.status === 'ACTIVE').forEach((f) => { m[f.user_id] = f; });
+      setFrozenMap(m);
+    }).catch(() => {});
   };
   useEffect(() => { load(); }, []);
 
@@ -69,10 +78,29 @@ export default function FraudOps() {
 
   const openCount = (arr) => (arr || []).filter((a) => a.status === 'OPEN').length;
 
+  const freezeUser = async (e) => {
+    e.preventDefault();
+    try {
+      await api.post('/fraud-ops/freezes', {
+        userId: Number(freezeForm.user_id),
+        reason: freezeForm.reason,
+        caseId: freezeForm.case_id ? Number(freezeForm.case_id) : null,
+      });
+      setMsg({ type: 'ok', text: t('fraudops.freeze_ok') });
+      setFreezeForm({ user_id: '', reason: '', case_id: '' });
+      load();
+    } catch (err) { error(err); }
+  };
+
+  const liftFreeze = async (id) => {
+    try { await api.post(`/fraud-ops/freezes/${id}/lift`, {}); setMsg({ type: 'ok', text: t('fraudops.lift_ok') }); load(); } catch (err) { error(err); }
+  };
+
   const TABS = [
     { key: 'overview', label: t('fraudops.tab_overview') },
     { key: 'alerts', label: t('fraudops.tab_alerts') },
     { key: 'cases', label: t('fraudops.tab_cases') },
+    { key: 'freezes', label: t('fraudops.tab_freezes') },
     { key: 'risk', label: t('fraudops.tab_risk') },
   ];
 
@@ -262,6 +290,7 @@ export default function FraudOps() {
                 <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => updateCase(selectedCase.case.id, { status: 'RESOLVED', disposition: 'FALSE_POSITIVE' })}>{t('fraudops.fp')}</button>
                 <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => updateCase(selectedCase.case.id, { status: 'RESOLVED', disposition: 'CONFIRMED_FRAUD' })}>{t('fraudops.confirmed')}</button>
                 <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => updateCase(selectedCase.case.id, { status: 'CLOSED' })}>{t('fraudops.close')}</button>
+                <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => { setTab('freezes'); setFreezeForm({ user_id: selectedCase.case.user_id || '', reason: selectedCase.case.summary || '', case_id: selectedCase.case.id }); }}>{t('fraudops.freeze_wallet')}</button>
               </div>
               <form onSubmit={addNote} style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
                 <input placeholder={t('fraudops.add_note_ph')} value={noteForm} onChange={(e) => setNoteForm(e.target.value)} style={{ flex: 1 }} required />
@@ -275,6 +304,40 @@ export default function FraudOps() {
                 </ul>
               )}
             </div>
+          )}
+        </div>
+      )}
+
+      {/* ===== WALLET FREEZES ===== */}
+      {tab === 'freezes' && (
+        <div className="card section">
+          <h3>{t('fraudops.freeze_title')}</h3>
+          <p className="roles-tag">{t('fraudops.freeze_sub')}</p>
+          <form onSubmit={freezeUser} style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 16, padding: 14, background: '#f8faf9', borderRadius: 10 }}>
+            <input type="number" placeholder={t('fraudops.user_id_ph')} value={freezeForm.user_id} onChange={(e) => setFreezeForm({ ...freezeForm, user_id: e.target.value })} style={{ width: 110 }} required />
+            <input placeholder={t('fraudops.freeze_reason_ph')} value={freezeForm.reason} onChange={(e) => setFreezeForm({ ...freezeForm, reason: e.target.value })} style={{ flex: 1, minWidth: 180 }} required />
+            <input type="number" placeholder={t('fraudops.case_id_ph')} value={freezeForm.case_id} onChange={(e) => setFreezeForm({ ...freezeForm, case_id: e.target.value })} style={{ width: 100 }} />
+            <button className="btn" type="submit">{t('fraudops.freeze_btn')}</button>
+          </form>
+
+          {freezes.length === 0 ? <p className="roles-tag">{t('fraudops.empty')}</p> : (
+            <table className="table">
+              <thead><tr><th>Ref</th><th>{t('fraudops.user')}</th><th>{t('fraudops.reason')}</th><th>Case</th><th>{t('fraudops.by')}</th><th>{t('fraudops.created_at')}</th><th>{t('fraudops.status')}</th><th></th></tr></thead>
+              <tbody>
+                {freezes.map((f) => (
+                  <tr key={f.id}>
+                    <td className="roles-tag">{f.reference}</td>
+                    <td>{f.full_name || f.user_name || f.user_id} <div className="roles-tag">{f.user_phone || ''}</div></td>
+                    <td style={{ fontSize: 13 }}>{f.reason}</td>
+                    <td>{f.case_id || '—'}</td>
+                    <td>{f.actor_name || f.initiated_by} <div className="roles-tag">{f.initiated_at ? new Date(f.initiated_at).toLocaleDateString() : ''}</div></td>
+                    <td className="roles-tag">{f.created_at ? new Date(f.created_at).toLocaleString() : ''}</td>
+                    <td><span className={`badge ${f.status === 'ACTIVE' ? 'danger' : 'info'}`}>{f.status}</span></td>
+                    <td>{f.status === 'ACTIVE' && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => liftFreeze(f.id)}>{t('fraudops.lift')}</button>}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           )}
         </div>
       )}
