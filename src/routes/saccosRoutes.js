@@ -207,6 +207,21 @@ router.post('/:id/loans/products/:productId/archive', authRequired, async (req, 
   } catch (e) { next(e); }
 });
 
+// ---------- Lending risk limits (increment 21b) ----------
+router.get('/:id/loans/risk', authRequired, async (req, res, next) => {
+  try {
+    const out = await credit.getMemberRiskSummary(req.user.id, Number(req.params.id));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.patch('/:id/loans/risk-limits', authRequired, async (req, res, next) => {
+  try {
+    const out = await credit.updateRiskLimits(req.user.id, Number(req.params.id), req.body);
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
 router.post('/:id/loans/apply', authRequired, async (req, res, next) => {
   try {
     const out = await credit.applyLoan(req.user.id, Number(req.params.id), { amount: req.body.amount, termMonths: req.body.termMonths, purpose: req.body.purpose, productId: req.body.productId });

@@ -31,6 +31,9 @@ const DEFAULT_LENDING_CONFIG = {
   savingsBackingEnabled: false,
   savingsBackingMultiple: 3,
   guaranteesRequired: 0,
+  maxExposureAmount: null,
+  maxExposureMultiple: null,
+  maxConcentrationPercent: null,
 };
 
 function lendingConfig(saccos) {
@@ -437,6 +440,117 @@ async function releaseGuaranteesForLoan(client, saccosId, loanId) {
   );
 }
 
+/* ============================================================
+ * Risk-limit helpers (increment 21b)
+ * ============================================================ */
+
+async function memberExposure(saccosId, memberId, db = pool) {
+  const r = await db.query(
+    `SELECT COALESCE(SUM(amount_outstanding), 0)::numeric AS exposure
+       FROM saccos_loans WHERE saccos_id = $1 AND member_id = $2 AND status = 'ACTIVE'`,
+    [saccosId, memberId]
+  );
+  return Number(r.rows[0].exposure);
+}
+
+async function assertMemberExposure(saccosId, memberId, value, cfg, db = pool) {
+  const exposure = await memberExposure(saccosId, memberId, db);
+  const after = round2(exposure + Number(value));
+  if (cfg.maxExposureAmount != null && Number(cfg.maxExposureAmount) > 0 && after > Number(cfg.maxExposureAmount)) {
+    throw createAppError('SACCOS_LOAN_EXPOSURE_EXCEEDED');
+  }
+  if (cfg.maxExposureMultiple != null && Number(cfg.maxExposureMultiple) > 0) {
+    const b = await memberBacking(saccosId, memberId, 1, db);
+    const cap = round2(b.backing_balance * Number(cfg.maxExposureMultiple));
+    if (b.backing_balance > 0 && after > cap) throw createAppError('SACCOS_LOAN_EXPOSURE_EXCEEDED');
+  }
+}
+
+/** Forward-looking single-borrower concentration = (borrower_exposure + new_principal) / (gross_loans + new_principal). */
+async function assertConcentration(saccosId, memberId, principal, cfg, db = pool) {
+  if (cfg.maxConcentrationPercent == null || !(Number(cfg.maxConcentrationPercent) > 0)) return;
+  const saccos = await db.query('SELECT * FROM saccos WHERE id = $1', [saccosId]).then((r) => r.rows[0]);
+  if (!saccos) return;
+  const treasury = await require('./saccosTreasuryService').computeTreasury(saccosId, saccos);
+  const grossLoans = Number(treasury.credit.gross_loans_receivable) || 0;
+  if (grossLoans <= 0) return;
+  const borrowerExposure = await memberExposure(saccosId, memberId, db);
+  const newGross = grossLoans + Number(principal);
+  if (newGross <= 0) return;
+  const percent = ((borrowerExposure + Number(principal)) / newGross) * 100;
+  if (percent > Number(cfg.maxConcentrationPercent)) {
+    throw createAppError('SACCOS_LOAN_CONCENTRATION_EXCEEDED');
+  }
+}
+
+function riskLimits(saccos) {
+  const cfg = lendingConfig(saccos);
+  return {
+    maxActiveLoans: Number(cfg.maxActiveLoans) || 1,
+    maxExposureAmount: cfg.maxExposureAmount != null ? Number(cfg.maxExposureAmount) : null,
+    maxExposureMultiple: cfg.maxExposureMultiple != null ? Number(cfg.maxExposureMultiple) : null,
+    maxConcentrationPercent: cfg.maxConcentrationPercent != null ? Number(cfg.maxConcentrationPercent) : null,
+  };
+}
+
+const RISK_LIMITS_SCHEMA = {
+  maxActiveLoans: (v) => v == null ? 1 : Math.max(1, Math.round(Number(v))),
+  maxExposureAmount: (v) => v == null ? null : Math.max(0, Number(v)) || null,
+  maxExposureMultiple: (v) => v == null ? null : Math.max(0, Number(v)) || null,
+  maxConcentrationPercent: (v) => v == null ? null : Math.min(100, Math.max(0, Number(v))) || null,
+};
+
+async function updateRiskLimits(actorId, saccosId, patch) {
+  await saccosCore.assertActiveRole(actorId, saccosId, ['OWNER', 'BOARD']);
+  const orgRow = await pool.query('SELECT config FROM saccos WHERE id = $1', [saccosId]).then((r) => r.rows[0]);
+  if (!orgRow) throw createAppError('SACCOS_NOT_FOUND');
+  const validated = {};
+  for (const [k, fn] of Object.entries(RISK_LIMITS_SCHEMA)) {
+    if (patch[k] !== undefined) validated[k] = fn(patch[k]);
+  }
+  if (!Object.keys(validated).length) throw createAppError('SACCOS_RISK_LIMITS_INVALID');
+  const lending = { ...((orgRow.config && orgRow.config.lending) || {}), ...validated };
+  const config = { ...((orgRow.config) || {}), lending };
+  await pool.query('UPDATE saccos SET config = $1::jsonb, updated_at = NOW() WHERE id = $2', [JSON.stringify(config), saccosId]);
+  await logAudit(actorId, 'SACCOS_RISK_LIMITS_UPDATED', { referenceId: saccosId, details: validated }).catch(() => {});
+  return riskLimits({ config });
+}
+
+async function getMemberRiskSummary(actorId, saccosId) {
+  await saccosCore.assertActiveRole(actorId, saccosId, ['OWNER', 'BOARD']);
+  const saccos = await fetchActiveOrg(actorId, saccosId);
+  const limits = riskLimits(saccos);
+  const treasury = await require('./saccosTreasuryService').computeTreasury(saccosId, saccos);
+  const topRows = await pool.query(
+    `SELECT sm.user_id, u.full_name, u.phone_number,
+            COALESCE(SUM(sl.amount_outstanding), 0)::numeric AS exposure,
+            COUNT(*)::int AS active_loans
+       FROM saccos_loans sl
+       JOIN saccos_members sm ON sm.id = sl.member_id AND sm.saccos_id = $1
+       LEFT JOIN users u ON u.id = sm.user_id
+      WHERE sl.saccos_id = $1 AND sl.status = 'ACTIVE'
+      GROUP BY sm.user_id, u.full_name, u.phone_number
+      ORDER BY exposure DESC
+      LIMIT 20`, [saccosId]
+  );
+  return {
+    limits,
+    portfolio: {
+      gross_loans: treasury.credit.gross_loans_receivable,
+      member_deposits: treasury.member_deposits.total,
+      funding_ratio: treasury.ratios.funding_ratio,
+    },
+    borrowers: topRows.rows.map((r) => ({
+      user_id: r.user_id,
+      full_name: r.full_name,
+      phone_number: r.phone_number,
+      exposure: Number(r.exposure),
+      active_loans: r.active_loans,
+      utilization_pct: limits.maxExposureAmount ? round2((Number(r.exposure) / limits.maxExposureAmount) * 100) : null,
+    })),
+  };
+}
+
 async function applyLoan(actorId, saccosId, { amount, termMonths, purpose, productId }) {
   const value = Number(amount);
   const term = Number(termMonths);
@@ -466,6 +580,7 @@ async function applyLoan(actorId, saccosId, { amount, termMonths, purpose, produ
 
   const backing = cfg.savingsBackingEnabled ? await memberBacking(saccosId, membership.id, cfg.savingsBackingMultiple) : null;
   if (backing && value > backing.backing_limit) throw createAppError('SACCOS_LOAN_BACKING_INSUFFICIENT');
+  await assertMemberExposure(saccosId, membership.id, value, cfg);
 
   const ref = newRef('SCL');
   const app = await pool.query(
@@ -540,6 +655,8 @@ async function decideApplication(actorId, saccosId, applicationId, decision) {
           [co.cover, applicationId]
         );
       }
+      await assertMemberExposure(saccosId, app.member_id, Number(app.requested_amount), cfg, client);
+      await assertConcentration(saccosId, app.member_id, Number(app.requested_amount), cfg, client);
       const rate = app.rate_percent != null ? Number(app.rate_percent) : cfg.interestRate;
       const { total } = repaymentMath(app.requested_amount, rate, app.term_months, app.requested_amount);
       const loan = await client.query(
@@ -765,4 +882,11 @@ module.exports = {
   listProducts,
   archiveProduct,
   fetchActiveProduct,
+  // lending risk limits (increment 21b)
+  memberExposure,
+  assertMemberExposure,
+  assertConcentration,
+  riskLimits,
+  updateRiskLimits,
+  getMemberRiskSummary,
 };

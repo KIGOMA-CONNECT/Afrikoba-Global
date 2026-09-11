@@ -57,6 +57,8 @@ export default function Saccos() {
     apply: { show: false, productId: '', amount: '', term: '', purpose: '' },
   });
   const [tr, setTr] = useState({ position: null, history: [] });
+  const [risk, setRisk] = useState({ limits: null, portfolio: null, borrowers: [] });
+  const [riskForm, setRiskForm] = useState({ maxActiveLoans: '', maxExposureAmount: '', maxExposureMultiple: '', maxConcentrationPercent: '' });
 
   const show = (type, text) => {
     setMsg({ type, text });
@@ -123,8 +125,11 @@ export default function Saccos() {
     setSo({ mine: [], all: [], targets: { funds: [], schemes: [], loans: [] }, form: { show: false, type: 'SAVINGS_DEPOSIT', amount: '', day: '1', targetId: '' } });
     setLp({ list: [], form: { show: false, code: '', name: '', desc: '', rate: '', min: '', max: '', term: '' }, apply: { show: false, productId: '', amount: '', term: '', purpose: '' } });
     setTr({ position: null, history: [] });
+    setRisk({ limits: null, portfolio: null, borrowers: [] });
+    setRiskForm({ maxActiveLoans: '', maxExposureAmount: '', maxExposureMultiple: '', maxConcentrationPercent: '' });
     loadProducts(org.id);
     loadTreasury(org.id);
+    loadRisk(org.id);
     api.get(`/saccos/${org.id}/loans/mine`).then((r) => {
       setLoans(r.data.result.loans || []);
       if (r.data.result.loans && r.data.result.loans.length) {
@@ -301,6 +306,22 @@ export default function Saccos() {
       .catch(() => setTr((s) => ({ ...s, history: [] })));
   };
 
+  const loadRisk = (id) => {
+    if (!isGoverning()) return;
+    api.get(`/saccos/${id}/loans/risk`)
+      .then((r) => {
+        const res = r.data.result;
+        setRisk({ limits: res.limits, portfolio: res.portfolio, borrowers: res.borrowers || [] });
+        setRiskForm({
+          maxActiveLoans: res.limits?.maxActiveLoans != null ? String(res.limits.maxActiveLoans) : '',
+          maxExposureAmount: res.limits?.maxExposureAmount != null ? String(res.limits.maxExposureAmount) : '',
+          maxExposureMultiple: res.limits?.maxExposureMultiple != null ? String(res.limits.maxExposureMultiple) : '',
+          maxConcentrationPercent: res.limits?.maxConcentrationPercent != null ? String(res.limits.maxConcentrationPercent) : '',
+        });
+      })
+      .catch(() => {});
+  };
+
   const doSnapshot = async () => {
     if (!isGoverning()) return;
     setBusy((prev) => ({ ...prev, trSnap: true }));
@@ -312,6 +333,25 @@ export default function Saccos() {
       show('err', err.response?.data?.message || t('saccos.error'));
     } finally {
       setBusy((prev) => ({ ...prev, trSnap: false }));
+    }
+  };
+
+  const saveRiskLimits = async () => {
+    if (!isGoverning()) return;
+    const body = {};
+    if (riskForm.maxActiveLoans !== '') body.maxActiveLoans = Number(riskForm.maxActiveLoans);
+    if (riskForm.maxExposureAmount !== '') body.maxExposureAmount = Number(riskForm.maxExposureAmount);
+    if (riskForm.maxExposureMultiple !== '') body.maxExposureMultiple = Number(riskForm.maxExposureMultiple);
+    if (riskForm.maxConcentrationPercent !== '') body.maxConcentrationPercent = Number(riskForm.maxConcentrationPercent);
+    setBusy((prev) => ({ ...prev, riskSave: true }));
+    try {
+      await api.patch(`/saccos/${selected.id}/loans/risk-limits`, body);
+      show('ok', t('saccos.saved'));
+      loadRisk(selected.id);
+    } catch (err) {
+      show('err', err.response?.data?.message || t('saccos.error'));
+    } finally {
+      setBusy((prev) => ({ ...prev, riskSave: false }));
     }
   };
 
@@ -1039,6 +1079,68 @@ export default function Saccos() {
                       ))
                     )}
                   </div>
+                </>
+              )}
+            </div>
+          ) : null}
+
+          {isGoverning() ? (
+            <div className="card">
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
+                <h3 style={{ margin: 0 }}>{t('saccos.rk_title')}</h3>
+                <button className="btn ghost" disabled={!!busy.riskSave} onClick={saveRiskLimits}>
+                  {busy.riskSave ? t('saccos.loading') : t('saccos.rk_save')}
+                </button>
+              </div>
+              {!risk.limits ? (
+                <div className="muted" style={{ marginTop: 10 }}>{t('saccos.loading')}</div>
+              ) : (
+                <>
+                  <div className="muted" style={{ fontSize: 13, margin: '10px 0' }}>{t('saccos.rk_hint')}</div>
+                  <div className="grid grid-2" style={{ marginTop: 8 }}>
+                    <label className="muted">{t('saccos.rk_active_loans')}
+                      <input type="number" min="1" value={riskForm.maxActiveLoans} onChange={(e) => setRiskForm((f) => ({ ...f, maxActiveLoans: e.target.value }))} />
+                    </label>
+                    <label className="muted">{t('saccos.rk_exposure_amt')}
+                      <input type="number" min="0" placeholder="TZS" value={riskForm.maxExposureAmount} onChange={(e) => setRiskForm((f) => ({ ...f, maxExposureAmount: e.target.value }))} />
+                    </label>
+                    <label className="muted">{t('saccos.rk_exposure_mult')}
+                      <input type="number" min="0" step="0.5" placeholder="×" value={riskForm.maxExposureMultiple} onChange={(e) => setRiskForm((f) => ({ ...f, maxExposureMultiple: e.target.value }))} />
+                    </label>
+                    <label className="muted">{t('saccos.rk_concentration')}
+                      <input type="number" min="0" max="100" placeholder="%" value={riskForm.maxConcentrationPercent} onChange={(e) => setRiskForm((f) => ({ ...f, maxConcentrationPercent: e.target.value }))} />
+                    </label>
+                  </div>
+                  <div className="grid grid-3" style={{ marginTop: 14 }}>
+                    <Stat value={risk.portfolio ? formatMoney(risk.portfolio.gross_loans) : '—'} label={t('saccos.rk_gross')} />
+                    <Stat value={risk.portfolio ? formatMoney(risk.portfolio.member_deposits) : '—'} label={t('saccos.rk_deposits')} />
+                    <Stat value={risk.portfolio ? (risk.portfolio.funding_ratio == null ? '—' : risk.portfolio.funding_ratio) : '—'} label={t('saccos.rk_funding')} />
+                  </div>
+                  <div className="muted" style={{ fontSize: 13, marginTop: 14, marginBottom: 6 }}>{t('saccos.rk_borrowers')}</div>
+                  {!risk.borrowers.length ? (
+                    <div className="muted">{t('saccos.rk_none')}</div>
+                  ) : (
+                    <table className="table" style={{ fontSize: 13 }}>
+                      <thead>
+                        <tr>
+                          <th>{t('saccos.rk_member')}</th>
+                          <th>{t('saccos.rk_exposure')}</th>
+                          <th>{t('saccos.rk_loans')}</th>
+                          <th>{t('saccos.rk_util')}</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {risk.borrowers.map((b) => (
+                          <tr key={b.user_id}>
+                            <td>{b.full_name || b.phone_number}</td>
+                            <td>{formatMoney(b.exposure)}</td>
+                            <td>{b.active_loans}</td>
+                            <td>{b.utilization_pct == null ? '—' : `${b.utilization_pct}%`}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
                 </>
               )}
             </div>
