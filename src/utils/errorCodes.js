@@ -140,6 +140,12 @@ const ERROR_CODES = {
   SACCOS_LOAN_ALREADY_CLOSED:      { status: 400, message: 'Mkopo huu tayari umekamilika.' },
   SACCOS_LOAN_REPAY_EXCEEDS:       { status: 400, message: 'Kiasi cha rejesho kinazidi deni lililobaki.' },
 
+  // SACCOS loan installments (400/404)
+  SACCOS_LOAN_INSTALLMENT_NOT_FOUND: { status: 404, message: 'Awamu ya malipo haijapatikana.' },
+  SACCOS_LOAN_INSTALLMENT_ORDER:     { status: 400, message: 'Lipa awamu za awali kabla ya hii.' },
+  SACCOS_LOAN_INSTALLMENT_ALREADY_PAID: { status: 400, message: 'Awamu hii tayari imelipwa.' },
+  SACCOS_LOAN_INSTALLMENTS_EXIST:    { status: 400, message: 'Ratiba ya awamu tayari imekwisha jalizwa.' },
+
   // SACCOS governance (400/403/404)
   SACCOS_GOV_RESOLUTION_NOT_FOUND: { status: 404, message: 'Azimio halijapatikana.' },
   SACCOS_GOV_RESOLUTION_STATE:     { status: 400, message: 'Hali ya azimio hairuhusu hatua hii.' },

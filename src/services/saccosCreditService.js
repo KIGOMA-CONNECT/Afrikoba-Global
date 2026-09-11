@@ -400,4 +400,5 @@ module.exports = {
   loansReceivableCode,
   interestIncomeCode,
   repaymentMath,
+  ensureCreditAccounts,
 };

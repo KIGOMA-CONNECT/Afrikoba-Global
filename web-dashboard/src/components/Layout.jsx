@@ -23,6 +23,7 @@ export default function Layout() {
     { to: '/dashboard/services', key: 'nav.services', always: true },
     { to: '/dashboard/promotions', key: 'nav.promotions', always: true },
     { to: '/dashboard/vicoba', key: 'nav.vicoba', svc: 'VICOBA' },
+    { to: '/dashboard/saccos', key: 'nav.saccos', always: true },
     { to: '/dashboard/governance', key: 'nav.governance', always: true },
     { to: '/dashboard/ai', key: 'nav.ai', always: true },
     { to: '/dashboard/rosca', key: 'nav.rosca', svc: 'ROSCA' },

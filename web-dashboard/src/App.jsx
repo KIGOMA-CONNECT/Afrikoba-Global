@@ -31,6 +31,7 @@ const Dashboard = lazy(() => import('./pages/Dashboard.jsx'));
 
 const Wallet = lazy(() => import('./pages/Wallet.jsx'));
 const Vicoba = lazy(() => import('./pages/Vicoba.jsx'));
+const Saccos = lazy(() => import('./pages/Saccos.jsx'));
 const Rosca = lazy(() => import('./pages/Rosca.jsx'));
 const P2p = lazy(() => import('./pages/P2p.jsx'));
 const Admin = lazy(() => import('./pages/Admin.jsx'));
@@ -134,6 +135,7 @@ export default function App() {
         <Route path="promotions" element={<Page><Promotions /></Page>} />
         <Route path="wallet" element={<Page><Wallet /></Page>} />
         <Route path="vicoba" element={<Page><Vicoba /></Page>} />
+        <Route path="saccos" element={<Page><Saccos /></Page>} />
         <Route path="rosca" element={<Page><Rosca /></Page>} />
         <Route path="p2p" element={<Page><P2p /></Page>} />
         <Route path="admin" element={<Page><Admin /></Page>} />

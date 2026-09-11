@@ -11,6 +11,7 @@ const dividends = require('../services/saccosDividendsService');
 const funds = require('../services/saccosFundsService');
 const exit = require('../services/saccosExitService');
 const reporting = require('../services/saccosReportingService');
+const installments = require('../services/saccosInstallmentService');
 
 const router = express.Router();
 
@@ -601,6 +602,34 @@ router.get('/:id/members/:memberId/statement', authRequired, async (req, res, ne
 router.get('/:id/reports/regulatory', authRequired, async (req, res, next) => {
   try {
     const out = await reporting.regulatoryReport(req.user.id, Number(req.params.id));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.get('/:id/loans/:loanId/installments', authRequired, async (req, res, next) => {
+  try {
+    const out = await installments.listInstallments(req.user.id, Number(req.params.id), Number(req.params.loanId));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/loans/:loanId/installments/generate', authRequired, async (req, res, next) => {
+  try {
+    const out = await installments.generateInstallments(req.user.id, Number(req.params.id), Number(req.params.loanId));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/loans/:loanId/installments/:installmentId/pay', authRequired, async (req, res, next) => {
+  try {
+    const out = await installments.payInstallment(req.user.id, Number(req.params.id), Number(req.params.loanId), Number(req.params.installmentId));
+    res.json({ success: true, result: out });
+  } catch (e) { next(e); }
+});
+
+router.get('/:id/loans/installments/summary', authRequired, async (req, res, next) => {
+  try {
+    const out = await installments.installmentSummary(req.user.id, Number(req.params.id));
     res.json({ success: true, result: out });
   } catch (e) { next(e); }
 });
