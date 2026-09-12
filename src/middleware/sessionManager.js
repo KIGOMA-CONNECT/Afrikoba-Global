@@ -136,6 +136,9 @@ async function refreshAccessToken(refreshToken) {
       if (err.name === 'TokenExpiredError') {
         throw Object.assign(new Error('Refresh token imeisha muda.'), { statusCode: 401 });
       }
+      if (err.name === 'JsonWebTokenError') {
+        throw Object.assign(new Error('Refresh token si sahihi.'), { statusCode: 401 });
+      }
       throw err;
     }
   }
