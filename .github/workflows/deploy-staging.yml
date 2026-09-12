@@ -7,17 +7,19 @@ name: Afrikoba Staging Deployment
 #   - App env         : NODE_ENV=development (devOtp + simulated SMS),
 #                       DB afrikoba_global_staging, SACCOS enabled
 #
-# Server-side prerequisites (once):
-#   1. Reverse proxy vhost for staging.afrikoba.com → 127.0.0.1:3001
-#      (e.g. Caddy:  staging.afrikoba.com { reverse_proxy 127.0.0.1:3001 })
-#   2. DNS A record    staging.afrikoba.com          → server IP
+# Server-side prerequisites (once, already done):
+#   1. Isolated git checkout at /var/www/afrikoba-staging
+#   2. .env.staging exists there (secrets persist; created once)
+#   3. Reverse proxy vhost for staging.afrikoba.com → 127.0.0.1:3001
+#      in /www/server/panel/vhost/nginx/ (aaPanel nginx, TLS + Basic Auth)
+#   4. DNS A record    staging.afrikoba.com          → server IP (PENDING - user)
 #
 # GitHub secrets/variables needed:
 #   secrets.STAGING_DB_PASSWORD   (set ONCE - persists in staging DB volume)
 #   secrets.STAGING_JWT_SECRET    (any 48+ char random hex)
 #   secrets.STAGING_WEBHOOK_SECRET
 #   vars.STAGING_CORS_ORIGINS     (default https://staging.afrikoba.com)
-#   vars.SERVER_PATH              (shared checkout - already configured)
+#   vars.STAGING_SERVER_PATH      (staging checkout, e.g. /var/www/afrikoba-staging)
 # ============================================================
 
 # Manual trigger only: deploy current origin/main as the staging stack.
@@ -34,7 +36,7 @@ jobs:
 
       - name: Verify deployment target config
         run: |
-          if [ -n "${{ vars.SERVER_PATH }}" ]; then echo "SERVER_PATH is set (length ${#SERVER_PATH})"; else echo "::error::SERVER_PATH repo variable is NOT set - please configure it under Settings > Secrets and variables > Actions > Variables"; exit 1; fi
+          if [ -n "${{ vars.STAGING_SERVER_PATH }}" ]; then echo "STAGING_SERVER_PATH is set (length ${#STAGING_SERVER_PATH})"; else echo "::error::STAGING_SERVER_PATH repo variable is NOT set - please configure it under Settings > Secrets and variables > Actions > Variables"; exit 1; fi
 
       - name: Validate SSH private key format
         env:
@@ -59,47 +61,49 @@ jobs:
           port: 22
           debug: true
           command_timeout: 20m
+          envs: STAGING_DB_PASSWORD,STAGING_JWT_SECRET,STAGING_WEBHOOK_SECRET
           script: |
             set -e
             echo "connected as $(whoami) on $(hostname)"
-            cd "${{ vars.SERVER_PATH }}" || exit 1
+            STAGE_DIR="${{ vars.STAGING_SERVER_PATH }}"
+            cd "$STAGE_DIR" || exit 1
             pwd
             git fetch origin main
             git reset --hard origin/main
             git log --oneline -1
 
             CORS_ORIGINS="${STAGING_CORS_ORIGINS:-https://staging.afrikoba.com}"
-            if [ -z "$STAGING_DB_PASSWORD" ]; then
-              echo "::error::STAGING_DB_PASSWORD secret is empty - configure it first"
-              exit 1
-            fi
 
             # Create .env.staging on first deploy only (password persists in the
             # staging DB volume; rotating it later would desync app vs postgres).
             if [ ! -f .env.staging ]; then
+              if [ -z "$STAGING_DB_PASSWORD" ]; then
+                echo "::error::STAGING_DB_PASSWORD secret is empty - configure it under Settings > Secrets"
+                exit 1
+              fi
               cat > .env.staging <<EOF
-        NODE_ENV=development
-        APP_PORT=3001
-        COMPOSE_PROJECT_NAME=afrikoba-staging
-        BACKUP_DIR=./backups-staging
-        DB_USER=afrikoba
-        DB_PASSWORD=$STAGING_DB_PASSWORD
-        DB_NAME=afrikoba_global_staging
-        JWT_SECRET=$STAGING_JWT_SECRET
-        JWT_TTL=7d
-        CORS_ORIGINS=$CORS_ORIGINS
-        WEBHOOK_SECRET=$STAGING_WEBHOOK_SECRET
-        BEEM_API_KEY=placeholder-staging
-        BEEM_SECRET_KEY=placeholder-staging
-        BEEM_SENDER_ID=AFRIKOBA
-        AT_API_KEY=placeholder-staging
-        AT_USERNAME=sandbox_afrikoba_staging
-        AZAMPAY_APP_NAME=afrikoba-staging
-        AZAMPAY_CLIENT_ID=placeholder-staging
-        AZAMPAY_CLIENT_SECRET=placeholder-staging
-        AZAMPAY_ENV=sandbox
-        TRUST_PROXY=true
-        EOF
+            NODE_ENV=development
+            APP_PORT=3001
+            COMPOSE_PROJECT_NAME=afrikoba-staging
+            BACKUP_DIR=./backups-staging
+            DB_USER=afrikoba
+            DB_PASSWORD=$STAGING_DB_PASSWORD
+            DB_NAME=afrikoba_global_staging
+            JWT_SECRET=$STAGING_JWT_SECRET
+            JWT_TTL=7d
+            CORS_ORIGINS=$CORS_ORIGINS
+            WEBHOOK_SECRET=$STAGING_WEBHOOK_SECRET
+            BEEM_API_KEY=placeholder-staging
+            BEEM_SECRET_KEY=placeholder-staging
+            BEEM_SENDER_ID=AFRIKOBA
+            AT_API_KEY=placeholder-staging
+            AT_USERNAME=sandbox_afrikoba_staging
+            AZAMPAY_APP_NAME=afrikoba-staging
+            AZAMPAY_CLIENT_ID=placeholder-staging
+            AZAMPAY_CLIENT_SECRET=placeholder-staging
+            AZAMPAY_ENV=sandbox
+            TRUST_PROXY=true
+            EOF
               echo "created .env.staging (first run)"
             else
               echo ".env.staging already exists - keeping existing secrets"
@@ -118,3 +122,7 @@ jobs:
             done
             echo "::error::Staging API did not become healthy within 400s after rebuild"
             exit 1
+        env:
+          STAGING_DB_PASSWORD: ${{ secrets.STAGING_DB_PASSWORD }}
+          STAGING_JWT_SECRET: ${{ secrets.STAGING_JWT_SECRET }}
+          STAGING_WEBHOOK_SECRET: ${{ secrets.STAGING_WEBHOOK_SECRET }}
