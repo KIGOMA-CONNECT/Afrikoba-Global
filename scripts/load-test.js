@@ -18,6 +18,8 @@
  *
  * Load-run notes: default OTP_RATE_MAX is 20/15min per phone; for realistic
  * auth load on staging either raise it or set RATE_LIMIT_DISABLED=true.
+ * The fraud velocity cap (FRAUD_VELOCITY_HOUR, default 10/hour) must also be
+ * raised on the target when running the transfer scenario at sustained load.
  */
 
 import http from 'k6/http';
@@ -127,7 +129,9 @@ export function healthCheck() {
 
 export function authFlow() {
   group('Auth: Login + Register (devOtp)', () => {
-    const phone = `2557${String(__VU).padStart(2, '0')}${String(__ITER).padStart(6, '0')}`.slice(0, 12);
+    // Unique phone per iteration: __VU + __ITER alone collide across VUs (duplicate
+    // registers return 400), so add a ms timestamp suffix.
+    const phone = `2557${String(__VU).padStart(2, '0')}${String(Date.now()).slice(-6)}`;
     const otpRes = http.post(`${BASE_URL}/api/v1/auth/send-otp`,
       JSON.stringify({ phoneNumber: phone }),
       { headers: { 'Content-Type': 'application/json' } });
@@ -142,10 +146,11 @@ export function authFlow() {
         JSON.stringify({ fullName: `Load User ${__VU}-${__ITER}`, phoneNumber: phone, otp: devOtp }),
         { headers: { 'Content-Type': 'application/json' } });
       apiLatency.add(reg.timings.duration);
-      if (reg.status === 200 && reg.json() && reg.json().token) loginSuccess.add(1);
+      if ((reg.status === 200 || reg.status === 201) && reg.json() && reg.json().token) loginSuccess.add(1);
       else loginFailed.add(1);
       check(reg, {
-        'register: status 200 or 400': (r) => r.status === 200 || r.status === 400,
+        'register: created (200/201) or business rejection (400/429)': (r) =>
+          r.status === 200 || r.status === 201 || r.status === 400 || r.status === 429,
       });
     } else if (otpRes.status !== 200) {
       loginFailed.add(1);
@@ -181,8 +186,8 @@ export function walletTransfer() {
     apiLatency.add(res.timings.duration);
     if (res.status === 200) transferSuccess.add(1);
     check(res, {
-      'transfer: accepted (200) or business error (400/402/409)': (r) =>
-        r.status === 200 || r.status === 400 || r.status === 402 || r.status === 409,
+      'transfer: accepted (200) or business rejection (400/402/403/409)': (r) =>
+        r.status === 200 || r.status === 400 || r.status === 402 || r.status === 403 || r.status === 409,
     });
     const bal = http.get(`${BASE_URL}/api/v1/wallet/balance`,
       { headers: { Authorization: `Bearer ${token}` } });

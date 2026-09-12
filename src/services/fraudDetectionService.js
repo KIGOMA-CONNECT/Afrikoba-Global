@@ -6,9 +6,12 @@
 const pool = require('../config/db');
 const logger = require('../utils/logger');
 
+// Thresholds are env-overridable so non-prod load-testing targets can raise the
+// velocity ceilings (a sustained k6 transfer run legitimately exceeds the daily
+// real-user limits); prod keeps the defaults because the envs are never set there.
 const THRESHOLDS = {
-  VELOCITY_HOUR: 10,
-  VELOCITY_DAY: 50,
+  VELOCITY_HOUR: Number(process.env.FRAUD_VELOCITY_HOUR) || 10,
+  VELOCITY_DAY: Number(process.env.FRAUD_VELOCITY_DAY) || 50,
   AMOUNT_SINGLE_HIGH: 5000000,
   AMOUNT_DAILY_HIGH: 15000000,
   UNIQUE_RECIPIENTS_DAY: 10,

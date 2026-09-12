@@ -20,6 +20,9 @@ on:
 #   - RATE_LIMIT_DISABLED=true (or raised OTP_RATE_MAX) so the auth scenario is not
 #     throttled; the transfer scenario uses seeded users 255713100001 / 255714100002
 #     from db/seed.sql.
+#   - FRAUD_VELOCITY_HOUR / FRAUD_VELOCITY_DAY raised (e.g. 100000) so the sustained
+#     transfer scenario (2/s) does not trip the account velocity gate
+#     (src/services/fraudDetectionService.js defaults: 10/hour, 50/day).
 # See headers of scripts/load-test.js and scripts/security-test.js.
 permissions:
   contents: read
