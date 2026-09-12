@@ -28,10 +28,22 @@ async function expect(cond, label, extra) {
 async function api(method, path, token, body) {
   const headers = { 'Content-Type': 'application/json' };
   if (token) headers.Authorization = `Bearer ${token}`;
-  const res = await fetch(BASE + path, { method, headers, body: body ? JSON.stringify(body) : undefined });
-  let data = null;
-  try { data = await res.json(); } catch (e) { data = {}; }
-  return { status: res.status, data };
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const res = await fetch(BASE + path, { method, headers, body: body ? JSON.stringify(body) : undefined });
+      let data = null;
+      try { data = await res.json(); } catch (e) { data = {}; }
+      return { status: res.status, data };
+    } catch (err) {
+      // Live CI server can drop a keep-alive socket mid-request; one retry keeps
+      // the whole suite from dying on a transient reset.
+      if (attempt === 0 && err && /UND_ERR_SOCKET|ECONNRESET|other side closed|socket hang/i.test(err.message || '')) {
+        await new Promise((r) => setTimeout(r, 300));
+        continue;
+      }
+      throw err;
+    }
+  }
 }
 
 async function apiRaw(method, path, rawBody, headersExt) {

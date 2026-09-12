@@ -73,7 +73,7 @@ async function diagnoseLockBlockers(sqlState) {
           AND a.pid <> pg_backend_pid()
           AND a.xact_start IS NOT NULL
           AND now() - a.xact_start > interval '3 seconds'
-        GROUP BY l.pid, a.state, left(a.query, 140)
+        GROUP BY l.pid, a.state, a.xact_start, left(a.query, 140)
         ORDER BY xact_age DESC`
     );
     if (holders.rows.length) {

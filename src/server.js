@@ -461,8 +461,10 @@ module.exports = app;
 
 // H14: Graceful handling of unhandled rejections
 process.on('unhandledRejection', (reason, promise) => {
-  logger.error('SERVER', 'Unhandled Rejection at: Promise', { promise, reason });
+  const detail = (reason && (reason.stack || reason.message)) || String(reason);
+  logger.error('SERVER', `Unhandled Rejection: ${detail}`);
 });
 process.on('uncaughtException', (err) => {
-  logger.error('SERVER', 'Uncaught Exception', { err });
+  const detail = (err && (err.stack || err.message)) || String(err);
+  logger.error('SERVER', `Uncaught Exception: ${detail}`);
 });
