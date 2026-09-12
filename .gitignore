@@ -32,3 +32,9 @@ mobile/android/.gradle/
 mobile/android/local.properties
 mobile/ios/Pods/
 mobile/ios/.symlinks/
+
+# Local server runtime
+server.err
+server.log
+_ci_fail*.log
+_ci_artifacts/
