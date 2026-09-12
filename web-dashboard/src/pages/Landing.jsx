@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
+import { useT } from '../i18n/LangProvider.jsx';
 import '../styles/landing.css';
 
 export default function Landing() {
+  const { t, lang, setLang } = useT();
   const [menuOpen, setMenuOpen] = useState(false);
-  const [lang, setLang] = useState('sw');
   const [showBalance, setShowBalance] = useState(true);
   const [yieldAmount, setYieldAmount] = useState(1000000);
   const [showSmartBanner, setShowSmartBanner] = useState(true);
@@ -22,17 +23,17 @@ export default function Landing() {
   const projects = [
     {
       tier: 'Tier A Gold Project',
-      title: 'Kilimo cha Mpunga Dakawa (Season 2027)',
+      title: t('landing.proj1_title'),
       roi: '18% p.a Return',
-      desc: 'Uwekezaji wa moja kwa moja kwenye shamba la hekta 50 la mpunga Morogoro, ukiwa na bima rasmi ya mazao.',
+      desc: t('landing.proj1_desc'),
       progress: 75,
       funded: 'TZS 15M / 20M',
     },
     {
       tier: 'Agribusiness Fattening',
-      title: "Unenepeshaji Ng'ombe wa Nyama (Sumbawanga)",
+      title: t('landing.proj2_title'),
       roi: '22% p.a Return',
-      desc: "Mradi wa unenepeshaji ng'ombe 100 wa nyama kwa ajili ya soko la kuuza nje ya nchi.",
+      desc: t('landing.proj2_desc'),
       progress: 92,
       funded: 'TZS 28M / 30M',
     },
@@ -41,54 +42,61 @@ export default function Landing() {
   const services = [
     {
       icon: '👥',
-      title: 'VICOBA Digital',
-      desc: "Mwenyekiti anasajili kikundi na kupata Namba Maalumu (Group Code). Wanachama wanajiunga au kuona maombi ya mwaliko. Idhini za mikopo zinafanyika kwa Multi-Sig PIN.",
-      cta: 'Sajili Kikundi Sasa',
+      title: t('landing.svc_vicoba'),
+      desc: t('landing.svc_vicoba_desc'),
+      cta: t('landing.svc_vicoba_cta'),
+      href: '/login',
+    },
+    {
+      icon: '🏛️',
+      title: t('landing.svc_saccos'),
+      desc: t('landing.svc_saccos_desc'),
+      cta: t('landing.svc_saccos_cta'),
       href: '/login',
     },
     {
       icon: '🌱',
-      title: 'Afrikoba Yield (13% p.a)',
-      desc: "Funga mtaji wako kwa hiari kwenye Mfuko wa Faida na upokee 13% kila mwezi moja kwa moja kwenye Wallet yako au Benki.",
-      cta: 'Wekeza Kwenye Yield',
+      title: t('landing.svc_yield'),
+      desc: t('landing.svc_yield_desc'),
+      cta: t('landing.svc_yield_cta'),
       href: '/login',
     },
     {
       icon: '🔄',
-      title: 'ROSCA / Smart Upatu',
-      desc: "Mzunguko wa fedha unaoendeshwa na mfumo kiotomatiki bila kupendelea mtu. Mfumo unakata mchango kupitia Mobile Money na kumpa anayestahili.",
-      cta: 'Anzisha Upatu',
+      title: t('landing.svc_rosca'),
+      desc: t('landing.svc_rosca_desc'),
+      cta: t('landing.svc_rosca_cta'),
       href: '/login',
     },
     {
       icon: '💳',
-      title: 'P2P Crowdfunding',
-      desc: "Wekeza kwenye miradi ya uzalishaji iliyohakikiwa (Kilimo, Mifugo) yenye Bima ya Mfuko na faida ya hadi 22% kwa mwaka.",
-      cta: 'Angalia Miradi',
+      title: t('landing.svc_p2p'),
+      desc: t('landing.svc_p2p_desc'),
+      cta: t('landing.svc_p2p_cta'),
       href: '/login',
     },
   ];
 
   const steps = [
-    { num: '1', title: 'Fungua Akaunti', desc: 'Jaza namba ya simu na kitambulisho cha NIDA au Pasi ya Kusafiria mara moja.' },
-    { num: '2', title: 'Chagua Huduma', desc: 'Anzisha Kikundi cha VICOBA, jiunge na mzunguko wa ROSCA, au fungua Afrikoba Yield.' },
-    { num: '3', title: 'Weka/Toa Pesa', desc: 'Tumia M-Pesa, Tigo Pesa, Selcom, au Akaunti yako ya Benki (CRDB/NMB/NBC) kufanya miamala.' },
-    { num: '4', title: 'Kukuza Mtaji', desc: 'Fuatilia ripoti zako za kifedha, gawio la kila mwezi, na maendeleo ya vikundi vyako.' },
+    { num: '1', title: t('landing.step1_title'), desc: t('landing.step1_desc') },
+    { num: '2', title: t('landing.step2_title'), desc: t('landing.step2_desc') },
+    { num: '3', title: t('landing.step3_title'), desc: t('landing.step3_desc') },
+    { num: '4', title: t('landing.step4_title'), desc: t('landing.step4_desc') },
   ];
 
   const yieldFeatures = [
-    { icon: '🛡️', title: 'Capital Protection', desc: 'Mtaji wako umelindwa 100% na kuwekezwa kwenye mifuko iliyoidhinishwa na Mamlaka ya Masoko ya Mitaji (CMSA).' },
-    { icon: '📅', title: 'Monthly Payouts', desc: 'Gawio lako linaingia kwenye Wallet au Akaunti yako ya Benki/Mobile Money tarehe 30 ya kila mwezi.' },
-    { icon: '📈', title: 'Compound Growth', desc: 'Washa mfumo wa Auto-Reinvest ili faida yako iongezeke kwenye mtaji na kuzalisha faida kubwa zaidi.' },
+    { icon: '🛡️', title: t('landing.pf_capital_title'), desc: t('landing.pf_capital_desc') },
+    { icon: '📅', title: t('landing.pf_monthly_title'), desc: t('landing.pf_monthly_desc') },
+    { icon: '📈', title: t('landing.pf_compound_title'), desc: t('landing.pf_compound_desc') },
   ];
 
   return (
     <div className="afrikoba-landing">
       {showSmartBanner && isMobile && (
         <div className="mobile-smart-banner">
-          <span>📱 Pakua App ya Afrikoba kupata usimamizi rahisi wa VICOBA.</span>
+          <span>{t('landing.banner')}</span>
           <div className="flex items-center gap-2">
-            <a href="https://play.google.com/store/apps/details?id=com.afrikoba" target="_blank" rel="noopener noreferrer" className="banner-install-btn">Install</a>
+            <a href="https://play.google.com/store/apps/details?id=com.afrikoba" target="_blank" rel="noopener noreferrer" className="banner-install-btn">{t('landing.install')}</a>
             <button className="banner-close-btn" onClick={() => setShowSmartBanner(false)}>&times;</button>
           </div>
         </div>
@@ -103,10 +111,10 @@ export default function Landing() {
         </div>
 
         <nav className="landing-desktop-nav">
-          <a href="#huduma">Huduma Zetu</a>
-          <a href="#yield">Afrikoba Yield (13%)</a>
-          <a href="#jinsi">Jinsi Inavyofanya Kazi</a>
-          <a href="#uwekezaji">Uwekezaji (P2P)</a>
+          <a href="#huduma">{t('landing.nav_services')}</a>
+          <a href="#yield">{t('landing.nav_yield')}</a>
+          <a href="#jinsi">{t('landing.nav_how')}</a>
+          <a href="#uwekezaji">{t('landing.nav_invest')}</a>
         </nav>
 
         <div className="landing-nav-actions">
@@ -114,8 +122,8 @@ export default function Landing() {
             <option value="sw">🇹🇿 SW</option>
             <option value="en">🇬🇧 EN</option>
           </select>
-          <Link to="/login" className="landing-btn-outline">Ingia (Login)</Link>
-          <Link to="/login" className="landing-btn-solid">Fungua Akaunti</Link>
+          <Link to="/login" className="landing-btn-outline">{t('landing.login')}</Link>
+          <Link to="/login" className="landing-btn-solid">{t('landing.open_account')}</Link>
 
           <button className={`landing-hamburger ${menuOpen ? 'active' : ''}`} onClick={() => setMenuOpen(!menuOpen)}>
             <span /><span /><span />
@@ -125,13 +133,13 @@ export default function Landing() {
 
       {menuOpen && (
         <div className="landing-mobile-drawer">
-          <a href="#huduma" onClick={() => setMenuOpen(false)}>Huduma Zetu</a>
-          <a href="#yield" onClick={() => setMenuOpen(false)}>Afrikoba Yield (13%)</a>
-          <a href="#jinsi" onClick={() => setMenuOpen(false)}>Jinsi Inavyofanya Kazi</a>
-          <a href="#uwekezaji" onClick={() => setMenuOpen(false)}>Uwekezaji (P2P)</a>
+          <a href="#huduma" onClick={() => setMenuOpen(false)}>{t('landing.nav_services')}</a>
+          <a href="#yield" onClick={() => setMenuOpen(false)}>{t('landing.nav_yield')}</a>
+          <a href="#jinsi" onClick={() => setMenuOpen(false)}>{t('landing.nav_how')}</a>
+          <a href="#uwekezaji" onClick={() => setMenuOpen(false)}>{t('landing.nav_invest')}</a>
           <div className="mobile-drawer-ctas">
-            <Link to="/login" className="landing-btn-outline" onClick={() => setMenuOpen(false)}>Ingia (Login)</Link>
-            <Link to="/login" className="landing-btn-solid" onClick={() => setMenuOpen(false)}>Fungua Akaunti Sasa</Link>
+            <Link to="/login" className="landing-btn-outline" onClick={() => setMenuOpen(false)}>{t('landing.login')}</Link>
+            <Link to="/login" className="landing-btn-solid" onClick={() => setMenuOpen(false)}>{t('landing.open_account')}</Link>
           </div>
         </div>
       )}
@@ -140,20 +148,20 @@ export default function Landing() {
       <section className="landing-hero-section">
         <div className="landing-hero-grid">
           <div className="landing-hero-copy">
-            <div className="hero-tag">✨ Enterprise Financial Operating System</div>
-            <h1>Mfumo Salama wa Kidijitali wa Akiba, VICOBA, na Uwekezaji <span className="gold-text">Afrika</span>.</h1>
-            <p>Simamia Vikundi vya VICOBA kwa uwazi wa 100%, shiriki kwenye mizunguko ya Upatu isiyo na utapeli, na wekeza kwenye Mfuko wa Faida wa 13% Annual Yield.</p>
+            <div className="hero-tag">{t('landing.hero_tag')}</div>
+            <h1>{t('landing.hero_title')}</h1>
+            <p>{t('landing.hero_sub')}</p>
 
             <div className="landing-hero-buttons">
-              <Link to="/login" className="landing-btn-primary">🚀 Fungua Akaunti Sasa</Link>
-              <Link to="/login" className="landing-btn-secondary">🔐 Ingia Kwenye System</Link>
+              <Link to="/login" className="landing-btn-primary">{t('landing.open_now')}</Link>
+              <Link to="/login" className="landing-btn-secondary">{t('landing.login_system')}</Link>
             </div>
           </div>
 
           <div className="landing-hero-visual">
             <div className="fintech-card-mockup">
               <div className="mockup-top">
-                <span>Akiba ya Mwezi</span>
+                <span>{t('landing.mockup_savings')}</span>
                 <span className="growth-pill">+14.2% 📈</span>
               </div>
               <div className="mockup-amount">
@@ -168,7 +176,7 @@ export default function Landing() {
                 ))}
               </div>
               <div className="mockup-bottom">
-                <span className="status-live">🟢 Mfuko wa Faida: Hai</span>
+                <span className="status-live">{t('landing.mockup_fund')}</span>
                 <span className="yield-tag">13% Pa.a</span>
               </div>
             </div>
@@ -180,13 +188,13 @@ export default function Landing() {
       <section className="landing-calc-section" id="yield">
         <div className="landing-container-narrow">
           <div className="landing-section-title">
-            <h2>Afrikoba Yield Calculator</h2>
-            <p>Piga hesabu ya faida yako kabla ya kujisajili:</p>
+            <h2>{t('landing.calc_title')}</h2>
+            <p>{t('landing.calc_sub')}</p>
           </div>
           <div className="yield-calc-card">
             <div className="calc-rate-badge">13% p.a</div>
             <div className="calc-row">
-              <span className="calc-label">Kiasi Unachotaka Kuwekeza:</span>
+              <span className="calc-label">{t('landing.calc_amount')}</span>
               <strong className="calc-value">TZS {yieldAmount.toLocaleString()}</strong>
             </div>
             <input
@@ -200,15 +208,15 @@ export default function Landing() {
             />
             <div className="calc-outputs">
               <div className="calc-output">
-                <span className="calc-output-label">Gawio la Kila Mwezi (Monthly Payout):</span>
+                <span className="calc-output-label">{t('landing.calc_monthly')}</span>
                 <strong className="calc-output-value">TZS {monthlyYield.toLocaleString()}</strong>
               </div>
               <div className="calc-output">
-                <span className="calc-output-label">Jumla ya Faida (Mwaka):</span>
+                <span className="calc-output-label">{t('landing.calc_yearly')}</span>
                 <strong className="calc-output-value">TZS {totalYield12Months.toLocaleString()}</strong>
               </div>
             </div>
-            <Link to="/login" className="landing-btn-primary calc-cta">🌱 Anza Kuwekeza (Create Account)</Link>
+            <Link to="/login" className="landing-btn-primary calc-cta">{t('landing.calc_cta')}</Link>
           </div>
         </div>
       </section>
@@ -217,9 +225,9 @@ export default function Landing() {
       <section className="landing-services-section" id="huduma">
         <div className="landing-container">
           <div className="landing-section-title">
-            <h2>Mfumo wa Huduma Zetu</h2>
-            <p>Huduma Zetu za Kiwango cha Kibenki</p>
-            <p className="landing-section-sub">Teknolojia iliyoundwa kurahisisha na kulinda akiba, mikopo, na uwekezaji wako.</p>
+            <h2>{t('landing.services_title')}</h2>
+            <p>{t('landing.services_sub')}</p>
+            <p className="landing-section-sub">{t('landing.services_sub2')}</p>
           </div>
           <div className="landing-services-grid">
             {services.map((s, i) => (
@@ -238,9 +246,9 @@ export default function Landing() {
       <section className="landing-yieldpool-section">
         <div className="landing-container-narrow">
           <div className="landing-section-title">
-            <h2>Mfuko wa Uwekezaji</h2>
-            <p className="gold-text">Afrikoba Yield Pool (13% p.a)</p>
-            <p className="landing-section-sub">Pata gawio la uhakika la 13% kwa mwaka linalohesabiwa na kulipwa kila mwezi. Unao uwezo wa kuweka Compound Interest au kutoa faida yako muda wowote.</p>
+            <h2>{t('landing.pool_title')}</h2>
+            <p className="gold-text">{t('landing.pool_sub')}</p>
+            <p className="landing-section-sub">{t('landing.pool_sub2')}</p>
           </div>
           <div className="yield-feature-grid">
             {yieldFeatures.map((f, i) => (
@@ -252,7 +260,7 @@ export default function Landing() {
             ))}
           </div>
           <div className="yieldpool-cta">
-            <Link to="/login" className="landing-btn-primary">Fungua Yield Vault Sasa</Link>
+            <Link to="/login" className="landing-btn-primary">{t('landing.pool_cta')}</Link>
           </div>
         </div>
       </section>
@@ -261,9 +269,9 @@ export default function Landing() {
       <section className="landing-how-section" id="jinsi">
         <div className="landing-container">
           <div className="landing-section-title">
-            <h2>Hatua Rahisi</h2>
-            <p>Jinsi Inavyofanya Kazi</p>
-            <p className="landing-section-sub">Hatua nne tu za kuanza safari yako ya kifedha na Afrikoba Global.</p>
+            <h2>{t('landing.how_title')}</h2>
+            <p>{t('landing.how_sub')}</p>
+            <p className="landing-section-sub">{t('landing.how_sub2')}</p>
           </div>
           <div className="landing-steps-grid landing-steps-grid-4">
             {steps.map((s, i) => (
@@ -281,10 +289,10 @@ export default function Landing() {
       <section className="landing-market-section" id="uwekezaji">
         <div className="landing-container">
           <div className="landing-section-title">
-            <h2>Soko la Miradi</h2>
-            <p>Uwekezaji wa P2P Crowdfunding</p>
-            <p className="landing-section-sub">Wekeza kwenye miradi ya kimkakati ya uzalishaji iliyokaguliwa na wataalamu wetu wa kifedha.</p>
-            <Link to="/login" className="landing-btn-secondary market-join-btn">Jiunge Kuanza Uwekezaji</Link>
+            <h2>{t('landing.market_title')}</h2>
+            <p>{t('landing.market_sub')}</p>
+            <p className="landing-section-sub">{t('landing.market_sub2')}</p>
+            <Link to="/login" className="landing-btn-secondary market-join-btn">{t('landing.market_join')}</Link>
           </div>
           <div className="project-grid">
             {projects.map((p, i) => (
@@ -294,11 +302,11 @@ export default function Landing() {
                 <div className="project-roi">{p.roi}</div>
                 <p className="project-desc">{p.desc}</p>
                 <div className="project-progress-head">
-                  <span>Progress:</span>
-                  <span>{p.progress}% Funded ({p.funded})</span>
+                  <span>{t('landing.progress')}</span>
+                  <span>{t('landing.funded', { pct: p.progress, amt: p.funded })}</span>
                 </div>
                 <div className="progress-bar-bg"><div className="progress-bar-fill" style={{ width: `${p.progress}%` }} /></div>
-                <Link to="/login" className="project-invest-btn">Wekeza Kwenye Mradi Huu →</Link>
+                <Link to="/login" className="project-invest-btn">{t('landing.invest')}</Link>
               </div>
             ))}
           </div>
@@ -308,11 +316,11 @@ export default function Landing() {
       {/* ===== CTA ===== */}
       <section className="landing-cta-section">
         <div className="landing-cta-inner">
-          <h2>Upo Tayari Kuanza Safari Yako ya Kifedha?</h2>
-          <p>Jiunge na maelfu ya watumiaji na vikundi vinavyotumia Afrikoba Global kusimamia na kukuza akiba zao.</p>
+          <h2>{t('landing.cta_title')}</h2>
+          <p>{t('landing.cta_sub')}</p>
           <div className="landing-cta-buttons">
-            <Link to="/login" className="landing-btn-primary">Fungua Akaunti Bure</Link>
-            <Link to="/login" className="landing-btn-secondary landing-btn-dark">Ingia Kwenye Akaunti</Link>
+            <Link to="/login" className="landing-btn-primary">{t('landing.cta_open')}</Link>
+            <Link to="/login" className="landing-btn-secondary landing-btn-dark">{t('landing.cta_login')}</Link>
           </div>
         </div>
       </section>
@@ -325,24 +333,24 @@ export default function Landing() {
               <img src="/afrikoba-icon.png" alt="Afrikoba" style={{ width: 28, height: 28, borderRadius: 6 }} onError={(e) => { e.target.style.display = 'none'; }} />
               AFRIKOBA
             </h3>
-            <p>Mfumo Salama wa Kidijitali wa Akiba, VICOBA, Mzunguko na Uwekezaji.</p>
+            <p>{t('landing.footer_tag')}</p>
           </div>
           <div className="footer-col">
-            <h4>Huduma</h4>
-            <a href="#huduma">VICOBA Digital</a>
-            <a href="#yield">Afrikoba Yield</a>
-            <a href="#huduma">ROSCA / Upatu</a>
-            <a href="#uwekezaji">P2P Crowdfunding</a>
+            <h4>{t('landing.footer_services')}</h4>
+            <a href="#huduma">{t('landing.svc_vicoba')}</a>
+            <a href="#yield">{t('landing.svc_yield')}</a>
+            <a href="#huduma">{t('landing.svc_rosca')}</a>
+            <a href="#uwekezaji">{t('landing.svc_p2p')}</a>
           </div>
           <div className="footer-col">
-            <h4>Mawasiliano</h4>
+            <h4>{t('landing.footer_contact')}</h4>
             <a href="mailto:support@afrikoba.com">support@afrikoba.com</a>
             <a href="tel:+255700000000">+255 700 000 000</a>
-            <Link to="/login">Wasiliana Nasi</Link>
+            <Link to="/login">{t('landing.footer_contact_cta')}</Link>
           </div>
         </div>
         <div className="landing-footer-bottom">
-          <p>&copy; 2026 Afrikoba Global Services Limited. BOT Regulated Gateway & PDPC Compliant.</p>
+          <p>{t('landing.footer_copyright')}</p>
         </div>
       </footer>
     </div>

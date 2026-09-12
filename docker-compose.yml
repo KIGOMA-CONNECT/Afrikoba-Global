@@ -149,6 +149,7 @@ services:
       CONTRACT_DIR: contracts
       CONTRACT_BASE_URL: ${CONTRACT_BASE_URL:-https://app.afrikoba.com/contracts}
       TRUST_PROXY: "true"
+      SACCOS_ENABLED: ${SACCOS_ENABLED:-true}
     # API inafungwa kwenye 127.0.0.1 TU (localhost) - inapatikana kupitia
     # reverse proxy (Caddy/Nginx) pekee. Hivyo hakuna usumbufu kwa ports au
     # apps nyingine za domains nyingine kwenye server.
