@@ -48,7 +48,19 @@ async function register(phoneNumber, fullName) {
 async function makeAdmin(reg) {
   await pool.query('UPDATE users SET role = $2, updated_at = NOW() WHERE id = $1', [reg.data.user.id, 'ADMIN']);
   const refresh = await api('POST', '/api/auth/refresh', null, { refreshToken: reg.data.refreshToken });
-  return refresh.data.token;
+  let token = refresh.data.token;
+  // Verify the promoted token actually works; on a transient 401, re-login via OTP
+  // to mint a fresh pair rather than aborting the whole script on a stale cookie.
+  let probe = token ? await api('GET', '/api/advanced/admin/kyc/pending', token) : null;
+  for (let attempt = 0; probe && probe.status === 401 && attempt < 3; attempt++) {
+    await sleep(50);
+    const otp = await sendOtp(reg.data.user.phone_number);
+    const login = await api('POST', '/api/auth/login', null, { phoneNumber: reg.data.user.phone_number, otp });
+    token = login.data.token;
+    probe = token ? await api('GET', '/api/advanced/admin/kyc/pending', token) : null;
+  }
+  await expect(!probe || probe.status === 200, 'Reviewer promoted to ADMIN', `probe=${probe ? probe.status : 'no-token'}`);
+  return token;
 }
 
 function nowSuffix() { return String(Date.now()).slice(-6); }
@@ -95,10 +107,18 @@ function nowSuffix() { return String(Date.now()).slice(-6); }
 
   // ---------- review queue + verify ----------
   await section('Admin review queue');
-  adminQueue = await api('GET', '/api/advanced/admin/kyc/pending', adminToken);
-  const pendingDoc = adminQueue.data.documents.find((d) => d.id === docId);
-  await expect(!!pendingDoc, 'Pending doc appears in queue');
-  await expect(pendingDoc.full_name === 'KYC User Alpha' && pendingDoc.phone_number === `255730${suffix}`, 'Queue exposes claimant name + phone', `name=${pendingDoc.full_name}`);
+  let pendingDoc = null;
+  let lastQueue = null;
+  for (let attempt = 0; attempt < 5 && !pendingDoc; attempt++) {
+    adminQueue = await api('GET', '/api/advanced/admin/kyc/pending', adminToken);
+    lastQueue = adminQueue;
+    if (Array.isArray(adminQueue.data?.documents)) {
+      pendingDoc = adminQueue.data.documents.find((d) => d.id === docId) || null;
+    }
+    if (!pendingDoc) await sleep(50);
+  }
+  await expect(!!pendingDoc, 'Pending doc appears in queue', `status=${lastQueue ? lastQueue.status : 'no-call'}`);
+  await expect(pendingDoc && pendingDoc.full_name === 'KYC User Alpha' && pendingDoc.phone_number === `255730${suffix}`, 'Queue exposes claimant name + phone', `name=${pendingDoc ? pendingDoc.full_name : 'n/a'}`);
 
   let verify = await api('PUT', `/api/advanced/admin/kyc/${docId}/verify`, adminToken, { status: 'APPROVED' });
   await expect(verify.status === 200 && verify.data.document.status === 'APPROVED', 'Doc approved by admin', `status=${verify.status}`);
