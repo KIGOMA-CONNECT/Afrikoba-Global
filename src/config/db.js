@@ -1,4 +1,5 @@
 const { Pool } = require('pg');
+const pg = require('pg');
 const config = require('./index');
 const logger = require('../utils/logger');
 
@@ -21,6 +22,59 @@ currentPool = new Pool(currentConfig);
 currentPool.on('error', (err) => {
   logger.error('DB_POOL_ERROR', err.message);
 });
+
+// 55P03 (lock timeout) / 40P01 (deadlock) diagnostics: dump which backend holds
+// the contested locks so the phantom long-lived lock holder finally gets caught.
+let lastLockDiag = 0;
+async function diagnoseLockBlockers(sqlState) {
+  const nowTs = Date.now();
+  if (nowTs - lastLockDiag < 5000) return;
+  lastLockDiag = nowTs;
+  try {
+    const res = await currentPool.query(
+      `SELECT blocked_locks.pid AS blocked_pid,
+              blocked_activity.state AS blocked_state,
+              left(blocked_activity.query, 80) AS blocked_query,
+              blocking_locks.pid AS blocking_pid,
+              blocking_activity.state AS blocking_state,
+              left(blocking_activity.query, 120) AS blocking_query,
+              (now() - blocking_activity.xact_start)::text AS blocking_xact_age
+         FROM pg_locks blocked_locks
+         JOIN pg_stat_activity blocked_activity ON blocked_activity.pid = blocked_locks.pid
+         JOIN pg_locks blocking_locks
+           ON blocking_locks.locktype = blocked_locks.locktype
+          AND blocking_locks.database IS NOT DISTINCT FROM blocked_locks.database
+          AND blocking_locks.relation IS NOT DISTINCT FROM blocked_locks.relation
+          AND blocking_locks.page IS NOT DISTINCT FROM blocked_locks.page
+          AND blocking_locks.tuple IS NOT DISTINCT FROM blocked_locks.tuple
+          AND blocking_locks.virtualxid IS NOT DISTINCT FROM blocked_locks.virtualxid
+          AND blocking_locks.transactionid IS NOT DISTINCT FROM blocked_locks.transactionid
+          AND blocking_locks.classid IS NOT DISTINCT FROM blocked_locks.classid
+          AND blocking_locks.objid IS NOT DISTINCT FROM blocked_locks.objid
+          AND blocking_locks.objsubid IS NOT DISTINCT FROM blocked_locks.objsubid
+         JOIN pg_stat_activity blocking_activity ON blocking_activity.pid = blocking_locks.pid
+        WHERE NOT blocked_locks.granted AND blocking_locks.granted`
+    );
+    if (res.rows.length) {
+      res.rows.forEach((row) => {
+        logger.warn('DB-LOCK-DIAG', `SQLState ${sqlState}: blocked=${row.blocked_pid}(${row.blocked_state}) "${row.blocked_query}" <- blocker=${row.blocking_pid}(${row.blocking_state}, xact_age=${row.blocking_xact_age}) "${row.blocking_query}"`);
+      });
+    }
+  } catch (e) {
+    logger.warn('DB-LOCK-DIAG', `diag query failed: ${e.message}`);
+  }
+}
+
+const origPgQuery = pg.Client.prototype.query;
+pg.Client.prototype.query = function q(...args) {
+  const p = origPgQuery.apply(this, args);
+  if (p && typeof p.then === 'function') {
+    p.then(null, (e) => {
+      if (e && (e.code === '55P03' || e.code === '40P01')) diagnoseLockBlockers(e.code);
+    });
+  }
+  return p;
+};
 
 async function autoDetectWorkingDbConfig() {
   const candidates = [
