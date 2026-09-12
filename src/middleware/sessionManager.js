@@ -53,8 +53,10 @@ async function generateTokenPair(user) {
  * Reuse detection: token ya zamani ilishafutwa → revoke ALL user sessions.
  */
 async function refreshAccessToken(refreshToken) {
-  try {
-    const decoded = jwt.verify(refreshToken, REFRESH_TOKEN_SECRET);
+  let consumed = false;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const decoded = jwt.verify(refreshToken, REFRESH_TOKEN_SECRET);
 
     if (decoded.type !== 'refresh') {
       throw Object.assign(new Error('Token si refresh token.'), { statusCode: 401 });
@@ -92,6 +94,7 @@ async function refreshAccessToken(refreshToken) {
 
     // Futa token ya zamani (consumed)
     await pool.query('DELETE FROM refresh_tokens WHERE id = $1', [tokenRow.rows[0].id]);
+    consumed = true;
 
     // Toka user mpya
     const user = result.rows[0];
@@ -121,11 +124,20 @@ async function refreshAccessToken(refreshToken) {
     }
 
     return { accessToken: newAccessToken, refreshToken: newRefreshToken, expiresIn: 3600 };
-  } catch (err) {
-    if (err.name === 'TokenExpiredError') {
-      throw Object.assign(new Error('Refresh token imeisha muda.'), { statusCode: 401 });
+    } catch (err) {
+      // Stale pool socket — one clean retry before surfacing a 500 that
+      // otherwise poisons every regression-script makeAdmin token.
+      // Only safe pre-consumption (retry after DELETE would trigger reuse 401).
+      const isConnTerm = err && (err.message || '').match(/connection terminated|read ECONN|ECONNRESET|EPIPE|timeout expired/i);
+      if (isConnTerm && attempt === 0 && !consumed) {
+        await new Promise((r) => setTimeout(r, 60));
+        continue;
+      }
+      if (err.name === 'TokenExpiredError') {
+        throw Object.assign(new Error('Refresh token imeisha muda.'), { statusCode: 401 });
+      }
+      throw err;
     }
-    throw err;
   }
 }
 

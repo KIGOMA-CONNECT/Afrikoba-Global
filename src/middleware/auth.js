@@ -40,17 +40,20 @@ async function authRequired(req, res, next) {
           [decoded.id]
         );
         if (result.rows.length === 0 || !result.rows[0].is_active) {
+          logger.warn('AUTH_401_DIAG', `path=${req.path} reason=account-closed id=${decoded.id}`);
           return res.status(401).json({ success: false, message: 'Akaunti imefungwa.' });
         }
         // Revocation: auth_version inabadilika kila password change →
         // tokens zote za zamani zinakataliwa papo hapo.
         if (decoded.av !== (result.rows[0].auth_version || 0)) {
+          logger.warn('AUTH_401_DIAG', `path=${req.path} reason=auth-version id=${decoded.id} tokenAV=${decoded.av} dbAV=${result.rows[0].auth_version || 0}`);
           return res.status(401).json({ success: false, message: 'Kipindi chako kimeisha. Ingia tena.', code: 'TOKEN_REVOKED' });
         }
         // Blacklist check (logout revoke) — access tokens sasa hubeba jti.
         if (decoded.jti) {
           const revoked = await pool.query('SELECT 1 FROM revoked_tokens WHERE token_jti = $1', [decoded.jti]);
           if (revoked.rows.length > 0) {
+            logger.warn('AUTH_401_DIAG', `path=${req.path} reason=jti-blacklisted`);
             return res.status(401).json({ success: false, message: 'Token imebatilishwa. Ingia tena.', code: 'TOKEN_REVOKED' });
           }
         }
@@ -73,6 +76,7 @@ async function authRequired(req, res, next) {
     if (error.statusCode && error.code) {
       return res.status(error.statusCode).json({ success: false, message: error.message, code: error.code });
     }
+    logger.warn('AUTH_401_DIAG', `path=${req.path} reason=${error && error.message} name=${error && error.name} code=${error && error.code}`);
     return res.status(401).json({ success: false, message: 'Kipindi chako kimeisha. Ingia tena.', code: 'TOKEN_REVOKED' });
   }
 }

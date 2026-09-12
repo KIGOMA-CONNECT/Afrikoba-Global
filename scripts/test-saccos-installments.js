@@ -33,18 +33,27 @@ async function sendOtp(phoneNumber) {
   const r = await api('POST', '/api/auth/send-otp', null, { phoneNumber });
   return r.data.devOtp;
 }
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function register(phoneNumber, fullName) {
   const otp = await sendOtp(phoneNumber);
   return api('POST', '/api/auth/register', null, { fullName, phoneNumber, otp });
 }
 async function makeAdmin(reg) {
   await pool.query('UPDATE users SET role = $2, updated_at = NOW() WHERE id = $1', [reg.data.user.id, 'ADMIN']);
+  let token = null;
   for (let i = 0; i < 8; i++) {
     const refresh = await api('POST', '/api/auth/refresh', null, { refreshToken: reg.data.refreshToken });
-    if (refresh.data.token) return refresh.data.token;
+    if (refresh.data.token) { token = refresh.data.token; break; }
     await new Promise((r) => setTimeout(r, 500));
   }
-  return null;
+  let probe = token ? await api('GET', '/api/saccos', token) : null;
+  for (let attempt = 0; probe && probe.status === 401 && attempt < 3; attempt++) {
+    const otp = await sendOtp(reg.data.user.phone_number);
+    const login = await api('POST', '/api/auth/login', null, { phoneNumber: reg.data.user.phone_number, otp });
+    token = login.data.token;
+    probe = token ? await api('GET', '/api/saccos', token) : null;
+  }
+  return token;
 }
 async function fundWallet(userId, amount) {
   await pool.query('UPDATE users SET wallet_balance = $2 WHERE id = $1', [userId, amount]);
