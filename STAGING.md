@@ -72,14 +72,11 @@ zcat backups-staging/afrikoba_global_staging_*.sql.gz | \
 
 ## TLS
 
-Sasa: self-signed cert (`/etc/nginx/ssl-staging/`) - browser itaonya.
-
-Baada ya DNS A record (`staging` → `129.121.86.66`) kuanza kusolve,
-Let's Encrypt inaweza kuwekwa:
+**Let's Encrypt** (halisi) imeshawekwa - browser haitaonya.
+Cert itarenew kiotomatiki na certbot. Unaweza kuangalia:
 
 ```bash
-/usr/bin/certbot --nginx -d staging.afrikoba.com \
-  --register-unsafely-without-email --agree-tos
+echo | openssl s_client -connect staging.afrikoba.com:443 -servername staging.afrikoba.com 2>/dev/null | openssl x509 -noout -issuer -dates
 ```
 
 ## Vhost (aaPanel nginx)
