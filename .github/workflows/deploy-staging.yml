@@ -1,0 +1,120 @@
+name: Afrikoba Staging Deployment
+
+# ============================================================
+# Separate staging stack on the SAME production server.
+#   - Compose project : afrikoba-staging (own network + volumes)
+#   - Host port       : 127.0.0.1:3001  (reverse proxy → staging.afrikoba.com)
+#   - App env         : NODE_ENV=development (devOtp + simulated SMS),
+#                       DB afrikoba_global_staging, SACCOS enabled
+#
+# Server-side prerequisites (once):
+#   1. Reverse proxy vhost for staging.afrikoba.com → 127.0.0.1:3001
+#      (e.g. Caddy:  staging.afrikoba.com { reverse_proxy 127.0.0.1:3001 })
+#   2. DNS A record    staging.afrikoba.com          → server IP
+#
+# GitHub secrets/variables needed:
+#   secrets.STAGING_DB_PASSWORD   (set ONCE - persists in staging DB volume)
+#   secrets.STAGING_JWT_SECRET    (any 48+ char random hex)
+#   secrets.STAGING_WEBHOOK_SECRET
+#   vars.STAGING_CORS_ORIGINS     (default https://staging.afrikoba.com)
+#   vars.SERVER_PATH              (shared checkout - already configured)
+# ============================================================
+
+# Manual trigger only: deploy current origin/main as the staging stack.
+on:
+  workflow_dispatch:
+
+jobs:
+  build-and-deploy-staging:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+
+      - name: Verify deployment target config
+        run: |
+          if [ -n "${{ vars.SERVER_PATH }}" ]; then echo "SERVER_PATH is set (length ${#SERVER_PATH})"; else echo "::error::SERVER_PATH repo variable is NOT set - please configure it under Settings > Secrets and variables > Actions > Variables"; exit 1; fi
+
+      - name: Validate SSH private key format
+        env:
+          SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          if [ -z "$SSH_KEY" ]; then echo "::error::SSH_PRIVATE_KEY secret is empty - configure it under Settings > Secrets and variables > Actions"; exit 1; fi
+          printf '%s\n' "$SSH_KEY" > /tmp/deploy_key
+          chmod 600 /tmp/deploy_key
+          if ssh-keygen -y -f /tmp/deploy_key > /dev/null 2>&1; then
+            echo "SSH private key parses OK"
+          else
+            echo "::error::SSH_PRIVATE_KEY is not a valid private key (ssh: no key found). Re-paste the FULL key INCLUDING its line breaks (-----BEGIN ... PRIVATE KEY----- to -----END ... PRIVATE KEY-----), or regenerate a key pair."
+            exit 1
+          fi
+
+      - name: Deploy Staging Stack via SSH
+        uses: appleboy/ssh-action@v1.2.5
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: 22
+          debug: true
+          command_timeout: 20m
+          script: |
+            set -e
+            echo "connected as $(whoami) on $(hostname)"
+            cd "${{ vars.SERVER_PATH }}" || exit 1
+            pwd
+            git fetch origin main
+            git reset --hard origin/main
+            git log --oneline -1
+
+            CORS_ORIGINS="${STAGING_CORS_ORIGINS:-https://staging.afrikoba.com}"
+            if [ -z "$STAGING_DB_PASSWORD" ]; then
+              echo "::error::STAGING_DB_PASSWORD secret is empty - configure it first"
+              exit 1
+            fi
+
+            # Create .env.staging on first deploy only (password persists in the
+            # staging DB volume; rotating it later would desync app vs postgres).
+            if [ ! -f .env.staging ]; then
+              cat > .env.staging <<EOF
+        NODE_ENV=development
+        APP_PORT=3001
+        COMPOSE_PROJECT_NAME=afrikoba-staging
+        BACKUP_DIR=./backups-staging
+        DB_USER=afrikoba
+        DB_PASSWORD=$STAGING_DB_PASSWORD
+        DB_NAME=afrikoba_global_staging
+        JWT_SECRET=$STAGING_JWT_SECRET
+        JWT_TTL=7d
+        CORS_ORIGINS=$CORS_ORIGINS
+        WEBHOOK_SECRET=$STAGING_WEBHOOK_SECRET
+        BEEM_API_KEY=placeholder-staging
+        BEEM_SECRET_KEY=placeholder-staging
+        BEEM_SENDER_ID=AFRIKOBA
+        AT_API_KEY=placeholder-staging
+        AT_USERNAME=sandbox_afrikoba_staging
+        AZAMPAY_APP_NAME=afrikoba-staging
+        AZAMPAY_CLIENT_ID=placeholder-staging
+        AZAMPAY_CLIENT_SECRET=placeholder-staging
+        AZAMPAY_ENV=sandbox
+        TRUST_PROXY=true
+        EOF
+              echo "created .env.staging (first run)"
+            else
+              echo ".env.staging already exists - keeping existing secrets"
+            fi
+
+            # Staging: isolated project + own network/volumes + port 3001.
+            docker compose -p afrikoba-staging --env-file .env.staging up -d --build
+
+            # Wait for the staging API to become healthy, then report.
+            for i in $(seq 1 40); do
+              if curl -s -m 5 http://127.0.0.1:3001/health/db | grep -q '"db":"UP"'; then
+                echo "Staging API healthy after ${i} tries"
+                exit 0
+              fi
+              sleep 10
+            done
+            echo "::error::Staging API did not become healthy within 400s after rebuild"
+            exit 1
