@@ -63,6 +63,52 @@ async function diagnoseLockBlockers(sqlState) {
   } catch (e) {
     logger.warn('DB-LOCK-DIAG', `diag query failed: ${e.message}`);
   }
+  try {
+    const holders = await currentPool.query(
+      `SELECT l.pid, a.state, (now() - a.xact_start)::text AS xact_age,
+              left(a.query, 140) AS q, COUNT(*) AS locks_held
+         FROM pg_locks l
+         JOIN pg_stat_activity a ON a.pid = l.pid
+        WHERE l.granted
+          AND a.pid <> pg_backend_pid()
+          AND a.xact_start IS NOT NULL
+          AND now() - a.xact_start > interval '3 seconds'
+        GROUP BY l.pid, a.state, left(a.query, 140)
+        ORDER BY xact_age DESC`
+    );
+    if (holders.rows.length) {
+      holders.rows.forEach((row) => {
+        logger.warn('DB-LOCK-DIAG', `SQLState ${sqlState} persistent-holder: pid=${row.pid} state=${row.state} xact_age=${row.xact_age} locks=${row.locks_held} "${row.q}"`);
+      });
+    }
+  } catch (e) {
+    logger.warn('DB-LOCK-DIAG', `holder query failed: ${e.message}`);
+  }
+}
+
+async function terminateStaleLockHolders(graceSeconds = 2) {
+  // CI suite is strictly sequential — backends holding granted locks for
+  // >graceSeconds are by definition rogue/leaked and safe to terminate there.
+  if (process.env.CI !== 'true') return 0;
+  try {
+    const res = await currentPool.query(
+      `SELECT l.pid AS terminated, pg_terminate_backend(l.pid) AS ok
+         FROM pg_locks l
+         JOIN pg_stat_activity a ON a.pid = l.pid
+        WHERE l.granted
+          AND l.pid <> pg_backend_pid()
+          AND a.xact_start IS NOT NULL
+          AND a.xact_start < now() - ($1::int || ' seconds')::interval`,
+      [graceSeconds]
+    );
+    if (res.rows.length) {
+      logger.warn('DB-LOCK-DIAG', `terminated ${res.rows.length} stale lock holder(s)`);
+    }
+    return res.rows.length;
+  } catch (e) {
+    logger.warn('DB-LOCK-DIAG', `terminate query failed: ${e.message}`);
+    return 0;
+  }
 }
 
 const origPgQuery = pg.Client.prototype.query;
@@ -155,6 +201,9 @@ module.exports = new Proxy({}, {
   get(target, prop) {
     if (prop === 'connect') {
       return safeConnect;
+    }
+    if (prop === 'terminateStaleLockHolders') {
+      return terminateStaleLockHolders;
     }
     const value = currentPool[prop];
     if (typeof value === 'function') {

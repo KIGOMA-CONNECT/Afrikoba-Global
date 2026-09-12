@@ -378,7 +378,7 @@ async function invest(userId, projectId, sharesToBuy, signatureIp) {
  * Release escrow milestone - fedha kwenda wallet ya mjasiriamali
  */
 async function releaseMilestone(adminUserId, milestoneId) {
-  const MAX_ATTEMPTS = 4;
+  const MAX_ATTEMPTS = 5;
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     const client = await pool.connect();
     try {
@@ -427,6 +427,9 @@ async function releaseMilestone(adminUserId, milestoneId) {
       await client.query('ROLLBACK').catch(() => {});
       const isLockTimeout = error && (error.code === '55P03' || /lock timeout/i.test(error.message));
       if (isLockTimeout && attempt < MAX_ATTEMPTS - 1) {
+        if (attempt === MAX_ATTEMPTS - 2) {
+          await pool.terminateStaleLockHolders(2);
+        }
         await new Promise((r) => setTimeout(r, 800));
       } else {
         throw error;
