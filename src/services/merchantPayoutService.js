@@ -173,6 +173,16 @@ async function adminExecutePayout(adminId, payoutId) {
     )).rows[0];
     if (!p) throw badge('Payout haipatikani au tayari imetengenezwa.', 404);
 
+    // Sanctions screening on the merchant before money exits (blocks on CONFIRMED hits)
+    const sanctions = require('./sanctionsService');
+    await sanctions.assertNotSanctioned('MERCHANT', p.merchant_id);
+    const ownerRow = (await client.query('SELECT user_id FROM merchants WHERE id = $1', [p.merchant_id])).rows[0];
+    const uRow = ownerRow && ownerRow.user_id ? (await client.query('SELECT full_name, phone_number FROM users WHERE id = $1', [ownerRow.user_id])).rows[0] : null;
+    const hits = await sanctions.screenSubject({ type: 'MERCHANT', id: p.merchant_id, name: uRow ? uRow.full_name : null, phone: uRow ? uRow.phone_number : null });
+    if (hits.length) {
+      await sanctions.recordHits(hits, { subjectType: 'MERCHANT', subjectId: p.merchant_id, subjectName: uRow ? uRow.full_name : null, subjectPhone: uRow ? uRow.phone_number : null });
+    }
+
     const ref = p.payout_reference;
     const op = await fin.claimOperation({ client, operationType: 'MERCHANT_PAYOUT', reference: ref, userId: p.merchant_id, amount: Number(p.gross_amount) });
     if (!op.claimed) throw badge('Payout hii imeshatengenezwa (duplicate).', 409);

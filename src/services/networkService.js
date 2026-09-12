@@ -582,6 +582,18 @@ async function sendRemittance(senderId, data) {
 }
 
 // F4.2: Pickup via payout adapter (WALLET credits a platform member; MNO/AGENT simulated rails)
+async function screenRecipientForSanctions(r) {
+  const sanctions = require('./sanctionsService');
+  const hits = await sanctions.screenSubject({
+    type: 'BENEFICIARY',
+    name: r.recipient_name,
+    phone: r.recipient_phone,
+  });
+  if (hits.length) {
+    await sanctions.recordHits(hits, { subjectType: 'BENEFICIARY', subjectName: r.recipient_name, subjectPhone: r.recipient_phone });
+  }
+}
+
 async function pickupRemittance(pickupCode, recipientPhone, recipientName) {
   await expireStaleRemittances();
   const res = await pool.query('SELECT * FROM remittance_transfers WHERE pickup_code = $1 AND recipient_phone = $2', [pickupCode, recipientPhone]);
@@ -591,6 +603,9 @@ async function pickupRemittance(pickupCode, recipientPhone, recipientName) {
   if (r.status !== 'PENDING') throw createAppError('REMITTANCE_TRANSFER_STATE');
   if (r.recipient_name.toLowerCase() !== String(recipientName).toLowerCase()) throw Object.assign(new Error('Jina la mpokeaji halilingani.'), { statusCode: 400 });
   if (r.expires_at && Number(new Date(r.expires_at)) <= Date.now()) throw createAppError('REMITTANCE_TRANSFER_STATE');
+
+  // Sanctions screening on the recipient before payout (blocks only on CONFIRMED hits)
+  await screenRecipientForSanctions(r);
 
   const payoutMethod = String(r.payout_method || 'MNO').toUpperCase();
   if (!['WALLET', 'MNO', 'AGENT'].includes(payoutMethod)) throw createAppError('REMITTANCE_INVALID_PAYOUT');

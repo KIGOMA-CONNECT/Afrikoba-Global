@@ -105,6 +105,12 @@ const ERROR_CODES = {
   AML_FREEZE_NOT_ACTIVE:        { status: 400, message: 'Kufunga huku si tena ACTIVE.' },
   AML_FREEZE_NOT_FOUND:         { status: 404, message: 'Kufunga haikupatikana.' },
 
+  // Sanctions / watchlist screening (400/403/404/409)
+  AML_SANCTIONS_MATCH:          { status: 403, message: 'Muamala umekatwa kutokana na ufanano na orodha ya vikwazo. Wasiliana na msaidizi.' },
+  SANCTIONS_SOURCE_REQUIRED:    { status: 400, message: 'Data ya kuingiza kwenye orodha ya vikwazo haijakamilika.' },
+  SANCTIONS_ENTRY_NOT_FOUND:    { status: 404, message: 'Ingizo la orodha ya vikwazo halijapatikana.' },
+  SANCTIONS_ENTRY_EXISTS:       { status: 409, message: 'Ingizo hili tayari lipo kwenye orodha ya vikwazo.' },
+
   // SACCOS foundation (400/403/404/409)
   SACCOS_NAME_REQUIRED:          { status: 400, message: 'Jina la SACCOS linahitajika.' },
   SACCOS_NAME_TAKEN:             { status: 409, message: 'Jina la SACCOS tayari limesajiliwa.' },

@@ -207,6 +207,14 @@ async function transferWallet(fromUserId, toPhoneNumber, amount, note) {
       throw Object.assign(new Error('Salio lako halitoshi.'), { statusCode: 400 });
     }
 
+    // Sanctions screening on the recipient (blocks only on CONFIRMED hits)
+    const sanctions = require('./sanctionsService');
+    await sanctions.assertNotSanctioned('USER', to.id);
+    const sHits = await sanctions.screenSubject({ type: 'USER', id: to.id, name: to.full_name, phone: to.phone_number });
+    if (sHits.length) {
+      await sanctions.recordHits(sHits, { subjectType: 'USER', subjectId: to.id, subjectName: to.full_name, subjectPhone: to.phone_number });
+    }
+
     const referenceId = generateReference('TR');
     const txResult = await client.query(
       `INSERT INTO transactions

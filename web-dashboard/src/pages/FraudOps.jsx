@@ -20,6 +20,12 @@ export default function FraudOps() {
   const [freezes, setFreezes] = useState([]);
   const [freezeForm, setFreezeForm] = useState({ user_id: '', reason: '', case_id: '' });
   const [frozenMap, setFrozenMap] = useState({});
+  const [watchEntries, setWatchEntries] = useState([]);
+  const [screenHits, setScreenHits] = useState([]);
+  const [screenResult, setScreenResult] = useState(null);
+  const [wlForm, setWlForm] = useState({ source: '', full_name: '', phone_number: '', document_type: '', document_number: '', reference: '' });
+  const [screenForm, setScreenForm] = useState({ name: '', phone: '', document: '' });
+  const [showWl, setShowWl] = useState(false);
 
   const error = (err) => setMsg({ type: 'err', text: err.response?.data?.message || t('fraudops.error') });
 
@@ -34,6 +40,8 @@ export default function FraudOps() {
       r.data.freezes.filter((f) => f.status === 'ACTIVE').forEach((f) => { m[f.user_id] = f; });
       setFrozenMap(m);
     }).catch(() => {});
+    api.get('/fraud-ops/sanctions').then((r) => setWatchEntries(r.data.entries)).catch(() => {});
+    api.get('/fraud-ops/sanctions/hits', { params: { disposition: 'PENDING' } }).then((r) => setScreenHits(r.data.hits)).catch(() => {});
   };
   useEffect(() => { load(); }, []);
 
@@ -96,12 +104,61 @@ export default function FraudOps() {
     try { await api.post(`/fraud-ops/freezes/${id}/lift`, {}); setMsg({ type: 'ok', text: t('fraudops.lift_ok') }); load(); } catch (err) { error(err); }
   };
 
+  const addWatch = async (e) => {
+    e.preventDefault();
+    try {
+      await api.post('/fraud-ops/sanctions', {
+        source: wlForm.source,
+        full_name: wlForm.full_name,
+        phone_number: wlForm.phone_number || null,
+        document_type: wlForm.document_type || null,
+        document_number: wlForm.document_number || null,
+        reference: wlForm.reference || null,
+      });
+      setMsg({ type: 'ok', text: t('fraudops.sanctions_added') });
+      setWlForm({ source: '', full_name: '', phone_number: '', document_type: '', document_number: '', reference: '' });
+      setShowWl(false);
+      load();
+    } catch (err) { error(err); }
+  };
+
+  const removeWatch = async (id) => {
+    try { await api.post(`/fraud-ops/sanctions/${id}/remove`, {}); setMsg({ type: 'ok', text: t('fraudops.sanctions_removed') }); load(); } catch (err) { error(err); }
+  };
+
+  const runScreen = async (e) => {
+    e.preventDefault();
+    try {
+      let documentType = null, documentNumber = null;
+      if (screenForm.document && screenForm.document.includes(':')) {
+        const [dt, dn] = screenForm.document.split(':');
+        documentType = dt.trim(); documentNumber = dn.trim();
+      }
+      const r = await api.post('/fraud-ops/sanctions/screen', {
+        name: screenForm.name || undefined,
+        phone: screenForm.phone || undefined,
+        documentType: documentType || undefined,
+        documentNumber: documentNumber || undefined,
+      });
+      setScreenResult(r.data.hits);
+    } catch (err) { error(err); }
+  };
+
+  const decideHit = async (id, disposition) => {
+    try {
+      await api.post(`/fraud-ops/sanctions/hits/${id}`, { disposition, comment: disposition === 'CONFIRMED' ? 'Verified by officer in console' : 'No true match' });
+      setMsg({ type: 'ok', text: disposition === 'CONFIRMED' ? t('fraudops.sanctions_confirmed_ok') : t('fraudops.sanctions_fp_ok') });
+      load();
+    } catch (err) { error(err); }
+  };
+
   const TABS = [
     { key: 'overview', label: t('fraudops.tab_overview') },
     { key: 'alerts', label: t('fraudops.tab_alerts') },
     { key: 'cases', label: t('fraudops.tab_cases') },
     { key: 'freezes', label: t('fraudops.tab_freezes') },
     { key: 'risk', label: t('fraudops.tab_risk') },
+    { key: 'sanctions', label: t('fraudops.tab_sanctions') },
   ];
 
   const stat = (label, value, color) => (
@@ -363,6 +420,102 @@ export default function FraudOps() {
               </tbody>
             </table>
           )}
+        </div>
+      )}
+
+      {/* ===== SANCTIONS / WATCHLIST ===== */}
+      {tab === 'sanctions' && (
+        <div>
+          <div className="card section">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+              <div>
+                <h3 style={{ margin: 0 }}>{t('fraudops.sanctions_watchlist')}</h3>
+                <p className="roles-tag" style={{ margin: '4px 0 0' }}>{t('fraudops.sanctions_sub')}</p>
+              </div>
+              <button className="btn" onClick={() => setShowWl(!showWl)}>＋ {t('fraudops.sanctions_new')}</button>
+            </div>
+
+            {showWl && (
+              <form onSubmit={addWatch} style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 16, padding: 14, background: '#f8faf9', borderRadius: 10 }}>
+                <input placeholder={t('fraudops.sanctions_source_ph')} value={wlForm.source} onChange={(e) => setWlForm({ ...wlForm, source: e.target.value })} style={{ width: 90 }} required />
+                <input placeholder={t('fraudops.sanctions_name_ph')} value={wlForm.full_name} onChange={(e) => setWlForm({ ...wlForm, full_name: e.target.value })} style={{ flex: 1, minWidth: 160 }} required />
+                <input placeholder={t('fraudops.sanctions_phone_ph')} value={wlForm.phone_number} onChange={(e) => setWlForm({ ...wlForm, phone_number: e.target.value })} style={{ width: 150 }} />
+                <input placeholder={t('fraudops.sanctions_doc_type_ph')} value={wlForm.document_type} onChange={(e) => setWlForm({ ...wlForm, document_type: e.target.value })} style={{ width: 130 }} />
+                <input placeholder={t('fraudops.sanctions_doc_num_ph')} value={wlForm.document_number} onChange={(e) => setWlForm({ ...wlForm, document_number: e.target.value })} style={{ width: 130 }} />
+                <input placeholder={t('fraudops.sanctions_ref_ph')} value={wlForm.reference} onChange={(e) => setWlForm({ ...wlForm, reference: e.target.value })} style={{ width: 120 }} />
+                <button className="btn" type="submit">{t('fraudops.sanctions_add')}</button>
+              </form>
+            )}
+
+            {watchEntries.length === 0 ? <p className="roles-tag">{t('fraudops.watchlist_empty')}</p> : (
+              <table className="table">
+                <thead><tr><th>ID</th><th>Source</th><th>{t('fraudops.sanctions_subject')}</th><th>Phone</th><th>Document</th><th>{t('fraudops.status')}</th><th></th></tr></thead>
+                <tbody>
+                  {watchEntries.map((w) => (
+                    <tr key={w.id}>
+                      <td>{w.id}</td>
+                      <td><span className="badge info">{w.source}</span></td>
+                      <td>{w.full_name}</td>
+                      <td className="roles-tag">{w.phone_number || '—'}</td>
+                      <td className="roles-tag">{(w.document_type && w.document_number) ? `${w.document_type}: ${w.document_number}` : '—'}</td>
+                      <td><span className={`badge ${w.status === 'ACTIVE' ? 'danger' : 'info'}`}>{w.status}</span></td>
+                      <td>{w.status === 'ACTIVE' && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => removeWatch(w.id)}>{t('fraudops.sanctions_remove')}</button>}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+
+          <div className="card section">
+            <h3>{t('fraudops.sanctions_screen_btn')}</h3>
+            <form onSubmit={runScreen} style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
+              <input placeholder={t('fraudops.sanctions_screen_ph_name')} value={screenForm.name} onChange={(e) => setScreenForm({ ...screenForm, name: e.target.value })} style={{ flex: 1, minWidth: 160 }} />
+              <input placeholder={t('fraudops.sanctions_screen_ph_phone')} value={screenForm.phone} onChange={(e) => setScreenForm({ ...screenForm, phone: e.target.value })} style={{ width: 150 }} />
+              <input placeholder={t('fraudops.sanctions_screen_ph_doc')} value={screenForm.document} onChange={(e) => setScreenForm({ ...screenForm, document: e.target.value })} style={{ width: 180 }} />
+              <button className="btn" type="submit">{t('fraudops.sanctions_screen_btn')}</button>
+            </form>
+            {Array.isArray(screenResult) && (
+              <div>
+                <b>{t('fraudops.sanctions_match_result')}:</b>{' '}
+                {screenResult.length === 0 ? <span className="roles-tag">{t('fraudops.sanctions_no_match')}</span> : (
+                  <ul style={{ margin: '8px 0 0', paddingLeft: 18 }}>
+                    {screenResult.map((h, i) => (
+                      <li key={i} style={{ marginBottom: 6, fontSize: 13 }}>
+                        {h.entry.full_name} · {t('fraudops.sanctions_field')}: {h.field} · {t('fraudops.sanctions_score')}: <b>{h.score}</b>
+                        <span className="badge" style={{ marginLeft: 8, background: `${SEVERITY_COLOR[h.severity]}22`, color: SEVERITY_COLOR[h.severity], border: `1px solid ${SEVERITY_COLOR[h.severity]}55` }}>{h.severity}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+          </div>
+
+          <div className="card section">
+            <h3>{t('fraudops.sanctions_hits')} ({screenHits.length} {t('fraudops.sanctions_hits_pending')})</h3>
+            {screenHits.length === 0 ? <p className="roles-tag">{t('fraudops.hits_empty')}</p> : (
+              <table className="table">
+                <thead><tr><th>ID</th><th>{t('fraudops.sanctions_subject')}</th><th>{t('fraudops.sanctions_match')}</th><th>{t('fraudops.sanctions_score')}</th><th>{t('fraudops.sanctions_field')}</th><th>{t('fraudops.sanctions_decided')}</th><th></th></tr></thead>
+                <tbody>
+                  {screenHits.map((h) => (
+                    <tr key={h.id}>
+                      <td>{h.id}</td>
+                      <td>{h.subject_name || h.subject_id || '—'} <div className="roles-tag">{h.subject_phone || ''}</div></td>
+                      <td>{h.watchlist_name || '—'} <div className="roles-tag">{h.watchlist_source || ''}</div></td>
+                      <td style={{ fontWeight: 700 }}>{h.match_score}</td>
+                      <td><span className="badge info">{h.matched_field}</span></td>
+                      <td>{h.disposition ? <span className="badge info">{h.disposition}</span> : '—'}</td>
+                      <td style={{ whiteSpace: 'nowrap' }}>
+                        <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12, marginRight: 6 }} onClick={() => decideHit(h.id, 'CONFIRMED')}>{t('fraudops.sanctions_hits_confirm')}</button>
+                        <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => decideHit(h.id, 'FALSE_POSITIVE')}>{t('fraudops.sanctions_hits_fp')}</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
         </div>
       )}
     </div>

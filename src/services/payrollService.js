@@ -190,6 +190,17 @@ async function runPayroll(scheduleId, { periodStart, periodEnd, approveImmediate
   const taxTotal  = computed.reduce((s, c) => s + c.tax, 0);
   const grossTotal = computed.reduce((s, c) => s + c.gross, 0);
 
+  // Sanctions screening on every employee before the run is created (blocks only on CONFIRMED hits)
+  const sanctions = require('./sanctionsService');
+  for (const c of computed) {
+    if (!c.user_id) continue;
+    await sanctions.assertNotSanctioned('PAYROLL_ENTRY', c.user_id);
+    const hits = await sanctions.screenSubject({ type: 'PAYROLL_ENTRY', id: c.user_id, name: c.employeeName, phone: c.employeePhone });
+    if (hits.length) {
+      await sanctions.recordHits(hits, { subjectType: 'PAYROLL_ENTRY', subjectId: c.user_id, subjectName: c.employeeName, subjectPhone: c.employeePhone });
+    }
+  }
+
   if (!sched.merchant_id) {
     const wallet = (await pool.query('SELECT balance FROM treasury_wallets WHERE id=$1 FOR UPDATE', [sched.treasury_wallet_id])).rows[0];
     if (!wallet || Number(wallet.balance) < netTotal)
