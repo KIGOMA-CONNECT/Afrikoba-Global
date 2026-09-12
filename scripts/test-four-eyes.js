@@ -53,7 +53,17 @@ async function register(phoneNumber, fullName) {
 async function makeAdmin(reg) {
   await pool.query('UPDATE users SET role = $2, updated_at = NOW() WHERE id = $1', [reg.data.user.id, 'ADMIN']);
   const refresh = await api('POST', '/api/auth/refresh', null, { refreshToken: reg.data.refreshToken });
-  return refresh.data.token;
+  let token = refresh.data.token;
+  let probe = token ? await api('GET', '/api/admin/four-eyes/policies', token) : null;
+  for (let attempt = 0; probe && probe.status === 401 && attempt < 3; attempt++) {
+    await sleep(50);
+    const otp = await sendOtp(reg.data.user.phone_number);
+    const login = await api('POST', '/api/auth/login', null, { phoneNumber: reg.data.user.phone_number, otp });
+    token = login.data.token;
+    probe = token ? await api('GET', '/api/admin/four-eyes/policies', token) : null;
+  }
+  await expect(!probe || probe.status !== 401, `Admin token verified (${reg.data.user.phone_number.slice(-3)})`, `probe=${probe ? probe.status : 'no-token'}`);
+  return token;
 }
 
 function nowSuffix() { return String(Date.now()).slice(-6); }
@@ -98,7 +108,10 @@ function nowSuffix() { return String(Date.now()).slice(-6); }
   // ---------- promote flow (maker != checker) ----------
   await section('Promote role: quorum and execution');
   let initPromote = await api('POST', '/api/admin/four-eyes/actions/promote-role', maker, { userId: memberId, role: 'OPS' });
-  await expect(initPromote.status === 201 && initPromote.data.request.status === 'PENDING', 'Maker queues promote request', `status=${initPromote.status}`);
+  await expect(initPromote.status === 201 && initPromote.data.request.status === 'PENDING', 'Maker queues promote request', `status=${initPromote.status} body=${JSON.stringify(initPromote.data).slice(0, 120)}`);
+  if (!initPromote.data?.request?.id) {
+    throw new Error(`Promote request missing id: status=${initPromote.status} body=${JSON.stringify(initPromote.data)}`);
+  }
   const promoteId = initPromote.data.request.id;
 
   let selfApprove = await api('POST', `/api/admin/four-eyes/requests/${promoteId}/approve`, maker, {});

@@ -1,4 +1,5 @@
 const BASE = process.env.TEST_BASE || 'http://localhost:3000';
+const pool = require('../src/config/db');
 
 async function api(method, path, token, body) {
   const headers = { 'Content-Type': 'application/json' };
@@ -25,6 +26,7 @@ async function login(phoneNumber) {
 async function main() {
   const adminToken = await login('255712000001');
   const ashaToken = await login('255713100001');
+  await pool.query('UPDATE users SET wallet_balance = 10000000 WHERE phone_number = $1', ['255713100001']);
 
   // 1. Admin angalia miradi inayosubiri ukaguzi
   const pending = await api('GET', '/api/admin/projects/pending', adminToken);
