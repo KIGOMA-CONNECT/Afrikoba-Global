@@ -30,6 +30,12 @@ const SQL_INJECTION_PATTERNS = [
  */
 function detectSqlInjection(value) {
   if (typeof value !== 'string') return false;
+  // Opaque signed tokens (JWT shaped, any claim set) are high-entropy base64,
+  // and random base64 of the payload/jti can accidentally spell SQL keywords
+  // (e.g. "select", "cast(", "drop") -- false positives that bricked refresh
+  // flows in CI. Real injection payloads never arrive fully JWT-shaped.
+  const isToken = /^[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{2,}\.[A-Za-z0-9_-]{2,}$/.test(value.trim());
+  if (isToken) return false;
   const normalized = value.replace(/\s+/g, ' ').trim();
   return SQL_INJECTION_PATTERNS.some((pattern) => pattern.test(normalized));
 }

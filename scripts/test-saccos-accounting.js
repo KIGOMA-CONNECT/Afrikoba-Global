@@ -53,12 +53,19 @@ async function register(phoneNumber, fullName) {
 }
 async function makeAdmin(reg) {
   await pool.query('UPDATE users SET role = $2, updated_at = NOW() WHERE id = $1', [reg.data.user.id, 'ADMIN']);
-  for (let i = 0; i < 8; i++) {
+  for (let i = 0; i < 3; i++) {
     const refresh = await api('POST', '/api/auth/refresh', null, { refreshToken: reg.data.refreshToken });
     if (refresh.data.token) return refresh.data.token;
-    await new Promise((r) => setTimeout(r, 500));
   }
-  return null;
+  // Fresh OTP re-login fallback so a transient refresh hiccup can't orphan the
+  // suite into silent 401s later.
+  const fresh = await register(reg.data.user.phone_number, reg.data.user.full_name);
+  await pool.query('UPDATE users SET role = $2, updated_at = NOW() WHERE id = $1', [fresh.data.user.id, 'ADMIN']);
+  for (let i = 0; i < 3; i++) {
+    const refresh = await api('POST', '/api/auth/refresh', null, { refreshToken: fresh.data.refreshToken });
+    if (refresh.data.token) return refresh.data.token;
+  }
+  throw new Error('makeAdmin: could not mint an ADMIN token for phone ' + reg.data.user.phone_number);
 }
 function nowSuffix() { return String(Date.now()).slice(-6); }
 
