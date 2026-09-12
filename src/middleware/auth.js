@@ -2,6 +2,7 @@ const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const pool = require('../config/db');
 const config = require('../config');
+const logger = require('../utils/logger');
 const { hardenedVerify } = require('./jwtHardening');
 
 const JWT_SECRET = config.security.jwtSecret || config.DEFAULT_JWT;
