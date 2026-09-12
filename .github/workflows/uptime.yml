@@ -14,11 +14,14 @@ on:
 # Continuous availability monitoring (AFK-INST-24 SLA core API >= 99.5% monthly,
 # AFK-INST-23 Operations Runbook "monitoring"): probes live endpoints and fails the
 # run on a sustained non-200 so status pages/alerts can key off this workflow.
-# Probe set (all GET, side-effect free):
+# Probe set (side-effect free, no SMS ever sent):
 #   /health                - liveness + db check
 #   /                      - landing page (public)
 #   /health/db             - readiness (db up) on production
 #   /api/v1/docs.json      - API spec published (non-prod only; prod gates docs)
+#   /api/v1/auth/send-otp  - POST invalid phone -> 400: body-parser + zod schema +
+#                            auth-stack route alive (invalid phone never sends SMS)
+#   /api/v1/wallet/balance - GET with invalid token -> 401: JWT auth middleware alive
 permissions:
   contents: read
 
@@ -77,6 +80,19 @@ jobs:
           code=$(curl -s -o /dev/null -w '%{http_code}' "$url/api/v1/docs.json")
           if [ "$code" != "200" ]; then echo "::error::api docs returned $code"; exit 1; fi
           echo "api specs OK"
+
+      - name: Probe auth stack (no SMS)
+        run: |
+          url=$(printf '%s' "${{ steps.url.outputs.url }}" | sed 's:/$::')
+          # Invalid phone: rejected by zod before any OTP/SMS is produced.
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$url/api/v1/auth/send-otp" \
+            -H 'Content-Type: application/json' -d '{"phoneNumber":"not_a_phone"}') || true
+          if [ "$code" != "400" ]; then echo "::error::send-otp validation returned $code (expect 400)"; exit 1; fi
+          # Invalid token: JWT middleware must reject before the route handler.
+          code2=$(curl -s -o /dev/null -w '%{http_code}' "$url/api/v1/wallet/balance" \
+            -H 'Authorization: Bearer invalid.token.value') || true
+          if [ "$code2" != "401" ] && [ "$code2" != "403" ]; then echo "::error::wallet/balance unauth returned $code2 (expect 401/403)"; exit 1; fi
+          echo "auth stack OK (send-otp=$code, unauth wallet=$code2)"
 
       - name: Latency snapshot
         run: |

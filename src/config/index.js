@@ -66,6 +66,14 @@ const config = {
       .filter(Boolean),
     rateLimitDisabled: process.env.RATE_LIMIT_DISABLED === 'true' || process.env.DISABLE_RATE_LIMIT === 'true',
     otpRateMax: parseInt(process.env.OTP_RATE_MAX || '20', 10),
+    // Per-phone OTP resend cooldown (in-memory sendLog in authService). Higher
+    // on production so attackers cannot spray OTPs; overridden for CI/soak runs.
+    otpCooldownSeconds: parseInt(
+      process.env.OTP_COOLDOWN_SECONDS || (process.env.NODE_ENV === 'production' ? '60' : '5'),
+      10
+    ),
+    // Cap on the in-memory cooldown map before it resets (memory safety).
+    otpSendLogMax: parseInt(process.env.OTP_SEND_LOG_MAX || '10000', 10),
     authRateMax: parseInt(process.env.AUTH_RATE_MAX || '40', 10),
     apiRateMax: parseInt(process.env.API_RATE_MAX || '1000', 10),
     rateWindowMs: parseInt(process.env.RATE_WINDOW_MS || String(15 * 60 * 1000), 10),

@@ -1,53 +1,70 @@
-name: Staging Load & Security (k6)
+name: API Security & Load (k6)
 
 on:
   workflow_dispatch:
     inputs:
       base_url:
-        description: 'Base URL of the staging environment under test'
+        description: 'Base URL under test'
         required: true
-        default: 'https://staging.afrikoba.com'
+        default: 'https://afrikoba.com'
+      scope:
+        description: 'Which suites to run'
+        required: true
+        type: choice
+        options:
+          - security-only
+          - load-and-security
+        default: security-only
 
-# The k6 suites (scripts/load-test.js, scripts/security-test.js) implement the
-# NFR-2 / Test-Strategy "k6 load + security" gate. Run this workflow manually
-# against a deployed staging environment (inputs.base_url). The suites:
-#   - load-test.js    : health, auth (login/register devOtp), idempotency-keyed
-#                       transfer, sustained browsing — scenarios + thresholds are
-#                       encoded in options (no -u/-d flags; they conflict with scenarios).
-#   - security-test.js: SQLi/XSS payloads, rate limiting, unauthorised access, CORS,
-#                       input-validation bypass.
-# Requirements on the target environment:
-#   - RATE_LIMIT_DISABLED=true (or raised OTP_RATE_MAX) so the auth scenario is not
-#     throttled; the transfer scenario uses seeded users 255713100001 / 255714100002
-#     from db/seed.sql.
-#   - FRAUD_VELOCITY_HOUR / FRAUD_VELOCITY_DAY raised (e.g. 100000) so the sustained
-#     transfer scenario (2/s) does not trip the account velocity gate
+# k6 suites (scripts/load-test.js, scripts/security-test.js) implement the
+# NFR-2 / Test-Strategy gate. Default scope is security-only against
+# PRODUCTION: the suite is read-only there — malformed payloads are rejected by
+# the zod schemas (400, no SMS), unauth probes get 401/403, and the rate-limit
+# scenario is skipped when PROD_TARGET=true so it never spams real numbers.
+#
+# The LOAD suite is opt-in (scope: load-and-security) and is intended for a
+# STAGING environment: it performs real OTP registrations, idempotency-keyed
+# real transfers between seeded users (255713100001 / 255714100002, db/seed.sql)
+# and moves ledger balances. Do not run it against production unless you own the
+# money-movement and SMS consequences. Target requirements for load:
+#   - RATE_LIMIT_DISABLED=true (or raised OTP_RATE_MAX / OTP cooldown)
+#   - FRAUD_VELOCITY_HOUR / FRAUD_VELOCITY_DAY raised (e.g. 100000) so the
+#     sustained transfer scenario does not trip the account velocity gate
 #     (src/services/fraudDetectionService.js defaults: 10/hour, 50/day).
-# See headers of scripts/load-test.js and scripts/security-test.js.
 permissions:
   contents: read
 
 jobs:
-  k6:
-    name: k6 load + security
+  security:
+    name: Security suite (SQLi / XSS / auth / CORS / validation)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - name: Load test (health / auth / transfer / browsing)
-        uses: grafana/k6-action@v0.3.1
-        with:
-          script: scripts/load-test.js
-          flags: -e BASE_URL=${{ inputs.base_url }}
-
-      - name: Security test (SQLi / XSS / rate-limit / CORS / validation)
+      - name: Security test
         uses: grafana/k6-action@v0.3.1
         with:
           script: scripts/security-test.js
-          flags: -e BASE_URL=${{ inputs.base_url }}
+          flags: >-
+            -e BASE_URL=${{ inputs.base_url }}
+            -e PROD_TARGET=${{ contains(inputs.base_url, 'afrikoba.com') && !contains(inputs.base_url, 'staging') }}
 
       - name: Summarize
-        run: |
-          echo "k6 load/security completed against ${{ inputs.base_url }}"
-          echo "- load scenarios + thresholds: encoded in scripts/load-test.js options"
-          echo "- security scenarios: scripts/security-test.js (5 VUs, 1m, <30% req failures)"
+        run: echo "Security suite completed against ${{ inputs.base_url }} (gate: checks rate==1)"
+
+  load:
+    name: Load suite (health / auth / transfer / browsing)
+    if: ${{ inputs.scope == 'load-and-security' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Load test
+        uses: grafana/k6-action@v0.3.1
+        with:
+          script: scripts/load-test.js
+          flags: >-
+            -e BASE_URL=${{ inputs.base_url }}
+
+      - name: Summarize
+        run: echo "Load suite completed against ${{ inputs.base_url }} (thresholds: P95<2s, failed<15%, logins>5, transfers>3)"

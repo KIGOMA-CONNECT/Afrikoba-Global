@@ -3,13 +3,15 @@ const pg = require('pg');
 const config = require('./index');
 const logger = require('../utils/logger');
 
+const POOL_MAX = Number(process.env.DB_POOL_MAX) || 20;
+
 let currentPool;
 let currentConfig = {
   ...config.db,
   host: process.env.DB_HOST || 'db',
   user: process.env.DB_USER || 'afrikoba',
   password: process.env.DB_PASSWORD || 'change_me_strong_password',
-  max: 20,
+  max: POOL_MAX,
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 5000,
   statement_timeout: 30000,
@@ -158,7 +160,7 @@ async function autoDetectWorkingDbConfig() {
           const oldPool = currentPool;
           currentPool = new Pool({
             ...cand,
-            max: 20,
+            max: POOL_MAX,
             idleTimeoutMillis: 30000,
             connectionTimeoutMillis: 5000,
             statement_timeout: 30000,

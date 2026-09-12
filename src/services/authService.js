@@ -12,6 +12,8 @@ const OTP_TTL_MINUTES = 10;
 const MAX_OTP_ATTEMPTS = 5;
 
 // In-memory rate limiter (single-process). Kwa multi-instance, tumia Redis.
+// Cooldown duration + map cap centralized in config.security (same source that
+// feeds the express otpLimiter via OTP_RATE_MAX / OTP_COOLDOWN_SECONDS).
 const sendLog = new Map();
 
 function generateOtp() {
@@ -19,7 +21,7 @@ function generateOtp() {
 }
 
 function checkSendRate(phone) {
-  const cooldownMs = config.nodeEnv === 'production' ? 60 * 1000 : 5000;
+  const cooldownMs = config.security.otpCooldownSeconds * 1000;
   const now = Date.now();
   const last = sendLog.get(phone) || 0;
   if (now - last < cooldownMs) {
@@ -27,7 +29,7 @@ function checkSendRate(phone) {
     throw Object.assign(createAppError('AUTH_OTP_COOLDOWN'), { _i18nVars: { waitSeconds } });
   }
   sendLog.set(phone, now);
-  if (sendLog.size > 10000) sendLog.clear();
+  if (sendLog.size > config.security.otpSendLogMax) sendLog.clear();
 }
 
 async function sendOtp(phoneNumber, purpose = 'LOGIN') {

@@ -12,6 +12,8 @@ function requestLog(req, res, next) {
   req.id = id;
   res.setHeader('X-Request-Id', id);
 
+  if (!logger.reqEnabled) return next();
+
   const startedAt = Date.now();
   res.on('finish', () => {
     const durationMs = Date.now() - startedAt;

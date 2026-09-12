@@ -22,6 +22,7 @@ function requestId(req, res, next) {
  */
 function responseTiming(req, res, next) {
   const startTime = Date.now();
+  if (!logger.reqEnabled) return next();
   res.on('finish', () => {
     const duration = Date.now() - startTime;
     logger.info('REQUEST_LOG', `${req.method} ${req.originalUrl}`, {

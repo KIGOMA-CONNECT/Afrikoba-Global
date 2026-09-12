@@ -22,6 +22,11 @@ const BASE_URL = __ENV.BASE_URL || 'http://localhost:3000';
 // Rate limiting must be disabled on the target for the load test's auth flow
 // (k6.yml); the rate-limit scenario only asserts when limiting is actually on.
 const RATE_LIMIT_DISABLED = (__ENV.RATE_LIMIT_DISABLED || '').toLowerCase() === 'true';
+// On production every send-otp is a real SMS; the 25x burst in the rate-limit
+// scenario would spam a live number, so PROD_TARGET skips it. The rest of the
+// suite is safe on prod: it sends malformed payloads the schema rejects (400)
+// and unauth probe requests (401), no OTP is ever generated.
+const PROD_TARGET = (__ENV.PROD_TARGET || '').toLowerCase() === 'true';
 
 // Gate is the checks metric, NOT http_req_failed: this suite sends attack probes
 // that MUST be rejected with 4xx, and k6 (v2) counts every status >= 400 as a
@@ -116,8 +121,8 @@ export default function () {
 
   // Test 4: Rate limiting
   group('Rate Limiting', () => {
-    if (RATE_LIMIT_DISABLED) {
-      check(null, { 'Rate limit: skipped (target disables limiting for load test)': () => true });
+    if (RATE_LIMIT_DISABLED || PROD_TARGET) {
+      check(null, { 'Rate limit: skipped (RATE_LIMIT_DISABLED or PROD_TARGET)': () => true });
     } else {
       const results = [];
       for (let i = 0; i < 25; i++) {
