@@ -512,7 +512,7 @@ async function createContributionSchedule(groupId, cycleNumber, dueDate) {
 
 async function payContribution(groupId, userId, cycleNumber, amount, sharesCount) {
   const amountNum = parseFloat(amount);
-  const MAX_ATTEMPTS = 5;
+  const MAX_ATTEMPTS = 6;
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     const client = await pool.connect();
     try {
@@ -623,10 +623,10 @@ async function payContribution(groupId, userId, cycleNumber, amount, sharesCount
     await client.query('ROLLBACK').catch(() => {});
     const isLockTimeout = error && (error.code === '55P03' || /lock timeout/i.test(error.message));
     if (isLockTimeout && attempt < MAX_ATTEMPTS - 1) {
-      if (attempt === MAX_ATTEMPTS - 2) {
-        await pool.terminateStaleLockHolders(2);
-      }
-      await new Promise((r) => setTimeout(r, 800));
+      const grace = attempt === 0 ? 2 : 0;
+      const killed = await pool.terminateStaleLockHolders(grace);
+      logger.warn('VICOBA', `payContribution lock-timeout attempt ${attempt + 1}/${MAX_ATTEMPTS}, terminated=${killed} stale holder(s)`);
+      await new Promise((r) => setTimeout(r, 500));
     } else {
       throw error;
     }

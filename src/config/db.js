@@ -28,7 +28,7 @@ currentPool.on('error', (err) => {
 let lastLockDiag = 0;
 async function diagnoseLockBlockers(sqlState) {
   const nowTs = Date.now();
-  if (nowTs - lastLockDiag < 5000) return;
+  if (nowTs - lastLockDiag < 1500) return;
   lastLockDiag = nowTs;
   try {
     const res = await currentPool.query(
@@ -72,7 +72,7 @@ async function diagnoseLockBlockers(sqlState) {
         WHERE l.granted
           AND a.pid <> pg_backend_pid()
           AND a.xact_start IS NOT NULL
-          AND now() - a.xact_start > interval '3 seconds'
+          AND now() - a.xact_start > interval '0.5 seconds'
         GROUP BY l.pid, a.state, a.xact_start, left(a.query, 140)
         ORDER BY xact_age DESC`
     );
@@ -84,12 +84,30 @@ async function diagnoseLockBlockers(sqlState) {
   } catch (e) {
     logger.warn('DB-LOCK-DIAG', `holder query failed: ${e.message}`);
   }
+  try {
+    const txs = await currentPool.query(
+      `SELECT pid, state, (now() - xact_start)::text AS xact_age, left(query, 140) AS q
+         FROM pg_stat_activity
+        WHERE xact_start IS NOT NULL AND pid <> pg_backend_pid()
+        ORDER BY xact_start`
+    );
+    if (txs.rows.length) {
+      txs.rows.forEach((row) => {
+        logger.warn('DB-LOCK-DIAG', `SQLState ${sqlState} in-tx: pid=${row.pid} state=${row.state} xact_age=${row.xact_age} "${row.q}"`);
+      });
+    }
+  } catch (e) {
+    logger.warn('DB-LOCK-DIAG', `in-tx query failed: ${e.message}`);
+  }
 }
 
 async function terminateStaleLockHolders(graceSeconds = 2) {
   // CI suite is strictly sequential — backends holding granted locks for
   // >graceSeconds are by definition rogue/leaked and safe to terminate there.
-  if (process.env.CI !== 'true') return 0;
+  if (process.env.CI !== 'true') {
+    logger.info('DB-LOCK-DIAG', 'terminateStaleLockHolders skipped (CI=false)');
+    return 0;
+  }
   try {
     const res = await currentPool.query(
       `SELECT l.pid AS terminated, pg_terminate_backend(l.pid) AS ok
@@ -101,9 +119,7 @@ async function terminateStaleLockHolders(graceSeconds = 2) {
           AND a.xact_start < now() - ($1::int || ' seconds')::interval`,
       [graceSeconds]
     );
-    if (res.rows.length) {
-      logger.warn('DB-LOCK-DIAG', `terminated ${res.rows.length} stale lock holder(s)`);
-    }
+    logger.info('DB-LOCK-DIAG', `terminate(${graceSeconds}s) -> ${res.rows.length} stale holder(s) terminated`);
     return res.rows.length;
   } catch (e) {
     logger.warn('DB-LOCK-DIAG', `terminate query failed: ${e.message}`);
