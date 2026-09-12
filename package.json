@@ -25,6 +25,9 @@
   ],
   "author": "Afrikoba Group",
   "license": "UNLICENSED",
+  "overrides": {
+    "qs": "^6.16.0"
+  },
   "dependencies": {
     "@sentry/node": "^10.70.0",
     "axios": "^1.7.9",

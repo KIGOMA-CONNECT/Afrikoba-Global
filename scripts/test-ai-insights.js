@@ -78,9 +78,9 @@ async function run() {
     [biz.rows[0].id]
   );
   await pool.query(
-    `INSERT INTO payroll_runs (business_id, period, total_amount, employee_count)
-     VALUES ($1, '${suffix}P1', 900000, 3)`,
-    [biz.rows[0].id]
+    `INSERT INTO payroll_runs (funding_source, status, total_amount, created_by)
+     VALUES ('BUSINESS', 'PAID', 900000, $1)`,
+    [ownerId]
   );
 
   // Procurement buyer: one OPEN RFQ + a disbursed supplier financing (financing
@@ -103,9 +103,9 @@ async function run() {
 
   // Give payroll a previous month reference so PAYROLL_HEALTH computes (older run).
   await pool.query(
-    `INSERT INTO payroll_runs (business_id, period, total_amount, employee_count, created_at)
-     VALUES ($1, '${suffix}P0', 600000, 3, NOW() - INTERVAL '30 days')`,
-    [biz.rows[0].id]
+    `INSERT INTO payroll_runs (funding_source, status, total_amount, created_by, created_at)
+     VALUES ('BUSINESS', 'PAID', 600000, $1, NOW() - INTERVAL '30 days')`,
+    [ownerId]
   );
 
   await section('Refresh generates invoice/payroll/procurement insights');
@@ -156,7 +156,7 @@ async function run() {
   await pool.query(`DELETE FROM procurement_requests WHERE id = $1`, [rfq.rows[0].id]);
   await pool.query(`DELETE FROM suppliers WHERE id = $1`, [supplier.rows[0].id]);
   await pool.query('DELETE FROM business_invoices WHERE business_id = $1', [biz.rows[0].id]);
-  await pool.query('DELETE FROM payroll_runs WHERE business_id = $1', [biz.rows[0].id]);
+  await pool.query('DELETE FROM payroll_runs WHERE created_by = $1', [ownerId]);
   await pool.query('DELETE FROM business_accounts WHERE id = $1', [biz.rows[0].id]);
 }
 

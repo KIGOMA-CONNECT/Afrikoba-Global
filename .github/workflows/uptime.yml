@@ -8,8 +8,8 @@ on:
     inputs:
       base_url:
         description: 'Environment base URL to probe'
-        required: true
-        default: 'https://staging.afrikoba.com'
+        required: false
+        default: 'https://www.afrikoba.com'
 
 # Continuous availability monitoring (AFK-INST-24 SLA core API >= 99.5% monthly,
 # AFK-INST-23 Operations Runbook "monitoring"): probes live endpoints and fails the
@@ -17,7 +17,8 @@ on:
 # Probe set (all GET, side-effect free):
 #   /health                - liveness + db check
 #   /                      - landing page (public)
-#   /api/v1/docs.json      - API spec published (non-prod gate)
+#   /health/db             - readiness (db up) on production
+#   /api/v1/docs.json      - API spec published (non-prod only; prod gates docs)
 permissions:
   contents: read
 
@@ -26,13 +27,20 @@ jobs:
     name: Health probe
     runs-on: ubuntu-latest
     steps:
-      - name: Resolve base URL
+      - name: Resolve base URL and environment
         id: url
         run: |
           URL="${{ github.event.inputs.base_url }}"
-          if [ -z "$URL" ]; then URL="${{ vars.STAGING_BASE_URL }}"; fi
-          if [ -z "$URL" ]; then URL="https://staging.afrikoba.com"; fi
+          if [ -z "$URL" ]; then URL="${{ vars.PROD_BASE_URL }}"; fi
+          if [ -z "$URL" ]; then URL="https://www.afrikoba.com"; fi
+          HOST=$(printf '%s' "$URL" | sed 's#^[a-z]*://##; s#/.*$##; s:/*$::')
+          if [ "$HOST" = "www.afrikoba.com" ] || [ "$HOST" = "afrikoba.com" ]; then
+            IS_PROD=true
+          else
+            IS_PROD=false
+          fi
           echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "is_prod=$IS_PROD" >> "$GITHUB_OUTPUT"
 
       - name: Probe /health
         run: |
@@ -52,7 +60,18 @@ jobs:
           if [ "$code" != "200" ]; then echo "::error::landing page returned $code"; exit 1; fi
           echo "landing OK"
 
-      - name: Probe API docs
+      - name: Probe readiness /health/db (production)
+        if: steps.url.outputs.is_prod == 'true'
+        run: |
+          url=$(printf '%s' "${{ steps.url.outputs.url }}" | sed 's:/$::')
+          code=$(curl -s -o /dev/null -w '%{http_code}' "$url/health/db")
+          if [ "$code" != "200" ]; then echo "::error::/health/db returned $code"; exit 1; fi
+          body=$(curl -s "$url/health/db")
+          echo "$body" | grep -q '"db"' || { echo "::error::/health/db missing db status"; exit 1; }
+          echo "production readiness OK"
+
+      - name: Probe API docs (non-production)
+        if: steps.url.outputs.is_prod == 'false'
         run: |
           url=$(printf '%s' "${{ steps.url.outputs.url }}" | sed 's:/$::')
           code=$(curl -s -o /dev/null -w '%{http_code}' "$url/api/v1/docs.json")

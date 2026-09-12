@@ -267,8 +267,8 @@ async function genPayrollHealth(userId) {
               SUM(pr.total_amount)::numeric AS total,
               COUNT(*)::int AS runs
          FROM payroll_runs pr
-        JOIN business_accounts b ON b.id = pr.business_id
-        WHERE b.owner_id = $1 AND pr.created_at > NOW() - INTERVAL '90 days'
+        JOIN business_accounts b ON b.owner_id = pr.created_by
+        WHERE pr.created_by = $1 AND pr.created_at > NOW() - INTERVAL '90 days'
         GROUP BY b.owner_id, m, y
      )
      SELECT COALESCE((SELECT total FROM months WHERE m = EXTRACT(MONTH FROM NOW()) AND y = EXTRACT(YEAR FROM NOW())),0)::numeric AS current_month,

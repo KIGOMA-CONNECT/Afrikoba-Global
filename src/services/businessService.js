@@ -265,8 +265,8 @@ async function runPayroll(businessId, ownerId, period, employees) {
     if (Number(b.rows[0].balance) < total) throw Object.assign(new Error(`Salio la biashara halitoshi kwa payroll (${formatMoney(total)}).`), { statusCode: 400 });
     await client.query('UPDATE business_accounts SET balance = balance - $1 WHERE id = $2', [total, businessId]);
     const run = await client.query(
-      `INSERT INTO payroll_runs (business_id, period, total_amount, employee_count, created_by) VALUES ($1,$2,$3,$4,$5) RETURNING *`,
-      [businessId, period, total, employees.length, ownerId]
+      `INSERT INTO payroll_runs (funding_source, status, total_amount, created_by) VALUES ('BUSINESS', 'PAID', $1, $2) RETURNING *`,
+      [total, ownerId]
     );
     let paid = 0, failed = 0;
     for (const e of employees) {
@@ -287,7 +287,12 @@ async function runPayroll(businessId, ownerId, period, employees) {
 
 async function listPayroll(businessId, ownerId) {
   await assertBusinessAccess(businessId, ownerId);
-  const res = await pool.query('SELECT * FROM payroll_runs WHERE business_id = $1 ORDER BY created_at DESC', [businessId]);
+  const res = await pool.query(
+    `SELECT pr.* FROM payroll_runs pr
+     JOIN payroll_items pi ON pi.payroll_run_id = pr.id
+     WHERE pr.created_by = $1 ORDER BY pr.created_at DESC`,
+    [ownerId]
+  );
   return res.rows;
 }
 

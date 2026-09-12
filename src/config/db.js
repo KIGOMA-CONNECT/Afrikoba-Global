@@ -11,7 +11,7 @@ let currentConfig = {
   max: 20,
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 5000,
-  statement_timeout: 10000,
+  statement_timeout: 30000,
 };
 
 currentPool = new Pool(currentConfig);
@@ -43,7 +43,7 @@ async function autoDetectWorkingDbConfig() {
             max: 20,
             idleTimeoutMillis: 30000,
             connectionTimeoutMillis: 5000,
-            statement_timeout: 10000,
+            statement_timeout: 30000,
           });
           currentConfig = cand;
           oldPool.end().catch(() => {});
@@ -70,8 +70,34 @@ setInterval(() => {
   }
 }, 60000);
 
+function safeRelease(client, origRelease, err) {
+  if (!err) {
+    client.query('ROLLBACK').then(() => origRelease()).catch(() => origRelease());
+    return;
+  }
+  origRelease(err);
+}
+
+function safeConnect() {
+  return currentPool.connect().then((client) => {
+    if (!client || client.__afrikobaSafeRelease) return client;
+    const origRelease = client.release.bind(client);
+    let released = false;
+    client.release = (err) => {
+      if (released) return;
+      released = true;
+      safeRelease(client, origRelease, err);
+    };
+    client.__afrikobaSafeRelease = true;
+    return client;
+  });
+}
+
 module.exports = new Proxy({}, {
   get(target, prop) {
+    if (prop === 'connect') {
+      return safeConnect;
+    }
     const value = currentPool[prop];
     if (typeof value === 'function') {
       return value.bind(currentPool);
