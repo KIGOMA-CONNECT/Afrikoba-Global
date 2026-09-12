@@ -378,54 +378,62 @@ async function invest(userId, projectId, sharesToBuy, signatureIp) {
  * Release escrow milestone - fedha kwenda wallet ya mjasiriamali
  */
 async function releaseMilestone(adminUserId, milestoneId) {
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    const milestoneRes = await client.query(
-      `SELECT em.*, p.owner_user_id, u.phone_number, u.full_name
-       FROM escrow_milestones em
-       JOIN investment_projects p ON p.id = em.project_id
-       JOIN users u ON u.id = p.owner_user_id
-       WHERE em.id = $1 FOR UPDATE OF em`,
-      [milestoneId]
-    );
-    const milestone = milestoneRes.rows[0];
-    if (!milestone) throw Object.assign(new Error('Milestone haijapatikana.'), { statusCode: 404 });
-    if (milestone.status === 'RELEASED') {
-      throw Object.assign(new Error('Milestone hii imeshakutolewa.'), { statusCode: 400 });
+  const MAX_ATTEMPTS = 4;
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const milestoneRes = await client.query(
+        `SELECT em.*, p.owner_user_id, u.phone_number, u.full_name
+         FROM escrow_milestones em
+         JOIN investment_projects p ON p.id = em.project_id
+         JOIN users u ON u.id = p.owner_user_id
+         WHERE em.id = $1 FOR UPDATE OF em`,
+        [milestoneId]
+      );
+      const milestone = milestoneRes.rows[0];
+      if (!milestone) throw Object.assign(new Error('Milestone haijapatikana.'), { statusCode: 404 });
+      if (milestone.status === 'RELEASED') {
+        throw Object.assign(new Error('Milestone hii imeshakutolewa.'), { statusCode: 400 });
+      }
+
+      await client.query(
+        `UPDATE escrow_milestones SET status = 'RELEASED', released_at = NOW(), released_by = $1 WHERE id = $2`,
+        [adminUserId, milestoneId]
+      );
+      const referenceId = generateReference('EM');
+      await fin.creditWallet({ client, userId: milestone.owner_user_id, amount: milestone.amount, reference: referenceId, fromAccount: 'SUSPENSE', description: 'Escrow milestone release' });
+      const txRes = await client.query(
+        `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
+         VALUES ($1, $2, $3, 0, $3, 'SUCCESS', 'INVESTMENT_PAYOUT', $4)
+         RETURNING id`,
+        [referenceId, milestone.owner_user_id, milestone.amount, JSON.stringify({ project_id: milestone.project_id, milestone_id: milestone.id })]
+      );
+
+      await client.query(
+        `INSERT INTO wallet_ledger (transaction_id, reference_id, to_user_id, amount, description)
+         VALUES ($1, $2, $3, $4, 'Escrow milestone release')`,
+        [txRes.rows[0].id, referenceId, milestone.owner_user_id, milestone.amount]
+      );
+
+      await client.query('COMMIT');
+
+      await logAudit({ eventType: 'ESCROW_RELEASE', action: 'RELEASE', entityType: 'MILESTONE', userId: adminUserId, entityId: milestoneId, referenceId, amount: milestone.amount, afterData: { project_id: milestone.project_id, owner: milestone.owner_user_id } });
+
+      const msg = `Habari ${milestone.full_name}, awamu ya escrow "${milestone.title}" imetolewa: ${formatMoney(milestone.amount)}. Ref: ${referenceId}`;
+      await sendSMS(milestone.phone_number, msg).catch((smsErr) => logger.error('P2P', `SMS post-milestone imefunga: ${smsErr.message}`));
+      return { success: true, referenceId };
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => {});
+      const isLockTimeout = error && (error.code === '55P03' || /lock timeout/i.test(error.message));
+      if (isLockTimeout && attempt < MAX_ATTEMPTS - 1) {
+        await new Promise((r) => setTimeout(r, 800));
+      } else {
+        throw error;
+      }
+    } finally {
+      client.release();
     }
-
-    await client.query(
-      `UPDATE escrow_milestones SET status = 'RELEASED', released_at = NOW(), released_by = $1 WHERE id = $2`,
-      [adminUserId, milestoneId]
-    );
-    const referenceId = generateReference('EM');
-    await fin.creditWallet({ client, userId: milestone.owner_user_id, amount: milestone.amount, reference: referenceId, fromAccount: 'SUSPENSE', description: 'Escrow milestone release' });
-    const txRes = await client.query(
-      `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
-       VALUES ($1, $2, $3, 0, $3, 'SUCCESS', 'INVESTMENT_PAYOUT', $4)
-       RETURNING id`,
-      [referenceId, milestone.owner_user_id, milestone.amount, JSON.stringify({ project_id: milestone.project_id, milestone_id: milestone.id })]
-    );
-
-    await client.query(
-      `INSERT INTO wallet_ledger (transaction_id, reference_id, to_user_id, amount, description)
-       VALUES ($1, $2, $3, $4, 'Escrow milestone release')`,
-      [txRes.rows[0].id, referenceId, milestone.owner_user_id, milestone.amount]
-    );
-
-    await client.query('COMMIT');
-
-    await logAudit({ eventType: 'ESCROW_RELEASE', action: 'RELEASE', entityType: 'MILESTONE', userId: adminUserId, entityId: milestoneId, referenceId, amount: milestone.amount, afterData: { project_id: milestone.project_id, owner: milestone.owner_user_id } });
-
-    const msg = `Habari ${milestone.full_name}, awamu ya escrow "${milestone.title}" imetolewa: ${formatMoney(milestone.amount)}. Ref: ${referenceId}`;
-    await sendSMS(milestone.phone_number, msg).catch((smsErr) => logger.error('P2P', `SMS post-milestone imefunga: ${smsErr.message}`));
-    return { success: true, referenceId };
-  } catch (error) {
-    await client.query('ROLLBACK').catch(() => {});
-    throw error;
-  } finally {
-    client.release();
   }
 }
 

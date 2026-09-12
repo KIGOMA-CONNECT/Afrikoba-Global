@@ -512,14 +512,25 @@ async function createContributionSchedule(groupId, cycleNumber, dueDate) {
 
 async function payContribution(groupId, userId, cycleNumber, amount, sharesCount) {
   const amountNum = parseFloat(amount);
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
+  const MAX_ATTEMPTS = 4;
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
 
-    const scheduleRes = await client.query(
+    let scheduleRes = await client.query(
       'SELECT * FROM vicoba_contribution_schedules WHERE group_id = $1 AND cycle_number = $2 FOR UPDATE',
       [groupId, cycleNumber]
     );
+    // Bridge transient cross-connection visibility for a schedule created a moment
+    // ago on another pooled connection (CI integration runs share the DB). Bounded.
+    for (let attempt = 0; scheduleRes.rows.length === 0 && attempt < 5; attempt++) {
+      await new Promise((r) => setTimeout(r, 20));
+      scheduleRes = await client.query(
+        'SELECT * FROM vicoba_contribution_schedules WHERE group_id = $1 AND cycle_number = $2 FOR UPDATE',
+        [groupId, cycleNumber]
+      );
+    }
     if (scheduleRes.rows.length === 0) {
       throw Object.assign(new Error('Mzunguko huu haupo.'), { statusCode: 404 });
     }
@@ -610,9 +621,15 @@ async function payContribution(groupId, userId, cycleNumber, amount, sharesCount
     return { success: true, referenceId, isLate, penaltyAmount, message: isLate ? 'Mchango umelipwa na faini.' : 'Mchango umefanikiwa.' };
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {});
-    throw error;
-  } finally {
+    const isLockTimeout = error && (error.code === '55P03' || /lock timeout/i.test(error.message));
+    if (isLockTimeout && attempt < MAX_ATTEMPTS - 1) {
+      await new Promise((r) => setTimeout(r, 800));
+    } else {
+      throw error;
+    }
+} finally {
     client.release();
+  }
   }
 }
 

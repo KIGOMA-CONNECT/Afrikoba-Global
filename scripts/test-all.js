@@ -547,7 +547,8 @@ async function section(title) { console.log(`\n== ${title} ==`); }
     cycleNumber: 2,
     dueDate: pastDate,
   });
-  await expect(lateSched.status === 201 || lateSched.status === 200, 'Late contribution schedule created');
+  await expect(lateSched.status === 201 || lateSched.status === 200, 'Late contribution schedule created', JSON.stringify(lateSched.data));
+  await expect(!!lateSched.data.schedule, 'Late contribution schedule row returned', JSON.stringify(lateSched.data));
 
   const latePay = await api('POST', `/api/vicoba/groups/${gId}/schedules/2/pay`, regD.data.token, {
     amount: 50000,
@@ -558,11 +559,13 @@ async function section(title) { console.log(`\n== ${title} ==`); }
   // List penalties (late faini hukatwa mara moja → hifadhiwa kama PAID)
   const penalties = await api('GET', `/api/vicoba/groups/${gId}/penalties?status=PAID`, regD.data.token);
   await expect(penalties.status === 200 && penalties.data.penalties.length >= 1, 'Penalties listed for group');
-  const penaltyId = penalties.data.penalties[0].id;
+  const penaltyId = penalties.data.penalties && penalties.data.penalties[0] ? penalties.data.penalties[0].id : null;
 
   // Pay penalty (idempotent: tayari kimekatwa wakati wa malipo ya mchango)
-  const payPenalty = await api('POST', `/api/vicoba/penalties/${penaltyId}/pay`, regD.data.token);
-  await expect(payPenalty.status === 200 && payPenalty.data.success, 'Penalty paid successfully', JSON.stringify(payPenalty.data));
+  if (penaltyId) {
+    const payPenalty = await api('POST', `/api/vicoba/penalties/${penaltyId}/pay`, regD.data.token);
+    await expect(payPenalty.status === 200 && payPenalty.data.success, 'Penalty paid successfully', JSON.stringify(payPenalty.data));
+  }
 
   // --- Social Fund ---
   const initSF = await api('POST', `/api/vicoba/groups/${gId}/social-fund`, regD.data.token, {

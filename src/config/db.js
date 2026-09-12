@@ -12,8 +12,8 @@ let currentConfig = {
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 5000,
   statement_timeout: 30000,
-  lock_timeout: 10000,
-  idle_in_transaction_session_timeout: 30000,
+  lock_timeout: 3000,
+  idle_in_transaction_session_timeout: 8000,
 };
 
 currentPool = new Pool(currentConfig);
@@ -46,8 +46,8 @@ async function autoDetectWorkingDbConfig() {
             idleTimeoutMillis: 30000,
             connectionTimeoutMillis: 5000,
             statement_timeout: 30000,
-            lock_timeout: 10000,
-            idle_in_transaction_session_timeout: 30000,
+            lock_timeout: 3000,
+            idle_in_transaction_session_timeout: 8000,
           });
           currentConfig = cand;
           oldPool.end().catch(() => {});

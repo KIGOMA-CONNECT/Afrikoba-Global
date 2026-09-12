@@ -25,21 +25,21 @@ async function setStatementTimeout() {
  */
 async function setLockTimeout() {
   try {
-    await pool.query('SET lock_timeout = 10000'); // 10 seconds
-    logger.info('DB', 'Lock timeout set to 10s');
+    await pool.query('SET lock_timeout = 3000'); // 3 seconds
+    logger.info('DB', 'Lock timeout set to 3s');
   } catch (err) {
     logger.warn('DB', `Failed to set lock timeout: ${err.message}`);
   }
 }
 
 /**
- * Set idle transaction timeout (30 seconds).
+ * Set idle transaction timeout (8 seconds).
  * Prevents abandoned transactions from holding locks.
  */
 async function setIdleTransactionTimeout() {
   try {
-    await pool.query('SET idle_in_transaction_session_timeout = 30000');
-    logger.info('DB', 'Idle transaction timeout set to 30s');
+    await pool.query('SET idle_in_transaction_session_timeout = 8000');
+    logger.info('DB', 'Idle transaction timeout set to 8s');
   } catch (err) {
     logger.warn('DB', `Failed to set idle transaction timeout: ${err.message}`);
   }
