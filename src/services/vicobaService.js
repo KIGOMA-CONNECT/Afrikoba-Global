@@ -17,8 +17,10 @@ async function createGroup(userId, { groupName, cycleType, shareValue, monthlyMa
   }
   for (let attempt = 0; attempt < 5; attempt++) {
     const joinCode = generateJoinCode();
+    const client = await pool.connect();
     try {
-      const result = await pool.query(
+      await client.query('BEGIN');
+      const result = await client.query(
         `INSERT INTO vicoba_groups
           (group_name, cycle_type, share_value, monthly_maintenance_fee, created_by_user_id, join_code)
          VALUES ($1, $2, $3, $4, $5, $6)
@@ -27,15 +29,19 @@ async function createGroup(userId, { groupName, cycleType, shareValue, monthlyMa
       );
       const group = result.rows[0];
 
-      await pool.query(
+      await client.query(
         `INSERT INTO vicoba_members (group_id, user_id, role_in_group)
          VALUES ($1, $2, 'MWENYEKITI')`,
         [group.id, userId]
       );
+      await client.query('COMMIT');
       return group;
     } catch (error) {
-      if (error.code === '23505') continue;
+      await client.query('ROLLBACK').catch(() => {});
+      if (error.code === '23505' && attempt < 4) continue;
       throw error;
+    } finally {
+      client.release();
     }
   }
   throw new Error('Imeshindikana kuzalisha msimbo wa kikundi. Jaribu tena.');
@@ -460,6 +466,7 @@ async function getGroupDetails(groupId, requesterUserId) {
   const detail = { ...group.rows[0], members: members.rows };
   if (requesterUserId) {
     const myRole = members.rows.find((m) => m.user_id === requesterUserId)?.role_in_group;
+    detail.role_in_group = myRole || null;
     const isLeader = ['MWENYEKITI', 'MWEKAHAZINA', 'KATIBU'].includes(myRole);
     if (!isLeader) delete detail.join_code;
   }
