@@ -84,7 +84,14 @@ export default function Vicoba() {
   const [gDocs, setGDocs] = useState([]);
   const [gResolutions, setGResolutions] = useState([]);
   const [gActions, setGActions] = useState([]);
+  const [gMinutes, setGMinutes] = useState([]);
   const [meetForm, setMeetForm] = useState({ title: '', scheduledAt: '' });
+  const [agendaForm, setAgendaForm] = useState({ title: '', description: '' });
+  const [docForm, setDocForm] = useState({ title: '', category: 'CONSTITUTION', body: '', access: 'MEMBERS' });
+  const [expanded, setExpanded] = useState(null); // meeting id with agenda loaded
+  const [expandedAgenda, setExpandedAgenda] = useState([]);
+  const [transcriptMap, setTranscriptMap] = useState({});
+  const [govBusy, setGovBusy] = useState(false);
 
   const show = (type, text) => {
     setMsg({ type, text });
@@ -160,6 +167,55 @@ export default function Vicoba() {
     api.get('/governance/documents', gp).then((r) => setGDocs(r.data.documents || r.data.docs || [])).catch(() => setGDocs([]));
     api.get('/governance/resolutions', gp).then((r) => setGResolutions(r.data.resolutions || [])).catch(() => setGResolutions([]));
     api.get('/governance/action-items', gp).then((r) => setGActions(r.data.items || r.data.actionItems || [])).catch(() => setGActions([]));
+    api.get('/governance/minutes', gp).then((r) => setGMinutes(r.data.minutes || [])).catch(() => setGMinutes([]));
+  };
+
+  const loadAgenda = (mid) => {
+    api.get(`/governance/meetings/${mid}`).then((r) => setExpandedAgenda((r.data.agenda || []).sort((a, b) => (a.position || 0) - (b.position || 0)))).catch(() => setExpandedAgenda([]));
+  };
+
+  const toggleAgenda = async (mid) => {
+    if (expanded === mid) { setExpanded(null); return; }
+    setExpanded(mid);
+    loadAgenda(mid);
+  };
+
+  const addAgenda = async (e, mid) => {
+    e.preventDefault();
+    if (!selected || !agendaForm.title) return;
+    try {
+      await api.post(`/governance/meetings/${mid}/agenda`, {
+        position: expandedAgenda.length + 1, title: agendaForm.title, description: agendaForm.description || undefined
+      });
+      show('ok', t('gov.agenda_added'));
+      setAgendaForm({ title: '', description: '' });
+      loadAgenda(mid);
+    } catch (err) { show('err', err.response?.data?.message || t('vicoba.error')); }
+  };
+
+  const genMinutes = async (mid) => {
+    setGovBusy(true);
+    try {
+      const res = await api.post(`/governance/meetings/${mid}/ai-minutes`, { transcript: transcriptMap[mid] || '' });
+      show('ok', t('gov.minutes_generated'));
+      if (selected) loadGov(selected.id);
+      loadAgenda(mid);
+    } catch (err) { show('err', err.response?.data?.message || t('vicoba.error')); }
+    setGovBusy(false);
+  };
+
+  const addDoc = async (e) => {
+    e.preventDefault();
+    if (!selected || !docForm.title) return;
+    try {
+      await api.post('/governance/documents', {
+        groupType: 'VICOBA', groupId: selected.id, docCategory: docForm.category, title: docForm.title,
+        body: docForm.body || undefined, accessLevel: docForm.access
+      });
+      show('ok', t('gov.doc_added'));
+      setDocForm({ title: '', category: docForm.category, body: '', access: docForm.access });
+      loadGov(selected.id);
+    } catch (err) { show('err', err.response?.data?.message || t('vicoba.error')); }
   };
 
   const createMeeting = async (e) => {
@@ -1223,6 +1279,30 @@ export default function Vicoba() {
                   <Link to="/dashboard/governance" className="btn ghost" style={{ textDecoration: 'none' }}>{t('vicoba.go_to_governance')}</Link>
                 </div>
               </div>
+              {isLeader && (
+                <details className="card">
+                  <summary style={{ cursor: 'pointer', fontWeight: 600 }}>{t('gov.add_document')}</summary>
+                  <form onSubmit={addDoc} style={{ marginTop: 10 }}>
+                    <div className="form-row">
+                      <div className="field" style={{ flex: 2 }}><label>{t('gov.doc_title')}</label><input value={docForm.title} onChange={(e) => setDocForm({ ...docForm, title: e.target.value })} required /></div>
+                      <div className="field" style={{ flex: 1 }}><label>{t('gov.doc_category')}</label>
+                        <select value={docForm.category} onChange={(e) => setDocForm({ ...docForm, category: e.target.value })}>
+                          {['CONSTITUTION', 'MEMBERS', 'MEETINGS', 'MINUTES', 'RESOLUTIONS', 'FINANCIAL', 'LOANS', 'SOCIAL_FUND', 'POLICIES', 'ANNOUNCEMENTS'].map((c) => <option key={c} value={c}>{t(`gov.cat_${c.toLowerCase()}`)}</option>)}
+                        </select>
+                      </div>
+                      <div className="field" style={{ flex: 1 }}><label>{t('gov.doc_access')}</label>
+                        <select value={docForm.access} onChange={(e) => setDocForm({ ...docForm, access: e.target.value })}>
+                          <option value="MEMBERS">{t('gov.access_members')}</option>
+                          <option value="OFFICERS">{t('gov.access_officers')}</option>
+                          <option value="PUBLIC">{t('gov.access_public')}</option>
+                        </select>
+                      </div>
+                    </div>
+                    <div className="field" style={{ marginTop: 8 }}><label>{t('gov.doc_body')}</label><textarea style={{ width: '100%', minHeight: 90 }} value={docForm.body} onChange={(e) => setDocForm({ ...docForm, body: e.target.value })} /></div>
+                    <button className="btn" type="submit">{t('gov.save')}</button>
+                  </form>
+                </details>
+              )}
               <div className="card section">
                 <h3 style={{ marginTop: 0 }}>{t('gov.documents')}</h3>
                 {gDocs.length === 0 ? (
@@ -1286,12 +1366,59 @@ export default function Vicoba() {
                       </div>
                       <div className="inline-actions">
                         <StatusBadge status={m.status} />
+                        <button className="btn ghost" onClick={() => toggleAgenda(m.id)}>{expanded === m.id ? t('gov.collapse') : t('gov.expand')}</button>
                         <button className="btn ghost" onClick={() => govRsvp(m.id, 'ACCEPTED')}>{t('gov.rsvp')}</button>
                         <button className="btn ghost" onClick={() => govAttended(m.id)}>{t('gov.mark_attended')}</button>
                       </div>
                     </div>
+                    {expanded === m.id && (
+                      <div style={{ marginTop: 10, paddingLeft: 8, borderLeft: '2px solid var(--primary)', background: 'var(--bg)', borderRadius: 6, padding: 8 }}>
+                        <strong className="roles-tag" style={{ display: 'block', marginBottom: 6 }}>{t('gov.agenda_list')}</strong>
+                        {expandedAgenda.length === 0 && <p className="roles-tag">{t('gov.no_agenda')}</p>}
+                        {expandedAgenda.map((a) => (
+                          <div key={a.id} className="roles-tag" style={{ display: 'flex', justifyContent: 'space-between', gap: 10, padding: '4px 0' }}>
+                            <span>{a.position}. {a.title}{a.description ? ` — ${a.description}` : ''}</span>
+                            <StatusBadge status={a.status || 'PENDING'} />
+                          </div>
+                        ))}
+                        {isLeader && (
+                          <form onSubmit={(e) => addAgenda(e, m.id)} style={{ marginTop: 8 }} className="inline-actions" >
+                            <input style={{ flex: 2 }} placeholder={t('gov.agenda_title')} value={agendaForm.title} onChange={(e) => setAgendaForm({ ...agendaForm, title: e.target.value })} required />
+                            <input style={{ flex: 2 }} placeholder={t('gov.agenda_desc')} value={agendaForm.description} onChange={(e) => setAgendaForm({ ...agendaForm, description: e.target.value })} />
+                            <button className="btn" type="submit">{t('gov.agenda_add')}</button>
+                          </form>
+                        )}
+                        {isLeader && (
+                          <details style={{ marginTop: 10 }}>
+                            <summary style={{ cursor: 'pointer', fontWeight: 600, fontSize: 13 }}>{t('gov.ai_minutes')}</summary>
+                            <textarea style={{ width: '100%', minHeight: 80, marginTop: 8 }} placeholder={t('gov.transcript_hint')} value={transcriptMap[m.id] || ''} onChange={(e) => setTranscriptMap({ ...transcriptMap, [m.id]: e.target.value })} />
+                            <button className="btn" style={{ marginTop: 6 }} disabled={!!govBusy} onClick={() => genMinutes(m.id)}>{t('gov.gen_minutes')}</button>
+                          </details>
+                        )}
+                      </div>
+                    )}
                   </div>
                 ))}
+              </div>
+              <div className="card">
+                <h3 style={{ marginTop: 0 }}>{t('gov.minutes')}</h3>
+                {gMinutes.length === 0 && <p className="roles-tag">{t('gov.no_minutes')}</p>}
+                {gMinutes.map((mn) => {
+                  let draft = {};
+                  try { draft = typeof mn.draft === 'string' ? JSON.parse(mn.draft) : (mn.draft || {}); } catch (e) { draft = { draft: mn.draft }; }
+                  return (
+                    <div key={mn.id} style={{ padding: '10px 0', borderBottom: '1px solid var(--border)' }}>
+                      <div className="inline-actions" style={{ justifyContent: 'space-between' }}>
+                        <div>
+                          <strong>{draft.title || mn.title}</strong>
+                          <div className="roles-tag">{mn.scheduled_at ? new Date(mn.scheduled_at).toLocaleDateString() : ''} · {draft.decisions ? draft.decisions.length : 0} {t('gov.decisions')} · {draft.actionItems ? draft.actionItems.length : 0} {t('gov.actions_count')}</div>
+                        </div>
+                        <StatusBadge status={mn.status} />
+                      </div>
+                      {draft.summary && <div className="roles-tag">{draft.summary}</div>}
+                    </div>
+                  );
+                })}
               </div>
               <div className="inline-actions" style={{ marginTop: 14 }}>
                 <Link to="/dashboard/governance" className="btn ghost" style={{ textDecoration: 'none' }}>{t('vicoba.go_to_governance')}</Link>
