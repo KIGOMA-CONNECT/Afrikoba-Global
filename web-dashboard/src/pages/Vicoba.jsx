@@ -79,6 +79,13 @@ export default function Vicoba() {
   const [loanExtra, setLoanExtra] = useState({});
   const [repayMap, setRepayMap] = useState({});
 
+  // Governance (embedded from /governance endpoints)
+  const [gMeetings, setGMeetings] = useState([]);
+  const [gDocs, setGDocs] = useState([]);
+  const [gResolutions, setGResolutions] = useState([]);
+  const [gActions, setGActions] = useState([]);
+  const [meetForm, setMeetForm] = useState({ title: '', scheduledAt: '' });
+
   const show = (type, text) => {
     setMsg({ type, text });
     setTimeout(() => setMsg({ type: '', text: '' }), 6000);
@@ -131,6 +138,7 @@ export default function Vicoba() {
     api.get(`/vicoba/groups/${g.id}/shares`).then((r) => setShareBook(r.data.purchases || r.data.shares || [])).catch(() => setShareBook([]));
     setShowArchived(false);
     loadTx(g.id, 0, false);
+    loadGov(g.id);
   };
 
   const loadTx = (gid, offset, archived) => {
@@ -143,6 +151,43 @@ export default function Vicoba() {
   const loadMoreTx = () => {
     const next = showArchived ? transactions.length : 25;
     loadTx(selected.id, next, true);
+  };
+
+  // ---- Governance embed (read-first, group-scoped) ----
+  const loadGov = (gid) => {
+    const gp = { params: { group_id: gid, group_type: 'VICOBA' } };
+    api.get('/governance/meetings', gp).then((r) => setGMeetings(r.data.meetings || [])).catch(() => setGMeetings([]));
+    api.get('/governance/documents', gp).then((r) => setGDocs(r.data.documents || r.data.docs || [])).catch(() => setGDocs([]));
+    api.get('/governance/resolutions', gp).then((r) => setGResolutions(r.data.resolutions || [])).catch(() => setGResolutions([]));
+    api.get('/governance/action-items', gp).then((r) => setGActions(r.data.items || r.data.actionItems || [])).catch(() => setGActions([]));
+  };
+
+  const createMeeting = async (e) => {
+    e.preventDefault();
+    if (!selected) return;
+    try {
+      await api.post('/governance/meetings', {
+        groupType: 'VICOBA', groupId: selected.id, title: meetForm.title,
+        scheduledAt: meetForm.scheduledAt || undefined, description: meetForm.title,
+      });
+      show('ok', t('gov.created'));
+      setMeetForm({ title: '', scheduledAt: '' });
+      loadGov(selected.id);
+    } catch (err) { show('err', err.response?.data?.message || t('vicoba.error')); }
+  };
+
+  const govRsvp = async (mid, status) => {
+    try {
+      await api.post(`/governance/meetings/${mid}/rsvp`, { status });
+      if (selected) loadGov(selected.id);
+    } catch (err) { show('err', err.response?.data?.message || t('vicoba.error')); }
+  };
+
+  const govAttended = async (mid) => {
+    try {
+      await api.post(`/governance/meetings/${mid}/attended`, {});
+      if (selected) loadGov(selected.id);
+    } catch (err) { show('err', err.response?.data?.message || t('vicoba.error')); }
   };
 
   const submitCreate = async (e) => {
@@ -441,6 +486,8 @@ export default function Vicoba() {
   const govTabs = [
     { id: 'leaders', key: 'vicoba.gov_leaders' },
     { id: 'structure', key: 'vicoba.gov_structure' },
+    { id: 'resolutions', key: 'vicoba.gov_resolutions' },
+    { id: 'actions', key: 'vicoba.gov_actions' },
   ];
 
   const quickActions = [
@@ -1126,20 +1173,77 @@ export default function Vicoba() {
                   </div>
                 </div>
               )}
+
+              {govTab === 'resolutions' && (
+                <div className="card">
+                  <h3 style={{ marginTop: 0 }}>{t('gov.resolutions')}</h3>
+                  {gResolutions.length === 0 && <p className="roles-tag">{t('gov.no_resolutions')}</p>}
+                  {gResolutions.map((r) => (
+                    <div key={r.id} style={{ padding: '10px 0', borderBottom: '1px solid var(--border)' }}>
+                      <div className="inline-actions" style={{ justifyContent: 'space-between' }}>
+                        <div>
+                          <strong>{r.resolution_number || `#${r.id}`} · {r.title}</strong>
+                          <div className="roles-tag">{r.body}</div>
+                        </div>
+                        <StatusBadge status={r.status} />
+                      </div>
+                      {r.financial_amount != null && <div className="roles-tag">{r.financial_action_type || 'FINANCIAL'} · {formatMoney(r.financial_amount)}</div>}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {govTab === 'actions' && (
+                <div className="card">
+                  <h3 style={{ marginTop: 0 }}>{t('gov.action')}</h3>
+                  {gActions.length === 0 && <p className="roles-tag">{t('gov.no_actions')}</p>}
+                  {gActions.map((a) => (
+                    <div key={a.id} style={{ padding: '10px 0', borderBottom: '1px solid var(--border)' }}>
+                      <div className="inline-actions" style={{ justifyContent: 'space-between' }}>
+                        <div>
+                          <strong>{a.task}</strong>
+                          <div className="roles-tag">{a.role_or_member || a.full_name || ''} · {a.deadline ? new Date(a.deadline).toLocaleDateString() : ''}</div>
+                        </div>
+                        <StatusBadge status={a.status} />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
 
           {/* ============ DOCUMENTS ============ */}
           {tab === 'docs' && (
-            <div className="card">
-              <h3 style={{ marginTop: 0 }}>{t('vicoba.docs')}</h3>
-              <p className="roles-tag" style={{ marginBottom: 12 }}>Hifadhi ya nyaraka za kikundi (katiba, kanuni, hatimiliki, maazimio). Hatimiliki na maazimio kamili yapo kwenye Jukwaa la Utawala.</p>
-              <div className="inline-actions" style={{ gap: 10, flexWrap: 'wrap' }}>
-                <button className="btn" onClick={printDocs}>{t('vicoba.view_doc')}</button>
-                <Link to="/dashboard/governance" className="btn ghost" style={{ textDecoration: 'none' }}>{t('vicoba.go_to_governance')}</Link>
+            <div>
+              <div className="card">
+                <h3 style={{ marginTop: 0 }}>{t('vicoba.docs')}</h3>
+                <div className="inline-actions" style={{ gap: 10, flexWrap: 'wrap' }}>
+                  <button className="btn" onClick={printDocs}>{t('vicoba.view_doc')}</button>
+                  <Link to="/dashboard/governance" className="btn ghost" style={{ textDecoration: 'none' }}>{t('vicoba.go_to_governance')}</Link>
+                </div>
+              </div>
+              <div className="card section">
+                <h3 style={{ marginTop: 0 }}>{t('gov.documents')}</h3>
+                {gDocs.length === 0 ? (
+                  <p className="roles-tag">{t('vicoba.no_docs')}</p>
+                ) : (
+                  gDocs.map((d) => (
+                    <div key={d.id} style={{ padding: '10px 0', borderBottom: '1px solid var(--border)' }}>
+                      <div className="inline-actions" style={{ justifyContent: 'space-between' }}>
+                        <div>
+                          <strong>{d.title}</strong>
+                          <div className="roles-tag">{d.doc_category} · {new Date(d.created_at).toLocaleDateString()}</div>
+                          {d.body && <div className="roles-tag">{String(d.body).slice(0, 180)}{String(d.body).length > 180 ? '…' : ''}</div>}
+                        </div>
+                        <StatusBadge status={d.access_level} />
+                      </div>
+                    </div>
+                  ))
+                )}
               </div>
               {constitution && Object.keys(constitution).length > 0 && (
-                <details style={{ marginTop: 10 }}>
+                <details className="card" style={{ marginTop: 10 }}>
                   <summary style={{ cursor: 'pointer', fontWeight: 600 }}>Katiba / Maagizo ya Kikundi</summary>
                   <pre style={{ whiteSpace: 'pre-wrap', fontSize: 12, background: 'var(--bg)', padding: 10, borderRadius: 8, marginTop: 8 }}>{JSON.stringify(constitution, null, 2)}</pre>
                 </details>
@@ -1150,20 +1254,47 @@ export default function Vicoba() {
 
           {/* ============ MEETINGS ============ */}
           {tab === 'meetings' && (
-            <div className="card">
-              <h3 style={{ marginTop: 0 }}>{t('vicoba.meetings_section')}</h3>
-              <p className="roles-tag" style={{ marginBottom: 12 }}>
-                Mikutano, ajenda, mahudhurio, kumbukumbu, maazimio na kura zinaendeshwa kwenye Jukwaa la Utawala wa kikundi na kuunganishwa na fedha za kikundi.
-              </p>
-              {attendance && Object.keys(attendance).length > 0 ? (
-                <div className="grid grid-3">
+            <div>
+              {attendance && Object.keys(attendance).length > 0 && (
+                <div className="grid grid-3" style={{ marginBottom: 14 }}>
                   <div className="card stat"><div className="value">{attendance.total_meetings}</div><div className="label">Mikutano</div></div>
                   <div className="card stat"><div className="value">{formatMoney(attendance.total_fines)}</div><div className="label">Faini</div></div>
                   <div className="card stat"><div className="value">{formatMoney(attendance.total_expected_contributions)}</div><div className="label">Michango</div></div>
                 </div>
-              ) : <p className="roles-tag">{t('vicoba.no_docs')}</p>}
+              )}
+              {isLeader && (
+                <div className="card">
+                  <h3 style={{ marginTop: 0 }}>{t('gov.new_meeting')}</h3>
+                  <form onSubmit={createMeeting}>
+                    <div className="form-row">
+                      <div className="field" style={{ flex: 2 }}><label>{t('gov.meeting_title')}</label><input value={meetForm.title} onChange={(e) => setMeetForm({ ...meetForm, title: e.target.value })} required /></div>
+                      <div className="field" style={{ flex: 1 }}><label>{t('gov.meeting_date')}</label><input type="datetime-local" value={meetForm.scheduledAt} onChange={(e) => setMeetForm({ ...meetForm, scheduledAt: e.target.value })} /></div>
+                    </div>
+                    <button className="btn" type="submit">{t('gov.create_meeting')}</button>
+                  </form>
+                </div>
+              )}
+              <div className="card section">
+                <h3 style={{ marginTop: 0 }}>{t('gov.meetings')}</h3>
+                {gMeetings.length === 0 && <p className="roles-tag">{t('gov.no_meetings')}</p>}
+                {gMeetings.map((m) => (
+                  <div key={m.id} style={{ padding: '10px 0', borderBottom: '1px solid var(--border)' }}>
+                    <div className="inline-actions" style={{ justifyContent: 'space-between' }}>
+                      <div>
+                        <strong>{m.title}</strong>
+                        <div className="roles-tag">{new Date(m.scheduled_at).toLocaleString()} · {m.attended_count}/{m.total_count} {t('gov.present_total')}</div>
+                      </div>
+                      <div className="inline-actions">
+                        <StatusBadge status={m.status} />
+                        <button className="btn ghost" onClick={() => govRsvp(m.id, 'ACCEPTED')}>{t('gov.rsvp')}</button>
+                        <button className="btn ghost" onClick={() => govAttended(m.id)}>{t('gov.mark_attended')}</button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
               <div className="inline-actions" style={{ marginTop: 14 }}>
-                <Link to="/dashboard/governance" className="btn" style={{ textDecoration: 'none' }}>+ Kikao Kipya / {t('vicoba.go_to_governance')}</Link>
+                <Link to="/dashboard/governance" className="btn ghost" style={{ textDecoration: 'none' }}>{t('vicoba.go_to_governance')}</Link>
               </div>
             </div>
           )}
