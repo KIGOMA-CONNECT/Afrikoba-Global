@@ -42,11 +42,18 @@ function TierProgress({ tier, nextTier }) {
 export default function Rewards() {
   const { t } = useT();
   const [rewards, setRewards] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
   const [redeem, setRedeem] = useState(100);
   const [msg, setMsg] = useState({ type: '', text: '' });
 
   const load = () => {
-    api.get('/smart/rewards').then((r) => setRewards(r.data.rewards)).catch(() => {});
+    setLoading(true);
+    setError(false);
+    api.get('/smart/rewards')
+      .then((r) => setRewards(r.data.rewards))
+      .catch(() => setError(true))
+      .finally(() => setLoading(false));
   };
   useEffect(() => { load(); }, []);
 
@@ -63,7 +70,32 @@ export default function Rewards() {
     }
   };
 
-  if (!rewards) return <p className="roles-tag">Loading...</p>;
+  if (loading) {
+    return (
+      <div>
+        <div className="page-head"><h2>🏆 {t('rewards.title')}</h2><p>{t('rewards.sub')}</p></div>
+        <div className="card" style={{ marginBottom: 16, background: 'linear-gradient(135deg,#0f172a,#1e293b)' }}>
+          <div className="skeleton" style={{ height: 28, maxWidth: 220 }} />
+          <div className="skeleton" style={{ height: 12, maxWidth: 340, marginTop: 12 }} />
+        </div>
+        <div className="card"><div className="skeleton" style={{ height: 120 }} /></div>
+      </div>
+    );
+  }
+
+  if (error || !rewards) {
+    return (
+      <div>
+        <div className="page-head"><h2>🏆 {t('rewards.title')}</h2><p>{t('rewards.sub')}</p></div>
+        <div className="empty-state">
+          <div className="es-icon">🎁</div>
+          <h4>{t('rewards.not_loaded')}</h4>
+          <p>{t('rewards.not_loaded_hint')}</p>
+          <button className="btn" onClick={load}>{t('dash.retry')}</button>
+        </div>
+      </div>
+    );
+  }
 
   const { tier, points, total_earned, total_redeemed, cashValue, nextTier, recentTransactions } = rewards;
 

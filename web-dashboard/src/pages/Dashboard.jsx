@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import api from '../api/client.js';
 import { formatMoney, StatusBadge } from '../components/ui.jsx';
+import { AreaChart } from '../components/Charts.jsx';
 import { useT } from '../i18n/LangProvider.jsx';
 
 const QUICK_ACTIONS = [
@@ -13,7 +14,7 @@ const QUICK_ACTIONS = [
   { to: '/dashboard/projects', key: 'dash.quick_project' },
 ];
 
-const CARD_IDS = ['money', 'groups', 'recent', 'ai', 'health'];
+const CARD_IDS = ['money', 'groups', 'recent', 'ai', 'health', 'flow'];
 
 function readList(key) {
   try {
@@ -40,11 +41,35 @@ export default function Dashboard() {
   const [unread, setUnread] = useState(0);
   const [pinned, setPinned] = useState(() => readList('afrikoba_pinned'));
   const [hidden, setHidden] = useState(() => readList('afrikoba_hidden_cards'));
+  const [flow, setFlow] = useState(null);
 
   const toggleBalance = () => {
     const newVal = !showBalance;
     setShowBalance(newVal);
     localStorage.setItem('afrikoba_show_balance', newVal);
+  };
+
+  const buildFlow = (txs) => {
+    const now = new Date();
+    const months = [];
+    for (let i = 5; i >= 0; i--) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      months.push({
+        key: `${d.getFullYear()}-${d.getMonth()}`,
+        label: d.toLocaleDateString('en', { month: 'short' }),
+        income: 0,
+        expense: 0,
+      });
+    }
+    txs.forEach((tr) => {
+      const d = new Date(tr.created_at);
+      const bucket = months.find((m) => m.key === `${d.getFullYear()}-${d.getMonth()}`);
+      if (!bucket) return;
+      const amt = Number(tr.wallet_amount != null ? tr.wallet_amount : tr.amount) || 0;
+      if (amt >= 0) bucket.income += amt;
+      else bucket.expense += -amt;
+    });
+    return months;
   };
 
   const loadBalance = () => {
@@ -62,7 +87,11 @@ export default function Dashboard() {
       return;
     }
     loadBalance();
-    api.get('/wallet/transactions?limit=6').then((r) => setTransactions(r.data.transactions || [])).catch(() => {});
+    api.get('/wallet/transactions?limit=500').then((r) => {
+      const txs = r.data.transactions || [];
+      setTransactions(txs);
+      setFlow(buildFlow(txs));
+    }).catch(() => {});
     api.get('/vicoba/groups').then((r) => setGroups(r.data.groups || [])).catch(() => {});
     api.get('/banking/analytics/health').then((r) => setHealth(r.data.health)).catch(() => {});
     api.get('/ai/insights').then((r) => setAiInsights(r.data.insights || [])).catch(() => {});
@@ -228,6 +257,30 @@ export default function Dashboard() {
                 ))}
               </tbody>
             </table>
+          )}
+        </div>
+      )}
+
+      {!isAdmin && !hidden.includes('flow') && (
+        <div className="card section" style={{ marginTop: 16, position: 'relative' }}>
+          {hideBtn('flow')}
+          <h3>{t('dash.flow_title')}</h3>
+          <p className="roles-tag" style={{ marginTop: -6, marginBottom: 12 }}>{t('dash.last6')}</p>
+          {flow && flow.some((m) => m.income > 0 || m.expense > 0) ? (
+            <AreaChart
+              labels={flow.map((m) => m.label)}
+              format={(v) => (v >= 1e6 ? `${(v / 1e6).toFixed(1)}M` : v >= 1e3 ? `${(v / 1e3).toFixed(0)}k` : v)}
+              series={[
+                { key: 'income', label: t('dash.flow_income'), color: '#059669', values: flow.map((m) => m.income) },
+                { key: 'expense', label: t('dash.flow_expenses'), color: '#e11d48', values: flow.map((m) => m.expense) },
+              ]}
+            />
+          ) : (
+            <div className="empty-state">
+              <div className="es-icon">📊</div>
+              <h4>{t('dash.flow_empty')}</h4>
+              <Link to="/dashboard/wallet" className="btn ghost" style={{ textDecoration: 'none' }}>{t('dash.view_all')}</Link>
+            </div>
           )}
         </div>
       )}

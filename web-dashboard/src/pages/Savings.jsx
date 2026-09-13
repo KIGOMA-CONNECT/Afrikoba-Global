@@ -1,5 +1,7 @@
 import React, { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import api from '../api/client.js';
+import { ProgressRing } from '../components/Charts.jsx';
 import { useT } from '../i18n/LangProvider.jsx';
 
 function money(v) {
@@ -105,6 +107,12 @@ export default function Savings() {
         <p>{t('savings.sub')}</p>
       </div>
 
+      <div style={{ display: 'flex', gap: 8, marginBottom: 18, flexWrap: 'wrap' }}>
+        <Link to="/dashboard/savings" className="btn ghost" style={{ textDecoration: 'none', padding: '6px 14px', fontSize: 13 }}>📒 {t('savings.hub')}</Link>
+        <Link to="/dashboard/vaults" className="btn ghost" style={{ textDecoration: 'none', padding: '6px 14px', fontSize: 13 }}>🔒 {t('savings.go_vaults')}</Link>
+        <Link to="/dashboard/challenges" className="btn ghost" style={{ textDecoration: 'none', padding: '6px 14px', fontSize: 13 }}>🎯 {t('savings.go_challenges')}</Link>
+      </div>
+
       {msg.text && (
         <div className={`alert ${msg.type === 'ok' ? 'alert-ok' : 'alert-err'}`} style={{ padding: '10px 14px', borderRadius: 10, marginBottom: 18 }}>
           {msg.text}
@@ -156,14 +164,12 @@ export default function Savings() {
                       return (
                         <tr key={g.id}>
                           <td><strong>{g.icon} {g.name}</strong></td>
-                          <td style={{ minWidth: 160 }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                              <div style={{ flex: 1, height: 8, borderRadius: 6, background: '#e2e8f0', overflow: 'hidden' }}>
-                                <div style={{ height: '100%', width: `${pct}%`, borderRadius: 6, background: pct >= 100 ? '#22c55e' : '#0ea5e9' }} />
-                              </div>
-                              <span style={{ fontSize: 12 }}>{pct.toFixed(0)}%</span>
-                            </div>
-                          </td>
+                          <td style={{ minWidth: 150 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                            <ProgressRing value={pct} size={44} stroke={6} color={pct >= 100 ? '#059669' : '#0b5d1e'} />
+                            <span style={{ fontSize: 12 }}>{pct.toFixed(0)}% · {money(g.current_amount)}</span>
+                          </div>
+                        </td>
                           <td>{money(g.current_amount)}</td>
                           <td>{money(g.target_amount)}</td>
                           <td>{g.deadline ? new Date(g.deadline).toLocaleDateString() : '—'}</td>

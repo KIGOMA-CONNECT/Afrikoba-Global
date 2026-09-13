@@ -11,15 +11,15 @@ export function StatusBadge({ status }) {
   const cls = [
     'SUCCESS', 'VERIFIED_ACTIVE', 'ACTIVE', 'DISBURSED', 'PASSED', 'RELEASED',
     'CONFIRMED', 'PAID', 'RESOLVED', 'COMPLETED', 'MINUTES_PUBLISHED', 'POSTED',
-    'FULLY_FUNDED', 'REPAID', 'REFUNDED',
+    'FULLY_FUNDED', 'REPAID', 'REFUNDED', 'APPROVED', 'MATURED', 'ACCEPTED',
   ].includes(s)
     ? 'success'
     : [
       'PENDING', 'WAITING_MEMBERS', 'PENDING_AUDIT', 'LOCKED', 'ESCROW_HELD',
-      'OPEN', 'UNDER_REVIEW', 'PARTIAL', 'DRAFT',
+      'OPEN', 'UNDER_REVIEW', 'PARTIAL', 'DRAFT', 'AWAITING', 'SUBMITTED', 'PROCESSING',
     ].includes(s)
       ? 'pending'
-      : ['FAILED', 'REJECTED', 'SKIPPED', 'DEFAULTED', 'CANCELLED', 'OVERDUE'].includes(s)
+      : ['FAILED', 'REJECTED', 'SKIPPED', 'DEFAULTED', 'CANCELLED', 'OVERDUE', 'EXPIRED'].includes(s)
         ? 'failed'
         : 'info';
   return <span className={`badge ${cls}`}>{status}</span>;

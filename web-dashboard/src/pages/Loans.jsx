@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import api from '../api/client.js';
 import { useT } from '../i18n/LangProvider.jsx';
 
@@ -113,6 +114,7 @@ export default function Loans() {
           <div>
             <p style={{ margin: 0, opacity: 0.8 }}>{t('loans.credit_score')}</p>
             <h2 style={{ margin: '4px 0 0', fontSize: 30 }}>{score?.score ?? '—'}</h2>
+            <Link to="/dashboard/credit" style={{ fontSize: 12, textDecoration: 'underline', opacity: 0.85 }}>{t('loans.score_detail')}</Link>
           </div>
           <button className="btn" onClick={() => setShowApply(true)}>＋ {t('loans.apply_btn')}</button>
         </div>

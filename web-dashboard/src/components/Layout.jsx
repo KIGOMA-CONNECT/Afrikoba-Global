@@ -11,7 +11,7 @@ const NAV_GROUPS = [
     ],
   },
   {
-    groupKey: 'nav.g_finance',
+    groupKey: 'nav.g_personal',
     entries: [
       { to: '/dashboard/wallet', key: 'nav.wallet' },
       {
@@ -21,24 +21,18 @@ const NAV_GROUPS = [
           { to: '/dashboard/remittance', key: 'nav.remittance' },
         ],
       },
-      {
-        submenu: 'nav.s_savings',
-        items: [
-          { to: '/dashboard/savings', key: 'nav.savings' },
-          { to: '/dashboard/vaults', key: 'nav.vaults' },
-          { to: '/dashboard/challenges', key: 'nav.challenges' },
-        ],
-      },
+      { to: '/dashboard/savings', key: 'nav.savings' },
       { to: '/dashboard/loans', key: 'nav.loans' },
-      { to: '/dashboard/credit', key: 'nav.credit' },
       { to: '/dashboard/budget', key: 'nav.budget' },
       { to: '/dashboard/cards', key: 'nav.cards' },
       { to: '/dashboard/fx', key: 'nav.fx' },
       { to: '/dashboard/banking', key: 'nav.banking' },
+      { to: '/dashboard/bills', key: 'nav.bills' },
+      { to: '/dashboard/passport', key: 'nav.passport' },
     ],
   },
   {
-    groupKey: 'nav.g_groups',
+    groupKey: 'nav.g_community',
     entries: [
       { to: '/dashboard/vicoba', key: 'nav.vicoba', svc: 'VICOBA' },
       { to: '/dashboard/rosca', key: 'nav.rosca', svc: 'ROSCA' },
@@ -46,39 +40,32 @@ const NAV_GROUPS = [
       { to: '/dashboard/circles', key: 'nav.circles' },
       { to: '/dashboard/family', key: 'nav.family' },
       { to: '/dashboard/governance', key: 'nav.governance' },
+      { to: '/dashboard/events', key: 'nav.events' },
     ],
   },
   {
-    groupKey: 'nav.g_market',
+    groupKey: 'nav.g_business',
     entries: [
-      { to: '/dashboard/marketplace', key: 'nav.marketplace' },
-      { to: '/dashboard/secondary', key: 'nav.secondary' },
-      { to: '/dashboard/financing', key: 'nav.financing' },
-      { to: '/dashboard/verification', key: 'nav.verification' },
+      { to: '/dashboard/business', key: 'nav.business' },
       { to: '/dashboard/merchant', key: 'nav.merchant' },
+      { to: '/dashboard/payroll', key: 'nav.payroll', admin: true },
       { to: '/dashboard/procurement', key: 'nav.procurement' },
+      { to: '/dashboard/bill-splits', key: 'nav.bill_splits' },
+      { to: '/dashboard/subscriptions', key: 'nav.subscriptions' },
+      { to: '/dashboard/insurance', key: 'nav.insurance' },
       { to: '/dashboard/disputes', key: 'nav.disputes' },
     ],
   },
   {
-    groupKey: 'nav.g_biz',
+    groupKey: 'nav.g_invest',
     entries: [
-      { to: '/dashboard/business', key: 'nav.business' },
-      { to: '/dashboard/payroll', key: 'nav.payroll', admin: true },
-      { to: '/dashboard/bills', key: 'nav.bills' },
-      { to: '/dashboard/bill-splits', key: 'nav.bill_splits' },
-      { to: '/dashboard/subscriptions', key: 'nav.subscriptions' },
-      { to: '/dashboard/insurance', key: 'nav.insurance' },
-    ],
-  },
-  {
-    groupKey: 'nav.g_projects',
-    entries: [
+      { to: '/dashboard/marketplace', key: 'nav.marketplace' },
+      { to: '/dashboard/financing', key: 'nav.financing' },
+      { to: '/dashboard/secondary', key: 'nav.secondary' },
       { to: '/dashboard/projects', key: 'nav.projects' },
       { to: '/dashboard/p2p', key: 'nav.p2p', svc: 'P2P' },
       { to: '/dashboard/kilimo', key: 'nav.kilimo' },
-      { to: '/dashboard/events', key: 'nav.events' },
-      { to: '/dashboard/passport', key: 'nav.passport' },
+      { to: '/dashboard/verification', key: 'nav.verification' },
       { to: '/dashboard/rewards', key: 'nav.rewards' },
       { to: '/dashboard/referrals', key: 'nav.referrals' },
     ],
@@ -124,11 +111,10 @@ const NAV_GROUPS = [
 
 const GROUP_WORKSPACE = {
   'nav.g_dashboard': 'workspace.home',
-  'nav.g_finance': 'workspace.personal',
-  'nav.g_groups': 'workspace.group',
-  'nav.g_market': 'workspace.market',
-  'nav.g_biz': 'workspace.business',
-  'nav.g_projects': 'workspace.invest',
+  'nav.g_personal': 'workspace.personal',
+  'nav.g_community': 'workspace.group',
+  'nav.g_business': 'workspace.business',
+  'nav.g_invest': 'workspace.invest',
   'nav.g_comm': 'workspace.comm',
   'nav.g_settings': 'workspace.settings',
 };
@@ -136,21 +122,20 @@ const GROUP_WORKSPACE = {
 const WORKSPACE_LINKS = [
   { to: '/dashboard/wallet', key: 'workspace.personal' },
   { to: '/dashboard/saccos', key: 'workspace.group' },
-  { to: '/dashboard/marketplace', key: 'workspace.market' },
   { to: '/dashboard/business', key: 'workspace.business' },
-  { to: '/dashboard/projects', key: 'workspace.invest' },
+  { to: '/dashboard/marketplace', key: 'workspace.invest' },
 ];
 
 const BOTTOM_TABS = [
   { to: '/dashboard', key: 'nav.dashboard', end: true },
-  { to: '/dashboard/wallet', key: 'nav.g_finance' },
-  { to: '/dashboard/saccos', key: 'nav.g_groups' },
-  { to: '/dashboard/marketplace', key: 'nav.g_market' },
+  { to: '/dashboard/wallet', key: 'nav.g_personal' },
+  { to: '/dashboard/saccos', key: 'nav.g_community' },
+  { to: '/dashboard/marketplace', key: 'nav.g_invest' },
 ];
 
 const MORE_LINKS = [
-  { to: '/dashboard/business', key: 'nav.g_biz' },
-  { to: '/dashboard/projects', key: 'nav.g_projects' },
+  { to: '/dashboard/business', key: 'nav.g_business' },
+  { to: '/dashboard/projects', key: 'nav.g_invest' },
   { to: '/dashboard/notifications', key: 'nav.g_comm' },
   { to: '/dashboard/settings', key: 'nav.g_settings' },
   { to: '/dashboard/support', key: 'nav.support' },

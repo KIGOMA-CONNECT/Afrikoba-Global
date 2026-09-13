@@ -37,12 +37,17 @@ function ScoreGauge({ score, color }) {
 export default function CreditScore() {
   const { t } = useT();
   const [passport, setPassport] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
   const [msg, setMsg] = useState({ type: '', text: '' });
 
   const load = (silent) => {
+    setLoading(true);
+    if (!silent) setError(false);
     api.get('/passport')
       .then((r) => setPassport(r.data.passport))
-      .catch(() => { if (!silent) setMsg({ type: 'err', text: t('credit.error') }); });
+      .catch(() => { if (!silent) setError(true); })
+      .finally(() => setLoading(false));
   };
 
   useEffect(() => { load(true); }, []);
@@ -58,11 +63,26 @@ export default function CreditScore() {
     }
   };
 
-  if (!passport) {
+  if (loading) {
     return (
       <>
         <div className="page-head"><h2>{t('credit.title')}</h2><p>{t('credit.sub')}</p></div>
-        <div className="card"><p className="roles-tag">{t('credit.loading')}</p></div>
+        <div className="card"><div className="skeleton" style={{ height: 40, maxWidth: 260 }} />
+          <div className="skeleton" style={{ height: 12, maxWidth: 420, marginTop: 12 }} /></div>
+      </>
+    );
+  }
+
+  if (error || !passport) {
+    return (
+      <>
+        <div className="page-head"><h2>{t('credit.title')}</h2><p>{t('credit.sub')}</p></div>
+        <div className="empty-state">
+          <div className="es-icon">🪪</div>
+          <h4>{t('credit.not_loaded')}</h4>
+          <p>{t('credit.not_loaded_hint')}</p>
+          <button className="btn" onClick={() => load(false)}>{t('dash.retry')}</button>
+        </div>
       </>
     );
   }
