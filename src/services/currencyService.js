@@ -115,9 +115,9 @@ async function updateRate(fromCurrency, toCurrency, rate, source = 'MANUAL') {
     [from, to, rateNum, source]
   );
   await pool.query(
-    `INSERT INTO exchange_rate_history (from_currency, to_currency, rate, source, sampled_at)
-     VALUES ($1, $2, $3, $4, NOW())
-     ON CONFLICT (from_currency, to_currency, date_trunc('day', sampled_at))
+    `INSERT INTO exchange_rate_history (from_currency, to_currency, day, rate, source, sampled_at)
+     VALUES ($1, $2, $3, $4, NOW(), NOW())
+     ON CONFLICT (from_currency, to_currency, day)
      DO UPDATE SET rate = EXCLUDED.rate, source = EXCLUDED.source`,
     [from, to, rateNum, source]
   );
@@ -127,11 +127,12 @@ async function updateRate(fromCurrency, toCurrency, rate, source = 'MANUAL') {
 /**
  * Daily FX history sampler - snapshots the effective rate for every
  * active currency (both directions vs TZS) into exchange_rate_history.
- * One row per pair per UTC day (idempotent upsert).
+ * One row per pair per day (idempotent upsert).
  */
 async function snapshotRateHistory() {
   const currencies = await getCurrencies();
   const now = new Date();
+  const day = now.toISOString().slice(0, 10);
   let pairs = [];
   for (const cur of currencies) {
     if (cur.code === 'TZS') continue;
@@ -146,11 +147,11 @@ async function snapshotRateHistory() {
     await client.query('BEGIN');
     for (const [from, to, rate, source] of pairs) {
       await client.query(
-        `INSERT INTO exchange_rate_history (from_currency, to_currency, rate, source, sampled_at)
-         VALUES ($1, $2, $3, $4, $5)
-         ON CONFLICT (from_currency, to_currency, date_trunc('day', sampled_at))
+        `INSERT INTO exchange_rate_history (from_currency, to_currency, day, rate, source, sampled_at)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (from_currency, to_currency, day)
          DO UPDATE SET rate = EXCLUDED.rate, source = EXCLUDED.source`,
-        [from, to, rate, source, now]
+        [from, to, day, rate, source, now]
       );
     }
     await client.query('COMMIT');
@@ -172,7 +173,7 @@ async function getRateHistory(fromCurrency, toCurrency, days = 60) {
   const to = String(toCurrency || '').toUpperCase();
   const since = new Date(Date.now() - (Number(days) || 60) * 86400000);
   const result = await pool.query(
-    `SELECT to_char(sampled_at, 'YYYY-MM-DD') AS date, from_currency, to_currency,
+    `SELECT to_char(day, 'YYYY-MM-DD') AS date, from_currency, to_currency,
             rate::float8 AS rate, source
      FROM exchange_rate_history
      WHERE from_currency = $1 AND to_currency = $2 AND sampled_at >= $3
