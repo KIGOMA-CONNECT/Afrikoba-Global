@@ -126,6 +126,17 @@ const vicoba = {
     amount: POSITIVE_NUM,
     note: z.string().max(255).optional().nullable(),
   }),
+  withdrawal: z.object({
+    amount: POSITIVE_NUM,
+  }),
+  withdrawalDecision: z.object({
+    approved: z.boolean(),
+    note: z.string().max(255).optional().nullable(),
+  }),
+  bonus: z.object({
+    amount: POSITIVE_NUM,
+    purpose: z.string().max(200).optional(),
+  }),
 };
 
 const rosca = {

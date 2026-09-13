@@ -783,7 +783,11 @@ async function getGroupFinancialSummary(groupId) {
             (SELECT COALESCE(SUM(amount), 0) FROM vicoba_penalties WHERE group_id = $1) as total_penalties,
             (SELECT COALESCE(SUM(amount), 0) FROM vicoba_penalties WHERE group_id = $1 AND status = 'PAID') as penalties_collected,
             (SELECT COALESCE(SUM(total_profit_earned), 0) FROM vicoba_members WHERE group_id = $1) as total_profits_distributed,
-            (SELECT COALESCE(total_profit_pool, 0) FROM vicoba_groups WHERE id = $1) as profit_pool
+            (SELECT COALESCE(total_profit_pool, 0) FROM vicoba_groups WHERE id = $1) as profit_pool,
+            (SELECT COALESCE(SUM(amount), 0) FROM vicoba_withdrawals WHERE group_id = $1 AND status = 'DISBURSED') as total_withdrawals_disbursed,
+            (SELECT COALESCE(SUM(amount), 0) FROM vicoba_withdrawals WHERE group_id = $1 AND status = 'PENDING') as total_withdrawals_pending,
+            (SELECT COALESCE(SUM(amount), 0) FROM vicoba_bonus WHERE group_id = $1) as total_bonus,
+            (SELECT COALESCE(SUM(balance), 0) FROM (SELECT total_balance as balance FROM vicoba_social_fund WHERE group_id = $1) sf) as social_fund_balance
      FROM vicoba_groups g WHERE g.id = $1`,
     [groupId]
   );

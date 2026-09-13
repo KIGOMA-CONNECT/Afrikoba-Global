@@ -414,4 +414,71 @@ router.delete('/groups/:groupId/members/:userId', async (req, res, next) => {
   }
 });
 
+// ==========================================
+// M-KOBA MERGE: WITHDRAWALS / BONUS / GROUP TRANSACTIONS
+// ==========================================
+
+// Member requests a share withdrawal
+router.post('/groups/:groupId/withdrawals', validate(schemas.vicoba.withdrawal), async (req, res, next) => {
+  try {
+    const result = await vicobaService.requestWithdrawal(req.user.id, parseInt(req.params.groupId, 10), req.body.amount);
+    return res.status(201).json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// List group withdrawals
+router.get('/groups/:groupId/withdrawals', async (req, res, next) => {
+  try {
+    const withdrawals = await vicobaService.listWithdrawals(parseInt(req.params.groupId, 10));
+    return res.json({ success: true, withdrawals });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Chairman / Treasurer signs a withdrawal decision (2-of-2 then disbursed)
+router.post('/withdrawals/:withdrawalId/approve', validate(schemas.vicoba.withdrawalDecision), async (req, res, next) => {
+  try {
+    const { approved, note } = req.body;
+    const result = await vicobaService.approveWithdrawal(req.user.id, parseInt(req.params.withdrawalId, 10), { approved, note });
+    return res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Leader adds a bonus (interest income) to the group fund
+router.post('/groups/:groupId/bonus', validate(schemas.vicoba.bonus), async (req, res, next) => {
+  try {
+    const { amount, purpose } = req.body;
+    const result = await vicobaService.addBonus(req.user.id, parseInt(req.params.groupId, 10), { amount, purpose });
+    return res.status(201).json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// List group bonuses
+router.get('/groups/:groupId/bonuses', async (req, res, next) => {
+  try {
+    const bonuses = await vicobaService.listBonuses(parseInt(req.params.groupId, 10));
+    return res.json({ success: true, bonuses });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Group transactions ledger (+ history/archived pagination)
+router.get('/groups/:groupId/transactions', async (req, res, next) => {
+  try {
+    const { limit, offset } = req.query;
+    const transactions = await vicobaService.getGroupTransactions(parseInt(req.params.groupId, 10), { limit, offset });
+    return res.json({ success: true, transactions });
+  } catch (error) {
+    next(error);
+  }
+});
+
 module.exports = router;

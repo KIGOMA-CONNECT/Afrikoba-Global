@@ -676,9 +676,9 @@ async function listPenalties(groupId, status = 'UNPAID') {
     `SELECT p.*, u.full_name, u.phone_number
      FROM vicoba_penalties p
      JOIN users u ON u.id = p.user_id
-     WHERE p.group_id = $1 AND p.status = $2
+     WHERE p.group_id = $1 ${status === 'ALL' ? '' : `AND p.status = $2`}
      ORDER BY p.created_at DESC`,
-    [groupId, status]
+    status === 'ALL' ? [groupId] : [groupId, status]
   );
   return result.rows;
 }
@@ -1192,6 +1192,291 @@ async function getLoanRepayments(loanId) {
   return result.rows;
 }
 
+// ==========================================
+// M-KOBA MERGE: GROUP WITHDRAWALS (mwanachama anatoa hisa zake; Mwenyekiti + Mwekahazina wanathibitisha)
+// ==========================================
+
+async function requestWithdrawal(userId, groupId, amount) {
+  const amountNum = parseFloat(amount);
+  if (!amountNum || amountNum <= 0) throw Object.assign(new Error('Kiasi lazima kiwe zaidi ya 0.'), { statusCode: 400 });
+
+  const memberRes = await pool.query(
+    'SELECT contribution_balance FROM vicoba_members WHERE group_id = $1 AND user_id = $2',
+    [groupId, userId]
+  );
+  if (memberRes.rows.length === 0) throw Object.assign(new Error('Hauko kwenye kikundi hiki.'), { statusCode: 403 });
+  if (Number(memberRes.rows[0].contribution_balance) < amountNum) {
+    throw Object.assign(new Error('Hisa zako za kuanzisha hazitoshi kwa uondoaji huu.'), { statusCode: 400 });
+  }
+
+  const referenceId = generateReference('WD');
+  const result = await pool.query(
+    `INSERT INTO vicoba_withdrawals (group_id, user_id, amount, reference_id)
+     VALUES ($1, $2, $3, $4)
+     RETURNING *`,
+    [groupId, userId, amountNum, referenceId]
+  );
+  const withdrawal = result.rows[0];
+
+  const user = await pool.query('SELECT full_name, phone_number FROM users WHERE id = $1', [userId]);
+  if (user.rows.length > 0) {
+    await sendSMS(user.rows[0].phone_number, `Ombi la uondoaji wa TSh ${formatMoney(amountNum)} limetumwa. Inasubiri idhini ya uongozi.`);
+  }
+  await logAudit({ eventType: 'VICOBA_WITHDRAWAL', action: 'REQUEST', entityType: 'VICOBA_WITHDRAWAL', userId, entityId: withdrawal.id, referenceId, amount: amountNum, afterData: { group_id: groupId } });
+
+  return { success: true, withdrawal };
+}
+
+async function approveWithdrawal(actorUserId, withdrawalId, { approved, note }) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const wdRes = await client.query(
+      `SELECT w.*, vm.role_in_group
+       FROM vicoba_withdrawals w
+       JOIN vicoba_members vm ON vm.group_id = w.group_id AND vm.user_id = $1
+       WHERE w.id = $2
+       FOR UPDATE`,
+      [actorUserId, withdrawalId]
+    );
+    if (wdRes.rows.length === 0) throw Object.assign(new Error('Uondoaji haupatikani.'), { statusCode: 404 });
+    const wd = wdRes.rows[0];
+
+    if (!['MWENYEKITI', 'MWEKAHAZINA'].includes(wd.role_in_group)) {
+      throw Object.assign(new Error('Mwenyekiti au Mwekahazina pekee wanaweza kuidhinisha uondoaji.'), { statusCode: 403 });
+    }
+    if (wd.status !== 'PENDING') {
+      throw Object.assign(new Error('Uondoaji tayari umeshachakatwa.'), { statusCode: 400 });
+    }
+
+    const isChair = wd.role_in_group === 'MWENYEKITI';
+    const isTreasurer = wd.role_in_group === 'MWEKAHAZINA';
+
+    if (!approved) {
+      await client.query(
+        `UPDATE vicoba_withdrawals SET status = 'REJECTED',
+           chairman_id = COALESCE(chairman_id, CASE WHEN $2 THEN $1 END),
+           treasurer_id = COALESCE(treasurer_id, CASE WHEN $3 THEN $1 END),
+           chairman_note = COALESCE(chairman_note, CASE WHEN $2 THEN $4 END),
+           treasurer_note = COALESCE(treasurer_note, CASE WHEN $3 THEN $4 END)
+         WHERE id = $5`,
+        [actorUserId, isChair, isTreasurer, note || 'Imekataliwa', withdrawalId]
+      );
+      await client.query('COMMIT');
+      await logAudit({ eventType: 'VICOBA_WITHDRAWAL', action: 'REJECT', entityType: 'VICOBA_WITHDRAWAL', userId: actorUserId, entityId: withdrawalId, referenceId: wd.reference_id, amount: Number(wd.amount), afterData: { group_id: wd.group_id } });
+      return { success: true, message: 'Uondoaji umekataliwa.' };
+    }
+
+    await client.query(
+      `UPDATE vicoba_withdrawals SET
+         chairman_id = COALESCE(chairman_id, CASE WHEN $2 THEN $1 END),
+         treasurer_id = COALESCE(treasurer_id, CASE WHEN $3 THEN $1 END),
+         chairman_note = COALESCE(chairman_note, CASE WHEN $2 THEN $4 END),
+         treasurer_note = COALESCE(treasurer_note, CASE WHEN $3 THEN $4 END),
+         chairman_at = CASE WHEN $2 AND chairman_id IS NULL THEN NOW() ELSE chairman_at END,
+         treasurer_at = CASE WHEN $3 AND treasurer_id IS NULL THEN NOW() ELSE treasurer_at END
+       WHERE id = $5`,
+      [actorUserId, isChair, isTreasurer, note || null, withdrawalId]
+    );
+
+    const updated = await client.query('SELECT * FROM vicoba_withdrawals WHERE id = $1', [withdrawalId]);
+    const cur = updated.rows[0];
+
+    if (!(cur.chairman_id && cur.treasurer_id)) {
+      await client.query('COMMIT');
+      await logAudit({ eventType: 'VICOBA_WITHDRAWAL', action: 'APPROVE', entityType: 'VICOBA_WITHDRAWAL', userId: actorUserId, entityId: withdrawalId, referenceId: cur.reference_id, amount: Number(cur.amount), afterData: { group_id: cur.group_id, partial: true } });
+      return { success: true, message: `Uondoaji umeidhinishwa na ${isChair ? 'Mwenyekiti' : 'Mwekahazina'}. Inasubiri saini ya mwingine.` };
+    }
+
+    const groupRes = await client.query(
+      'SELECT group_wallet_balance FROM vicoba_groups WHERE id = $1 FOR UPDATE',
+      [cur.group_id]
+    );
+    if (Number(groupRes.rows[0].group_wallet_balance) < Number(cur.amount)) {
+      throw Object.assign(new Error('Salio la kikundi halitoshi kwa uondoaji huu.'), { statusCode: 400 });
+    }
+
+    await fin.groupToWallet({
+      client, userId: cur.user_id, groupId: cur.group_id, groupAccount: 'VICOBA_GROUP',
+      groupSql: 'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance - $1 WHERE id = $2',
+      amount: Number(cur.amount), reference: `${cur.reference_id}:GW`, description: 'VICOBA Group Withdrawal',
+    });
+
+    const refId = generateReference('WD');
+    await client.query(
+      `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
+       VALUES ($1, $2, $3, 0, $3, 'SUCCESS', 'VICOBA_WITHDRAWAL', $4)`,
+      [refId, cur.user_id, Number(cur.amount),
+       JSON.stringify({ group_id: cur.group_id, withdrawal_id: withdrawalId, via: 'SIGNATURE_2OF2' })]
+    );
+
+    await client.query(
+      `UPDATE vicoba_members SET contribution_balance = contribution_balance - $1,
+         share_capital = GREATEST(0, share_capital - $1)
+       WHERE group_id = $2 AND user_id = $3`,
+      [Number(cur.amount), cur.group_id, cur.user_id]
+    );
+
+    await client.query(
+      `UPDATE vicoba_withdrawals SET status = 'DISBURSED', disbursed_at = NOW() WHERE id = $1`,
+      [withdrawalId]
+    );
+
+    await client.query('COMMIT');
+
+    const member = await client.query('SELECT full_name, phone_number FROM users WHERE id = $1', [cur.user_id]);
+    if (member.rows.length > 0) {
+      await sendSMS(member.rows[0].phone_number, `Habari ${member.rows[0].full_name}, uondoaji wa TSh ${formatMoney(cur.amount)} umekamilika na fedha zimeingia kwenye wallet yako.`);
+    }
+    await logAudit({ eventType: 'VICOBA_WITHDRAWAL', action: 'DISBURSE', entityType: 'VICOBA_WITHDRAWAL', userId: actorUserId, entityId: withdrawalId, referenceId: cur.reference_id, amount: Number(cur.amount), afterData: { group_id: cur.group_id, member: cur.user_id } });
+
+    return { success: true, message: 'Uondoaji umekamilika. Fedha zimeingia kwenye wallet ya mwanachama.', referenceId: cur.reference_id };
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function listWithdrawals(groupId) {
+  const result = await pool.query(
+    `SELECT w.*, u.full_name, u.phone_number,
+            ch.full_name as chairman_name, tr.full_name as treasurer_name
+     FROM vicoba_withdrawals w
+     JOIN users u ON u.id = w.user_id
+     LEFT JOIN users ch ON ch.id = w.chairman_id
+     LEFT JOIN users tr ON tr.id = w.treasurer_id
+     WHERE w.group_id = $1
+     ORDER BY w.created_at DESC`,
+    [groupId]
+  );
+  return result.rows;
+}
+
+// ==========================================
+// M-KOBA MERGE: BONUS (interest/extra income added to the group fund)
+// ==========================================
+
+async function addBonus(userId, groupId, { amount, purpose }) {
+  const amountNum = parseFloat(amount);
+  if (!amountNum || amountNum <= 0) throw Object.assign(new Error('Kiasi cha bonus lazima kiwe zaidi ya 0.'), { statusCode: 400 });
+
+  const roleRes = await pool.query(
+    'SELECT role_in_group FROM vicoba_members WHERE group_id = $1 AND user_id = $2',
+    [groupId, userId]
+  );
+  if (roleRes.rows.length === 0 || !['MWENYEKITI', 'MWEKAHAZINA', 'KATIBU'].includes(roleRes.rows[0].role_in_group)) {
+    throw Object.assign(new Error('Viongozi pekee wanaweza kuongeza bonus.'), { statusCode: 403 });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const referenceId = generateReference('BON');
+    await fin.postJournal({
+      client,
+      lines: [
+        { accountCode: 'SUSPENSE', direction: 'DR', amount: amountNum },
+        { accountCode: 'VICOBA_GROUP', direction: 'CR', amount: amountNum },
+      ],
+      referenceId, description: 'VICOBA Bonus (interest income)', postedBy: 'vicoba:bonus',
+    });
+
+    await client.query(
+      'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance + $1 WHERE id = $2',
+      [amountNum, groupId]
+    );
+
+    const bonusRes = await client.query(
+      `INSERT INTO vicoba_bonus (group_id, amount, purpose, created_by)
+       VALUES ($1, $2, $3, $4)
+       RETURNING id`,
+      [groupId, amountNum, purpose || 'Interest income', userId]
+    );
+
+    await client.query('COMMIT');
+    await logAudit({ eventType: 'VICOBA_BONUS', action: 'CREATE', entityType: 'VICOBA_BONUS', userId, entityId: bonusRes.rows[0].id, referenceId, amount: amountNum, afterData: { group_id: groupId } });
+    return { success: true, message: 'Bonus imeongezwa kwenye fedha za kikundi.', bonus: bonusRes.rows[0].id };
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function listBonuses(groupId) {
+  const result = await pool.query(
+    `SELECT b.*, u.full_name as created_by_name
+     FROM vicoba_bonus b
+     JOIN users u ON u.id = b.created_by
+     WHERE b.group_id = $1
+     ORDER BY b.created_at DESC`,
+    [groupId]
+  );
+  return result.rows;
+}
+
+// ==========================================
+// M-KOBA MERGE: GROUP TRANSACTIONS (ledger kuu ya kikundi + historia/archived)
+// ==========================================
+
+async function getGroupTransactions(groupId, { limit = 30, offset = 0 } = {}) {
+  const lim = Math.min(Math.max(parseInt(limit, 10) || 30, 1), 100);
+  const off = Math.max(parseInt(offset, 10) || 0, 0);
+  const result = await pool.query(
+    `SELECT t.* FROM (
+       SELECT mc.amount, u.full_name, cs.cycle_number, 'CONTRIBUTION' AS kind, NULL::numeric(15,2) AS extra,
+              mc.paid_at AS created_at
+         FROM vicoba_member_contributions mc
+         JOIN vicoba_contribution_schedules cs ON cs.id = mc.schedule_id
+         JOIN users u ON u.id = mc.user_id
+        WHERE cs.group_id = $1
+       UNION ALL
+       SELECT rp.amount, u.full_name, NULL, 'LOAN_REPAYMENT', NULL,
+              rp.created_at
+         FROM vicoba_loan_repayments rp
+         JOIN vicoba_loan_requests lr ON lr.id = rp.loan_id
+         JOIN users u ON u.id = rp.user_id
+        WHERE lr.group_id = $1
+       UNION ALL
+       SELECT p.amount, u.full_name, NULL, 'PENALTY', NULL, p.paid_at
+         FROM vicoba_penalties p
+         JOIN users u ON u.id = p.user_id
+        WHERE p.group_id = $1 AND p.status = 'PAID'
+       UNION ALL
+       SELECT sp.amount, u.full_name, sp.cycle_number, 'SHARE_PURCHASE', NULL, sp.created_at
+         FROM vicoba_share_purchases sp
+         JOIN users u ON u.id = sp.user_id
+        WHERE sp.group_id = $1
+       UNION ALL
+       SELECT pp.dividend_amount, u.full_name, pd.cycle_number, 'DIVIDEND', NULL, pp.paid_at
+         FROM vicoba_profit_payouts pp
+         JOIN vicoba_profit_distributions pd ON pd.id = pp.distribution_id
+         JOIN users u ON u.id = pp.user_id
+        WHERE pd.group_id = $1 AND pp.paid = TRUE
+       UNION ALL
+       SELECT sfc.amount, u.full_name, NULL, 'SOCIAL_FUND', NULL, sfc.paid_at
+         FROM vicoba_social_fund_contributions sfc
+         JOIN vicoba_social_fund sf ON sf.id = sfc.fund_id
+         JOIN users u ON u.id = sfc.user_id
+        WHERE sf.group_id = $1
+       UNION ALL
+       SELECT w.amount, u.full_name, NULL, 'WITHDRAWAL', NULL, w.disbursed_at
+         FROM vicoba_withdrawals w
+         JOIN users u ON u.id = w.user_id
+        WHERE w.group_id = $1 AND w.status = 'DISBURSED'
+     ) t
+     ORDER BY t.created_at DESC
+     LIMIT $2 OFFSET $3`,
+    [groupId, lim, off]
+  );
+  return result.rows;
+}
+
 module.exports = {
   createGroup,
   addMember,
@@ -1224,4 +1509,10 @@ module.exports = {
   repayLoan,
   getLoanSchedule,
   getLoanRepayments,
+  requestWithdrawal,
+  approveWithdrawal,
+  listWithdrawals,
+  addBonus,
+  listBonuses,
+  getGroupTransactions,
 };
