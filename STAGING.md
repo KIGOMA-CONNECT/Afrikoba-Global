@@ -8,13 +8,12 @@ code ya `main` bila kugusa production.
 | Kitu | Thamani |
 |---|---|
 | URL | `https://staging.afrikoba.com` |
-| Basic Auth (dashboard tu) | `admin-staging` / `AfriKoba#Stagin9!2026` |
+| Linganisha moja kwa moja (no Basic Auth) | Stamina: namba `+255719000002` → OTP → Ingia |
 | Namba ya test | `+255719000002` |
 | OTP | Inatolewa na response ya send-otp as `devOtp` (hakuna SMS halisi) |
 
-> `/api/*` haiko nyuma ya Basic Auth - imelindwa na mfumo wa app yenyewe
-> (JWT/OTP, rate limits, lockout). `auth_basic` inatumika kwenye `/` pekee
-> (SPA + assets) ili browser ishinde mgongano wa header ya `Authorization`.
+> Basic Auth imeondolewa (2026-09-13) ili testing iwe moja kwa moja.
+> Ulinzi wa app yenyewe unabakia: JWT/OTP, rate limits, lockout.
 
 ## Uhusiano na Production
 
@@ -93,8 +92,7 @@ Faili: `/www/server/panel/vhost/nginx/staging.afrikoba.com.conf`
 
 ## 1) Credentials za kuingia
 
-**Door ya nje (Basic Auth — dashboard tu):**
-- User: `admin-staging` — Password: `AfriKoba#Stagin9!2026`
+**Hakuna door ya nje (Basic Auth imeondolewa 2026-09-13)** — funguka moja kwa moja.
 
 **Test user wa app:**
 - Namba: `0719000002` ≡ `+255719000002` ≡ `255719000002` (zote tatu zinakubalika)
@@ -133,16 +131,16 @@ Roli zilizopo katika mfumo (kwenye code): `MJUMBE` (chaguo-msingi),
 | Kipengele | Hali |
 |---|---|
 | SSL Let's Encrypt (halisi) | ✅ |
-| Basic Auth + JWT (`Bearer` kutoka merged header) | ✅ imerekebishwa |
+| JWT (`Bearer` kutoka merged header, imekamilika) | ✅ imerekebishwa |
 | DB tofauti `afrikoba_global_staging` + sandbox pekee | ✅ |
 | Backup daily 2:00 + monitor kila 15 min | ✅ |
 | Rollback script | ✅ |
 | Deploy workflow (manual pekee) | ✅ |
 | Production `afrikoba.com` | ✅ haigusiwi |
 
-**Tahadhari ya browser:** ukiingia Basic Auth kwanza, browser inaweka header
-moja `Authorization: Basic …, Bearer …` kwa `/api`. Fix ya `092eb1b`
-(auth.js) inashughulikia hili — iko kwenye staging sasa.
+**Mulika ya hapa:** hivi karibuni (2026-09-13) Basic Auth iko OFF — app
+inafunguka moja kwa moja. Ikiwa kuna fix mpya kwenye `auth.js`, inasafirishwa
+tafadhali kwenye staging pia.
 
 ## 4) AzamPay sandbox — credentials au flow
 
@@ -166,8 +164,7 @@ moja `Authorization: Basic …, Bearer …` kwa `/api`. Fix ya `092eb1b`
 ## 5) Maelekezo ya kuingia kwenye mfumo (UI)
 
 1. Fungua `https://staging.afrikoba.com`
-2. Basic Auth → `admin-staging` / `AfriKoba#Stagin9!2026`
-3. Tab **Ingia** → namba `0719000002` → **Tuma OTP**
-4. Chukua OTP kwenye sanduku la kijani (`devOtp`) → ingiza → **Ingia**
-5. Utajikuta kwenye dashboard (nilipo unaweza kubadili SW/EN juu kulia,
+2. Tab **Ingia** → namba `0719000002` → **Tuma OTP**
+3. Chukua OTP kwenye sanduku la kijani (`devOtp`) → ingiza → **Ingia**
+4. Utajikuta kwenye dashboard (nilipo unaweza kubadili SW/EN juu kulia,
    kagua SACCOS, Wallet, malipo, n.k.)
