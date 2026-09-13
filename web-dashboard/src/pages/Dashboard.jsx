@@ -30,6 +30,8 @@ export default function Dashboard() {
   const activeServices = user.services || [];
   const [stats, setStats] = useState(null);
   const [balance, setBalance] = useState(null);
+  const [balanceLoading, setBalanceLoading] = useState(true);
+  const [balanceError, setBalanceError] = useState(false);
   const [showBalance, setShowBalance] = useState(localStorage.getItem('afrikoba_show_balance') !== 'false');
   const [transactions, setTransactions] = useState([]);
   const [groups, setGroups] = useState([]);
@@ -45,12 +47,21 @@ export default function Dashboard() {
     localStorage.setItem('afrikoba_show_balance', newVal);
   };
 
+  const loadBalance = () => {
+    setBalanceLoading(true);
+    setBalanceError(false);
+    api.get('/wallet/balance')
+      .then((r) => { setBalance(r.data.balance || null); })
+      .catch(() => { setBalance(null); setBalanceError(true); })
+      .finally(() => setBalanceLoading(false));
+  };
+
   useEffect(() => {
     if (isAdmin) {
       api.get('/admin/dashboard').then((r) => setStats(r.data.stats)).catch(() => {});
       return;
     }
-    api.get('/wallet/balance').then((r) => setBalance(r.data.balance)).catch(() => {});
+    loadBalance();
     api.get('/wallet/transactions?limit=6').then((r) => setTransactions(r.data.transactions || [])).catch(() => {});
     api.get('/vicoba/groups').then((r) => setGroups(r.data.groups || [])).catch(() => {});
     api.get('/banking/analytics/health').then((r) => setHealth(r.data.health)).catch(() => {});
@@ -91,8 +102,9 @@ export default function Dashboard() {
   }, [pinned, activeServices]);
 
   const kycLevel = user.kyc_level || 0;
+  const kycVerified = kycLevel >= 2 || !!user.nida_number;
   const pendingItems = [];
-  if (kycLevel < 3) pendingItems.push({ key: 'dash.action_kyc', to: '/dashboard/kyc', sev: kycLevel === 0 ? 'danger' : 'info' });
+  if (!kycVerified) pendingItems.push({ key: 'dash.action_kyc', to: '/dashboard/kyc', sev: kycLevel === 0 ? 'danger' : 'info' });
   if (groups.length > 0) pendingItems.push({ key: 'dash.action_group', to: '/dashboard/vicoba', sev: 'info' });
   if (unread > 0) pendingItems.push({ key: 'dash.action_notif', to: '/dashboard/notifications', sev: 'warning' });
 
@@ -136,8 +148,19 @@ export default function Dashboard() {
             <div className="card section" style={{ margin: 0, position: 'relative' }}>
               {hideBtn('money')}
               <h3>{t('dash.live')}</h3>
-              {!balance && <p className="roles-tag">Inapakia...</p>}
-              {balance && (
+              {balanceLoading && (
+                <div className="skeleton" style={{ height: 34, maxWidth: 200, margin: '8px 0' }} />
+              )}
+              {!balanceLoading && balanceError && (
+                <div className="roles-tag" style={{ marginTop: 6 }}>
+                  {t('dash.balance_error')}{' '}
+                  <button type="button" className="linklike" onClick={loadBalance}>{t('dash.retry')}</button>
+                </div>
+              )}
+              {!balanceLoading && !balanceError && balance == null && (
+                <p className="roles-tag" style={{ marginTop: 6 }}>{t('dash.balance_fallback')}</p>
+              )}
+              {!balanceLoading && !balanceError && balance && (
                 <>
                   <div className="value" style={{ fontSize: 30, marginTop: 6 }}>
                     {showBalance ? formatMoney(balance.wallet_balance) : 'TZS ***,***'}

@@ -210,7 +210,7 @@ export default function Layout() {
   const user = JSON.parse(localStorage.getItem('afrikoba_user') || '{}');
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
-  const [openGroups, setOpenGroups] = useState(() => ({ 'nav.g_dashboard': true }));
+  const [openGroup, setOpenGroup] = useState('nav.g_dashboard');
 
   const logout = () => {
     localStorage.removeItem('afrikoba_token');
@@ -231,7 +231,7 @@ export default function Layout() {
 
   useEffect(() => {
     if (activeGroup) {
-      setOpenGroups((o) => (o[activeGroup] ? o : { ...o, [activeGroup]: true }));
+      setOpenGroup(activeGroup);
     }
   }, [activeGroup, location.pathname]);
 
@@ -247,7 +247,7 @@ export default function Layout() {
     }
   }, [denied, location.pathname]);
 
-  const toggleGroup = (key) => setOpenGroups((o) => ({ ...o, [key]: !o[key] }));
+  const toggleGroup = (key) => setOpenGroup((k) => (k === key ? null : key));
 
   const visibleEntries = (entries) =>
     entries
@@ -289,7 +289,7 @@ export default function Layout() {
         </div>
         <nav className="nav">
           {groups.map((g) => {
-            const isOpen = !!openGroups[g.groupKey];
+            const isOpen = openGroup === g.groupKey;
             return (
               <div key={g.groupKey} className={`nav-group${isOpen ? ' open' : ''}`}>
                 <button type="button" className="nav-group-label" aria-expanded={isOpen} onClick={() => toggleGroup(g.groupKey)}>
@@ -324,7 +324,11 @@ export default function Layout() {
         <div className="footer-badges">
           <div className="badge-item">🔒 <span>SSL 256-bit</span></div>
           <div className="badge-item">🛡️ <span>BOT Regulated</span></div>
-          <div className="badge-item">✅ <span>NIDA Verified</span></div>
+          {((user.kyc_level || 0) >= 2 || !!user.nida_number) ? (
+            <div className="badge-item">✅ <span>{t('badge.nida')}</span></div>
+          ) : (
+            <div className="badge-item">⚠️ <span>{t('badge.kyc')}</span></div>
+          )}
         </div>
       </aside>
       <main className="content">
