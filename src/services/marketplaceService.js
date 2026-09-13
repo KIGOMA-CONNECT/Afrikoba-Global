@@ -223,7 +223,7 @@ async function buyListing(buyerId, listingId, quantity) {
     }
 
     const ref = `MKTORD:${generateReference()}`;
-    await fin.debitWallet({ client, userId: buyerId, amount: total, reference: ref, toAccount: 'MARKETPLACE_ESCROW', description: `Marketplace payment for ${listing.title}` });
+    await fin.debitWallet({ client, userId: buyerId, amount: total, reference: ref, toAccount: 'MARKETPLACE_ESCROW', description: `Marketplace payment for ${listing.title}`, productType: 'MARKETPLACE', productRef: ref });
 
     const order = await client.query(
       `INSERT INTO marketplace_orders (reference, buyer_user_id, seller_user_id, listing_id, category, title, unit_price, quantity, total_amount, escrow_held_amount)

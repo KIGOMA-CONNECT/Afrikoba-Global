@@ -111,7 +111,7 @@ async function contribute(lenderUserId, campaignId, amount) {
     const ref = generateReference('CF');
 
     // 1. Debit Lender
-    await fin.debitWallet({ client, userId: lenderUserId, amount, reference: ref, toAccount: 'SUSPENSE', description: `Contribution to ${camp.title}` });
+    await fin.debitWallet({ client, userId: lenderUserId, amount, reference: ref, toAccount: 'SUSPENSE', description: `Contribution to ${camp.title}`, productType: 'LENDING_CIRCLES', productRef: String(campaignId) });
 
     // 2. Log Contribution
     await client.query(
@@ -153,7 +153,7 @@ async function disburseCampaign(adminUserId, campaignId) {
     const ref = generateReference('CFD');
 
     // Credit borrower
-    await fin.creditWallet({ client, userId: camp.borrower_user_id, amount: camp.raised_amount, reference: ref, fromAccount: 'SUSPENSE', description: `Crowdfund disbursement: ${camp.title}` });
+    await fin.creditWallet({ client, userId: camp.borrower_user_id, amount: camp.raised_amount, reference: ref, fromAccount: 'SUSPENSE', description: `Crowdfund disbursement: ${camp.title}`, productType: 'LENDING_CIRCLES', productRef: String(campaignId) });
 
     await client.query('UPDATE crowdfund_campaigns SET status = \'DISBURSED\' WHERE id = $1', [campaignId]);
 

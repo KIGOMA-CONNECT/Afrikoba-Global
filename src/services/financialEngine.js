@@ -80,8 +80,10 @@ async function auditBalance({ client, accountKind, accountId, operation, amount,
  * @param referenceId  - idempotency key
  * @param description
  * @param postedBy
+ * @param productType  - product namespace to attribute the posting to (optional)
+ * @param productRef   - entity id within that product (optional, e.g. groupId)
  */
-async function postJournal({ client, lines, transactionId = null, referenceId, description, postedBy = 'engine' }) {
+async function postJournal({ client, lines, transactionId = null, referenceId, description, postedBy = 'engine', productType = null, productRef = null }) {
   const span = startSpan('fin.postJournal');
   const groupId = referenceId || generateReference('JE');
   let dr = 0, cr = 0;
@@ -99,10 +101,11 @@ async function postJournal({ client, lines, transactionId = null, referenceId, d
       await client.query(
         `INSERT INTO journal_entries
            (entry_group_id, transaction_id, account_id, direction, amount,
-            currency_code, reference_id, description, posted_by)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+            currency_code, reference_id, description, posted_by, product_type, product_ref)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
         [groupId, transactionId, accId, line.direction, line.amount,
-         line.currencyCode || 'TZS', referenceId, line.description || description || null, postedBy]
+         line.currencyCode || 'TZS', referenceId, line.description || description || null, postedBy,
+         productType, productRef]
       );
     }
     span.end('OK', { groupId, lines: lines.map((l) => `${l.accountCode}:${l.direction}:${l.amount}`) });
@@ -448,7 +451,7 @@ async function recordException({ type, reference, transactionId, detail = {} }) 
  * Credit a user's available wallet balance.
  *   DR <fromAccount>   CR CUSTOMER_WALLET
  */
-async function creditWallet({ client, userId, amount, reference, fromAccount = 'SUSPENSE', description = 'Wallet credit', actor = 'engine:credit' }) {
+async function creditWallet({ client, userId, amount, reference, fromAccount = 'SUSPENSE', description = 'Wallet credit', actor = 'engine:credit', productType = null, productRef = null }) {
   const amountN = Number(amount);
   if (!(amountN > 0)) throw new Error('Invalid amount for credit');
   const op = await claimOperation({ client, operationType: 'CREDIT', reference, userId, amount: amountN });
@@ -464,7 +467,7 @@ async function creditWallet({ client, userId, amount, reference, fromAccount = '
       { accountCode: fromAccount, direction: 'DR', amount: amountN },
       { accountCode: 'CUSTOMER_WALLET', direction: 'CR', amount: amountN },
     ],
-    referenceId: reference, description, postedBy: actor,
+    referenceId: reference, description, postedBy: actor, productType, productRef,
   });
 
   await client.query(`UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2`, [amountN, userId]);
@@ -476,7 +479,7 @@ async function creditWallet({ client, userId, amount, reference, fromAccount = '
  * Debit a user's available wallet balance (with insufficient-funds guard).
  *   DR CUSTOMER_WALLET   CR <toAccount>
  */
-async function debitWallet({ client, userId, amount, reference, toAccount = 'PLATFORM_FEES', description = 'Wallet debit', actor = 'engine:debit' }) {
+async function debitWallet({ client, userId, amount, reference, toAccount = 'PLATFORM_FEES', description = 'Wallet debit', actor = 'engine:debit', productType = null, productRef = null }) {
   const amountN = Number(amount);
   if (!(amountN > 0)) throw new Error('Invalid amount for debit');
   const op = await claimOperation({ client, operationType: 'DEBIT', reference, userId, amount: amountN });
@@ -495,7 +498,7 @@ async function debitWallet({ client, userId, amount, reference, toAccount = 'PLA
       { accountCode: 'CUSTOMER_WALLET', direction: 'DR', amount: amountN },
       { accountCode: toAccount, direction: 'CR', amount: amountN },
     ],
-    referenceId: reference, description, postedBy: actor,
+    referenceId: reference, description, postedBy: actor, productType, productRef,
   });
 
   await client.query(`UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2`, [amountN, userId]);
@@ -507,7 +510,7 @@ async function debitWallet({ client, userId, amount, reference, toAccount = 'PLA
  * Internal transfer between two customer wallets (aggregate-neutral).
  *   DR CUSTOMER_WALLET (from)   CR CUSTOMER_WALLET (to)
  */
-async function internalTransfer({ client, fromUserId, toUserId, amount, reference, description = 'Internal transfer', actor = 'engine:transfer' }) {
+async function internalTransfer({ client, fromUserId, toUserId, amount, reference, description = 'Internal transfer', actor = 'engine:transfer', productType = null, productRef = null }) {
   const amountN = Number(amount);
   const op = await claimOperation({ client, operationType: 'TRANSFER', reference, userId: fromUserId, amount: amountN });
   if (!op.claimed) return { dedup: true, reference };
@@ -533,7 +536,7 @@ async function internalTransfer({ client, fromUserId, toUserId, amount, referenc
       { accountCode: 'CUSTOMER_WALLET', direction: 'DR', amount: amountN },
       { accountCode: 'CUSTOMER_WALLET', direction: 'CR', amount: amountN },
     ],
-    referenceId: reference, description, postedBy: actor,
+    referenceId: reference, description, postedBy: actor, productType, productRef,
   });
 
   await client.query(`UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2`, [amountN, fromUserId]);
@@ -547,7 +550,7 @@ async function internalTransfer({ client, fromUserId, toUserId, amount, referenc
  * Move funds from a user wallet into a group wallet (e.g. VICOBA contribution).
  *   DR CUSTOMER_WALLET   CR <groupAccountCode>   [+ users -X, group +Y]
  */
-async function walletToGroup({ client, userId, groupId, groupAccount = 'VICOBA_GROUP', groupSql, amount, reference, description = 'Wallet to group', actor = 'engine:walletToGroup' }) {
+async function walletToGroup({ client, userId, groupId, groupAccount = 'VICOBA_GROUP', groupSql, amount, reference, description = 'Wallet to group', actor = 'engine:walletToGroup', productType = null, productRef = null }) {
   const amountN = Number(amount);
   const op = await claimOperation({ client, operationType: 'WALLET_TO_GROUP', reference, userId, amount: amountN });
   if (!op.claimed) return { dedup: true, reference };
@@ -565,7 +568,7 @@ async function walletToGroup({ client, userId, groupId, groupAccount = 'VICOBA_G
       { accountCode: 'CUSTOMER_WALLET', direction: 'DR', amount: amountN },
       { accountCode: groupAccount, direction: 'CR', amount: amountN },
     ],
-    referenceId: reference, description, postedBy: actor,
+    referenceId: reference, description, postedBy: actor, productType, productRef,
   });
 
   await client.query(`UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2`, [amountN, userId]);
@@ -580,7 +583,7 @@ async function walletToGroup({ client, userId, groupId, groupAccount = 'VICOBA_G
  * Move funds from a group wallet back to a user wallet (e.g. VICOBA payout).
  *   DR <groupAccountCode>   CR CUSTOMER_WALLET   [+ group -Y, users +X]
  */
-async function groupToWallet({ client, userId, groupId, groupAccount = 'VICOBA_GROUP', groupSql, amount, reference, description = 'Group to wallet', actor = 'engine:groupToWallet' }) {
+async function groupToWallet({ client, userId, groupId, groupAccount = 'VICOBA_GROUP', groupSql, amount, reference, description = 'Group to wallet', actor = 'engine:groupToWallet', productType = null, productRef = null }) {
   const amountN = Number(amount);
   const op = await claimOperation({ client, operationType: 'GROUP_TO_WALLET', reference, userId, amount: amountN });
   if (!op.claimed) return { dedup: true, reference };
@@ -595,7 +598,7 @@ async function groupToWallet({ client, userId, groupId, groupAccount = 'VICOBA_G
       { accountCode: groupAccount, direction: 'DR', amount: amountN },
       { accountCode: 'CUSTOMER_WALLET', direction: 'CR', amount: amountN },
     ],
-    referenceId: reference, description, postedBy: actor,
+    referenceId: reference, description, postedBy: actor, productType, productRef,
   });
 
   if (groupSql) {

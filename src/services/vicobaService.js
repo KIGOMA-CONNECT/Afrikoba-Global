@@ -103,7 +103,7 @@ async function contributeShares(groupId, userId, amount, sharesCount) {
       [referenceId, userId, amountNum, JSON.stringify({ group_id: groupId })]
     );
 
-    await fin.walletToGroup({ client, userId, groupId, groupAccount: 'VICOBA_GROUP', groupSql: 'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance + $1 WHERE id = $2', amount: amountNum, reference: `${referenceId}:WG`, description: 'VICOBA Share Contribution' });
+    await fin.walletToGroup({ client, userId, groupId, groupAccount: 'VICOBA_GROUP', groupSql: 'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance + $1 WHERE id = $2', amount: amountNum, reference: `${referenceId}:WG`, description: 'VICOBA Share Contribution', productType: 'VICOBA', productRef: String(groupId) });
     await client.query(
       `UPDATE vicoba_members SET total_shares = total_shares + $1, contribution_balance = contribution_balance + $2
        WHERE group_id = $3 AND user_id = $4`,
@@ -207,7 +207,7 @@ async function approveLoan(approverUserId, loanId, approvedAmount) {
       [referenceId, ctx.applicant_id, finalAmount, JSON.stringify({ group_id: loan.group_id, loan_id: loanId })]
     );
 
-    await fin.groupToWallet({ client, userId: ctx.applicant_id, groupId: loan.group_id, groupAccount: 'VICOBA_GROUP', groupSql: 'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance - $1 WHERE id = $2', amount: finalAmount, reference: `${referenceId}:GW`, description: 'VICOBA Loan Disbursement' });
+    await fin.groupToWallet({ client, userId: ctx.applicant_id, groupId: loan.group_id, groupAccount: 'VICOBA_GROUP', groupSql: 'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance - $1 WHERE id = $2', amount: finalAmount, reference: `${referenceId}:GW`, description: 'VICOBA Loan Disbursement', productType: 'VICOBA', productRef: String(loan.group_id) });
     await client.query(
       'UPDATE vicoba_loan_requests SET status = $1, updated_at = NOW() WHERE id = $2',
       ['DISBURSED', loanId]
@@ -586,7 +586,7 @@ async function payContribution(groupId, userId, cycleNumber, amount, sharesCount
     const totalDeduct = amountNum + penaltyAmount;
 
     const referenceId = generateReference('VC');
-    await fin.walletToGroup({ client, userId, groupId, groupAccount: 'VICOBA_GROUP', groupSql: 'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance + $1 WHERE id = $2', amount: amountNum, reference: `${referenceId}:WG`, description: 'VICOBA Contribution' });
+    await fin.walletToGroup({ client, userId, groupId, groupAccount: 'VICOBA_GROUP', groupSql: 'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance + $1 WHERE id = $2', amount: amountNum, reference: `${referenceId}:WG`, description: 'VICOBA Contribution', productType: 'VICOBA', productRef: String(groupId) });
     if (penaltyAmount > 0) {
       await fin.debitWallet({ client, userId, amount: penaltyAmount, reference: `${referenceId}:DR`, toAccount: 'PLATFORM_FEES', description: 'VICOBA Late Penalty' });
     }
@@ -820,7 +820,7 @@ async function contributeSocialFund(groupId, userId, month) {
     const user = userRes.rows[0];
 
     const referenceId = generateReference('SF');
-    await fin.walletToGroup({ client, userId, groupId: fund.id, groupAccount: 'VICOBA_GROUP', groupSql: 'UPDATE vicoba_social_fund SET total_balance = total_balance + $1, total_collected = total_collected + $1 WHERE id = $2', amount: fund.monthly_contribution, reference: `${referenceId}:WG`, description: 'VICOBA Social Fund Contribution' });
+    await fin.walletToGroup({ client, userId, groupId: fund.id, groupAccount: 'VICOBA_GROUP', groupSql: 'UPDATE vicoba_social_fund SET total_balance = total_balance + $1, total_collected = total_collected + $1 WHERE id = $2', amount: fund.monthly_contribution, reference: `${referenceId}:WG`, description: 'VICOBA Social Fund Contribution', productType: 'VICOBA', productRef: String(fund.id) });
     await client.query(
       `UPDATE vicoba_members SET social_fund_balance = social_fund_balance + $1 WHERE group_id = $2 AND user_id = $3`,
       [fund.monthly_contribution, groupId, userId]
@@ -911,7 +911,7 @@ async function approveSocialFundDisbursement(actorUserId, requestId, approvedAmo
       [finalAmount, actorUserId, requestId]
     );
     const referenceId = generateReference('SD');
-    await fin.groupToWallet({ client, userId: request.requester_id, groupId: request.fund_id, groupAccount: 'VICOBA_GROUP', groupSql: 'UPDATE vicoba_social_fund SET total_balance = total_balance - $1, total_disbursed = total_disbursed + $1 WHERE id = $2', amount: finalAmount, reference: `${referenceId}:GW`, description: 'VICOBA Social Fund Disbursement' });
+    await fin.groupToWallet({ client, userId: request.requester_id, groupId: request.fund_id, groupAccount: 'VICOBA_GROUP', groupSql: 'UPDATE vicoba_social_fund SET total_balance = total_balance - $1, total_disbursed = total_disbursed + $1 WHERE id = $2', amount: finalAmount, reference: `${referenceId}:GW`, description: 'VICOBA Social Fund Disbursement', productType: 'VICOBA', productRef: String(request.fund_id) });
 
     await client.query(
       `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
@@ -1100,7 +1100,7 @@ async function repayLoan(userId, loanId, amount, note) {
     const totalDeduct = amountNum + penaltyAmount;
 
     const referenceId = generateReference('LR');
-    await fin.walletToGroup({ client, userId, groupId: loan.group_id, groupAccount: 'VICOBA_GROUP', groupSql: 'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance + $1 WHERE id = $2', amount: amountNum, reference: `${referenceId}:WG`, description: 'VICOBA Loan Repayment' });
+    await fin.walletToGroup({ client, userId, groupId: loan.group_id, groupAccount: 'VICOBA_GROUP', groupSql: 'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance + $1 WHERE id = $2', amount: amountNum, reference: `${referenceId}:WG`, description: 'VICOBA Loan Repayment', productType: 'VICOBA', productRef: String(loan.group_id) });
     if (penaltyAmount > 0) {
       await fin.debitWallet({ client, userId, amount: penaltyAmount, reference: `${referenceId}:DR`, toAccount: 'PLATFORM_FEES', description: 'VICOBA Late Loan Penalty' });
     }
@@ -1310,6 +1310,7 @@ async function approveWithdrawal(actorUserId, withdrawalId, { approved, note }) 
       client, userId: cur.user_id, groupId: cur.group_id, groupAccount: 'VICOBA_GROUP',
       groupSql: 'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance - $1 WHERE id = $2',
       amount: Number(cur.amount), reference: `${cur.reference_id}:GW`, description: 'VICOBA Group Withdrawal',
+      productType: 'VICOBA', productRef: String(cur.group_id),
     });
 
     const refId = generateReference('WD');

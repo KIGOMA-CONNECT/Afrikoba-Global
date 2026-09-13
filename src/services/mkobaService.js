@@ -108,7 +108,7 @@ async function buyShares(userId, groupId, sharesCount) {
     const cost = count * rules.share_price;
 
     const referenceId = generateReference('VS');
-    await fin.walletToGroup({ client, userId, groupId, groupAccount: 'VICOBA_GROUP', groupSql: 'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance + $1 WHERE id = $2', amount: cost, reference: `${referenceId}:WG`, description: 'VICOBA Share Purchase' });
+    await fin.walletToGroup({ client, userId, groupId, groupAccount: 'VICOBA_GROUP', groupSql: 'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance + $1 WHERE id = $2', amount: cost, reference: `${referenceId}:WG`, description: 'VICOBA Share Purchase', productType: 'VICOBA', productRef: String(groupId) });
     await client.query(
       'UPDATE vicoba_members SET total_shares = total_shares + $1, share_capital = share_capital + $2 WHERE group_id = $3 AND user_id = $4',
       [count, cost, groupId, userId]
@@ -296,7 +296,7 @@ async function approveProfitDistribution(distributionId, approverUserId) {
 
     for (const payout of payouts.rows) {
       const referenceId = generateReference('PD');
-      await fin.groupToWallet({ client, userId: payout.user_id, groupId: dist.group_id, groupAccount: 'VICOBA_GROUP', amount: Number(payout.dividend_amount), reference: `${referenceId}:GW`, description: 'VICOBA Profit Payout' });
+      await fin.groupToWallet({ client, userId: payout.user_id, groupId: dist.group_id, groupAccount: 'VICOBA_GROUP', amount: Number(payout.dividend_amount), reference: `${referenceId}:GW`, description: 'VICOBA Profit Payout', productType: 'VICOBA', productRef: String(dist.group_id) });
 
       await client.query(
         `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
@@ -479,7 +479,7 @@ async function approveTransfer(approverUserId, transferId, { approved, note }) {
     }
 
     if (transfer.recipient_type === 'MEMBER' && transfer.recipient_user_id) {
-      await fin.groupToWallet({ client, userId: transfer.recipient_user_id, groupId: transfer.group_id, groupAccount: 'VICOBA_GROUP', groupSql: 'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance - $1 WHERE id = $2', amount: transfer.amount, reference: `${transfer.reference_id}:GW`, description: 'VICOBA Fund Transfer to Member' });
+      await fin.groupToWallet({ client, userId: transfer.recipient_user_id, groupId: transfer.group_id, groupAccount: 'VICOBA_GROUP', groupSql: 'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance - $1 WHERE id = $2', amount: transfer.amount, reference: `${transfer.reference_id}:GW`, description: 'VICOBA Fund Transfer to Member', productType: 'VICOBA', productRef: String(transfer.group_id) });
 
       const recipient = await client.query('SELECT full_name, phone_number FROM users WHERE id = $1', [transfer.recipient_user_id]);
       const refId = generateReference('TW');

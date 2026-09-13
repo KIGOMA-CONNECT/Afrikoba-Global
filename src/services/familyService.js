@@ -86,7 +86,7 @@ async function familyContribute(walletId, userId, amount) {
     const sender = await client.query('SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE', [userId]);
     if (Number(sender.rows[0].wallet_balance) < amountNum) throw Object.assign(new Error('Salio lako halitoshi.'), { statusCode: 400 });
     const fcRef = generateReference('FC');
-    await fin.walletToGroup({ client, userId, groupId: walletId, groupAccount: 'FAMILY_WALLET', groupSql: 'UPDATE family_wallets SET balance = balance + $1 WHERE id = $2', amount: amountNum, reference: fcRef, description: 'Mchango wa familia' });
+    await fin.walletToGroup({ client, userId, groupId: walletId, groupAccount: 'FAMILY_WALLET', groupSql: 'UPDATE family_wallets SET balance = balance + $1 WHERE id = $2', amount: amountNum, reference: fcRef, description: 'Mchango wa familia', productType: 'FAMILY', productRef: String(walletId) });
     await client.query(
       `INSERT INTO family_wallet_transactions (wallet_id, actor_user_id, amount, type, description) VALUES ($1,$2,$3,'CONTRIBUTION',$4)`,
       [walletId, userId, amountNum, 'Mchango wa familia']
@@ -148,7 +148,7 @@ async function familyTransfer(walletId, userId, toPhone, amount) {
     const to = await client.query('SELECT id, wallet_balance, full_name, phone_number FROM users WHERE phone_number = $1 FOR UPDATE', [toPhone.trim()]);
     if (!to.rows.length) throw Object.assign(new Error('Mpokeaji hajapatikana.'), { statusCode: 404 });
     const ftRef = generateReference('FT');
-    await fin.groupToWallet({ client, userId: to.rows[0].id, groupId: walletId, groupAccount: 'FAMILY_WALLET', groupSql: 'UPDATE family_wallets SET balance = balance - $1 WHERE id = $2', amount: amountNum, reference: ftRef, description: `Tuma kwa ${toPhone}` });
+    await fin.groupToWallet({ client, userId: to.rows[0].id, groupId: walletId, groupAccount: 'FAMILY_WALLET', groupSql: 'UPDATE family_wallets SET balance = balance - $1 WHERE id = $2', amount: amountNum, reference: ftRef, description: `Tuma kwa ${toPhone}`, productType: 'FAMILY', productRef: String(walletId) });
     await client.query(
       `INSERT INTO family_wallet_transactions (wallet_id, actor_user_id, counterparty_user_id, amount, type, description) VALUES ($1,$2,$3,$4,'TRANSFER_OUT',$5)`,
       [walletId, userId, to.rows[0].id, amountNum, `Tuma kwa ${toPhone}`]

@@ -345,7 +345,7 @@ async function disburseDuePayouts() {
         [Number(sched.total_payout_amount), sched.id]
       );
 
-      await fin.groupToWallet({ client, userId: sched.recipient_user_id, groupId: sched.pool_id, groupAccount: 'ROSICA_POOL', amount: netPayout, reference: `${referenceId}:PO`, description: 'ROSCA Payout' });
+      await fin.groupToWallet({ client, userId: sched.recipient_user_id, groupId: sched.pool_id, groupAccount: 'ROSICA_POOL', amount: netPayout, reference: `${referenceId}:PO`, description: 'ROSCA Payout', productType: 'ROSCA', productRef: String(sched.pool_id) });
       if (sched.comm_amount > 0) {
         await fin.postJournal({
           client,

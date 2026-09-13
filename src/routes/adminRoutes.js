@@ -670,4 +670,43 @@ router.put('/projects/milestones/:id', async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
+// Muhtasari wa leda kwa kila product (product isolation) - P0
+router.get('/products/ledger-summary', async (req, res, next) => {
+  try {
+    if (!req.user || req.user.role !== 'ADMIN') {
+      return res.status(403).json({ success: false, error: 'Unauthorized' });
+    }
+    const map = {
+      VICOBA: { table: 'vicoba_groups', key: 'id' },
+      LENDING_CIRCLES: { table: 'crowdfund_campaigns', key: 'id' },
+      ROSCA: { table: 'rosca_pools', key: 'id' },
+      SACCOS: { table: 'saccos', key: 'id' },
+      FAMILY: { table: 'family_wallets', key: 'id' },
+      MARKETPLACE: { table: 'marketplace_orders', key: 'id' },
+    };
+    const [summary, unattributed, perType] = await Promise.all([
+      pool.query('SELECT * FROM v_product_ledger_summary'),
+      pool.query(
+        `SELECT COUNT(*)::int AS rows
+         FROM journal_entries WHERE product_type IS NULL`
+      ),
+      pool.query(
+        `SELECT product_type, product_ref, account_code, SUM(amount)::numeric AS net
+         FROM (
+           SELECT je.product_type, je.product_ref, la.account_code,
+                  CASE WHEN je.direction = 'CR' THEN je.amount ELSE -je.amount END AS amount
+           FROM journal_entries je
+           JOIN ledger_accounts la ON la.id = je.account_id
+           WHERE je.product_type IS NOT NULL
+             AND la.account_code <> 'CUSTOMER_WALLET'
+         ) x
+         GROUP BY 1, 2, 3
+         HAVING ABS(SUM(amount)) > 0.001
+         ORDER BY 1, 2, 3`
+      ),
+    ]);
+    res.json({ success: true, summary: summary.rows, unattributed, byEntity: perType.rows });
+  } catch (error) { next(error); }
+});
+
 module.exports = router;
