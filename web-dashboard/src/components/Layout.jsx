@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
+import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useT } from '../i18n/LangProvider.jsx';
+import { trackNav } from '../tracking.js';
 
 const NAV_GROUPS = [
   {
@@ -121,6 +122,40 @@ const NAV_GROUPS = [
   },
 ];
 
+const GROUP_WORKSPACE = {
+  'nav.g_dashboard': 'workspace.home',
+  'nav.g_finance': 'workspace.personal',
+  'nav.g_groups': 'workspace.group',
+  'nav.g_market': 'workspace.market',
+  'nav.g_biz': 'workspace.business',
+  'nav.g_projects': 'workspace.invest',
+  'nav.g_comm': 'workspace.comm',
+  'nav.g_settings': 'workspace.settings',
+};
+
+const WORKSPACE_LINKS = [
+  { to: '/dashboard/wallet', key: 'workspace.personal' },
+  { to: '/dashboard/saccos', key: 'workspace.group' },
+  { to: '/dashboard/marketplace', key: 'workspace.market' },
+  { to: '/dashboard/business', key: 'workspace.business' },
+  { to: '/dashboard/projects', key: 'workspace.invest' },
+];
+
+const BOTTOM_TABS = [
+  { to: '/dashboard', key: 'nav.dashboard', end: true },
+  { to: '/dashboard/wallet', key: 'nav.g_finance' },
+  { to: '/dashboard/saccos', key: 'nav.g_groups' },
+  { to: '/dashboard/marketplace', key: 'nav.g_market' },
+];
+
+const MORE_LINKS = [
+  { to: '/dashboard/business', key: 'nav.g_biz' },
+  { to: '/dashboard/projects', key: 'nav.g_projects' },
+  { to: '/dashboard/notifications', key: 'nav.g_comm' },
+  { to: '/dashboard/settings', key: 'nav.g_settings' },
+  { to: '/dashboard/support', key: 'nav.support' },
+];
+
 function isVisible(item, user, activeServices) {
   if (item.admin && user.role !== 'ADMIN') return false;
   if (item.roles && !item.roles.includes(user.role)) return false;
@@ -134,11 +169,11 @@ function leafActive(leaf, pathname) {
 }
 
 function findEntryInGroup(group, pathname) {
-  const exactLeaf = group.entries.some((e) => {
+  const anyMatch = group.entries.some((e) => {
     if (e.submenu) return e.items.some((i) => leafActive(i, pathname));
     return leafActive(e, pathname);
   });
-  const fallback = exactLeaf ? 'exact' : 'prefix';
+  const fallback = anyMatch ? 'exact' : 'prefix';
   for (const e of group.entries) {
     if (e.submenu) {
       const leaf = e.items.find((i) => leafActive(i, pathname) && (fallback === 'exact' ? i.to === pathname || i.end : true));
@@ -150,12 +185,31 @@ function findEntryInGroup(group, pathname) {
   return null;
 }
 
+function routeGate(entries, pathname, user, activeServices) {
+  let anyMatch = false;
+  for (const e of entries) {
+    if (e.submenu) {
+      for (const leaf of e.items) {
+        if (leafActive(leaf, pathname)) {
+          anyMatch = true;
+          if (!isVisible(leaf, user, activeServices)) return false;
+        }
+      }
+    } else if (leafActive(e, pathname)) {
+      anyMatch = true;
+      if (!isVisible(e, user, activeServices)) return false;
+    }
+  }
+  return anyMatch ? true : null;
+}
+
 export default function Layout() {
   const navigate = useNavigate();
   const location = useLocation();
   const { t, lang, setLang } = useT();
   const user = JSON.parse(localStorage.getItem('afrikoba_user') || '{}');
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
   const [openGroups, setOpenGroups] = useState(() => ({ 'nav.g_dashboard': true }));
 
   const logout = () => {
@@ -166,16 +220,32 @@ export default function Layout() {
 
   const activeServices = user.services || [];
   const closeSidebar = () => setSidebarOpen(false);
+  const closeMore = () => setMoreOpen(false);
 
   const crumbGroup = NAV_GROUPS.find((g) => findEntryInGroup(g, location.pathname));
   const crumb = crumbGroup ? { group: crumbGroup.groupKey, ...findEntryInGroup(crumbGroup, location.pathname) } : null;
   const activeGroup = crumbGroup?.groupKey;
+  const workspaceKey = activeGroup ? GROUP_WORKSPACE[activeGroup] || 'workspace.home' : 'workspace.home';
+
+  const denied = NAV_GROUPS.some((g) => routeGate(g.entries, location.pathname, user, activeServices) === false);
 
   useEffect(() => {
     if (activeGroup) {
       setOpenGroups((o) => (o[activeGroup] ? o : { ...o, [activeGroup]: true }));
     }
   }, [activeGroup, location.pathname]);
+
+  useEffect(() => {
+    if (location.pathname !== '/dashboard') {
+      trackNav('NAV_OPEN', { path: location.pathname, role: user.role });
+    }
+  }, [location.pathname]);
+
+  useEffect(() => {
+    if (denied) {
+      trackNav('NAV_ACCESS_DENIED', { path: location.pathname, role: user.role });
+    }
+  }, [denied, location.pathname]);
 
   const toggleGroup = (key) => setOpenGroups((o) => ({ ...o, [key]: !o[key] }));
 
@@ -196,6 +266,12 @@ export default function Layout() {
 
   const renderLeaf = (item) => (
     <NavLink key={item.to} to={item.to} end={item.end} onClick={closeSidebar} className={({ isActive }) => (isActive ? 'active' : '')}>
+      {t(item.key)}
+    </NavLink>
+  );
+
+  const bottomTabLinks = (item) => (
+    <NavLink key={item.to} to={item.to} end={item.end} className={({ isActive }) => `bottom-tab${isActive ? ' active' : ''}`}>
       {t(item.key)}
     </NavLink>
   );
@@ -253,17 +329,53 @@ export default function Layout() {
       </aside>
       <main className="content">
         <button className="hamburger" onClick={() => setSidebarOpen(!sidebarOpen)}>☰</button>
-        {crumb && (
-          <div className="breadcrumb" aria-label="Breadcrumb">
-            <span className="bc-crumb">{t(crumb.group)}</span>
-            {crumb.submenu && <span className="bc-sep">/</span>}
-            {crumb.submenu && <span className="bc-crumb">{t(crumb.submenu)}</span>}
-            <span className="bc-sep">/</span>
-            <span className="bc-here">{t(crumb.leaf.key)}</span>
+        {denied ? (
+          <div className="card section" style={{ maxWidth: 520, margin: '40px auto', textAlign: 'center' }}>
+            <h3>⛔ {t('access.denied_short')}</h3>
+            <p>{t('access.denied')}</p>
+            <Link to="/dashboard" className="btn" style={{ textDecoration: 'none', marginTop: 12 }}>{t('access.back')}</Link>
           </div>
+        ) : (
+          <>
+            <div className="workspace-bar">
+              <span className="workspace-label">{t('workspace.label')}</span>
+              <strong className="workspace-name">{t(workspaceKey)}</strong>
+              <span className="workspace-sep">|</span>
+              <div className="workspace-links">
+                {WORKSPACE_LINKS.map((w) => (
+                  <NavLink key={w.to} to={w.to} className={({ isActive }) => `ws-link${isActive ? ' active' : ''}`}>{t(w.key)}</NavLink>
+                ))}
+              </div>
+            </div>
+            {crumb && (
+              <div className="breadcrumb" aria-label="Breadcrumb">
+                <span className="bc-crumb">{t(crumb.group)}</span>
+                {crumb.submenu && <span className="bc-sep">/</span>}
+                {crumb.submenu && <span className="bc-crumb">{t(crumb.submenu)}</span>}
+                <span className="bc-sep">/</span>
+                <span className="bc-here">{t(crumb.leaf.key)}</span>
+              </div>
+            )}
+            <Outlet />
+          </>
         )}
-        <Outlet />
       </main>
+      <nav className="bottom-nav" aria-label="Mobile navigation">
+        {BOTTOM_TABS.map(bottomTabLinks)}
+        <button type="button" className={`bottom-tab${moreOpen ? ' active' : ''}`} aria-expanded={moreOpen} onClick={() => setMoreOpen(!moreOpen)}>
+          {t('more.title')}
+        </button>
+      </nav>
+      {moreOpen && (
+        <div className="more-backdrop" onClick={closeMore}>
+          <div className="more-sheet" onClick={(e) => e.stopPropagation()}>
+            <strong className="more-title">{t('more.title')}</strong>
+            {MORE_LINKS.map((m) => (
+              <NavLink key={m.to} to={m.to} onClick={closeMore} className={({ isActive }) => (isActive ? 'active' : '')}>{t(m.key)}</NavLink>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
