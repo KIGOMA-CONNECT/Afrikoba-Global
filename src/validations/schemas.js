@@ -250,4 +250,36 @@ const mkoba = {
   }),
 };
 
-module.exports = { auth, wallet, vicoba, rosca, p2p, admin, mkoba };
+const lending = {
+  fieldPartner: z.object({
+    name: z.string().min(2).max(150),
+    countryCode: z.string().max(10).optional(),
+    region: z.string().max(100).optional(),
+    riskRating: z.enum(['LOW','MEDIUM','HIGH']).optional(),
+  }),
+  circle: z.object({
+    name: z.string().min(2).max(150),
+    fieldPartnerId: POSITIVE_INT.optional(),
+    description: z.string().max(500).optional(),
+    location: z.string().max(150).optional(),
+    impactCategory: z.enum(['COMMUNITY','WOMEN_EMPOWERMENT','SMALL_FARMER','YOUTH']).optional(),
+  }),
+  campaign: z.object({
+    circleId: POSITIVE_INT.optional(),
+    title: z.string().min(2).max(200),
+    story: z.string().max(5000).optional(),
+    targetAmount: POSITIVE_NUM,
+    termMonths: POSITIVE_INT.max(120).optional(),
+    interestRate: POSITIVE_NUM.max(100).optional(),
+    fundingDeadline: z.string().datetime().optional(),
+  }),
+  contribute: z.object({
+    amount: POSITIVE_NUM,
+  }),
+  repay: z.object({
+    amount: POSITIVE_NUM,
+    interestAmount: POSITIVE_NUM.optional(),
+  }),
+};
+
+module.exports = { auth, wallet, vicoba, rosca, p2p, admin, mkoba, lending };

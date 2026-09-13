@@ -11,6 +11,7 @@ export function StatusBadge({ status }) {
   const cls = [
     'SUCCESS', 'VERIFIED_ACTIVE', 'ACTIVE', 'DISBURSED', 'PASSED', 'RELEASED',
     'CONFIRMED', 'PAID', 'RESOLVED', 'COMPLETED', 'MINUTES_PUBLISHED', 'POSTED',
+    'FULLY_FUNDED', 'REPAID', 'REFUNDED',
   ].includes(s)
     ? 'success'
     : [

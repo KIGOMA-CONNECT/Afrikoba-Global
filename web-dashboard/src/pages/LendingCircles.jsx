@@ -30,7 +30,10 @@ export default function LendingCircles() {
   const [joining, setJoining] = useState(null);
 
   const [contributeAmt, setContributeAmt] = useState({});
+  const [repayAmt, setRepayAmt] = useState({});
   const [disbursing, setDisbursing] = useState(null);
+  const [repaying, setRepaying] = useState(null);
+  const [cancelling, setCancelling] = useState(null);
 
   const show = (type, text) => {
     setMsg({ type, text });
@@ -109,6 +112,29 @@ export default function LendingCircles() {
       load();
     } catch (err) { show('err', err.response?.data?.message || t('circles.error')); }
     finally { setDisbursing(null); }
+  };
+
+  const repay = async (id) => {
+    const amount = Number(repayAmt[id]);
+    if (!amount) { show('err', t('circles.enter_amount')); return; }
+    setRepaying(id);
+    try {
+      await api.post(`/circles/campaigns/${id}/repay`, { amount });
+      show('ok', t('circles.repaid'));
+      setRepayAmt((prev) => ({ ...prev, [id]: '' }));
+      load();
+    } catch (err) { show('err', err.response?.data?.message || t('circles.error')); }
+    finally { setRepaying(null); }
+  };
+
+  const cancel = async (id) => {
+    setCancelling(id);
+    try {
+      await api.post(`/circles/campaigns/${id}/cancel`);
+      show('ok', t('circles.cancelled'));
+      load();
+    } catch (err) { show('err', err.response?.data?.message || t('circles.error')); }
+    finally { setCancelling(null); }
   };
 
   return (
@@ -206,14 +232,15 @@ export default function LendingCircles() {
         <h3>{t('circles.campaigns')}</h3>
         {campaigns.length === 0 && <p className="roles-tag">{t('circles.no_campaigns')}</p>}
         <table>
-          <thead><tr><th>{t('circles.campaign_title')}</th><th>{t('circles.circle')}</th><th>{t('circles.borrower')}</th><th>{t('circles.raised')}</th><th>{t('circles.th_status')}</th><th></th></tr></thead>
+          <thead><tr><th>{t('circles.campaign_title')}</th><th>{t('circles.circle')}</th><th>{t('circles.borrower')}</th><th>{t('circles.raised')}</th><th>{t('circles.inter_rate')}</th><th>{t('circles.th_status')}</th><th></th></tr></thead>
           <tbody>
             {campaigns.map((c) => (
               <tr key={c.id}>
-                <td>{c.title}<div className="roles-tag">{c.story}</div></td>
+                <td>{c.title}<div className="roles-tag">{c.story}</div>{c.funding_deadline && <div className="roles-tag">{t('circles.deadline')}: {new Date(c.funding_deadline).toLocaleDateString()}</div>}</td>
                 <td>{c.circle_name || '-'}</td>
                 <td>{c.borrower_name}</td>
-                <td>{formatMoney(c.raised_amount)} / {formatMoney(c.target_amount)}</td>
+                <td>{formatMoney(c.raised_amount)} / {formatMoney(c.target_amount)}{c.outstanding_balance > 0 && <div className="roles-tag">{t('circles.outstanding')}: {formatMoney(c.outstanding_balance)}</div>}</td>
+                <td>{c.interest_rate}%</td>
                 <td><StatusBadge status={c.status} /></td>
                 <td>
                   <div className="inline-actions">
@@ -225,6 +252,15 @@ export default function LendingCircles() {
                     )}
                     {isAdmin && c.status === 'FULLY_FUNDED' && (
                       <button className="btn warn" disabled={disbursing === c.id} onClick={() => disburse(c.id)}>{t('circles.disburse')}</button>
+                    )}
+                    {c.status === 'DISBURSED' && (isAdmin || Number(c.borrower_user_id) === Number(user.id)) && (
+                      <>
+                        <input type="number" min="1" placeholder={t('circles.repay_amt')} value={repayAmt[c.id] || ''} onChange={(e) => setRepayAmt((prev) => ({ ...prev, [c.id]: e.target.value }))} style={{ width: 110 }} />
+                        <button className="btn" disabled={repaying === c.id} onClick={() => repay(c.id)}>{t('circles.repay')}</button>
+                      </>
+                    )}
+                    {c.status === 'FUNDING' && (isAdmin || Number(c.borrower_user_id) === Number(user.id)) && (
+                      <button className="btn ghost" disabled={cancelling === c.id} onClick={() => cancel(c.id)}>{t('circles.cancel')}</button>
                     )}
                   </div>
                 </td>

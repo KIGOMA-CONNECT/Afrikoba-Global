@@ -54,4 +54,43 @@ router.post('/admin/campaigns/:id/disburse', authRequired, requireRoles('ADMIN')
   catch (e) { next(e); }
 });
 
+// Campaign detail
+router.get('/campaigns/:id', authRequired, async (req, res, next) => {
+  try { res.json({ success: true, campaign: await circles.listCampaign(parseInt(req.params.id)) }); }
+  catch (e) { next(e); }
+});
+
+// Repayments
+router.post('/campaigns/:id/repay', authRequired, async (req, res, next) => {
+  try {
+    const { amount, interestAmount } = req.body;
+    res.json({ success: true, result: await circles.repayLoan(req.user.id, parseInt(req.params.id), {
+      amount: Number(amount),
+      interestAmount: interestAmount ? Number(interestAmount) : 0,
+    }) });
+  } catch (e) { next(e); }
+});
+
+router.get('/campaigns/:id/repayments', authRequired, async (req, res, next) => {
+  try { res.json({ success: true, repayments: await circles.listRepayments(parseInt(req.params.id)) }); }
+  catch (e) { next(e); }
+});
+
+router.get('/campaigns/:id/payouts', authRequired, async (req, res, next) => {
+  try { res.json({ success: true, payouts: await circles.listPayouts(parseInt(req.params.id)) }); }
+  catch (e) { next(e); }
+});
+
+// Cancellation (borrower/circle leader or admin)
+router.post('/campaigns/:id/cancel', authRequired, async (req, res, next) => {
+  try { res.json({ success: true, result: await circles.cancelCampaign(req.user.id, parseInt(req.params.id)) }); }
+  catch (e) { next(e); }
+});
+
+// Admin default
+router.post('/admin/campaigns/:id/default', authRequired, requireRoles('ADMIN'), async (req, res, next) => {
+  try { res.json({ success: true, result: await circles.markDefault(req.user.id, parseInt(req.params.id)) }); }
+  catch (e) { next(e); }
+});
+
 module.exports = router;
