@@ -90,6 +90,17 @@ router.post('/convert', authRequired, async (req, res, next) => {
   }
 });
 
+// Auth: FX rate history (daily samples for charts)
+router.get('/rates/history', authRequired, async (req, res, next) => {
+  try {
+    const { from = 'TZS', to = 'USD', days = 60 } = req.query;
+    const history = await currencyService.getRateHistory(String(from).toUpperCase(), String(to).toUpperCase(), parseInt(days, 10) || 60);
+    return res.json({ success: true, history });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // Admin: update exchange rate
 router.put('/rates', authRequired, requireRoles('ADMIN'), async (req, res, next) => {
   try {

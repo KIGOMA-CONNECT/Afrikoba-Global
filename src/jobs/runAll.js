@@ -13,6 +13,7 @@ const { runAutoInvestCycle } = require('../services/p2pMarketplaceService');
 const { dispatchOutbox } = require('../services/outboxService');
 const { ensureAll: ensurePartitions } = require('../services/partitionService');
 const { runDueStandingOrders } = require('../services/saccosStandingOrderService');
+const { snapshotRateHistory } = require('../services/currencyService');
 const logger = require('../utils/logger');
 
 /**
@@ -140,6 +141,17 @@ function startAllJobs() {
       if (r.executed > 0) logger.info('CRON-STANDING-ORDERS', `SACCOS standing orders executed: ${r.executed} across ${r.entities} entities`);
     } catch (e) {
       logger.error('CRON-STANDING-ORDERS', e.message);
+    }
+  });
+
+  // Daily FX history sampler - 00:45, snapshot effective rates za kila
+  // sarafu (vs TZS) ndani ya exchange_rate_history kwa ajili ya chati.
+  cron.schedule('45 0 * * *', async () => {
+    try {
+      const r = await snapshotRateHistory();
+      logger.info('CRON-FX-HISTORY', `FX rate history sampled (${r.sampled} pairs)`);
+    } catch (e) {
+      logger.error('CRON-FX-HISTORY', e.message);
     }
   });
 

@@ -16,30 +16,22 @@ export default function Fx() {
   const [convertForm, setConvertForm] = useState({ from_currency: 'TZS', to_currency: 'USD', amount: '' });
   const [previewRate, setPreviewRate] = useState(null);
   const [fxHistory, setFxHistory] = useState(null);
+  const [fxOfficial, setFxOfficial] = useState(null);
 
   const error = (err) => setMsg({ type: 'err', text: err.response?.data?.message || t('fx.error') });
 
-  const buildFxHistory = (txs) => {
-    const convs = (txs || []).filter((tx) => tx.type === 'CURRENCY_CONVERT');
-    if (!convs.length) return null;
-    const pairs = {};
-    convs.forEach((c) => {
-      const to = (typeof c.meta === 'object' && c.meta ? c.meta.to : null) || c.fx_base_currency;
-      if (to) pairs[to] = (pairs[to] || 0) + 1;
-    });
-    const pair = Object.keys(pairs).sort((a, b) => (pairs[b] || 0) - (pairs[a] || 0))[0];
+  const buildMonthSeries = (items, rateOf) => {
     const now = new Date();
     const months = [];
     for (let i = 5; i >= 0; i--) {
       const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
       months.push({ key: `${d.getFullYear()}-${d.getMonth()}`, label: d.toLocaleDateString('en', { month: 'short' }), sum: 0, n: 0 });
     }
-    convs.forEach((c) => {
-      const to = (typeof c.meta === 'object' && c.meta ? c.meta.to : null) || c.fx_base_currency;
-      if (to !== pair) return;
-      const v = Number(c.fx_rate);
+    items.forEach((it) => {
+      const v = Number(rateOf(it));
       if (!v) return;
-      const d = new Date(c.created_at);
+      const d = new Date(it.created_at || it.date);
+      if (Number.isNaN(d.getTime())) return;
       const bucket = months.find((m) => m.key === `${d.getFullYear()}-${d.getMonth()}`);
       if (!bucket) return;
       bucket.sum += v;
@@ -51,7 +43,20 @@ export default function Fx() {
       if (m.n) { last = +(m.sum / m.n).toFixed(4); return last; }
       return last;
     });
-    return { pair, labels, values };
+    return { labels, values };
+  };
+
+  const buildFxHistory = (txs) => {
+    const convs = (txs || []).filter((tx) => tx.type === 'CURRENCY_CONVERT');
+    if (!convs.length) return null;
+    const pairs = {};
+    convs.forEach((c) => {
+      const to = (typeof c.meta === 'object' && c.meta ? c.meta.to : null) || c.fx_base_currency;
+      if (to) pairs[to] = (pairs[to] || 0) + 1;
+    });
+    const pair = Object.keys(pairs).sort((a, b) => (pairs[b] || 0) - (pairs[a] || 0))[0];
+    const series = buildMonthSeries(convs.filter((c) => ((typeof c.meta === 'object' && c.meta ? c.meta.to : null) || c.fx_base_currency) === pair), (c) => c.fx_rate);
+    return { pair, labels: series.labels, values: series.values };
   };
 
   const load = () => {
@@ -60,7 +65,17 @@ export default function Fx() {
     api.get('/currency/my-currency').then((r) => {
       if (r.data.currency) setPrefCurrency(r.data.currency);
     }).catch(() => {});
-    api.get('/wallet/transactions?limit=500').then((r) => setFxHistory(buildFxHistory(r.data.transactions || []))).catch(() => {});
+    api.get('/wallet/transactions?limit=500').then((r) => {
+      const hist = buildFxHistory(r.data.transactions || []);
+      setFxHistory(hist);
+      if (hist) {
+        api.get(`/currency/rates/history?from=TZS&to=${encodeURIComponent(hist.pair)}&days=90`).then((hr) => {
+          const rows = (hr.data.history || []).filter((row) => row.date);
+          if (!rows.length) return;
+          setFxOfficial({ pair: hist.pair, ...buildMonthSeries(rows, (row) => row.rate) });
+        }).catch(() => {});
+      }
+    }).catch(() => {});
   };
   useEffect(() => { load(); }, []);
 
@@ -198,14 +213,14 @@ export default function Fx() {
         </div>
       )}
 
-      {fxHistory && fxHistory.values.some((v) => v != null) && (
+      {(fxOfficial || fxHistory) && (fxOfficial ? fxOfficial.values : fxHistory.values).some((v) => v != null) && (
         <div className="card" style={{ marginBottom: 24 }}>
           <h3>{t('fx.history_title')}</h3>
-          <p className="roles-tag" style={{ marginTop: -6, marginBottom: 12 }}>TZS → {fxHistory.pair} · {t('dash.last6')}</p>
+          <p className="roles-tag" style={{ marginTop: -6, marginBottom: 12 }}>TZS → {(fxOfficial || fxHistory).pair} · {t('dash.last6')}</p>
           <AreaChart
-            labels={fxHistory.labels}
+            labels={(fxOfficial || fxHistory).labels}
             format={(v) => Number(v).toFixed(2)}
-            series={[{ key: 'fx', label: `TZS → ${fxHistory.pair}`, color: '#2563eb', values: fxHistory.values }]}
+            series={[{ key: 'fx', label: `TZS → ${(fxOfficial || fxHistory).pair}`, color: '#2563eb', values: (fxOfficial || fxHistory).values }]}
           />
         </div>
       )}

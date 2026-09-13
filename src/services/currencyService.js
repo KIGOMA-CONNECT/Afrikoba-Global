@@ -114,7 +114,75 @@ async function updateRate(fromCurrency, toCurrency, rate, source = 'MANUAL') {
      DO UPDATE SET rate = $3, source = $4`,
     [from, to, rateNum, source]
   );
+  await pool.query(
+    `INSERT INTO exchange_rate_history (from_currency, to_currency, rate, source, sampled_at)
+     VALUES ($1, $2, $3, $4, NOW())
+     ON CONFLICT (from_currency, to_currency, date_trunc('day', sampled_at))
+     DO UPDATE SET rate = EXCLUDED.rate, source = EXCLUDED.source`,
+    [from, to, rateNum, source]
+  );
   return { success: true, from, to, rate: rateNum };
+}
+
+/**
+ * Daily FX history sampler - snapshots the effective rate for every
+ * active currency (both directions vs TZS) into exchange_rate_history.
+ * One row per pair per UTC day (idempotent upsert).
+ */
+async function snapshotRateHistory() {
+  const currencies = await getCurrencies();
+  const now = new Date();
+  let pairs = [];
+  for (const cur of currencies) {
+    if (cur.code === 'TZS') continue;
+    const toTzs = await getExchangeRate(cur.code, 'TZS');
+    if (toTzs) pairs.push([cur.code, 'TZS', toTzs.rate, toTzs.source]);
+    const fromTzs = await getExchangeRate('TZS', cur.code);
+    if (fromTzs) pairs.push(['TZS', cur.code, fromTzs.rate, fromTzs.source]);
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    for (const [from, to, rate, source] of pairs) {
+      await client.query(
+        `INSERT INTO exchange_rate_history (from_currency, to_currency, rate, source, sampled_at)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (from_currency, to_currency, date_trunc('day', sampled_at))
+         DO UPDATE SET rate = EXCLUDED.rate, source = EXCLUDED.source`,
+        [from, to, rate, source, now]
+      );
+    }
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+  return { sampled: pairs.length, at: now };
+}
+
+/**
+ * FX rate history for a pair. Falls back to the current live rate as a
+ * single point (so charts still render on fresh deployments).
+ */
+async function getRateHistory(fromCurrency, toCurrency, days = 60) {
+  const from = String(fromCurrency || '').toUpperCase();
+  const to = String(toCurrency || '').toUpperCase();
+  const since = new Date(Date.now() - (Number(days) || 60) * 86400000);
+  const result = await pool.query(
+    `SELECT to_char(sampled_at, 'YYYY-MM-DD') AS date, from_currency, to_currency,
+            rate::float8 AS rate, source
+     FROM exchange_rate_history
+     WHERE from_currency = $1 AND to_currency = $2 AND sampled_at >= $3
+     ORDER BY sampled_at ASC`,
+    [from, to, since]
+  );
+  if (result.rows.length) return result.rows;
+  const current = await getExchangeRate(from, to);
+  if (!current) return [];
+  return [{ date: new Date().toISOString().slice(0, 10), from_currency: from, to_currency: to, rate: current.rate, source: current.source }];
 }
 
 /** List all stored rates (admin). */
@@ -280,4 +348,6 @@ module.exports = {
   setUserCurrency,
   getMyHoldings,
   convertHolding,
+  snapshotRateHistory,
+  getRateHistory,
 };
