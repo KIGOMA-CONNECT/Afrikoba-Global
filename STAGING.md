@@ -86,3 +86,88 @@ Faili: `/www/server/panel/vhost/nginx/staging.afrikoba.com.conf`
 - HTTP → HTTPS redirect
 - `/` : Basic Auth + proxy → `127.0.0.1:3001`
 - `/api/` : proxy → `127.0.0.1:3001` (no Basic Auth; app JWT inalinda)
+
+---
+
+# Testing Guide (Maabara ya Frontend)
+
+## 1) Credentials za kuingia
+
+**Door ya nje (Basic Auth — dashboard tu):**
+- User: `admin-staging` — Password: `AfriKoba#Stagin9!2026`
+
+**Test user wa app:**
+- Namba: `0719000002` ≡ `+255719000002` ≡ `255719000002` (zote tatu zinakubalika)
+- PASSWORD/OTP: hakuna password ya kudumu — login ni **OTP inayobadilika**.
+  Kwenye staging (`NODE_ENV=development`), OTP inaonekana moja kwa moja kwenye
+  skrini (sanduku la kijani `devOtp`). Kila OTP inatumika mara moja tu.
+
+**Njia mbadala (API):**
+```bash
+# 1. Tuma OTP (inarejesha devOtp moja kwa moja)
+curl -s -X POST https://staging.afrikoba.com/api/v1/auth/send-otp \
+  -H "Content-Type: application/json" \
+  -d '{"phoneNumber":"+255719000002"}'
+#   → {"success":true,"devOtp":"XXXXXX",...}
+
+# 2. Ingia kwa kutumia devOtp
+curl -s -X POST https://staging.afrikoba.com/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"phoneNumber":"+255719000002","otp":"XXXXXX"}'
+#   → {"token":"...","user":{...}}
+```
+
+## 2) Test entities na roles
+
+| User | Namba | Roli | KYC | Wallet | Status |
+|---|---|---|---|---|---|
+| Staging Test User (id=1) | `255719000002` | `MJUMBE` | 1 | 0.00 TZS | active |
+
+Roli zilizopo katika mfumo (kwenye code): `MJUMBE` (chaguo-msingi),
+`ADMIN`, `OPERATOR`, `OPS`, `COMPLIANCE`, `SUPPORT`, `FIELD_PARTNER`,
+`AGRONOMIST`, na SACCOS office: `CHAIR`, `TREASURER`, `SECRETARY`.
+(Nyongeza ya roli kwa watumiaji wa staging inawezekana — omba tu.)
+
+## 3) Staging checklist (hali ya sasa)
+
+| Kipengele | Hali |
+|---|---|
+| SSL Let's Encrypt (halisi) | ✅ |
+| Basic Auth + JWT (`Bearer` kutoka merged header) | ✅ imerekebishwa |
+| DB tofauti `afrikoba_global_staging` + sandbox pekee | ✅ |
+| Backup daily 2:00 + monitor kila 15 min | ✅ |
+| Rollback script | ✅ |
+| Deploy workflow (manual pekee) | ✅ |
+| Production `afrikoba.com` | ✅ haigusiwi |
+
+**Tahadhari ya browser:** ukiingia Basic Auth kwanza, browser inaweka header
+moja `Authorization: Basic …, Bearer …` kwa `/api`. Fix ya `092eb1b`
+(auth.js) inashughulikia hili — iko kwenye staging sasa.
+
+## 4) AzamPay sandbox — credentials au flow
+
+- `AZAMPAY_ENV=sandbox` kwenye staging → API inaelekeza kwenye
+  `https://sandbox.azampay.co.tz` + `https://authenticator-sandbox.azampay.co.tz`.
+- Credentials za sasa ni **placeholder** → deposit flow inarudi na hitilafu
+  laini ("Imeshindwa kupata Access Token kutoka AzamPay") — salama, hakuna
+  USSD push wala hela inayosogea.
+- **Kwa jaribio la green-path (USSD halisi ya sandbox):**
+  1. Jitokeze kwenye https://portal.azampay.co.tz (sandbox developer)
+  2. Unda app ya sandbox → pata `AZAMPAY_APP_NAME`, `AZAMPAY_CLIENT_ID`,
+     `AZAMPAY_CLIENT_SECRET`
+  3. Nitaingiza vigezo hivyo kwenye server `.env.staging` na kurestart app
+  4. Jaribu kupitia UI: **Wallet → Amana (Deposit)** — provider `Mpesa/Tigo/…`
+     (`POST /api/v1/wallet/deposit/initiate {amount≥1000, provider}`)
+  5. Namba yako ya simu itapokea USSD ombi la kuthibitisha (sandbox).
+- Callback ya sandbox: `POST /api/v1/payments/azampay-callback` (ina HMAC).
+- Internal transfer (bila sandbox): `POST /api/v1/wallet/transfer`
+  `{toPhoneNumber, amount, note}`.
+
+## 5) Maelekezo ya kuingia kwenye mfumo (UI)
+
+1. Fungua `https://staging.afrikoba.com`
+2. Basic Auth → `admin-staging` / `AfriKoba#Stagin9!2026`
+3. Tab **Ingia** → namba `0719000002` → **Tuma OTP**
+4. Chukua OTP kwenye sanduku la kijani (`devOtp`) → ingiza → **Ingia**
+5. Utajikuta kwenye dashboard (nilipo unaweza kubadili SW/EN juu kulia,
+   kagua SACCOS, Wallet, malipo, n.k.)
