@@ -263,8 +263,12 @@ async function repayLoan(borrowerUserId, campaignId, { amount, interestAmount = 
       throw Object.assign(new Error('Only the borrower can make repayments.'), { statusCode: 403 });
     }
     const totalOwed = Number(camp.outstanding_balance);
-    const principalAmt = Math.min(amount, totalOwed);
-    const intAmt = Math.min(interestAmount, amount - principalAmt);
+    if (Number(amount) <= 0) throw Object.assign(new Error('Invalid repayment amount.'), { statusCode: 400 });
+    let intAmt = Number(interestAmount || 0);
+    if (intAmt < 0) intAmt = 0;
+    if (intAmt > amount) throw Object.assign(new Error('Interest exceeds repayment amount.'), { statusCode: 400 });
+    const principalAmt = amount - intAmt;
+    if (principalAmt > totalOwed) throw Object.assign(new Error(`Repayment exceeds outstanding balance.`, { statusCode: 400 }, { amount }));
     const borrowerBal = await client.query('SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE', [borrowerUserId]);
     if (Number(borrowerBal.rows[0].wallet_balance) < amount) {
       throw Object.assign(new Error('Salio lako halitoshi.'), { statusCode: 400 });
