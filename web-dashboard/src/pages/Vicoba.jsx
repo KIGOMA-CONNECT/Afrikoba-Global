@@ -1,8 +1,11 @@
 import React, { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import api from '../api/client.js';
 import { formatMoney, StatusBadge } from '../components/ui.jsx';
 import ServiceLock from '../components/ServiceLock.jsx';
 import { useT } from '../i18n/LangProvider.jsx';
+
+const LEADER_ROLES = ['MWENYEKITI', 'MWEKAHAZINA', 'KATIBU'];
 
 export default function Vicoba() {
   const { t } = useT();
@@ -34,7 +37,11 @@ export default function Vicoba() {
   const [profitCalc, setProfitCalc] = useState(null);
   const [distributions, setDistributions] = useState([]);
   const [myPayouts, setMyPayouts] = useState([]);
-const [invitations, setInvitations] = useState([]);
+  const [invitations, setInvitations] = useState([]);
+
+  const [constitution, setConstitution] = useState(null);
+  const [attendance, setAttendance] = useState(null);
+  const [finReport, setFinReport] = useState(null);
 
   const show = (type, text) => {
     setMsg({ type, text });
@@ -77,6 +84,9 @@ const [invitations, setInvitations] = useState([]);
     api.get(`/vicoba/groups/${g.id}/loans`).then((r) => setLoans(r.data.loans)).catch(() => {});
     api.get(`/vicoba/groups/${g.id}/profits`).then((r) => setDistributions(r.data.distributions)).catch(() => { setDistributions([]); });
     api.get('/vicoba/profits/my').then((r) => setMyPayouts(r.data.payouts)).catch(() => setMyPayouts([]));
+    api.get(`/vicoba/groups/${g.id}/constitution`).then((r) => setConstitution(r.data.constitution || r.data)).catch(() => setConstitution(null));
+    api.get(`/vicoba/groups/${g.id}/attendance/report`).then((r) => setAttendance(r.data.report)).catch(() => setAttendance(null));
+    api.get(`/vicoba/groups/${g.id}/reports/financial`).then((r) => setFinReport(r.data.summary)).catch(() => setFinReport(null));
   };
 
   const createGroup = async (e) => {
@@ -183,8 +193,38 @@ const [invitations, setInvitations] = useState([]);
   };
 
   const canApprove = myRole === 'MWEKAHAZINA' || myRole === 'KATIBU';
-  const canAddLoan = ['MWENYEKITI', 'MWEKAHAZINA', 'KATIBU'].includes(myRole);
-  const isLeader = canAddLoan;
+  const canAddLoan = LEADER_ROLES.includes(myRole);
+  const isLeader = LEADER_ROLES.includes(myRole);
+
+  const members = selected?.members || [];
+  const leadership = LEADER_ROLES.map((r) => members.find((m) => m.role_in_group === r)).filter(Boolean);
+  const totalShares = members.reduce((s, m) => s + Number(m.total_shares || 0), 0);
+  const totalContrib = members.reduce((s, m) => s + Number(m.contribution_balance || 0), 0);
+
+  const printDocs = () => {
+    const win = window.open('', '_blank');
+    if (!win) return;
+    const roleName = selected?.role_in_group || 'MWANACHAMA';
+    win.document.write(`<!doctype html><html><head><title>${selected?.group_name} - Nyaraka</title><style>body{font-family:sans-serif;max-width:720px;margin:30px auto;padding:0 16px;color:#111}table{border-collapse:collapse;width:100%;margin:14px 0}th,td{border:1px solid #999;padding:8px;font-size:13px;text-align:left}th{background:#f2f2f2}h1{font-size:22px}h2{font-size:16px;border-bottom:1px solid #ccc;padding-bottom:4px}</style></head><body><h1>${selected?.group_name}</h1><p>Mzunguko: ${selected?.cycle_type} · Msimbo: ${selected?.join_code || '-'} · Wajibu Wako: ${roleName}</p><h2>Wanachama</h2><table><tr><th>Jina</th><th>Namba</th><th>Wajibu</th><th>Hisa</th><th>Michango</th></tr>${members.map((m) => `<tr><td>${m.full_name || ''}</td><td>${m.phone_number || ''}</td><td>${m.role_in_group || ''}</td><td>${m.total_shares || 0}</td><td>${formatMoney(m.contribution_balance)}</td></tr>`).join('')}</table>${constitution && Object.keys(constitution).length > 0 ? `<h2>Katiba / Nyaraka</h2><pre style="white-space:pre-wrap;font-size:12px">${JSON.stringify(constitution, null, 2)}</pre>` : ''}</body></html>`);
+    win.document.close();
+    setTimeout(() => win.print(), 350);
+  };
+
+  const sectionNav = (id) => {
+    const el = document.getElementById(id);
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+
+  const sections = [
+    { id: 'vicoba-news', key: 'vicoba.news' },
+    { id: 'vicoba-docs', key: 'vicoba.docs' },
+    { id: 'vicoba-leadership', key: 'vicoba.leadership' },
+    { id: 'vicoba-treasury', key: 'vicoba.treasury' },
+    { id: 'vicoba-meetings', key: 'vicoba.meetings_section' },
+    { id: 'vicoba-members', key: 'vicoba.members_section' },
+    { id: 'vicoba-loans', key: 'vicoba.loans_section' },
+    { id: 'vicoba-reports', key: 'vicoba.reports_section' },
+  ];
 
   return (
     <ServiceLock serviceKey="VICOBA">
@@ -258,169 +298,267 @@ const [invitations, setInvitations] = useState([]);
 
       {selected && (
         <div className="card section">
-          <h3>{selected.group_name}
-            <span className="roles-tag" style={{ marginLeft: 12 }}>{t('vicoba.group_wallet')}: <strong>{formatMoney(selected.group_wallet_balance)}</strong></span>
-            {selected.join_code && (
-              <span className="roles-tag" style={{ marginLeft: 12 }}>{t('vicoba.code')}: <strong>{selected.join_code}</strong></span>
-            )}
-          </h3>
+          <div className="inline-actions" style={{ justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
+            <h3 style={{ margin: 0 }}>{selected.group_name}
+              {selected.join_code && <span className="roles-tag" style={{ marginLeft: 12 }}>{t('vicoba.code')}: <strong>{selected.join_code}</strong></span>}
+              <span className="roles-tag" style={{ marginLeft: 8 }}>{t('vicoba.status')}: <StatusBadge status={selected.status} /></span>
+            </h3>
+            <div className="inline-actions" style={{ gap: 6, flexWrap: 'wrap' }}>
+              {sections.map((s) => (
+                <button key={s.id} className="btn ghost" style={{ fontSize: 12, padding: '4px 10px' }} onClick={() => sectionNav(s.id)}>{t(s.key)}</button>
+              ))}
+            </div>
+          </div>
 
-          <div className="grid grid-2" style={{ marginBottom: 16 }}>
+          <div className="grid grid-3" style={{ margin: '14px 0' }}>
+            <div className="card stat"><div className="value">{formatMoney(selected.group_wallet_balance)}</div><div className="label">{t('vicoba.group_wallet')}</div></div>
+            <div className="card stat"><div className="value">{members.length}</div><div className="label">{t('vicoba.members_count')}</div></div>
+            <div className="card stat"><div className="value">{formatMoney(totalContrib)}</div><div className="label">{t('vicoba.total_shares')} ({totalShares})</div></div>
+          </div>
+
+          <section id="vicoba-news" className="card" style={{ marginBottom: 14 }}>
+            <h3>{t('vicoba.news')}</h3>
+            <div className="inline-actions" style={{ gap: 8, flexWrap: 'wrap' }}>
+              <span className="roles-tag">Mzunguko: <strong>{selected.cycle_type}</strong></span>
+              <span className="roles-tag">Hisa moja: <strong>{formatMoney(selected.share_value)}</strong></span>
+              <span className="roles-tag">Ada ya mwezi: <strong>{formatMoney(selected.monthly_maintenance_fee)}</strong></span>
+              <span className="roles-tag">Wajibu wako: <strong>{myRole || 'MWANACHAMA'}</strong></span>
+            </div>
+            <p style={{ opacity: 0.75, fontSize: 13, marginTop: 8 }}>Taarifa rasmi, matangazo na maelezo ya uongozi yataonekana hapa.</p>
+          </section>
+
+          <section id="vicoba-docs" className="card" style={{ marginBottom: 14 }}>
+            <h3>{t('vicoba.docs')}</h3>
+            <div className="inline-actions" style={{ gap: 10, flexWrap: 'wrap' }}>
+              <button className="btn" onClick={printDocs}>{t('vicoba.view_doc')}</button>
+              <Link to="/dashboard/governance" className="btn ghost" style={{ textDecoration: 'none' }}>{t('nav.governance')}</Link>
+            </div>
+            {constitution && Object.keys(constitution).length > 0 && (
+              <details style={{ marginTop: 10 }}>
+                <summary style={{ cursor: 'pointer', fontWeight: 600 }}>Katiba / Maagizo ya Kikundi</summary>
+                <pre style={{ whiteSpace: 'pre-wrap', fontSize: 12, background: 'var(--bg)', padding: 10, borderRadius: 8, marginTop: 8 }}>{JSON.stringify(constitution, null, 2)}</pre>
+              </details>
+            )}
+            {(!constitution || Object.keys(constitution).length === 0) && <p className="roles-tag" style={{ marginTop: 8 }}>{t('vicoba.no_docs')}</p>}
+
+            {myPayouts.length > 0 && (
+              <>
+                <h3 style={{ marginTop: 14, marginBottom: 8 }}>{t('vicoba.profit_my')}</h3>
+                <table>
+                  <thead><tr><th>{t('vicoba.profit_d_cycle')}</th><th>{t('vicoba.profit_dividend')}</th><th>{t('vicoba.m_th_shares')}</th><th>{t('vicoba.rollover')}</th><th>{t('vicoba.profit_paid')}</th><th>{t('vicoba.th_loan_status')}</th></tr></thead>
+                  <tbody>
+                    {myPayouts.map((p) => (
+                      <tr key={p.id}>
+                        <td>#{p.cycle_number}</td>
+                        <td>{formatMoney(p.dividend_amount)}</td>
+                        <td>{p.shares_count}</td>
+                        <td>{p.rollover_shares}</td>
+                        <td>{formatMoney(p.dividend_amount)}</td>
+                        <td>{p.paid ? t('vicoba.yes') : t('vicoba.no')}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </>
+            )}
+          </section>
+
+          <section id="vicoba-leadership" className="card" style={{ marginBottom: 14 }}>
+            <h3>{t('vicoba.leadership')}</h3>
+            {leadership.length > 0 ? (
+              <table>
+                <thead><tr><th>{t('vicoba.m_th_name')}</th><th>{t('vicoba.m_th_role')}</th><th>{t('vicoba.m_th_phone')}</th><th>{t('vicoba.m_th_shares')}</th></tr></thead>
+                <tbody>
+                  {leadership.map((m) => (
+                    <tr key={m.user_id}>
+                      <td>{m.full_name}</td>
+                      <td><strong>{m.role_in_group}</strong></td>
+                      <td>{m.phone_number}</td>
+                      <td>{m.total_shares}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : <p className="roles-tag">{t('vicoba.no_docs')}</p>}
+
+            {isLeader && (
+              <>
+                <form className="form-row" onSubmit={addMember} style={{ marginTop: 14 }}>
+                  <div className="field"><label>{t('vicoba.add_member')}</label><input type="number" value={newMemberId} onChange={(e) => setNewMemberId(e.target.value)} required /></div>
+                  <button className="btn ghost" type="submit">{t('vicoba.add')}</button>
+                </form>
+                <form className="form-row" onSubmit={invite} style={{ marginTop: 10 }}>
+                  <div className="field" style={{ flex: 1 }}>
+                    <label>{t('vicoba.invite_sms')}</label>
+                    <input value={invitePhones} onChange={(e) => setInvitePhones(e.target.value)} placeholder="0712000001, 0713000002" />
+                  </div>
+                  <button className="btn warn" type="submit">{t('vicoba.send_invites')}</button>
+                </form>
+              </>
+            )}
+          </section>
+
+          <section id="vicoba-treasury" className="card" style={{ marginBottom: 14 }}>
+            <h3>{t('vicoba.treasury')}</h3>
             <form className="form-row" onSubmit={contribute}>
               <div className="field"><label>{t('vicoba.contribute')}</label><input type="number" value={contributeAmt} onChange={(e) => setContributeAmt(e.target.value)} required /></div>
               <div className="field"><label>{t('vicoba.share_count')}</label><input type="number" value={contributeShares} onChange={(e) => setContributeShares(e.target.value)} /></div>
               <button className="btn" type="submit">{t('vicoba.contribute_btn')}</button>
             </form>
-            <form className="form-row" onSubmit={addMember}>
-              <div className="field"><label>{t('vicoba.add_member')}</label><input type="number" value={newMemberId} onChange={(e) => setNewMemberId(e.target.value)} required /></div>
-              <button className="btn ghost" type="submit">{t('vicoba.add')}</button>
-            </form>
-          </div>
+            <table style={{ marginTop: 12 }}>
+              <thead><tr><th>{t('vicoba.m_th_name')}</th><th>{t('vicoba.m_th_shares')}</th><th>{t('vicoba.m_th_contrib')}</th></tr></thead>
+              <tbody>
+                {members.map((m) => (
+                  <tr key={m.user_id}>
+                    <td>{m.full_name}</td>
+                    <td>{m.total_shares}</td>
+                    <td>{formatMoney(m.contribution_balance)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </section>
 
-          {isLeader && (
-            <form className="form-row" onSubmit={invite} style={{ marginBottom: 16 }}>
-              <div className="field" style={{ flex: 1 }}>
-                <label>{t('vicoba.invite_sms')}</label>
-                <input value={invitePhones} onChange={(e) => setInvitePhones(e.target.value)} placeholder="0712000001, 0713000002" />
+          <section id="vicoba-meetings" className="card" style={{ marginBottom: 14 }}>
+            <h3>{t('vicoba.meetings_section')}</h3>
+            {attendance && Object.keys(attendance).length > 0 ? (
+              <div className="grid grid-3">
+                <div className="card stat"><div className="value">{attendance.total_meetings}</div><div className="label">Mikutano</div></div>
+                <div className="card stat"><div className="value">{formatMoney(attendance.total_fines)}</div><div className="label">Faini</div></div>
+                <div className="card stat"><div className="value">{formatMoney(attendance.total_expected_contributions)}</div><div className="label">Michango</div></div>
               </div>
-              <button className="btn warn" type="submit">{t('vicoba.send_invites')}</button>
-            </form>
-          )}
+            ) : <p className="roles-tag">{t('vicoba.no_docs')}</p>}
+            <p style={{ opacity: 0.75, fontSize: 13, marginTop: 8 }}>Dondoo, maazimio na kumbukumbu za mikutano zitaongezwa hapa kwenye awamu ijayo.</p>
+          </section>
 
-          <h3 style={{ marginTop: 18 }}>{t('vicoba.members')}</h3>
-          <table>
-            <thead><tr><th>{t('vicoba.m_th_name')}</th><th>{t('vicoba.m_th_phone')}</th><th>{t('vicoba.m_th_role')}</th><th>{t('vicoba.m_th_shares')}</th><th>{t('vicoba.m_th_contrib')}</th></tr></thead>
-            <tbody>
-              {selected.members.map((m) => (
-                <tr key={m.user_id}>
-                  <td>{m.full_name}</td>
-                  <td>{m.phone_number}</td>
-                  <td>{m.role_in_group}</td>
-                  <td>{m.total_shares}</td>
-                  <td>{formatMoney(m.contribution_balance)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <section id="vicoba-members" className="card" style={{ marginBottom: 14 }}>
+            <h3>{t('vicoba.members_section')}</h3>
+            <table>
+              <thead><tr><th>{t('vicoba.m_th_name')}</th><th>{t('vicoba.m_th_phone')}</th><th>{t('vicoba.m_th_role')}</th><th>{t('vicoba.m_th_shares')}</th><th>{t('vicoba.m_th_contrib')}</th></tr></thead>
+              <tbody>
+                {members.map((m) => (
+                  <tr key={m.user_id}>
+                    <td>{m.full_name}</td>
+                    <td>{m.phone_number}</td>
+                    <td>{m.role_in_group}</td>
+                    <td>{m.total_shares}</td>
+                    <td>{formatMoney(m.contribution_balance)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </section>
 
-          <h3 style={{ marginTop: 22 }}>{t('vicoba.loans')}</h3>
-          {canAddLoan && (
-            <form className="form-row" onSubmit={addLoan}>
-              <div className="field"><label>{t('vicoba.loan_member')}</label><input type="number" value={loanApplicant} onChange={(e) => setLoanApplicant(e.target.value)} required /></div>
-              <div className="field"><label>{t('vicoba.loan_amount')}</label><input type="number" value={loanAmount} onChange={(e) => setLoanAmount(e.target.value)} required /></div>
-              <div className="field"><label>{t('vicoba.loan_interest')}</label><input type="number" value={loanInterest} onChange={(e) => setLoanInterest(e.target.value)} /></div>
-              <div className="field"><label>{t('vicoba.loan_months')}</label><input type="number" value={loanMonths} onChange={(e) => setLoanMonths(e.target.value)} /></div>
-              <button className="btn" type="submit">{t('vicoba.add_loan')}</button>
-            </form>
-          )}
+          <section id="vicoba-loans" className="card" style={{ marginBottom: 14 }}>
+            <h3>{t('vicoba.loans_section')}</h3>
+            {canAddLoan && (
+              <form className="form-row" onSubmit={addLoan}>
+                <div className="field"><label>{t('vicoba.loan_member')}</label><input type="number" value={loanApplicant} onChange={(e) => setLoanApplicant(e.target.value)} required /></div>
+                <div className="field"><label>{t('vicoba.loan_amount')}</label><input type="number" value={loanAmount} onChange={(e) => setLoanAmount(e.target.value)} required /></div>
+                <div className="field"><label>{t('vicoba.loan_interest')}</label><input type="number" value={loanInterest} onChange={(e) => setLoanInterest(e.target.value)} /></div>
+                <div className="field"><label>{t('vicoba.loan_months')}</label><input type="number" value={loanMonths} onChange={(e) => setLoanMonths(e.target.value)} /></div>
+                <button className="btn" type="submit">{t('vicoba.add_loan')}</button>
+              </form>
+            )}
 
-          <table>
-            <thead><tr><th>{t('vicoba.th_request')}</th><th>{t('vicoba.th_applicant')}</th><th>{t('vicoba.loan_amount')}</th><th>{t('vicoba.th_approval')}</th><th>{t('vicoba.th_loan_status')}</th><th>{t('vicoba.th_loan_actions')}</th></tr></thead>
-            <tbody>
-              {loans.map((l) => (
-                <tr key={l.id}>
-                  <td>#{l.id}</td>
-                  <td>{l.full_name}<div className="roles-tag">{l.phone_number}</div></td>
-                  <td>{formatMoney(l.requested_amount)}</td>
-                  <td>
-                    <span className="roles-tag">
-                      {t('vicoba.approvals', { c: l.chairman_approval ? '✓' : '✗', t: l.treasurer_approval ? `${String.fromCharCode(10003)}` : '✗' })}
-                    </span>
-                  </td>
-                  <td><StatusBadge status={l.status} /></td>
-                  <td>
-                    {canApprove && l.status === 'APPROVED' && (
-                      <div className="inline-actions">
-                        <input type="number" placeholder="Kiasi" style={{ minWidth: 80 }} value={approveAmount}
-                          onChange={(e) => setApproveAmount(e.target.value)} />
-                        <button className="btn" onClick={() => approve(l.id)}>{t('vicoba.release_loan')}</button>
-                      </div>
-                    )}
-                    {l.status === 'PENDING' && l.treasurer_approval === false && canApprove && (
-                      <button className="btn warn" onClick={() => approve(l.id)}>{t('vicoba.approve_loan')}</button>
-                    )}
-                  </td>
-                </tr>
-              ))}
-              {loans.length === 0 && <tr><td colSpan="6" className="roles-tag">{t('vicoba.no_loans')}</td></tr>}
-            </tbody>
-          </table>
+            <table style={{ marginTop: 12 }}>
+              <thead><tr><th>{t('vicoba.th_request')}</th><th>{t('vicoba.th_applicant')}</th><th>{t('vicoba.loan_amount')}</th><th>{t('vicoba.th_approval')}</th><th>{t('vicoba.th_loan_status')}</th><th>{t('vicoba.th_loan_actions')}</th></tr></thead>
+              <tbody>
+                {loans.map((l) => (
+                  <tr key={l.id}>
+                    <td>#{l.id}</td>
+                    <td>{l.full_name}<div className="roles-tag">{l.phone_number}</div></td>
+                    <td>{formatMoney(l.requested_amount)}</td>
+                    <td>
+                      <span className="roles-tag">
+                        {t('vicoba.approvals', { c: l.chairman_approval ? '✓' : '✗', t: l.treasurer_approval ? `${String.fromCharCode(10003)}` : '✗' })}
+                      </span>
+                    </td>
+                    <td><StatusBadge status={l.status} /></td>
+                    <td>
+                      {canApprove && l.status === 'APPROVED' && (
+                        <div className="inline-actions">
+                          <input type="number" placeholder="Kiasi" style={{ minWidth: 80 }} value={approveAmount}
+                            onChange={(e) => setApproveAmount(e.target.value)} />
+                          <button className="btn" onClick={() => approve(l.id)}>{t('vicoba.release_loan')}</button>
+                        </div>
+                      )}
+                      {l.status === 'PENDING' && l.treasurer_approval === false && canApprove && (
+                        <button className="btn warn" onClick={() => approve(l.id)}>{t('vicoba.approve_loan')}</button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+                {loans.length === 0 && <tr><td colSpan="6" className="roles-tag">{t('vicoba.no_loans')}</td></tr>}
+              </tbody>
+            </table>
+          </section>
 
-          <h3 style={{ marginTop: 22 }}>{t('vicoba.profit_title')}</h3>
-          <p className="roles-tag" style={{ marginBottom: 12 }}>{t('vicoba.profit_sub')}</p>
+          <section id="vicoba-reports" className="card">
+            <h3>{t('vicoba.reports_section')}</h3>
+            {finReport && Object.keys(finReport).length > 0 && (
+              <div className="grid grid-3">
+                <div className="card stat"><div className="value">{formatMoney(finReport.total_income)}</div><div className="label">Mapato</div></div>
+                <div className="card stat"><div className="value">{formatMoney(finReport.total_expenses)}</div><div className="label">Matumizi</div></div>
+                <div className="card stat"><div className="value">{formatMoney(finReport.total_contributions)}</div><div className="label">Michango</div></div>
+              </div>
+            )}
 
-          {isLeader && (
-            <form className="form-row" onSubmit={calculateProfit} style={{ marginBottom: 12 }}>
-              <div className="field"><label>{t('vicoba.profit_cycle')}</label><input type="number" value={pCycle} onChange={(e) => setPCycle(e.target.value)} required /></div>
-              <div className="field"><label>{t('vicoba.profit_total')}</label><input type="number" value={pProfit} onChange={(e) => setPProfit(e.target.value)} required /></div>
-              <button className="btn" type="submit">{t('vicoba.profit_calc_btn')}</button>
-            </form>
-          )}
+            <h3 style={{ marginTop: 14 }}>{t('vicoba.profit_title')}</h3>
+            <p className="roles-tag" style={{ marginBottom: 12 }}>{t('vicoba.profit_sub')}</p>
 
-          {profitCalc && (
-            <div className="card" style={{ marginBottom: 12, padding: 14 }}>
-              <strong>{t('vicoba.profit_preview')}: {formatMoney(profitCalc.totalProfit)}</strong>
-              <div className="roles-tag">{t('vicoba.profit_per_share', { v: formatMoney(profitCalc.perShareDividend) })} · {t('vicoba.profit_members', { c: profitCalc.payouts?.length || 0 })}</div>
-              <table style={{ marginTop: 10 }}>
-                <thead><tr><th>{t('vicoba.m_th_name')}</th><th>{t('vicoba.m_th_shares')}</th><th>{t('vicoba.profit_dividend')}</th></tr></thead>
-                <tbody>
-                  {(profitCalc.payouts || []).map((p, i) => (
-                    <tr key={i}><td>{p.name}</td><td>{p.shares}</td><td>{formatMoney(p.dividend)}</td></tr>
-                  ))}
-                </tbody>
-              </table>
-              {profitCalc.distribution && (
-                <div className="inline-actions" style={{ marginTop: 10 }}>
-                  <button className="btn warn" onClick={() => approveProfit(profitCalc.distribution.id)}>{t('vicoba.profit_approve')}</button>
-                </div>
-              )}
-            </div>
-          )}
+            {isLeader && (
+              <form className="form-row" onSubmit={calculateProfit} style={{ marginBottom: 12 }}>
+                <div className="field"><label>{t('vicoba.profit_cycle')}</label><input type="number" value={pCycle} onChange={(e) => setPCycle(e.target.value)} required /></div>
+                <div className="field"><label>{t('vicoba.profit_total')}</label><input type="number" value={pProfit} onChange={(e) => setPProfit(e.target.value)} required /></div>
+                <button className="btn" type="submit">{t('vicoba.profit_calc_btn')}</button>
+              </form>
+            )}
 
-          {distributions.length > 0 && (
-            <>
-              <h3 style={{ marginTop: 16, marginBottom: 8 }}>{t('vicoba.profit_distributions')}</h3>
-              <table>
-                <thead><tr><th>{t('vicoba.profit_d_cycle')}</th><th>{t('vicoba.profit_total2')}</th><th>{t('vicoba.profit_per_share2')}</th><th>{t('vicoba.profit_d_members')}</th><th>{t('vicoba.profit_d_paid')}</th><th>{t('vicoba.th_loan_status')}</th><th></th></tr></thead>
-                <tbody>
-                  {distributions.map((d) => (
-                    <tr key={d.id}>
-                      <td>#{d.cycle_number}</td>
-                      <td>{formatMoney(d.total_profit)}</td>
-                      <td>{formatMoney(d.per_share_dividend)}</td>
-                      <td>{d.payout_count}</td>
-                      <td>{formatMoney(d.total_paid)}</td>
-                      <td><StatusBadge status={d.status} /></td>
-                      <td>{isLeader && d.status === 'PENDING' && (
-                        <button className="btn warn" onClick={() => approveProfit(d.id)}>{t('vicoba.profit_approve')}</button>
-                      )}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </>
-          )}
+            {profitCalc && (
+              <div className="card" style={{ marginBottom: 12, padding: 14 }}>
+                <strong>{t('vicoba.profit_preview')}: {formatMoney(profitCalc.totalProfit)}</strong>
+                <div className="roles-tag">{t('vicoba.profit_per_share', { v: formatMoney(profitCalc.perShareDividend) })} · {t('vicoba.profit_members', { c: profitCalc.payouts?.length || 0 })}</div>
+                <table style={{ marginTop: 10 }}>
+                  <thead><tr><th>{t('vicoba.m_th_name')}</th><th>{t('vicoba.m_th_shares')}</th><th>{t('vicoba.profit_dividend')}</th></tr></thead>
+                  <tbody>
+                    {(profitCalc.payouts || []).map((p, i) => (
+                      <tr key={i}><td>{p.name}</td><td>{p.shares}</td><td>{formatMoney(p.dividend)}</td></tr>
+                    ))}
+                  </tbody>
+                </table>
+                {profitCalc.distribution && (
+                  <div className="inline-actions" style={{ marginTop: 10 }}>
+                    <button className="btn warn" onClick={() => approveProfit(profitCalc.distribution.id)}>{t('vicoba.profit_approve')}</button>
+                  </div>
+                )}
+              </div>
+            )}
 
-          {myPayouts.length > 0 && (
-            <>
-              <h3 style={{ marginTop: 16, marginBottom: 8 }}>{t('vicoba.profit_my')}</h3>
-              <table>
-                <thead><tr><th>{t('vicoba.profit_d_cycle')}</th><th>{t('vicoba.profit_dividend')}</th><th>{t('vicoba.m_th_shares')}</th><th>{t('vicoba.rollover')}</th><th>{t('vicoba.profit_paid')}</th><th>{t('vicoba.th_loan_status')}</th></tr></thead>
-                <tbody>
-                  {myPayouts.map((p) => (
-                    <tr key={p.id}>
-                      <td>#{p.cycle_number}</td>
-                      <td>{formatMoney(p.dividend_amount)}</td>
-                      <td>{p.shares_count}</td>
-                      <td>{p.rollover_shares}</td>
-                      <td>{formatMoney(p.dividend_amount)}</td>
-                      <td>{p.paid ? t('vicoba.yes') : t('vicoba.no')}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </>
-          )}
+            {distributions.length > 0 && (
+              <>
+                <h3 style={{ marginTop: 16, marginBottom: 8 }}>{t('vicoba.profit_distributions')}</h3>
+                <table>
+                  <thead><tr><th>{t('vicoba.profit_d_cycle')}</th><th>{t('vicoba.profit_total2')}</th><th>{t('vicoba.profit_per_share2')}</th><th>{t('vicoba.profit_d_members')}</th><th>{t('vicoba.profit_d_paid')}</th><th>{t('vicoba.th_loan_status')}</th><th></th></tr></thead>
+                  <tbody>
+                    {distributions.map((d) => (
+                      <tr key={d.id}>
+                        <td>#{d.cycle_number}</td>
+                        <td>{formatMoney(d.total_profit)}</td>
+                        <td>{formatMoney(d.per_share_dividend)}</td>
+                        <td>{d.payout_count}</td>
+                        <td>{formatMoney(d.total_paid)}</td>
+                        <td><StatusBadge status={d.status} /></td>
+                        <td>{isLeader && d.status === 'PENDING' && (
+                          <button className="btn warn" onClick={() => approveProfit(d.id)}>{t('vicoba.profit_approve')}</button>
+                        )}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </>
+            )}
+          </section>
         </div>
       )}
     </ServiceLock>

@@ -2,6 +2,117 @@ import React, { useState } from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { useT } from '../i18n/LangProvider.jsx';
 
+const NAV_GROUPS = [
+  {
+    groupKey: 'nav.g_dashboard',
+    items: [
+      { to: '/dashboard', key: 'nav.dashboard', end: true, always: true },
+    ],
+  },
+  {
+    groupKey: 'nav.g_finance',
+    items: [
+      { to: '/dashboard/wallet', key: 'nav.wallet', always: true },
+      { to: '/dashboard/p2p', key: 'nav.p2p', svc: 'P2P' },
+      { to: '/dashboard/loans', key: 'nav.loans', always: true },
+      { to: '/dashboard/credit', key: 'nav.credit', always: true },
+      { to: '/dashboard/budget', key: 'nav.budget', always: true },
+      { to: '/dashboard/vaults', key: 'nav.vaults', always: true },
+      { to: '/dashboard/savings', key: 'nav.savings', always: true },
+      { to: '/dashboard/challenges', key: 'nav.challenges', always: true },
+      { to: '/dashboard/fx', key: 'nav.fx', always: true },
+      { to: '/dashboard/banking', key: 'nav.banking', always: true },
+      { to: '/dashboard/cards', key: 'nav.cards', always: true },
+      { to: '/dashboard/network', key: 'nav.network', always: true },
+      { to: '/dashboard/remittance', key: 'nav.remittance', always: true },
+    ],
+  },
+  {
+    groupKey: 'nav.g_groups',
+    items: [
+      { to: '/dashboard/vicoba', key: 'nav.vicoba', svc: 'VICOBA' },
+      { to: '/dashboard/saccos', key: 'nav.saccos', always: true },
+      { to: '/dashboard/rosca', key: 'nav.rosca', svc: 'ROSCA' },
+      { to: '/dashboard/circles', key: 'nav.circles', always: true },
+      { to: '/dashboard/governance', key: 'nav.governance', always: true },
+      { to: '/dashboard/family', key: 'nav.family', always: true },
+    ],
+  },
+  {
+    groupKey: 'nav.g_market',
+    items: [
+      { to: '/dashboard/marketplace', key: 'nav.marketplace', always: true },
+      { to: '/dashboard/financing', key: 'nav.financing', always: true },
+      { to: '/dashboard/merchant', key: 'nav.merchant', always: true },
+      { to: '/dashboard/secondary', key: 'nav.secondary', always: true },
+      { to: '/dashboard/verification', key: 'nav.verification', always: true },
+      { to: '/dashboard/disputes', key: 'nav.disputes', always: true },
+      { to: '/dashboard/procurement', key: 'nav.procurement', always: true },
+    ],
+  },
+  {
+    groupKey: 'nav.g_biz',
+    items: [
+      { to: '/dashboard/business', key: 'nav.business', always: true },
+      { to: '/dashboard/payroll', key: 'nav.payroll', admin: true },
+      { to: '/dashboard/bills', key: 'nav.bills', always: true },
+      { to: '/dashboard/bill-splits', key: 'nav.bill_splits', always: true },
+      { to: '/dashboard/subscriptions', key: 'nav.subscriptions', always: true },
+      { to: '/dashboard/insurance', key: 'nav.insurance', always: true },
+    ],
+  },
+  {
+    groupKey: 'nav.g_projects',
+    items: [
+      { to: '/dashboard/projects', key: 'nav.projects', always: true },
+      { to: '/dashboard/kilimo', key: 'nav.kilimo', always: true },
+      { to: '/dashboard/events', key: 'nav.events', always: true },
+      { to: '/dashboard/passport', key: 'nav.passport', always: true },
+      { to: '/dashboard/rewards', key: 'nav.rewards', always: true },
+      { to: '/dashboard/referrals', key: 'nav.referrals', always: true },
+    ],
+  },
+  {
+    groupKey: 'nav.g_comm',
+    items: [
+      { to: '/dashboard/promotions', key: 'nav.promotions', always: true },
+      { to: '/dashboard/notifications', key: 'nav.notifications', always: true },
+      { to: '/dashboard/chat', key: 'nav.chat', always: true },
+      { to: '/dashboard/support', key: 'nav.support', always: true },
+      { to: '/dashboard/reports', key: 'nav.reports', always: true },
+      { to: '/dashboard/insights', key: 'nav.insights', always: true },
+    ],
+  },
+  {
+    groupKey: 'nav.g_settings',
+    items: [
+      { to: '/dashboard/services', key: 'nav.services', always: true },
+      { to: '/dashboard/kyc', key: 'nav.kyc', always: true },
+      { to: '/dashboard/devices', key: 'nav.devices', always: true },
+      { to: '/dashboard/security', key: 'nav.security', always: true },
+      { to: '/dashboard/settings', key: 'nav.settings', always: true },
+      { to: '/dashboard/offline', key: 'nav.offline', always: true },
+      { to: '/dashboard/developer', key: 'nav.developer', always: true },
+      { to: '/dashboard/admin', key: 'nav.admin', admin: true },
+      { to: '/dashboard/risk', key: 'nav.risk', admin: true },
+      { to: '/dashboard/admin/events', key: 'nav.events_admin', admin: true },
+      { to: '/dashboard/ops', key: 'nav.ops', admin: true },
+      { to: '/dashboard/features', key: 'nav.features', admin: true },
+      { to: '/dashboard/fraud-ops', key: 'nav.fraud_ops', roles: ['ADMIN', 'COMPLIANCE'] },
+      { to: '/dashboard/experiments', key: 'nav.experiments', admin: true },
+      { to: '/dashboard/four-eyes', key: 'nav.four_eyes', admin: true },
+      { to: '/dashboard/recurrence', key: 'nav.recurrence', admin: true },
+    ],
+  },
+];
+
+function isVisible(item, user, activeServices) {
+  if (item.admin && user.role !== 'ADMIN') return false;
+  if (item.roles && !item.roles.includes(user.role)) return false;
+  if (item.svc && !activeServices.includes(item.svc)) return false;
+  return true;
+}
+
 export default function Layout() {
   const navigate = useNavigate();
   const { t, lang, setLang } = useT();
@@ -14,76 +125,11 @@ export default function Layout() {
     navigate('/login');
   };
 
-  const isAdmin = user.role === 'ADMIN';
   const activeServices = user.services || [];
-
-  const navItems = [
-    { to: '/dashboard', key: 'nav.dashboard', end: true, always: true },
-    { to: '/dashboard/wallet', key: 'nav.wallet', always: true },
-    { to: '/dashboard/services', key: 'nav.services', always: true },
-    { to: '/dashboard/promotions', key: 'nav.promotions', always: true },
-    { to: '/dashboard/vicoba', key: 'nav.vicoba', svc: 'VICOBA' },
-    { to: '/dashboard/saccos', key: 'nav.saccos', always: true },
-    { to: '/dashboard/governance', key: 'nav.governance', always: true },
-    { to: '/dashboard/ai', key: 'nav.ai', always: true },
-    { to: '/dashboard/rosca', key: 'nav.rosca', svc: 'ROSCA' },
-    { to: '/dashboard/p2p', key: 'nav.p2p', svc: 'P2P' },
-    { to: '/dashboard/referrals', key: 'nav.referrals', always: true },
-    { to: '/dashboard/marketplace', key: 'nav.marketplace', always: true },
-    { to: '/dashboard/financing', key: 'nav.financing', always: true },
-    { to: '/dashboard/verification', key: 'nav.verification', always: true },
-    { to: '/dashboard/kyc', key: 'nav.kyc', always: true },
-    { to: '/dashboard/disputes', key: 'nav.disputes', always: true },
-    { to: '/dashboard/field-partners', key: 'nav.field_partners', always: true },
-    { to: '/dashboard/devices', key: 'nav.devices', always: true },
-    { to: '/dashboard/credit', key: 'nav.credit', always: true },
-    { to: '/dashboard/budget', key: 'nav.budget', always: true },
-    { to: '/dashboard/vaults', key: 'nav.vaults', always: true },
-    { to: '/dashboard/merchant', key: 'nav.merchant', always: true },
-    { to: '/dashboard/cards', key: 'nav.cards', always: true },
-    { to: '/dashboard/subscriptions', key: 'nav.subscriptions', always: true },
-    { to: '/dashboard/family', key: 'nav.family', always: true },
-    { to: '/dashboard/passport', key: 'nav.passport', always: true },
-    { to: '/dashboard/support', key: 'nav.support', always: true },
-    { to: '/dashboard/insurance', key: 'nav.insurance', always: true },
-    { to: '/dashboard/business', key: 'nav.business', always: true },
-    { to: '/dashboard/fx', key: 'nav.fx', always: true },
-    { to: '/dashboard/offline', key: 'nav.offline', always: true },
-    { to: '/dashboard/rewards', key: 'nav.rewards', always: true },
-    { to: '/dashboard/loans', key: 'nav.loans', always: true },
-    { to: '/dashboard/network', key: 'nav.network', always: true },
-    { to: '/dashboard/insights', key: 'nav.insights', always: true },
-    { to: '/dashboard/remittance', key: 'nav.remittance', always: true },
-    { to: '/dashboard/challenges', key: 'nav.challenges', always: true },
-    { to: '/dashboard/bills', key: 'nav.bills', always: true },
-    { to: '/dashboard/banking', key: 'nav.banking', always: true },
-    { to: '/dashboard/chat', key: 'nav.chat', always: true },
-    { to: '/dashboard/savings', key: 'nav.savings', always: true },
-    { to: '/dashboard/bill-splits', key: 'nav.bill_splits', always: true },
-    { to: '/dashboard/reports', key: 'nav.reports', always: true },
-    { to: '/dashboard/projects', key: 'nav.projects', always: true },
-    { to: '/dashboard/procurement', key: 'nav.procurement', always: true },
-  { to: '/dashboard/developer', key: 'nav.developer', always: true },
-    { to: '/dashboard/notifications', key: 'nav.notifications', always: true },
-    { to: '/dashboard/circles', key: 'nav.circles', always: true },
-    { to: '/dashboard/kilimo', key: 'nav.kilimo', always: true },
-    { to: '/dashboard/events', key: 'nav.events', always: true },
-    { to: '/dashboard/secondary', key: 'nav.secondary', always: true },
-    { to: '/dashboard/admin', key: 'nav.admin', admin: true },
-    { to: '/dashboard/risk', key: 'nav.risk', admin: true },
-    { to: '/dashboard/admin/events', key: 'nav.events_admin', admin: true },
-    { to: '/dashboard/payroll', key: 'nav.payroll', admin: true },
-    { to: '/dashboard/recurrence', key: 'nav.recurrence', admin: true },
-    { to: '/dashboard/ops', key: 'nav.ops', admin: true },
-    { to: '/dashboard/features', key: 'nav.features', admin: true },
-    { to: '/dashboard/fraud-ops', key: 'nav.fraud_ops', roles: ['ADMIN', 'COMPLIANCE'] },
-    { to: '/dashboard/experiments', key: 'nav.experiments', admin: true },
-    { to: '/dashboard/four-eyes', key: 'nav.four_eyes', admin: true },
-    { to: '/dashboard/settings', key: 'nav.settings', always: true },
-    { to: '/dashboard/security', key: 'nav.security', always: true },
-  ];
-
   const closeSidebar = () => setSidebarOpen(false);
+  const groups = NAV_GROUPS
+    .map((g) => ({ groupKey: g.groupKey, items: g.items.filter((i) => isVisible(i, user, activeServices)) }))
+    .filter((g) => g.items.length > 0);
 
   return (
     <div className="layout">
@@ -97,36 +143,21 @@ export default function Layout() {
           <p>{t('brand.tagline')}</p>
         </div>
         <nav className="nav">
-          {navItems.map((item) => {
-            if (item.admin && !isAdmin) return null;
-            if (item.roles && !item.roles.includes(user.role)) return null;
-            if (item.svc && !activeServices.includes(item.svc)) return null;
-            return (
-              <NavLink
-                key={item.to}
-                to={item.to}
-                end={item.end}
-                onClick={closeSidebar}
-              >
-                {t(item.key)}
-              </NavLink>
-            );
-          })}
+          {groups.map((g) => (
+            <div key={g.groupKey} className="nav-group">
+              <div className="nav-group-label">{t(g.groupKey)}</div>
+              {g.items.map((item) => (
+                <NavLink key={item.to} to={item.to} end={item.end} onClick={closeSidebar} className={({ isActive }) => (isActive ? 'active' : '')}>
+                  {t(item.key)}
+                </NavLink>
+              ))}
+            </div>
+          ))}
         </nav>
         <div className="lang-switcher">
           <span>{t('lang.label')}:</span>
-          <button
-            className={`lang-btn${lang === 'sw' ? ' active' : ''}`}
-            onClick={() => setLang('sw')}
-          >
-            {t('lang.sw')}
-          </button>
-          <button
-            className={`lang-btn${lang === 'en' ? ' active' : ''}`}
-            onClick={() => setLang('en')}
-          >
-            {t('lang.en')}
-          </button>
+          <button className={`lang-btn${lang === 'sw' ? ' active' : ''}`} onClick={() => setLang('sw')}>{t('lang.sw')}</button>
+          <button className={`lang-btn${lang === 'en' ? ' active' : ''}`} onClick={() => setLang('en')}>{t('lang.en')}</button>
         </div>
         <div className="sidebar-user">
           <strong>{user.full_name}</strong>
@@ -140,9 +171,7 @@ export default function Layout() {
         </div>
       </aside>
       <main className="content">
-        <button className="hamburger" onClick={() => setSidebarOpen(!sidebarOpen)}>
-          ☰
-        </button>
+        <button className="hamburger" onClick={() => setSidebarOpen(!sidebarOpen)}>☰</button>
         <Outlet />
       </main>
     </div>
