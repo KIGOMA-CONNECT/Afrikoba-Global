@@ -11,7 +11,10 @@ function generateJoinCode() {
   return crypto.randomBytes(4).toString('hex').toUpperCase();
 }
 
-async function createGroup(userId, { groupName, cycleType, shareValue, monthlyMaintenanceFee }) {
+async function createGroup(userId, {
+  groupName, cycleType, shareValue, monthlyMaintenanceFee,
+  description, groupType, country, language, currencyCode, startDate, minShares, maxShares,
+}) {
   if (parseFloat(shareValue) <= 0) {
     throw Object.assign(new Error('Bei ya hisa lazima iwe kubwa kuliko 0.'), { statusCode: 400 });
   }
@@ -22,10 +25,15 @@ async function createGroup(userId, { groupName, cycleType, shareValue, monthlyMa
       await client.query('BEGIN');
       const result = await client.query(
         `INSERT INTO vicoba_groups
-          (group_name, cycle_type, share_value, monthly_maintenance_fee, created_by_user_id, join_code)
-         VALUES ($1, $2, $3, $4, $5, $6)
+          (group_name, cycle_type, share_value, monthly_maintenance_fee, created_by_user_id, join_code,
+           description, group_type, country, language, currency_code, start_date, min_shares, max_shares)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
          RETURNING *`,
-        [groupName, cycleType, shareValue, monthlyMaintenanceFee || config.fees.vicobaMonthlyFee, userId, joinCode]
+        [
+          groupName, cycleType, shareValue, monthlyMaintenanceFee || config.fees.vicobaMonthlyFee, userId, joinCode,
+          description || null, groupType || 'STANDARD', country || 'Tanzania', language || 'sw', currencyCode || 'TZS',
+          startDate || null, minShares || null, maxShares || null,
+        ]
       );
       const group = result.rows[0];
 
@@ -475,7 +483,8 @@ async function getGroupDetails(groupId, requesterUserId) {
 
 async function listUserGroups(userId) {
   const result = await pool.query(
-    `SELECT g.*, vm.role_in_group
+    `SELECT g.*, vm.role_in_group,
+            (SELECT COUNT(*) FROM vicoba_members c WHERE c.group_id = g.id) AS member_count
      FROM vicoba_groups g
      JOIN vicoba_members vm ON vm.group_id = g.id
      WHERE vm.user_id = $1
