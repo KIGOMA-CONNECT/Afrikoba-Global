@@ -64,9 +64,9 @@ async function markFailed(executionId, notes) {
 async function listExecutions({ resolutionId, groupId, status } = {}) {
   const params = [];
   let where = 'WHERE 1=1';
-  if (resolutionId) { params.push(resolutionId); where += ` AND resolution_id=$${params.length}`; }
-  if (groupId) { params.push(groupId); where += ` AND group_id=$${params.length}`; }
-  if (status) { params.push(status); where += ` AND status=$${params.length}`; }
+  if (resolutionId) { params.push(resolutionId); where += ` AND e.resolution_id=$${params.length}`; }
+  if (groupId) { params.push(groupId); where += ` AND e.group_id=$${params.length}`; }
+  if (status) { params.push(status); where += ` AND e.status=$${params.length}`; }
   const res = await pool.query(
     `SELECT e.*, r.title AS resolution_title, r.resolution_number
      FROM governance_financial_executions e
