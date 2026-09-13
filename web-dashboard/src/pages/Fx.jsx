@@ -1,7 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import api from '../api/client.js';
 import { formatMoney } from '../components/ui.jsx';
+import { AreaChart } from '../components/Charts.jsx';
 import { useT } from '../i18n/LangProvider.jsx';
+
+const CURRENCY_COLORS = ['#34d399', '#fbbf24', '#60a5fa', '#f472b6', '#a78bfa', '#f87171'];
 
 export default function Fx() {
   const { t } = useT();
@@ -12,8 +15,44 @@ export default function Fx() {
   const [showConvert, setShowConvert] = useState(false);
   const [convertForm, setConvertForm] = useState({ from_currency: 'TZS', to_currency: 'USD', amount: '' });
   const [previewRate, setPreviewRate] = useState(null);
+  const [fxHistory, setFxHistory] = useState(null);
 
   const error = (err) => setMsg({ type: 'err', text: err.response?.data?.message || t('fx.error') });
+
+  const buildFxHistory = (txs) => {
+    const convs = (txs || []).filter((tx) => tx.type === 'CURRENCY_CONVERT');
+    if (!convs.length) return null;
+    const pairs = {};
+    convs.forEach((c) => {
+      const to = (typeof c.meta === 'object' && c.meta ? c.meta.to : null) || c.fx_base_currency;
+      if (to) pairs[to] = (pairs[to] || 0) + 1;
+    });
+    const pair = Object.keys(pairs).sort((a, b) => (pairs[b] || 0) - (pairs[a] || 0))[0];
+    const now = new Date();
+    const months = [];
+    for (let i = 5; i >= 0; i--) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      months.push({ key: `${d.getFullYear()}-${d.getMonth()}`, label: d.toLocaleDateString('en', { month: 'short' }), sum: 0, n: 0 });
+    }
+    convs.forEach((c) => {
+      const to = (typeof c.meta === 'object' && c.meta ? c.meta.to : null) || c.fx_base_currency;
+      if (to !== pair) return;
+      const v = Number(c.fx_rate);
+      if (!v) return;
+      const d = new Date(c.created_at);
+      const bucket = months.find((m) => m.key === `${d.getFullYear()}-${d.getMonth()}`);
+      if (!bucket) return;
+      bucket.sum += v;
+      bucket.n += 1;
+    });
+    let last = 0;
+    const labels = months.map((m) => m.label);
+    const values = months.map((m) => {
+      if (m.n) { last = +(m.sum / m.n).toFixed(4); return last; }
+      return last;
+    });
+    return { pair, labels, values };
+  };
 
   const load = () => {
     api.get('/currency/currencies').then((r) => setCurrencies(r.data.currencies || r.data || [])).catch(() => {});
@@ -21,6 +60,7 @@ export default function Fx() {
     api.get('/currency/my-currency').then((r) => {
       if (r.data.currency) setPrefCurrency(r.data.currency);
     }).catch(() => {});
+    api.get('/wallet/transactions?limit=500').then((r) => setFxHistory(buildFxHistory(r.data.transactions || []))).catch(() => {});
   };
   useEffect(() => { load(); }, []);
 
@@ -90,6 +130,26 @@ export default function Fx() {
               </select>
             </div>
           </div>
+          {holdings && holdings.currencies && holdings.currencies.length > 0 && (
+            <div style={{ marginTop: 18 }}>
+              <div style={{ display: 'flex', height: 8, borderRadius: 6, overflow: 'hidden', background: 'rgba(255,255,255,0.2)' }}>
+                {holdings.currencies.map((c, i) => {
+                  const share = holdings.tzsTotal ? ((c.tzsValue || 0) / holdings.tzsTotal) * 100 : 0;
+                  return share > 0 ? (
+                    <div key={c.currency} style={{ width: `${share}%`, background: CURRENCY_COLORS[i % CURRENCY_COLORS.length] }} title={`${c.currency}: ${share.toFixed(1)}%`} />
+                  ) : null;
+                })}
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, marginTop: 8, fontSize: 12 }}>
+                {holdings.currencies.map((c, i) => (
+                  <span key={c.currency} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, opacity: 0.9 }}>
+                    <span style={{ width: 8, height: 8, borderRadius: 2, background: CURRENCY_COLORS[i % CURRENCY_COLORS.length] }} />
+                    {c.currency} {holdings.tzsTotal ? `${((c.tzsValue || 0) / holdings.tzsTotal * 100).toFixed(0)}%` : '0%'}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -135,6 +195,18 @@ export default function Fx() {
               <small className="roles-tag" style={{ color: '#6b7a70' }}>{t('fx.tzs_value')}: {formatMoney(row.tzsValue || 0)}</small>
             </div>
           ))}
+        </div>
+      )}
+
+      {fxHistory && fxHistory.values.some((v) => v != null) && (
+        <div className="card" style={{ marginBottom: 24 }}>
+          <h3>{t('fx.history_title')}</h3>
+          <p className="roles-tag" style={{ marginTop: -6, marginBottom: 12 }}>TZS → {fxHistory.pair} · {t('dash.last6')}</p>
+          <AreaChart
+            labels={fxHistory.labels}
+            format={(v) => Number(v).toFixed(2)}
+            series={[{ key: 'fx', label: `TZS → ${fxHistory.pair}`, color: '#2563eb', values: fxHistory.values }]}
+          />
         </div>
       )}
     </div>

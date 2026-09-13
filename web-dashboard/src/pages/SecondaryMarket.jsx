@@ -152,6 +152,29 @@ export default function SecondaryMarket() {
 
       <div className="card section">
         <h3>{t('sec.active_listings')}</h3>
+        {listings.length > 0 && (() => {
+          const counts = {};
+          listings.forEach((l) => { counts[l.sector] = (counts[l.sector] || 0) + 1; });
+          const total = listings.length;
+          const sectorColors = ['#059669', '#d97706', '#2563eb', '#e11d48', '#7c3aed', '#0e8a8a', '#b26a00'];
+          return (
+            <div style={{ marginBottom: 18 }}>
+              <div style={{ display: 'flex', height: 10, borderRadius: 6, overflow: 'hidden', background: 'var(--bg-soft)' }}>
+                {Object.keys(counts).map((s, i) => (
+                  <div key={s} style={{ width: `${(counts[s] / total) * 100}%`, background: sectorColors[i % sectorColors.length] }} title={`${s}: ${counts[s]}`} />
+                ))}
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 14, marginTop: 8, fontSize: 12, color: 'var(--muted)' }}>
+                {Object.keys(counts).map((s, i) => (
+                  <span key={s} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                    <span style={{ width: 8, height: 8, borderRadius: 2, background: sectorColors[i % sectorColors.length] }} />
+                    {s} · {counts[s]}
+                  </span>
+                ))}
+              </div>
+            </div>
+          );
+        })()}
         {listings.length === 0 && <p className="roles-tag">{t('sec.no_listings')}</p>}
         <table>
           <thead>
