@@ -90,6 +90,12 @@ export default function Vicoba() {
   const [docForm, setDocForm] = useState({ title: '', category: 'CONSTITUTION', body: '', access: 'MEMBERS' });
   const [expanded, setExpanded] = useState(null); // meeting id with agenda loaded
   const [expandedAgenda, setExpandedAgenda] = useState([]);
+  const [expandedProposals, setExpandedProposals] = useState([]);
+  const [propForm, setPropForm] = useState({ title: '', description: '' });
+  const [tallyMap, setTallyMap] = useState({});
+  const [aziMap, setAziMap] = useState({});
+  const [gExecutions, setGExecutions] = useState([]);
+  const [gAnalytics, setGAnalytics] = useState(null);
   const [transcriptMap, setTranscriptMap] = useState({});
   const [govBusy, setGovBusy] = useState(false);
 
@@ -168,16 +174,79 @@ export default function Vicoba() {
     api.get('/governance/resolutions', gp).then((r) => setGResolutions(r.data.resolutions || [])).catch(() => setGResolutions([]));
     api.get('/governance/action-items', gp).then((r) => setGActions(r.data.items || r.data.actionItems || [])).catch(() => setGActions([]));
     api.get('/governance/minutes', gp).then((r) => setGMinutes(r.data.minutes || [])).catch(() => setGMinutes([]));
+    api.get('/governance/financial-executions', gp).then((r) => setGExecutions(r.data.executions || [])).catch(() => setGExecutions([]));
+    api.get('/governance/analytics', gp).then((r) => setGAnalytics(r.data.analytics || null)).catch(() => setGAnalytics(null));
   };
 
-  const loadAgenda = (mid) => {
-    api.get(`/governance/meetings/${mid}`).then((r) => setExpandedAgenda((r.data.agenda || []).sort((a, b) => (a.position || 0) - (b.position || 0)))).catch(() => setExpandedAgenda([]));
+  const loadMeetingDetails = (mid, keepExpanded) => {
+    api.get(`/governance/meetings/${mid}`).then((r) => {
+      const sorted = (r.data.agenda || []).sort((a, b) => (a.position || 0) - (b.position || 0));
+      setExpandedAgenda(sorted);
+      setExpandedProposals(r.data.proposals || []);
+      if (keepExpanded !== false) setExpanded(mid);
+    }).catch(() => { setExpandedAgenda([]); setExpandedProposals([]); });
   };
 
   const toggleAgenda = async (mid) => {
     if (expanded === mid) { setExpanded(null); return; }
-    setExpanded(mid);
-    loadAgenda(mid);
+    loadMeetingDetails(mid);
+  };
+
+  const createProposal = async (e, mid) => {
+    e.preventDefault();
+    if (!selected || !propForm.title) return;
+    try {
+      await api.post('/governance/proposals', {
+        meetingId: mid, groupType: 'VICOBA', groupId: selected.id, title: propForm.title,
+        description: propForm.description || undefined, secretBallot: false
+      });
+      show('ok', t('gov.proposal_created'));
+      setPropForm({ title: '', description: '' });
+      loadMeetingDetails(mid);
+    } catch (err) { show('err', err.response?.data?.message || t('vicoba.error')); }
+  };
+
+  const castVote = async (pid, choice) => {
+    try {
+      const res = await api.post(`/governance/proposals/${pid}/vote`, { choice });
+      if (res.data.tally) setTallyMap((m) => ({ ...m, [pid]: res.data.tally }));
+      if (res.data && res.data.tally === undefined && res.data.result) setTallyMap((m) => ({ ...m, [pid]: res.data.result.tally }));
+      if (selected) loadGov(selected.id);
+    } catch (err) { show('err', err.response?.data?.message || t('vicoba.error')); }
+  };
+
+  const promoteResolution = async (pid, mid) => {
+    const p = expandedProposals.find((x) => x.id === pid);
+    if (!p || !selected) return;
+    const azi = aziMap[pid] || {};
+    try {
+      const res = await api.post('/governance/resolutions', {
+        proposalId: pid, groupType: 'VICOBA', groupId: selected.id, meetingId: mid,
+        title: p.title, body: p.description || p.title,
+        rules: { quorum_percent: 50, voting_threshold: 50 },
+        financialActionType: azi.type || null, financialAmount: azi.amount ? Number(azi.amount) : null
+      });
+      show('ok', res.data.outcome && res.data.outcome.thresholdMet ? t('gov.resolution_passed') : t('gov.resolution_failed'));
+      loadMeetingDetails(mid, false);
+      if (selected) loadGov(selected.id);
+    } catch (err) { show('err', err.response?.data?.message || t('vicoba.error')); }
+  };
+
+  const createExecution = async (resolutionId, amount) => {
+    const r = gResolutions.find((x) => x.id === resolutionId);
+    if (!r || !selected) return;
+    try {
+      await api.post('/governance/financial-executions', {
+        resolutionId, groupId: selected.id, financialActionType: r.financial_action_type || 'GENERAL',
+        targetEntityType: 'VICOBA', targetEntityId: selected.id, amount: Number(amount || r.financial_amount || 0), notes: t('gov.exec_from_res')
+      });
+      show('ok', t('gov.exec_registered'));
+      if (selected) loadGov(selected.id);
+    } catch (err) { show('err', err.response?.data?.message || t('vicoba.error')); }
+  };
+
+  const loadAgenda = (mid) => {
+    loadMeetingDetails(mid);
   };
 
   const addAgenda = async (e, mid) => {
@@ -544,6 +613,7 @@ export default function Vicoba() {
     { id: 'structure', key: 'vicoba.gov_structure' },
     { id: 'resolutions', key: 'vicoba.gov_resolutions' },
     { id: 'actions', key: 'vicoba.gov_actions' },
+    { id: 'analytics', key: 'vicoba.gov_analytics' },
   ];
 
   const quickActions = [
@@ -1231,21 +1301,44 @@ export default function Vicoba() {
               )}
 
               {govTab === 'resolutions' && (
-                <div className="card">
-                  <h3 style={{ marginTop: 0 }}>{t('gov.resolutions')}</h3>
-                  {gResolutions.length === 0 && <p className="roles-tag">{t('gov.no_resolutions')}</p>}
-                  {gResolutions.map((r) => (
-                    <div key={r.id} style={{ padding: '10px 0', borderBottom: '1px solid var(--border)' }}>
-                      <div className="inline-actions" style={{ justifyContent: 'space-between' }}>
-                        <div>
-                          <strong>{r.resolution_number || `#${r.id}`} · {r.title}</strong>
-                          <div className="roles-tag">{r.body}</div>
+                <div>
+                  <div className="card">
+                    <h3 style={{ marginTop: 0 }}>{t('gov.resolutions')}</h3>
+                    {gResolutions.length === 0 && <p className="roles-tag">{t('gov.no_resolutions')}</p>}
+                    {gResolutions.map((r) => (
+                      <div key={r.id} style={{ padding: '10px 0', borderBottom: '1px solid var(--border)' }}>
+                        <div className="inline-actions" style={{ justifyContent: 'space-between' }}>
+                          <div>
+                            <strong>{r.resolution_number || `#${r.id}`} · {r.title}</strong>
+                            <div className="roles-tag">{r.body}</div>
+                          </div>
+                          <StatusBadge status={r.status} />
                         </div>
-                        <StatusBadge status={r.status} />
+                        {r.financial_amount != null && <div className="roles-tag">{r.financial_action_type || 'FINANCIAL'} · {formatMoney(r.financial_amount)}</div>}
+                        {r.financial_action_type && isLeader && (
+                          <div className="inline-actions" style={{ marginTop: 6 }}>
+                            <button className="btn ghost" onClick={() => createExecution(r.id, r.financial_amount)}>{t('gov.register_exec')}</button>
+                          </div>
+                        )}
                       </div>
-                      {r.financial_amount != null && <div className="roles-tag">{r.financial_action_type || 'FINANCIAL'} · {formatMoney(r.financial_amount)}</div>}
-                    </div>
-                  ))}
+                    ))}
+                  </div>
+                  <div className="card">
+                    <h3 style={{ marginTop: 0 }}>{t('gov.executions')}</h3>
+                    {gExecutions.length === 0 && <p className="roles-tag">{t('gov.no_executions')}</p>}
+                    {gExecutions.map((x) => (
+                      <div key={x.id} style={{ padding: '10px 0', borderBottom: '1px solid var(--border)' }}>
+                        <div className="inline-actions" style={{ justifyContent: 'space-between' }}>
+                          <div>
+                            <strong>{x.resolution_title || `#${x.resolution_id}`}</strong>
+                            <div className="roles-tag">{x.financial_action_type} · {formatMoney(x.amount)} · {t('gov.target')}: {x.target_entity_type || '—'}</div>
+                            {x.ledger_reference && <div className="roles-tag">{t('gov.ledger_ref')}: {x.ledger_reference}</div>}
+                          </div>
+                          <StatusBadge status={x.status} />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
 
@@ -1264,6 +1357,30 @@ export default function Vicoba() {
                       </div>
                     </div>
                   ))}
+                </div>
+              )}
+
+              {govTab === 'analytics' && (
+                <div>
+                  {gAnalytics ? (
+                    <>
+                      <div className="grid grid-3">
+                        <div className="card stat"><div className="value">{gAnalytics.meetings?.total || 0}</div><div className="label">{t('gov.ana_meetings')}</div></div>
+                        <div className="card stat"><div className="value">{gAnalytics.meetings?.completed || 0}</div><div className="label">{t('gov.ana_completed')}</div></div>
+                        <div className="card stat"><div className="value">{gAnalytics.meetings?.avgAttendancePercent || 0}%</div><div className="label">{t('gov.ana_attendance')}</div></div>
+                      </div>
+                      <div className="grid grid-3">
+                        <div className="card stat"><div className="value">{gAnalytics.resolutions?.passed || 0}/{gAnalytics.resolutions?.total || 0}</div><div className="label">{t('gov.ana_passed')}</div></div>
+                        <div className="card stat"><div className="value">{gAnalytics.resolutions?.passRate || 0}%</div><div className="label">{t('gov.ana_passrate')}</div></div>
+                        <div className="card stat"><div className="value">{gAnalytics.resolutions?.avgDecisionHours || 0} h</div><div className="label">{t('gov.ana_decision_time')}</div></div>
+                      </div>
+                      <div className="grid grid-3">
+                        <div className="card stat"><div className="value">{gAnalytics.actionItems?.completed || 0}/{gAnalytics.actionItems?.total || 0}</div><div className="label">{t('gov.ana_done')}</div></div>
+                        <div className="card stat"><div className="value">{gAnalytics.actionItems?.open || 0}</div><div className="label">{t('gov.ana_open')}</div></div>
+                        <div className="card stat"><div className="value">{gAnalytics.actionItems?.overdue || 0}</div><div className="label">{t('gov.ana_overdue')}</div></div>
+                      </div>
+                    </>
+                  ) : <p className="roles-tag">{t('gov.ana_empty')}</p>}
                 </div>
               )}
             </div>
@@ -1395,6 +1512,47 @@ export default function Vicoba() {
                             <button className="btn" style={{ marginTop: 6 }} disabled={!!govBusy} onClick={() => genMinutes(m.id)}>{t('gov.gen_minutes')}</button>
                           </details>
                         )}
+                        <strong className="roles-tag" style={{ display: 'block', marginTop: 12, marginBottom: 6 }}>{t('gov.proposals')}</strong>
+                        {expandedProposals.length === 0 && <p className="roles-tag">{t('gov.no_proposals')}</p>}
+                        {expandedProposals.map((p) => {
+                          const tly = tallyMap[p.id];
+                          return (
+                            <div key={p.id} style={{ padding: '8px 0', borderBottom: '1px solid var(--border)' }}>
+                              <div className="inline-actions" style={{ justifyContent: 'space-between' }}>
+                                <div>
+                                  <strong>{p.title}</strong>
+                                  <div className="roles-tag">{p.description}</div>
+                                </div>
+                                <div className="inline-actions">
+                                  <StatusBadge status={p.status} />
+                                  <button className="btn ghost" onClick={() => castVote(p.id, 'YES')}>{t('gov.vote_yes')}</button>
+                                  <button className="btn ghost" onClick={() => castVote(p.id, 'NO')}>{t('gov.vote_no')}</button>
+                                  <button className="btn ghost" onClick={() => castVote(p.id, 'ABSTAIN')}>{t('gov.vote_abstain')}</button>
+                                </div>
+                              </div>
+                              {tly && (
+                                <div className="roles-tag">{t('gov.vote_yes')} {tly.YES || 0} · {t('gov.vote_no')} {tly.NO || 0} · {t('gov.vote_abstain')} {tly.ABSTAIN || 0}</div>
+                              )}
+                              {isLeader && (p.status || 'OPEN') === 'OPEN' && (
+                                <div className="inline-actions" style={{ marginTop: 6, gap: 8 }}>
+                                  <select style={{ flex: 1 }} value={aziMap[p.id]?.type || ''} onChange={(e) => setAziMap({ ...aziMap, [p.id]: { ...(aziMap[p.id] || {}), type: e.target.value } })}>
+                                    <option value="">{t('gov.azi_normal')}</option>
+                                    <option value="LOAN_APPROVAL">{t('gov.azi_loan')}</option>
+                                    <option value="SOCIAL_FUND">{t('gov.azi_social')}</option>
+                                    <option value="GENERAL_EXPENSE">{t('gov.azi_expense')}</option>
+                                  </select>
+                                  <input style={{ flex: 1 }} type="number" min="0" placeholder={t('gov.amount')} value={aziMap[p.id]?.amount || ''} onChange={(e) => setAziMap({ ...aziMap, [p.id]: { ...(aziMap[p.id] || {}), amount: e.target.value } })} />
+                                  <button className="btn" onClick={() => promoteResolution(p.id, m.id)}>{t('gov.promote')}</button>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                        <form onSubmit={(e) => createProposal(e, m.id)} className="inline-actions" style={{ marginTop: 10 }}>
+                          <input style={{ flex: 2 }} placeholder={t('gov.prop_title')} value={propForm.title} onChange={(e) => setPropForm({ ...propForm, title: e.target.value })} required />
+                          <input style={{ flex: 2 }} placeholder={t('gov.prop_desc')} value={propForm.description} onChange={(e) => setPropForm({ ...propForm, description: e.target.value })} />
+                          <button className="btn" type="submit">{t('gov.prop_create')}</button>
+                        </form>
                       </div>
                     )}
                   </div>
