@@ -894,7 +894,7 @@ async function payConsultationFee(projectId, userId, uniqueReference) {
       client,
       userId,
       amount: fee,
-      reference: uniqueReference,
+      reference: `${uniqueReference}-wallet`,
       toAccount: 'PROJECT_CONSULTATION_FEE',
       description: `Consultation fee - ${p.name}`,
       productType: 'PROJECT',
