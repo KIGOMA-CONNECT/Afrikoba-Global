@@ -134,7 +134,7 @@ async function createInitialRules(userId, projectId, data) {
   const r = await pool.query(
     `INSERT INTO waterfall_allocation_rules (project_id, version, status,
         ${RULE_COLUMNS.join(', ')}, proposed_by, proposed_at)
-     VALUES ($1, 1, 'DRAFT', ${RULE_COLUMNS.map((_, i) => `$${i + 2}`).join(', ')}, ${RULE_COLUMNS.length + 2}, NOW())
+     VALUES ($1, 1, 'DRAFT', ${RULE_COLUMNS.map((_, i) => `$${i + 2}`).join(', ')}, $${RULE_COLUMNS.length + 2}, NOW())
      RETURNING *`,
     [projectId, ...RULE_COLUMNS.map((c) => pct[c]), userId]
   );
@@ -524,8 +524,21 @@ async function requestDisbursement(userId, projectId, { milestone_id, amount, un
   const m = await pool.query('SELECT * FROM project_milestones WHERE id = $1 AND project_id = $2', [milestone_id, projectId]);
   if (m.rows.length === 0) throw new ValidityError('Hatua haipatikani.');
   const milestone = m.rows[0];
-  if (milestone.status !== 'COMPLETED') {
-    throw new ValidityError('Fedha zinatolewa tu baada ya hatua kuidhinishwa na expert (COMPLETED).');
+  // First release of a milestone may precede proof (expert reviews the budget
+  // during the review/approve phase). Any subsequent release requires the
+  // milestone to be expert-approved (COMPLETED) via proof review.
+  const priorRelease = await pool.query(
+    `SELECT 1 FROM project_disbursements
+     WHERE project_id = $1 AND milestone_id = $2 AND status = 'RELEASED' LIMIT 1`,
+    [projectId, milestone_id]
+  );
+  const firstRelease = priorRelease.rows.length === 0;
+  if (firstRelease) {
+    if (!['NOT_STARTED', 'IN_PROGRESS'].includes(milestone.status)) {
+      throw new ValidityError(`Hatua iko '${milestone.status}'. Tranche ya kwanza inahitaji hatua kuwa NOT_STARTED au IN_PROGRESS.`);
+    }
+  } else if (milestone.status !== 'COMPLETED') {
+    throw new ValidityError('Fedha za tranche zinazofuata zinatolewa tu baada ya hatua kuidhinishwa na expert (COMPLETED).');
   }
   const spent = await pool.query(
     `SELECT COALESCE(SUM(amount),0) AS s FROM project_disbursements
