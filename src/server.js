@@ -132,6 +132,32 @@ outbox.registerHandler('OUTBOX_RETRY', async () => {
   _outboxRetryCount += 1;
   if (_outboxRetryCount % 3 !== 0) throw new Error('sigui bado');
 });
+outbox.registerHandler('PROJECT_REVENUE_PROCESSED', async ({ payload }) => {
+  const { projectId, amount, reference, allocations = [] } = payload;
+  const p = await pool.query('SELECT id, owner_user_id, name FROM projects WHERE id = $1', [projectId]);
+  if (p.rows.length === 0) return;
+  const summary = allocations.map((a) => `${a.step}: ${a.amount}`).join(', ');
+  await createNotification(p.rows[0].owner_user_id, {
+    title: 'Mapato na mgawanyo kwenye waterfall',
+    body: `Mradi "${p.rows[0].name}": TZS ${amount} yamegawanywa (${summary}).`,
+    type: 'PROJECT',
+    entityType: 'PROJECT',
+    entityId: projectId,
+  }).catch(() => {});
+});
+outbox.registerHandler('PROJECT_DIVIDEND_PAID', async ({ payload }) => {
+  const { projectId, name, reference, paid = [] } = payload;
+  const p = await pool.query('SELECT owner_user_id FROM projects WHERE id = $1', [projectId]);
+  if (p.rows.length === 0) return;
+  const total = paid.reduce((s, x) => s + Number(x.amount || 0), 0);
+  await createNotification(p.rows[0].owner_user_id, {
+    title: 'Mgawanyo wa faida umetolewa',
+    body: `Wawekezaji ${paid.length} wa mradi "${name}" wamelipwa jumla ya TZS ${total}. Rejea: ${reference}`,
+    type: 'PROJECT',
+    entityType: 'PROJECT',
+    entityId: projectId,
+  }).catch(() => {});
+});
 
 // H5: Initialize database security settings
 initDbSecurity().catch(() => {});

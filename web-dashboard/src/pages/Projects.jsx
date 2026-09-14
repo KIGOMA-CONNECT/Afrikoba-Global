@@ -13,6 +13,8 @@ export default function Projects() {
   const [mine, setMine] = useState([]);
   const [investments, setInvestments] = useState([]);
   const [queue, setQueue] = useState([]);
+  const [transparency, setTransparency] = useState([]);
+  const [transDetail, setTransDetail] = useState(null);
   const [msg, setMsg] = useState({ type: '', text: '' });
   const [role, setRole] = useState('');
   const [expandedForm, setExpandedForm] = useState(false);
@@ -35,6 +37,7 @@ export default function Projects() {
     api.get('/projects', { params: { status: 'PUBLISHED' } }).then((r) => setProjects(r.data.projects || [])).catch(() => {});
     api.get('/projects', { params: { status: '' } }).then((r) => setMine(r.data.projects || [])).catch(() => {});
     api.get('/projects/mine/investments').then((r) => setInvestments(r.data.investments || [])).catch(() => {});
+    api.get('/projects/mine/transparency').then((r) => setTransparency(r.data.investments || [])).catch(() => {});
   };
   useEffect(() => {
     try { const u = JSON.parse(localStorage.getItem('afrikoba_user') || '{}'); setRole(u.role || ''); } catch (e) {}
@@ -145,10 +148,27 @@ export default function Projects() {
     } catch (err) { error(err); }
   };
 
+  const viewTransparency = async (id) => {
+    try {
+      const r = await api.get(`/projects/${id}/transparency`);
+      setTransDetail(r.data.transparency);
+    } catch (err) { error(err); }
+  };
+
+  const payDividends = async (id) => {
+    try {
+      const r = await api.post(`/projects/${id}/dividend/payout`);
+      ok(`${t('projects.dividend_paid')} (wawekezaji: ${(r.data.paid || []).length})`);
+      if (transDetail) viewTransparency(transDetail.project.id);
+      load();
+    } catch (err) { error(err); }
+  };
+
   const tabs = [
     { id: 'marketplace', label: t('projects.marketplace_tab') },
     { id: 'myprojects', label: t('projects.myprojects_tab') },
     { id: 'myinvest', label: t('projects.myinvest_tab') },
+    { id: 'transparency', label: t('projects.transparency_tab') },
   ];
   if (['ADMIN', 'MODERATOR', 'EXPERT'].includes(role)) {
     tabs.push({ id: 'review', label: `${t('projects.review_queue')} (${queue.length})` });
@@ -439,6 +459,115 @@ export default function Projects() {
                   })}
                 </tbody>
               </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {tab === 'transparency' && (
+        <div>
+          <div className="card">
+            <h3 style={{ margin: '0 0 14px' }}>{t('projects.transparency_tab')}</h3>
+            {transparency.length === 0 ? (
+              <p className="roles-tag">{t('projects.error')}</p>
+            ) : (
+              <div style={{ overflowX: 'auto' }}>
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>{t('projects.name')}</th>
+                      <th>{t('projects.invested_amount')}</th>
+                      <th>{t('projects.participation')}</th>
+                      <th>{t('projects.pending_payout')}</th>
+                      <th>{t('projects.paid_payout')}</th>
+                      <th>{t('projects.actions')}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {transparency.map((i) => (
+                      <tr key={i.investment_id}>
+                        <td>
+                          <strong>{i.name}</strong>
+                          <div className="roles-tag" style={{ margin: 0 }}>{i.status}{i.category ? ` · ${i.category}` : ''}</div>
+                        </td>
+                        <td>{fmt(i.invested_amount)}</td>
+                        <td>{i.participation_pct != null ? Number(i.participation_pct).toFixed(2) : '—'}%</td>
+                        <td>{fmt(i.pending_payout_total)}</td>
+                        <td>{fmt(i.paid_payout_total)}</td>
+                        <td>
+                          <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => viewTransparency(i.project_id)}>{t('projects.details')}</button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          {transDetail && (
+            <div className="card" style={{ marginTop: 16 }}>
+              <h3 style={{ margin: '0 0 6px' }}>{transDetail.project.name} — {t('projects.details')}</h3>
+              <div className="roles-tag" style={{ marginBottom: 12 }}>
+                {transDetail.project.status} · {t('projects.investors')}: {transDetail.project.investor_count} · {fmt(transDetail.project.amount_raised)} / {fmt(transDetail.project.capital_required)} {transDetail.project.currency_code}
+              </div>
+
+              <h4>{t('projects.funds')}</h4>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px,1fr))', gap: 12 }}>
+                <div className="card"><div className="roles-tag">{t('projects.raised')}</div><b>{fmt(transDetail.funds.raised)}</b></div>
+                <div className="card"><div className="roles-tag">{t('projects.escrow')}</div><b>{fmt(transDetail.funds.escrow_balance)}</b></div>
+                <div className="card"><div className="roles-tag">{t('projects.disbursed_total')}</div><b>{fmt(transDetail.funds.disbursed_total)}</b></div>
+                <div className="card"><div className="roles-tag">{t('projects.revenue_total')}</div><b>{fmt(transDetail.funds.revenue_total)}</b></div>
+                <div className="card"><div className="roles-tag">{t('projects.dividend_allocated')}</div><b>{fmt(transDetail.funds.dividend_allocated_total)}</b></div>
+              </div>
+
+              {transDetail.my_position && (
+                <div style={{ marginTop: 14 }}>
+                  <h4>{t('projects.my_position')}</h4>
+                  <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                    <span className="badge info">{t('projects.invested_amount')}: {fmt(transDetail.my_position.invested)}</span>
+                    <span className="badge info">{t('projects.participation')}: {transDetail.my_position.participation_pct != null ? Number(transDetail.my_position.participation_pct).toFixed(2) : '—'}%</span>
+                    <span className="badge" style={{ background: '#fef3c7', color: '#b45309' }}>{t('projects.pending_payout')}: {fmt(transDetail.my_position.pending_payout)}</span>
+                    <span className="badge" style={{ background: '#dcfce7', color: '#15803d' }}>{t('projects.paid_payout')}: {fmt(transDetail.my_position.paid_payout)}</span>
+                  </div>
+                </div>
+              )}
+
+              {transDetail.roles.authorized_view && transDetail.all_pending_payouts.length > 0 && (
+                <div style={{ marginTop: 14 }}>
+                  <h4>{t('projects.waterfall')}</h4>
+                  <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+                    {transDetail.all_pending_payouts.map((x) => (
+                      <span key={x.investor_user_id} className="badge info">u{x.investor_user_id}: {fmt(x.pending_total)}</span>
+                    ))}
+                    {transDetail.roles.expert && (
+                      <button className="btn" style={{ padding: '6px 14px', fontSize: 13 }} onClick={() => payDividends(transDetail.project.id)}>{t('projects.pay_dividends')}</button>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {transDetail.waterfall_by_step.length > 0 && (
+                <div style={{ marginTop: 14 }}>
+                  <h5>{t('projects.waterfall')}</h5>
+                  <ul style={{ paddingLeft: 18, margin: 0 }}>
+                    {transDetail.waterfall_by_step.map((s) => (
+                      <li key={s.allocation_step}><b>{s.allocation_step}</b>: {fmt(s.total)} ({s.count}x)</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {transDetail.recent_events.length > 0 && (
+                <div style={{ marginTop: 14 }}>
+                  <h5>{t('projects.recent_events')}</h5>
+                  <ul style={{ paddingLeft: 18, margin: 0, maxHeight: 160, overflowY: 'auto' }}>
+                    {transDetail.recent_events.map((e, idx) => (
+                      <li key={idx}><b>{e.action}</b> — {new Date(e.created_at).toLocaleString()}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
             </div>
           )}
         </div>

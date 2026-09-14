@@ -27,6 +27,7 @@ const { generateReference } = require('../utils/helpers');
 const fin = require('./financialEngine');
 const { logAudit } = require('./auditService');
 const { createNotification } = require('./notificationService');
+const { enqueueOutbox } = require('./outboxService');
 
 const ACCOUNTS = {
   INVESTMENT: 'PROJECT_INVESTMENT_ACCOUNT',
@@ -348,6 +349,17 @@ async function processIncomingRevenue(userId, projectId, { amount, revenue_type,
       allocations.push({ step, pct, amount: stepAmount });
     }
 
+    // Confirmed investors (for per-investor dividend entitlements).
+    const invRes = await client.query(
+      `SELECT investor_user_id, amount, participation_pct
+       FROM project_investments
+       WHERE project_id = $1 AND status = 'CONFIRMED'`,
+      [projectId]
+    );
+    const investors = invRes.rows;
+    const totalRaised = round2(investors.reduce((s, i) => s + Number(i.amount), 0));
+    const dividendNotices = [];
+
     for (const { step, pct, amount: stepAmount } of allocations) {
       if (stepAmount <= 0) continue;
       const stepRef = `${ref}-${step.key}`;
@@ -363,17 +375,36 @@ async function processIncomingRevenue(userId, projectId, { amount, revenue_type,
         productType: 'PROJECT',
         productRef: String(projectId),
       });
-      await client.query(
+      const allocRes = await client.query(
         `INSERT INTO waterfall_allocation_records
            (project_id, rule_id, rule_version, allocation_step, priority,
             revenue_transaction_id, revenue_reference, source_account_code,
             destination_account_code, calculation_basis, percentage, amount,
             currency, ledger_group_id, reconciliation_status)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'PERCENTAGE',$10,$11,COALESCE($12,'TZS'),$13,'RECONCILED')`,
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'PERCENTAGE',$10,$11,COALESCE($12,'TZS'),$13,'RECONCILED')
+         RETURNING id`,
         [projectId, rule.id, rule.version, step.key, step.priority,
          txn.rows[0].id, ref, ACCOUNTS.REVENUE, step.dest, pct, stepAmount,
          p.currency_code || 'TZS', groupId]
       );
+      if (step.key === 'DIVIDEND' && investors.length > 0) {
+        for (const inv of investors) {
+          const share = (inv.participation_pct == null || Number(inv.participation_pct) <= 0)
+            ? (totalRaised > 0 ? Number(inv.amount) / totalRaised : 0)
+            : Number(inv.participation_pct) / 100;
+          const entitlement = round2(stepAmount * Math.min(Math.max(share, 0), 1));
+          if (entitlement <= 0) continue;
+          const payoutRef = `${ref}-div-${step.key}-u${inv.investor_user_id}`;
+          await client.query(
+            `INSERT INTO project_investor_payouts
+               (project_id, allocation_id, investor_user_id, entitlement, payout_reference)
+             VALUES ($1, $2, $3, $4, $5)
+             ON CONFLICT (payout_reference) DO NOTHING`,
+            [projectId, allocRes.rows[0].id, inv.investor_user_id, entitlement, payoutRef]
+          );
+          dividendNotices.push({ investor_user_id: inv.investor_user_id, entitlement, payoutRef });
+        }
+      }
     }
 
     await logAudit({ eventType: 'PROJECT_REVENUE_PROCESSED', action: 'PROCESS', entityType: 'PROJECT', userId, entityId: projectId, referenceId: ref, amount: amt, afterData: { rule_version: rule.version } });
@@ -381,11 +412,16 @@ async function processIncomingRevenue(userId, projectId, { amount, revenue_type,
     await client.query('COMMIT');
 
     // Transactional notifications: fired only after COMMIT succeeded.
-    const investors = await pool.query(
-      'SELECT DISTINCT investor_user_id FROM project_investments WHERE project_id = $1 AND status = $2',
-      [projectId, 'CONFIRMED']
-    );
-    for (const inv of investors.rows) {
+    for (const notice of dividendNotices) {
+      await createNotification(notice.investor_user_id, {
+        title: 'Mgawanyo wa faida',
+        body: `Mradi "${p.name}" ulipokea mapato ${amt}. Mgawanyo wako: TZS ${notice.entitlement}.`,
+        type: 'PROJECT',
+        entityType: 'PROJECT',
+        entityId: projectId,
+      });
+    }
+    for (const inv of investors) {
       await createNotification(inv.investor_user_id, {
         title: 'Mapato yamepokelewa',
         body: `Mradi "${p.name}" ulipokea mapato ${amt}. Allocation kwenye waterfall imetengenezwa (rule v${rule.version}).`,
@@ -394,6 +430,15 @@ async function processIncomingRevenue(userId, projectId, { amount, revenue_type,
         entityId: projectId,
       });
     }
+
+    // Outbox fan-out for downstream integrations (transaction-aware reference;
+    // dispatcher picks it up ~every minute).
+    await enqueueOutbox({
+      eventType: 'PROJECT_REVENUE_PROCESSED',
+      aggregateId: String(projectId),
+      payload: { projectId, name: p.name, amount: amt, reference: ref, allocations: allocations.filter((a) => a.amount > 0).map((a) => ({ step: a.step.key, amount: a.amount })) },
+      reference: `${ref}-outbox`,
+    }).catch(() => {});
 
     return { success: true, revenue_id: ref, amount: amt, allocations: allocations.filter((a) => a.amount > 0).map((a) => ({ step: a.step.key, amount: a.amount, pct: a.pct })) };
   } catch (e) {
@@ -977,6 +1022,227 @@ async function getAuditTrail(projectId) {
   };
 }
 
+// ============================================================================
+// PHASE 4 — TRANSPARENCY & NOTIFICATIONS
+// Per-investor dividend entitlements, expert-authorized payouts, and a
+// ledger-verified transparency picture for owner / experts / investors.
+// ============================================================================
+
+async function listDividendPayouts(projectId, { userId, role }) {
+  const p = await getProject(projectId);
+  const isAuthorizedView = p.owner_user_id === userId || isExpert(role);
+  const values = isAuthorizedView
+    ? [projectId]
+    : [projectId, userId];
+  const where = isAuthorizedView
+    ? 'project_id = $1'
+    : 'project_id = $1 AND investor_user_id = $2';
+  const r = await pool.query(
+    `SELECT id, project_id, investor_user_id, entitlement, payout_reference,
+            status, paid_at, payout_setting_reference, created_at
+     FROM project_investor_payouts
+     WHERE ${where}
+     ORDER BY id DESC LIMIT 500`,
+    values
+  );
+  return { project: { id: p.id, name: p.name }, payouts: r.rows, authorized_view: isAuthorizedView };
+}
+
+async function payProjectDividends({ projectId, actorUserId, actorRole }) {
+  if (!isExpert(actorRole)) {
+    throw new ValidityError('Huna mamlaka ya kufanya malipo ya mgawanyo.', 403);
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const p = await getProject(projectId, client);
+
+    const pendingRes = await client.query(
+      `SELECT investor_user_id, SUM(entitlement)::numeric AS total_entitlement, COUNT(*)::int AS row_count
+       FROM project_investor_payouts
+       WHERE project_id = $1 AND status = 'PENDING'
+       GROUP BY investor_user_id ORDER BY investor_user_id`,
+      [projectId]
+    );
+    const pending = pendingRes.rows;
+    if (pending.length === 0) {
+      await client.query('COMMIT');
+      return { paid: [], total: 0, already_paid: true };
+    }
+
+    const txnRef = `${generateReference('PROJECT_DIVIDEND_PAYOUT')}-${projectId}`;
+    const paid = [];
+    for (const row of pending) {
+      const amt = Number(row.total_entitlement);
+      if (amt <= 0) continue;
+      const res = await fin.creditWallet({
+        client,
+        userId: row.investor_user_id,
+        amount: amt,
+        reference: `${txnRef}-u${row.investor_user_id}`,
+        fromAccount: ACCOUNTS.DIVIDEND,
+        description: `Dividend payout - ${p.name}`,
+        productType: 'PROJECT',
+        productRef: String(projectId),
+      });
+      if (res.dedup) continue;
+      await client.query(
+        `UPDATE project_investor_payouts SET status = 'PAID', paid_at = NOW(), payout_setting_reference = $1
+         WHERE project_id = $2 AND investor_user_id = $3 AND status = 'PENDING'`,
+        [txnRef, projectId, row.investor_user_id]
+      );
+      paid.push({ investor_user_id: row.investor_user_id, amount: amt });
+    }
+
+    await client.query('COMMIT');
+
+    await logAudit({
+      eventType: 'PROJECT_DIVIDEND_PAID', action: 'CREATE', entityType: 'PROJECT',
+      userId: actorUserId, entityId: projectId, referenceId: txnRef,
+      afterData: { reference: txnRef, paid: paid.map((x) => ({ investor_user_id: x.investor_user_id, amount: x.amount })) },
+    });
+
+    // Transactional notifications: fired only after COMMIT succeeded.
+    for (const { investor_user_id, amount } of paid) {
+      await createNotification(investor_user_id, {
+        title: 'Mgawanyo wa faida umelipwa',
+        body: `Mgawanyo wako wa mradi "${p.name}" umewekwa kwenye wallet yako: TZS ${amount}.`,
+        type: 'PROJECT',
+        entityType: 'PROJECT',
+        entityId: projectId,
+      });
+    }
+    await enqueueOutbox({
+      eventType: 'PROJECT_DIVIDEND_PAID',
+      aggregateId: String(projectId),
+      payload: { projectId, name: p.name, reference: txnRef, paid },
+      reference: `${txnRef}-outbox`,
+    }).catch(() => {});
+
+    return { paid, total: round2(paid.reduce((s, x) => s + Number(x.amount), 0)), already_paid: paid.length === 0 };
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Investor transparency: how much each fundraiser reported vs what the ledger
+ * actually moved, drawn purely from journal_entries (source of truth).
+ */
+async function getProjectTransparency(projectId, { userId, role }) {
+  const p = await getProject(projectId);
+  const isOwner = p.owner_user_id === userId;
+  const invRes = await pool.query(
+    `SELECT 1 FROM project_investments WHERE project_id = $1 AND investor_user_id = $2 AND status = 'CONFIRMED' LIMIT 1`,
+    [projectId, userId]
+  );
+  const isInvestor = invRes.rows.length > 0;
+  if (!isOwner && !isInvestor && !isExpert(role)) {
+    throw new ValidityError('Huna ruhusa ya taarifa za uwazi za mradi huu.', 403);
+  }
+
+  const [raisedRes, escrowRes, disbursedRes, revenueRes, dividendRes,
+        waterfallRes, myPosition, eventsRes, myPayoutRes] = await Promise.all([
+    pool.query(
+      `SELECT COALESCE(SUM(amount),0)::numeric AS total, COUNT(*)::int AS investors
+       FROM project_investments WHERE project_id = $1 AND status = 'CONFIRMED'`, [projectId]),
+    pool.query(
+      `SELECT remaining_balance AS balance FROM controlled_project_accounts WHERE project_id = $1 LIMIT 1`, [projectId]),
+    pool.query(
+      `SELECT COALESCE(SUM(amount),0)::numeric AS total, COUNT(*)::int AS count
+       FROM project_disbursements WHERE project_id = $1 AND status = 'RELEASED'`, [projectId]),
+    pool.query(
+      `SELECT COALESCE(SUM(amount),0)::numeric AS total, COUNT(*)::int AS count
+       FROM project_revenue WHERE project_id = $1`, [projectId]),
+    pool.query(
+      `SELECT COALESCE(SUM(amount),0)::numeric AS total, COUNT(*)::int AS count
+       FROM waterfall_allocation_records WHERE project_id = $1 AND allocation_step = 'DIVIDEND'`, [projectId]),
+    pool.query(
+      `SELECT allocation_step, COALESCE(SUM(amount),0)::numeric AS total, COUNT(*)::int AS count
+       FROM waterfall_allocation_records WHERE project_id = $1
+       GROUP BY allocation_step ORDER BY MIN(id)`, [projectId]),
+    pool.query(
+      `SELECT amount, participation_pct, agreement_version, created_at
+       FROM project_investments WHERE project_id = $1 AND investor_user_id = $2 AND status = 'CONFIRMED'
+       ORDER BY id DESC LIMIT 1`, [projectId, userId]),
+    pool.query(
+      `SELECT action, meta, entity_type, created_at FROM audit_logs
+       WHERE entity_type = 'PROJECT' AND entity_id = $1
+       ORDER BY created_at DESC LIMIT 25`, [String(projectId)]),
+    pool.query(
+      `SELECT COALESCE(SUM(entitlement),0)::numeric AS pending,
+              COALESCE((SELECT SUM(entitlement)::numeric FROM project_investor_payouts
+                        WHERE project_id = $1 AND investor_user_id = $2 AND status = 'PAID'),0) AS paid
+       FROM project_investor_payouts
+       WHERE project_id = $1 AND investor_user_id = $2 AND status = 'PENDING'`, [projectId, userId]),
+  ]);
+
+  const canSeeAll = isOwner || isExpert(role);
+  let allPayouts = [];
+  if (canSeeAll) {
+    const r = await pool.query(
+      `SELECT investor_user_id, SUM(entitlement)::numeric AS pending_total, COUNT(*)::int AS pending_count
+       FROM project_investor_payouts WHERE project_id = $1 AND status = 'PENDING'
+       GROUP BY investor_user_id ORDER BY investor_user_id`, [projectId]);
+    allPayouts = r.rows;
+  }
+
+  return {
+    project: {
+      id: p.id, name: p.name, category: p.category, location: p.location,
+      status: p.status, capital_required: p.capital_required,
+      amount_raised: raisedRes.rows[0].total, investor_count: raisedRes.rows[0].investors,
+      currency_code: p.currency_code || 'TZS',
+    },
+    roles: { owner: isOwner, investor: isInvestor, expert: isExpert(role), authorized_view: canSeeAll },
+    funds: {
+      raised: raisedRes.rows[0].total,
+      escrow_balance: escrowRes.rows[0] ? escrowRes.rows[0].balance : 0,
+      disbursed_total: disbursedRes.rows[0].total,
+      revenue_total: revenueRes.rows[0].total,
+      dividend_allocated_total: dividendRes.rows[0].total,
+    },
+    waterfall_by_step: waterfallRes.rows,
+    my_position: myPosition.rows.length > 0
+      ? { invested: myPosition.rows[0].amount, participation_pct: myPosition.rows[0].participation_pct,
+          pending_payout: myPayoutRes.rows[0].pending, paid_payout: myPayoutRes.rows[0].paid }
+      : null,
+    all_pending_payouts: canSeeAll ? allPayouts : undefined,
+    recent_events: eventsRes.rows,
+  };
+}
+
+/**
+ * The "investor dashboard": every confirmed investment of the user with the
+ * project's fundraising picture and the user's own dividend outcomes.
+ */
+async function getMyTransparency(userId) {
+  const r = await pool.query(
+    `SELECT i.id AS investment_id, i.project_id, p.name, p.status, p.category,
+            p.capital_required, p.amount_raised, p.currency_code,
+            i.amount AS invested_amount, i.participation_pct, i.created_at AS invested_at,
+            COALESCE(pp.total_pending, 0)::numeric AS pending_payout_total,
+            COALESCE(pa.total_paid, 0)::numeric AS paid_payout_total
+     FROM project_investments i
+     JOIN projects p ON p.id = i.project_id
+     LEFT JOIN (SELECT project_id, SUM(entitlement)::numeric AS total_pending
+                FROM project_investor_payouts
+                WHERE investor_user_id = $1 AND status = 'PENDING' GROUP BY project_id) pp
+            ON pp.project_id = i.project_id
+     LEFT JOIN (SELECT project_id, SUM(entitlement)::numeric AS total_paid
+                FROM project_investor_payouts
+                WHERE investor_user_id = $1 AND status = 'PAID' GROUP BY project_id) pa
+            ON pa.project_id = i.project_id
+     WHERE i.investor_user_id = $1 AND i.status = 'CONFIRMED'
+     ORDER BY i.id DESC`,
+    [userId]
+  );
+  return r.rows;
+}
+
 module.exports = {
   ACCOUNTS,
   WATERFALL_STEPS,
@@ -1010,4 +1276,8 @@ module.exports = {
   listConsultations,
   listProjectsForReview,
   getAuditTrail,
+  listDividendPayouts,
+  payProjectDividends,
+  getProjectTransparency,
+  getMyTransparency,
 };

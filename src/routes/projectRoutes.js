@@ -232,6 +232,35 @@ router.get('/projects/review-queue', requireRoles('ADMIN', 'MODERATOR', 'EXPERT'
   } catch (e) { next(e); }
 });
 
+// --- Phase 4: Transparency & investor notifications --------------------------
+router.get('/projects/mine/transparency', async (req, res, next) => {
+  try {
+    const investments = await projectFinance.getMyTransparency(req.user.id);
+    return res.json({ success: true, investments });
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/:id/transparency', async (req, res, next) => {
+  try {
+    const transparency = await projectFinance.getProjectTransparency(parseInt(req.params.id, 10), { userId: req.user.id, role: req.user.role });
+    return res.json({ success: true, transparency });
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/:id/payouts', async (req, res, next) => {
+  try {
+    const result = await projectFinance.listDividendPayouts(parseInt(req.params.id, 10), { userId: req.user.id, role: req.user.role });
+    return res.json({ success: true, ...result });
+  } catch (e) { next(e); }
+});
+
+router.post('/projects/:id/dividend/payout', requireRoles('ADMIN', 'MODERATOR', 'EXPERT'), async (req, res, next) => {
+  try {
+    const result = await projectFinance.payProjectDividends({ projectId: parseInt(req.params.id, 10), actorUserId: req.user.id, actorRole: req.user.role });
+    return res.json({ success: true, ...result });
+  } catch (e) { next(e); }
+});
+
 router.get('/projects/:id/audit-trail', async (req, res, next) => {
   try {
     const trail = await projectFinance.getAuditTrail(parseInt(req.params.id, 10));
