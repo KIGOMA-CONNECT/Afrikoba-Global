@@ -66,15 +66,20 @@ async function createProject(userId, data) {
        (owner_user_id, name, description, category, location, capital_required, min_investment,
         duration_days, expected_revenue, expected_costs, projected_profit,
         reinvestment_pct, reserve_pct, owner_equity_pct, distribution_method,
-        risks, assumptions, business_plan, status, current_stage)
+        risks, assumptions, business_plan,
+        business_model, market_analysis, competition_analysis, management_team,
+        use_of_funds, exit_timeline, compliance_certifications, status, current_stage)
      VALUES
-       ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,'DRAFT','DRAFT')
+       ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,
+        $19,$20,$21,$22,$23,$24,$25,'DRAFT','DRAFT')
      RETURNING *`,
     [userId, data.name, data.description, data.category, data.location,
      data.capital_required, data.min_investment, data.duration_days,
      data.expected_revenue, data.expected_costs, data.projected_profit,
      data.reinvestment_pct, data.reserve_pct, data.owner_equity_pct,
-     data.distribution_method, data.risks, data.assumptions, data.business_plan]
+     data.distribution_method, data.risks, data.assumptions, data.business_plan,
+     data.business_model, data.market_analysis, data.competition_analysis, data.management_team,
+     data.use_of_funds, data.exit_timeline, data.compliance_certifications]
   );
   await logAudit({ eventType: 'PROJECT_CREATED', action: 'CREATE', entityType: 'PROJECT', userId, entityId: r.rows[0].id, afterData: { name: data.name } });
   return r.rows[0];
