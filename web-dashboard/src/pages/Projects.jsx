@@ -18,6 +18,7 @@ export default function Projects() {
   const [capTable, setCapTable] = useState(null);
   const [performance, setPerformance] = useState(null);
   const [settlement, setSettlement] = useState(null);
+  const [closeOut, setCloseOut] = useState(null);
   const [msg, setMsg] = useState({ type: '', text: '' });
   const [role, setRole] = useState('');
   const [expandedForm, setExpandedForm] = useState(false);
@@ -199,6 +200,28 @@ export default function Projects() {
     try {
       const r = await api.get(`/projects/${id}/settlement`);
       setSettlement(r.data);
+    } catch (err) { error(err); }
+  };
+
+  const releaseReserve = async () => {
+    if (!settlement || !settlement.project) return;
+    if (!window.confirm(`${t('projects.reserve_confirm')} "${settlement.project.name}"?`)) return;
+    try {
+      const r = await api.post(`/projects/${settlement.project.id}/close-out/reserve`);
+      if (r.data.already_released) {
+        ok(t('projects.reserve_already'));
+      } else {
+        ok(`${t('projects.reserve_released_ok')} ${fmt(r.data.amount)}`);
+      }
+      viewSettlement(settlement.project.id);
+      load();
+    } catch (err) { error(err); }
+  };
+
+  const viewCloseOut = async (id) => {
+    try {
+      const r = await api.get(`/projects/${id}/close-out`);
+      setCloseOut(r.data);
     } catch (err) { error(err); }
   };
 
@@ -423,8 +446,10 @@ export default function Projects() {
           )}
         {settlement && settlement.completed && (
             <div style={{ marginTop: 18 }}>
-              <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 8 }}>
+              <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 8, flexWrap: 'wrap' }}>
                 <h4 style={{ margin: 0 }}>{t('projects.settlement_report')}: {settlement.project.name}</h4>
+                <button className="btn" style={{ padding: '4px 10px', fontSize: 12 }} onClick={releaseReserve}>{t('projects.reserve_payout')}</button>
+                <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => viewCloseOut(settlement.project.id)}>{t('projects.close_out')}</button>
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px,1fr))', gap: 12 }}>
                 <div className="card"><div className="roles-tag">{t('projects.invested_total')}</div><b>{fmt(settlement.settlement.invested_total)}</b></div>
@@ -449,6 +474,49 @@ export default function Projects() {
                   </table>
                 </div>
               )}
+            </div>
+          )}
+          {closeOut && (
+            <div style={{ marginTop: 16 }}>
+              <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 8 }}>
+                <h4 style={{ margin: 0 }}>{t('projects.close_out')}: {closeOut.project.name}</h4>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px,1fr))', gap: 12 }}>
+                <div className="card"><div className="roles-tag">{t('projects.returned_to_investors')}</div><b>{fmt(closeOut.funds_out.escrow_returned_to_investors)}</b></div>
+                <div className="card"><div className="roles-tag">{t('projects.disbursed_to_owner')}</div><b>{fmt(closeOut.funds_out.disbursed_to_owner)}</b></div>
+                <div className="card"><div className="roles-tag">{t('projects.reserve_to_owner')}</div><b>{fmt(closeOut.funds_out.reserve_released_to_owner)}</b></div>
+                <div className="card"><div className="roles-tag">{t('projects.dividend_paid_inv')}</div><b>{fmt(closeOut.funds_out.dividends_paid_to_investors)}</b></div>
+                <div className="card"><div className="roles-tag">{t('projects.dividend_pending')}</div><b>{fmt(closeOut.funds_out.dividends_pending)}</b></div>
+              </div>
+              <div style={{ marginTop: 12, overflowX: 'auto' }}>
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>{t('projects.investor')}</th>
+                      <th>{t('projects.invested_amount')}</th>
+                      <th>{t('projects.escrow_return')}</th>
+                      <th>{t('projects.dividend_paid_inv')}</th>
+                      <th>{t('projects.received')}</th>
+                      <th>ROI</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {closeOut.investors.map((inv) => (
+                      <tr key={inv.investor_user_id}>
+                        <td>{inv.full_name || `+${inv.phone_number}`}</td>
+                        <td>{fmt(inv.invested)}</td>
+                        <td>{fmt(inv.escrow_return)}</td>
+                        <td>{fmt(inv.dividends_paid)}</td>
+                        <td>{fmt(inv.received)}</td>
+                        <td style={{ color: inv.roi_percent >= 0 ? '#15803d' : '#dc2626', fontWeight: 600 }}>{inv.roi_percent}%</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div className="roles-tag" style={{ marginTop: 8 }}>
+                {t('projects.owner_received')}: {fmt(closeOut.owner_position.total_received)} ({t('projects.disbursed_to_owner')}: {fmt(closeOut.owner_position.from_disbursements)} · {t('projects.reserve_to_owner')}: {fmt(closeOut.owner_position.from_reserve)})
+              </div>
             </div>
           )}
         </div>

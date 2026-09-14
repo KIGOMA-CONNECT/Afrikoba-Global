@@ -1526,6 +1526,230 @@ async function getMyPerformance(userId) {
   return { totals, investments: rows };
 }
 
+// ============================================================================
+// PHASE 7 — CLOSE-OUT: RESERVE RELEASE + CLOSE-OUT REPORT
+// After a project reaches COMPLETED (Phase 6), the accrued distribution
+// reserve (DISTRIBUTION_RESERVE step of the revenue waterfall) is released to
+// the project owner via double-entry (DR PROJECT_RESERVE_ACCOUNT / CR
+// CUSTOMER_WALLET). Each release is recorded append-only and idempotent.
+// ============================================================================
+
+async function getAccruedReserveTotal(projectId, client = pool) {
+  const r = await client.query(
+    `SELECT COALESCE(SUM(amount),0)::numeric AS total
+     FROM waterfall_allocation_records
+     WHERE project_id = $1 AND allocation_step = 'RESERVE'`,
+    [projectId]
+  );
+  return Number(r.rows[0].total || 0);
+}
+
+async function getReleasedReserveTotal(projectId, client = pool) {
+  const r = await client.query(
+    `SELECT COALESCE(SUM(amount),0)::numeric AS total
+     FROM project_reserve_releases WHERE project_id = $1 AND status = 'RELEASED'`,
+    [projectId]
+  );
+  return Number(r.rows[0].total || 0);
+}
+
+/**
+ * Release the remaining accrued DISTRIBUTION_RESERVE to the project owner.
+ * Idempotent: once the reserve is fully released, further calls return a
+ * no-op (already_released) instead of moving money again.
+ */
+async function releaseOwnerReserve({ projectId, actorUserId, actorRole }) {
+  const p = await getProject(projectId);
+  const isOwner = p.owner_user_id === actorUserId;
+  if (!isOwner && !isExpert(actorRole)) {
+    throw new ValidityError('Huna mamlaka ya kutoa akiba ya mradi huu.', 403);
+  }
+  if (p.status !== 'COMPLETED') throw new ValidityError(`Akiba ya mradi hutolewa baada ya mradi kuwa COMPLETED. (sasa: ${p.status})`);
+
+  const settlementRes = await pool.query('SELECT * FROM project_settlements WHERE project_id = $1', [projectId]);
+  if (settlementRes.rows.length === 0) throw new ValidityError('Hakuna settlement ya mradi huu.', 409);
+
+  const accrued = await getAccruedReserveTotal(projectId);
+  const released = await getReleasedReserveTotal(projectId);
+  const amount = round2(accrued - released);
+  if (amount <= 0.01) {
+    return {
+      success: true, already_released: true,
+      project_id: projectId, accrued, released: Math.min(accrued, released), amount: 0,
+    };
+  }
+
+  const ref = `RESVA-${projectId}-${Date.now()}`;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const claimed = await fin.claimOperation({
+      client, operationType: 'PROJECT_RESERVE_RELEASE', reference: `${ref}-ow`, userId: p.owner_user_id, amount,
+    });
+    if (!claimed.claimed) throw new ValidityError('Utoaji wa akiba tayari umesajiliwa.', 409);
+
+    await fin.creditWallet({
+      client, userId: p.owner_user_id, amount, reference: `${ref}-ow`,
+      fromAccount: ACCOUNTS.RESERVE,
+      description: 'Project close-out reserve release',
+      productType: 'PROJECT', productRef: String(projectId),
+    });
+
+    await client.query(
+      `INSERT INTO project_reserve_releases
+         (project_id, settlement_id, reserve_type, amount, released_to, reference, status, created_by)
+       VALUES ($1,$2,'DISTRIBUTION_RESERVE',$3,$4,$5,'RELEASED',$6)`,
+      [projectId, settlementRes.rows[0].id, amount, p.owner_user_id, ref, actorUserId]
+    );
+    await client.query(
+      `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
+       VALUES ($1,$2,$3,0,$3,'SUCCESS','PROJECT_RESERVE_RELEASE',$4)`,
+      [`${ref}-ow`, p.owner_user_id, amount, JSON.stringify({ project_id: projectId, reference: ref, reason: 'close_out_reserve' })]
+    );
+
+    await logAudit({
+      eventType: 'PROJECT_RESERVE_RELEASED', action: 'RELEASE', entityType: 'PROJECT',
+      userId: actorUserId, entityId: projectId, referenceId: ref,
+      afterData: { amount, accrued, released_before: released, released_to: p.owner_user_id },
+    });
+
+    await client.query('COMMIT');
+
+    await createNotification(p.owner_user_id, {
+      title: 'Akiba ya mradi imetolewa',
+      body: `Akiba ya mradi "${p.name}" (TZS ${amount}) imetolewa kwako kwenye wallet yako.`,
+      type: 'PROJECT', entityType: 'PROJECT', entityId: projectId,
+    });
+    await enqueueOutbox({
+      eventType: 'PROJECT_RESERVE_RELEASED',
+      aggregateId: String(projectId),
+      payload: { projectId, name: p.name, amount, reference: ref },
+      reference: `${ref}-outbox`,
+    }).catch(() => {});
+
+    return { success: true, project_id: projectId, amount, reference: ref, accrued, released_now: amount };
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    if (String(e.message || '').toLowerCase().includes('duplicate key')) {
+      const s = await pool.query('SELECT * FROM project_reserve_releases WHERE project_id = $1', [projectId]);
+      if (s.rows.length > 0) {
+        return { success: true, already_released: true, project_id: projectId, amount: Number(s.rows[0].amount) };
+      }
+    }
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Close-out report for a COMPLETED project. Realized cash in/out for the owner
+ * and each investor, waterfall break-out, dividends, and milestone status.
+ */
+async function getCloseOutReport(projectId, { userId, role }) {
+  const p = await getProject(projectId);
+  const isOwner = p.owner_user_id === userId;
+  const invRes = await pool.query(
+    `SELECT 1 FROM project_investments WHERE project_id = $1 AND investor_user_id = $2 AND status IN ('CONFIRMED','REFUNDED') LIMIT 1`,
+    [projectId, userId]
+  );
+  const isInvestor = invRes.rows.length > 0;
+  if (!isOwner && !isInvestor && !isExpert(role)) {
+    throw new ValidityError('Huna ruhusa ya ripoti ya kufunga mradi huu.', 403);
+  }
+
+  const s = await pool.query('SELECT * FROM project_settlements WHERE project_id = $1', [projectId]);
+  const settlement = s.rows[0] || null;
+
+  const disbursed = await pool.query(
+    `SELECT COALESCE(SUM(amount),0)::numeric AS total FROM project_disbursements WHERE project_id = $1 AND status = 'RELEASED'`,
+    [projectId]
+  );
+  const reserveRel = await pool.query(
+    `SELECT COALESCE(SUM(amount),0)::numeric AS total FROM project_reserve_releases WHERE project_id = $1 AND status = 'RELEASED'`,
+    [projectId]
+  );
+  const divPaid = await pool.query(
+    `SELECT COALESCE(SUM(entitlement),0)::numeric AS total FROM project_investor_payouts WHERE project_id = $1 AND status = 'PAID'`,
+    [projectId]
+  );
+  const divPending = await pool.query(
+    `SELECT COALESCE(SUM(entitlement),0)::numeric AS total FROM project_investor_payouts WHERE project_id = $1 AND status = 'PENDING'`,
+    [projectId]
+  );
+  const waterfall = await pool.query(
+    `SELECT allocation_step, COUNT(*)::int AS runs, SUM(amount)::numeric AS total
+     FROM waterfall_allocation_records WHERE project_id = $1 GROUP BY allocation_step ORDER BY allocation_step`,
+    [projectId]
+  );
+  const milestones = await pool.query(
+    `SELECT phase, name, status, budget FROM project_milestones WHERE project_id = $1 ORDER BY id`,
+    [projectId]
+  );
+  const investors = await pool.query(
+    `SELECT i.investor_user_id, u.full_name, u.phone_number, i.amount AS invested, i.participation_pct,
+            i.status AS investment_status, i.refund_reference,
+            COALESCE(pa.paid,0)::numeric AS dividends_paid,
+            COALESCE(pn.pending,0)::numeric AS dividends_pending
+     FROM project_investments i
+     JOIN users u ON u.id = i.investor_user_id
+     LEFT JOIN (SELECT investor_user_id, SUM(entitlement)::numeric AS paid FROM project_investor_payouts
+                WHERE project_id = $1 AND status = 'PAID' GROUP BY investor_user_id) pa ON pa.investor_user_id = i.investor_user_id
+     LEFT JOIN (SELECT investor_user_id, SUM(entitlement)::numeric AS pending FROM project_investor_payouts
+                WHERE project_id = $1 AND status = 'PENDING' GROUP BY investor_user_id) pn ON pn.investor_user_id = i.investor_user_id
+     WHERE i.project_id = $1 ORDER BY i.id`,
+    [projectId]
+  );
+
+  // Per-investor escrow return from the append-only settlement snapshot.
+  const returnedMap = {};
+  let returnedTotal = 0;
+  if (settlement && settlement.summary && Array.isArray(settlement.summary.returned_to_investors)) {
+    for (const d of settlement.summary.returned_to_investors) {
+      returnedMap[d.investor_user_id] = Number(d.amount || 0);
+      returnedTotal += Number(d.amount || 0);
+    }
+  }
+
+  const investorPositions = investors.rows.map((x) => {
+    const invested = Number(x.invested || 0);
+    const escrowReturn = Number(returnedMap[x.investor_user_id] || 0);
+    const dividendsPaid = Number(x.dividends_paid || 0);
+    const refunded = x.refund_reference ? invested : 0;
+    const received = round2(escrowReturn + dividendsPaid + refunded);
+    const roi = invested > 0 ? round2(((received - invested) / invested) * 100) : 0;
+    return {
+      investor_user_id: x.investor_user_id, full_name: x.full_name, phone_number: x.phone_number,
+      invested: round2(invested), escrow_return: round2(escrowReturn), dividends_paid: round2(dividendsPaid),
+      dividends_pending: round2(Number(x.dividends_pending || 0)),
+      refunded: round2(refunded), received, roi_percent: roi, investment_status: x.investment_status,
+    };
+  });
+
+  const disbursedTotal = Number(disbursed.rows[0].total || 0);
+  const reserveTotal = Number(reserveRel.rows[0].total || 0);
+  const ownerReceived = round2(disbursedTotal + reserveTotal);
+
+  return {
+    project: { id: p.id, name: p.name, status: p.status, completed_at: p.completed_at, capital_required: p.capital_required, amount_raised: p.amount_raised },
+    completed: !!settlement,
+    settlement,
+    funds_out: {
+      escrow_returned_to_investors: round2(returnedTotal),
+      disbursed_to_owner: round2(disbursedTotal),
+      reserve_released_to_owner: round2(reserveTotal),
+      dividends_paid_to_investors: round2(Number(divPaid.rows[0].total || 0)),
+      dividends_pending: round2(Number(divPending.rows[0].total || 0)),
+    },
+    owner_position: { total_received: ownerReceived, from_disbursements: round2(disbursedTotal), from_reserve: round2(reserveTotal) },
+    investors: investorPositions,
+    waterfall: waterfall.rows,
+    milestones: milestones.rows,
+    milestone_total: milestones.rows.length,
+    milestone_completed: milestones.rows.filter((m) => m.status === 'COMPLETED').length,
+  };
+}
+
 module.exports = {
   ACCOUNTS,
   WATERFALL_STEPS,
@@ -1566,4 +1790,6 @@ module.exports = {
   completeProject,
   getSettlementReport,
   getMyPerformance,
+  releaseOwnerReserve,
+  getCloseOutReport,
 };
