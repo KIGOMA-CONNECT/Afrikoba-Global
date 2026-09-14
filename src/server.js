@@ -90,6 +90,7 @@ const experimentRoutes = require('./routes/experimentRoutes');
 const fourEyesRoutes = require('./routes/fourEyesRoutes');
 const outboxRoutes = require('./routes/outboxRoutes');
 const outbox = require('./services/outboxService');
+const pool = require('./config/db');
 const { createNotification } = require('./services/notificationService');
 const swaggerUi = require('swagger-ui-express');
 const { swaggerSpec } = require('./config/swagger');
