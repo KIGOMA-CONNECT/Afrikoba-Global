@@ -648,8 +648,13 @@ async function executeDisbursement(userId, projectId, requestId) {
       [projectId, amt]
     );
     if (req.milestone_id) {
+      // First tranche release marks the milestone in-progress (work started),
+      // enabling proof submission. Never regress an expert-approved milestone.
       await client.query(
-        `UPDATE project_milestones SET disbursed_at = NOW(), updated_at = NOW() WHERE id = $1`,
+        `UPDATE project_milestones
+         SET status = CASE WHEN status = 'NOT_STARTED' THEN 'IN_PROGRESS' ELSE status END,
+             disbursed_at = NOW(), updated_at = NOW()
+         WHERE id = $1`,
         [req.milestone_id]
       );
     }
