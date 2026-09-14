@@ -1527,116 +1527,151 @@ async function getMyPerformance(userId) {
 }
 
 // ============================================================================
-// PHASE 7 — CLOSE-OUT: RESERVE RELEASE + CLOSE-OUT REPORT
-// After a project reaches COMPLETED (Phase 6), the accrued distribution
-// reserve (DISTRIBUTION_RESERVE step of the revenue waterfall) is released to
-// the project owner via double-entry (DR PROJECT_RESERVE_ACCOUNT / CR
-// CUSTOMER_WALLET). Each release is recorded append-only and idempotent.
+// PHASE 7/8 — CLOSE-OUT: FUND RELEASE + CLOSE-OUT REPORT
+// After a project reaches COMPLETED (Phase 6), the accrued waterfall payout
+// funds are released to the project owner via double-entry (DR <project
+// sub-account> / CR CUSTOMER_WALLET), following the same convention as Phase 4
+// dividend payouts. Each release is recorded append-only and idempotent.
 // ============================================================================
 
-async function getAccruedReserveTotal(projectId, client = pool) {
+const CLOSE_OUT_FUNDS = {
+  RESERVE: {
+    step: 'RESERVE',
+    account: ACCOUNTS.RESERVE,
+    reserveType: 'DISTRIBUTION_RESERVE',
+    txType: 'PROJECT_RESERVE_RELEASE',
+    eventType: 'PROJECT_RESERVE_RELEASED',
+    description: 'Project close-out reserve release',
+    title: 'Akiba ya mradi imetolewa',
+    body: (name, amount) => `Akiba ya mradi "${name}" (TZS ${amount}) imetolewa kwako kwenye wallet yako.`,
+  },
+  OWNER_RESIDUAL: {
+    step: 'OWNER_RESIDUAL',
+    account: ACCOUNTS.OWNER_RESIDUAL,
+    reserveType: 'OWNER_RESIDUAL',
+    txType: 'PROJECT_RESIDUAL_RELEASE',
+    eventType: 'PROJECT_RESIDUAL_RELEASED',
+    description: 'Project close-out owner residual release',
+    title: 'Faida ya mradi (residual) imetolewa',
+    body: (name, amount) => `Faida iliyosalia ya mradi "${name}" (TZS ${amount}) imetolewa kwako kwenye wallet yako.`,
+  },
+};
+
+async function getAccruedCloseOutTotal(projectId, step, client = pool) {
   const r = await client.query(
     `SELECT COALESCE(SUM(amount),0)::numeric AS total
      FROM waterfall_allocation_records
-     WHERE project_id = $1 AND allocation_step = 'RESERVE'`,
-    [projectId]
+     WHERE project_id = $1 AND allocation_step = $2`,
+    [projectId, step]
   );
   return Number(r.rows[0].total || 0);
 }
 
-async function getReleasedReserveTotal(projectId, client = pool) {
+async function getReleasedCloseOutTotal(projectId, reserveType, client = pool) {
   const r = await client.query(
     `SELECT COALESCE(SUM(amount),0)::numeric AS total
-     FROM project_reserve_releases WHERE project_id = $1 AND status = 'RELEASED'`,
-    [projectId]
+     FROM project_reserve_releases WHERE project_id = $1 AND reserve_type = $2 AND status = 'RELEASED'`,
+    [projectId, reserveType]
   );
   return Number(r.rows[0].total || 0);
 }
 
 /**
- * Release the remaining accrued DISTRIBUTION_RESERVE to the project owner.
- * Idempotent: once the reserve is fully released, further calls return a
+ * Release the remaining accrued close-out fund (RESERVE or OWNER_RESIDUAL) to
+ * the project owner. Idempotent: once fully released, further calls return a
  * no-op (already_released) instead of moving money again.
  */
-async function releaseOwnerReserve({ projectId, actorUserId, actorRole }) {
+async function releaseCloseOutFund({ projectId, actorUserId, actorRole, fundType }) {
+  const meta = CLOSE_OUT_FUNDS[fundType];
   const p = await getProject(projectId);
   const isOwner = p.owner_user_id === actorUserId;
   if (!isOwner && !isExpert(actorRole)) {
-    throw new ValidityError('Huna mamlaka ya kutoa akiba ya mradi huu.', 403);
+    throw new ValidityError('Huna mamlaka ya kutoa fedha za ukomo wa mradi huu.', 403);
   }
-  if (p.status !== 'COMPLETED') throw new ValidityError(`Akiba ya mradi hutolewa baada ya mradi kuwa COMPLETED. (sasa: ${p.status})`);
+  if (p.status !== 'COMPLETED') throw new ValidityError(`Fedha za ukomo hutolewa baada ya mradi kuwa COMPLETED. (sasa: ${p.status})`);
 
   const settlementRes = await pool.query('SELECT * FROM project_settlements WHERE project_id = $1', [projectId]);
   if (settlementRes.rows.length === 0) throw new ValidityError('Hakuna settlement ya mradi huu.', 409);
 
-  const accrued = await getAccruedReserveTotal(projectId);
-  const released = await getReleasedReserveTotal(projectId);
+  const accrued = await getAccruedCloseOutTotal(projectId, meta.step);
+  const released = await getReleasedCloseOutTotal(projectId, meta.reserveType);
   const amount = round2(accrued - released);
   if (amount <= 0.01) {
     return {
       success: true, already_released: true,
-      project_id: projectId, accrued, released: Math.min(accrued, released), amount: 0,
+      project_id: projectId, fund: fundType, accrued, released: Math.min(accrued, released), amount: 0,
     };
   }
 
-  const ref = `RESVA-${projectId}-${Date.now()}`;
+  const ref = `${fundType === 'RESERVE' ? 'RESVA' : 'RESID'}-${projectId}-${Date.now()}`;
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     // creditWallet owns the idempotency claim (financial_operations UNIQUE on
-    // reference_id) and performs the double-entry reserve release.
+    // reference_id) and performs the double-entry release.
     await fin.creditWallet({
       client, userId: p.owner_user_id, amount, reference: `${ref}-ow`,
-      fromAccount: ACCOUNTS.RESERVE,
-      description: 'Project close-out reserve release',
+      fromAccount: meta.account,
+      description: meta.description,
       productType: 'PROJECT', productRef: String(projectId),
     });
 
     await client.query(
       `INSERT INTO project_reserve_releases
          (project_id, settlement_id, reserve_type, amount, released_to, reference, status, created_by)
-       VALUES ($1,$2,'DISTRIBUTION_RESERVE',$3,$4,$5,'RELEASED',$6)`,
-      [projectId, settlementRes.rows[0].id, amount, p.owner_user_id, ref, actorUserId]
+       VALUES ($1,$2,$3,$4,$5,$6,'RELEASED',$7)`,
+      [projectId, settlementRes.rows[0].id, meta.reserveType, amount, p.owner_user_id, ref, actorUserId]
     );
     await client.query(
       `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
-       VALUES ($1,$2,$3,0,$3,'SUCCESS','PROJECT_RESERVE_RELEASE',$4)`,
-      [`${ref}-ow`, p.owner_user_id, amount, JSON.stringify({ project_id: projectId, reference: ref, reason: 'close_out_reserve' })]
+       VALUES ($1,$2,$3,0,$3,'SUCCESS',$4,$5)`,
+      [`${ref}-ow`, p.owner_user_id, amount, meta.txType, JSON.stringify({ project_id: projectId, reference: ref, fund: fundType, reason: 'close_out' })]
     );
 
     await logAudit({
-      eventType: 'PROJECT_RESERVE_RELEASED', action: 'RELEASE', entityType: 'PROJECT',
+      eventType: meta.eventType, action: 'RELEASE', entityType: 'PROJECT',
       userId: actorUserId, entityId: projectId, referenceId: ref,
-      afterData: { amount, accrued, released_before: released, released_to: p.owner_user_id },
+      afterData: { fund: fundType, amount, accrued, released_before: released, released_to: p.owner_user_id },
     });
 
     await client.query('COMMIT');
 
     await createNotification(p.owner_user_id, {
-      title: 'Akiba ya mradi imetolewa',
-      body: `Akiba ya mradi "${p.name}" (TZS ${amount}) imetolewa kwako kwenye wallet yako.`,
+      title: meta.title,
+      body: meta.body(p.name, amount),
       type: 'PROJECT', entityType: 'PROJECT', entityId: projectId,
     });
     await enqueueOutbox({
-      eventType: 'PROJECT_RESERVE_RELEASED',
+      eventType: meta.eventType,
       aggregateId: String(projectId),
-      payload: { projectId, name: p.name, amount, reference: ref },
+      payload: { projectId, name: p.name, fund: fundType, amount, reference: ref },
       reference: `${ref}-outbox`,
     }).catch(() => {});
 
-    return { success: true, project_id: projectId, amount, reference: ref, accrued, released_now: amount };
+    return { success: true, project_id: projectId, fund: fundType, amount, reference: ref, accrued, released_now: amount };
   } catch (e) {
     await client.query('ROLLBACK').catch(() => {});
     if (String(e.message || '').toLowerCase().includes('duplicate key')) {
-      const s = await pool.query('SELECT * FROM project_reserve_releases WHERE project_id = $1', [projectId]);
+      const s = await pool.query(
+        'SELECT * FROM project_reserve_releases WHERE project_id = $1 AND reserve_type = $2',
+        [projectId, meta.reserveType]
+      );
       if (s.rows.length > 0) {
-        return { success: true, already_released: true, project_id: projectId, amount: Number(s.rows[0].amount) };
+        return { success: true, already_released: true, project_id: projectId, fund: fundType, amount: Number(s.rows[0].amount) };
       }
     }
     throw e;
   } finally {
     client.release();
   }
+}
+
+async function releaseOwnerReserve({ projectId, actorUserId, actorRole }) {
+  return releaseCloseOutFund({ projectId, actorUserId, actorRole, fundType: 'RESERVE' });
+}
+
+async function releaseOwnerResidual({ projectId, actorUserId, actorRole }) {
+  return releaseCloseOutFund({ projectId, actorUserId, actorRole, fundType: 'OWNER_RESIDUAL' });
 }
 
 /**
@@ -1663,9 +1698,19 @@ async function getCloseOutReport(projectId, { userId, role }) {
     [projectId]
   );
   const reserveRel = await pool.query(
-    `SELECT COALESCE(SUM(amount),0)::numeric AS total FROM project_reserve_releases WHERE project_id = $1 AND status = 'RELEASED'`,
+    `SELECT reserve_type, COALESCE(SUM(amount),0)::numeric AS total
+     FROM project_reserve_releases WHERE project_id = $1 AND status = 'RELEASED'
+     GROUP BY reserve_type`,
     [projectId]
   );
+  const releasedByType = {};
+  let reserveTotal = 0;
+  let residualTotal = 0;
+  for (const row of reserveRel.rows) {
+    releasedByType[row.reserve_type] = Number(row.total || 0);
+    if (row.reserve_type === 'DISTRIBUTION_RESERVE') reserveTotal = Number(row.total || 0);
+    if (row.reserve_type === 'OWNER_RESIDUAL') residualTotal = Number(row.total || 0);
+  }
   const divPaid = await pool.query(
     `SELECT COALESCE(SUM(entitlement),0)::numeric AS total FROM project_investor_payouts WHERE project_id = $1 AND status = 'PAID'`,
     [projectId]
@@ -1724,8 +1769,8 @@ async function getCloseOutReport(projectId, { userId, role }) {
   });
 
   const disbursedTotal = Number(disbursed.rows[0].total || 0);
-  const reserveTotal = Number(reserveRel.rows[0].total || 0);
-  const ownerReceived = round2(disbursedTotal + reserveTotal);
+  const closeOutPaid = round2(reserveTotal + residualTotal);
+  const ownerReceived = round2(disbursedTotal + closeOutPaid);
 
   return {
     project: { id: p.id, name: p.name, status: p.status, completed_at: p.completed_at, capital_required: p.capital_required, amount_raised: p.amount_raised },
@@ -1735,10 +1780,12 @@ async function getCloseOutReport(projectId, { userId, role }) {
       escrow_returned_to_investors: round2(returnedTotal),
       disbursed_to_owner: round2(disbursedTotal),
       reserve_released_to_owner: round2(reserveTotal),
+      residual_released_to_owner: round2(residualTotal),
+      close_out_paid_to_owner: closeOutPaid,
       dividends_paid_to_investors: round2(Number(divPaid.rows[0].total || 0)),
       dividends_pending: round2(Number(divPending.rows[0].total || 0)),
     },
-    owner_position: { total_received: ownerReceived, from_disbursements: round2(disbursedTotal), from_reserve: round2(reserveTotal) },
+    owner_position: { total_received: ownerReceived, from_disbursements: round2(disbursedTotal), from_reserve: round2(reserveTotal), from_residual: round2(residualTotal) },
     investors: investorPositions,
     waterfall: waterfall.rows,
     milestones: milestones.rows,
@@ -1788,5 +1835,6 @@ module.exports = {
   getSettlementReport,
   getMyPerformance,
   releaseOwnerReserve,
+  releaseOwnerResidual,
   getCloseOutReport,
 };

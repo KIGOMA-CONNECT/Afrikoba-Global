@@ -203,11 +203,12 @@ export default function Projects() {
     } catch (err) { error(err); }
   };
 
-  const releaseReserve = async () => {
+  const releaseReserve = async (fund) => {
     if (!settlement || !settlement.project) return;
-    if (!window.confirm(`${t('projects.reserve_confirm')} "${settlement.project.name}"?`)) return;
+    const fundType = fund === 'OWNER_RESIDUAL' ? t('projects.residual_payout') : t('projects.reserve_payout');
+    if (!window.confirm(`${fundType} "${settlement.project.name}"?`)) return;
     try {
-      const r = await api.post(`/projects/${settlement.project.id}/close-out/reserve`);
+      const r = await api.post(`/projects/${settlement.project.id}/close-out/${fund === 'OWNER_RESIDUAL' ? 'residual' : 'reserve'}`);
       if (r.data.already_released) {
         ok(t('projects.reserve_already'));
       } else {
@@ -448,7 +449,8 @@ export default function Projects() {
             <div style={{ marginTop: 18 }}>
               <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 8, flexWrap: 'wrap' }}>
                 <h4 style={{ margin: 0 }}>{t('projects.settlement_report')}: {settlement.project.name}</h4>
-                <button className="btn" style={{ padding: '4px 10px', fontSize: 12 }} onClick={releaseReserve}>{t('projects.reserve_payout')}</button>
+                <button className="btn" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => releaseReserve('DISTRIBUTION_RESERVE')}>{t('projects.reserve_payout')}</button>
+                <button className="btn" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => releaseReserve('OWNER_RESIDUAL')}>{t('projects.residual_payout')}</button>
                 <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => viewCloseOut(settlement.project.id)}>{t('projects.close_out')}</button>
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px,1fr))', gap: 12 }}>
@@ -485,6 +487,8 @@ export default function Projects() {
                 <div className="card"><div className="roles-tag">{t('projects.returned_to_investors')}</div><b>{fmt(closeOut.funds_out.escrow_returned_to_investors)}</b></div>
                 <div className="card"><div className="roles-tag">{t('projects.disbursed_to_owner')}</div><b>{fmt(closeOut.funds_out.disbursed_to_owner)}</b></div>
                 <div className="card"><div className="roles-tag">{t('projects.reserve_to_owner')}</div><b>{fmt(closeOut.funds_out.reserve_released_to_owner)}</b></div>
+                <div className="card"><div className="roles-tag">{t('projects.residual_to_owner')}</div><b>{fmt(closeOut.funds_out.residual_released_to_owner)}</b></div>
+                <div className="card"><div className="roles-tag">{t('projects.close_out_paid_to_owner')}</div><b>{fmt(closeOut.funds_out.close_out_paid_to_owner)}</b></div>
                 <div className="card"><div className="roles-tag">{t('projects.dividend_paid_inv')}</div><b>{fmt(closeOut.funds_out.dividends_paid_to_investors)}</b></div>
                 <div className="card"><div className="roles-tag">{t('projects.dividend_pending')}</div><b>{fmt(closeOut.funds_out.dividends_pending)}</b></div>
               </div>
@@ -515,7 +519,7 @@ export default function Projects() {
                 </table>
               </div>
               <div className="roles-tag" style={{ marginTop: 8 }}>
-                {t('projects.owner_received')}: {fmt(closeOut.owner_position.total_received)} ({t('projects.disbursed_to_owner')}: {fmt(closeOut.owner_position.from_disbursements)} · {t('projects.reserve_to_owner')}: {fmt(closeOut.owner_position.from_reserve)})
+                {t('projects.owner_received')}: {fmt(closeOut.owner_position.total_received)} ({t('projects.disbursed_to_owner')}: {fmt(closeOut.owner_position.from_disbursements)} · {t('projects.reserve_to_owner')}: {fmt(closeOut.owner_position.from_reserve)} · {t('projects.residual_to_owner')}: {fmt(closeOut.owner_position.from_residual)})
               </div>
             </div>
           )}

@@ -362,10 +362,19 @@ router.get('/projects/mine/performance', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// Phase 7: close-out - reserve release to owner + aggregate close-out report
+// Phase 7/8: close-out - fund release to owner (reserve + residual) + report
 router.post('/projects/:id/close-out/reserve', async (req, res, next) => {
   try {
     const result = await projectFinance.releaseOwnerReserve({
+      projectId: parseInt(req.params.id, 10), actorUserId: req.user.id, actorRole: req.user.role,
+    });
+    return res.json({ success: true, ...result });
+  } catch (e) { next(e); }
+});
+
+router.post('/projects/:id/close-out/residual', async (req, res, next) => {
+  try {
+    const result = await projectFinance.releaseOwnerResidual({
       projectId: parseInt(req.params.id, 10), actorUserId: req.user.id, actorRole: req.user.role,
     });
     return res.json({ success: true, ...result });
