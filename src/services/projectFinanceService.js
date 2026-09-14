@@ -1583,11 +1583,8 @@ async function releaseOwnerReserve({ projectId, actorUserId, actorRole }) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const claimed = await fin.claimOperation({
-      client, operationType: 'PROJECT_RESERVE_RELEASE', reference: `${ref}-ow`, userId: p.owner_user_id, amount,
-    });
-    if (!claimed.claimed) throw new ValidityError('Utoaji wa akiba tayari umesajiliwa.', 409);
-
+    // creditWallet owns the idempotency claim (financial_operations UNIQUE on
+    // reference_id) and performs the double-entry reserve release.
     await fin.creditWallet({
       client, userId: p.owner_user_id, amount, reference: `${ref}-ow`,
       fromAccount: ACCOUNTS.RESERVE,
