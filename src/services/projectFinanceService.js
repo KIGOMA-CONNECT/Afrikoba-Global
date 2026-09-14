@@ -1222,7 +1222,7 @@ async function getProjectTransparency(projectId, { userId, role }) {
 async function getMyTransparency(userId) {
   const r = await pool.query(
     `SELECT i.id AS investment_id, i.project_id, p.name, p.status, p.category,
-            p.capital_required, p.amount_raised, p.currency_code,
+            p.capital_required, p.amount_raised, 'TZS' AS currency_code,
             i.amount AS invested_amount, i.participation_pct, i.created_at AS invested_at,
             COALESCE(pp.total_pending, 0)::numeric AS pending_payout_total,
             COALESCE(pa.total_paid, 0)::numeric AS paid_payout_total
