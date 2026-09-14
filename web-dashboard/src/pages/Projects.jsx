@@ -12,13 +12,18 @@ export default function Projects() {
   const [projects, setProjects] = useState([]);
   const [mine, setMine] = useState([]);
   const [investments, setInvestments] = useState([]);
+  const [queue, setQueue] = useState([]);
   const [msg, setMsg] = useState({ type: '', text: '' });
+  const [role, setRole] = useState('');
+  const [expandedForm, setExpandedForm] = useState(false);
 
   const [form, setForm] = useState({
     name: '', description: '', category: '', location: '', capital_required: '',
     min_investment: '', duration_days: '', expected_revenue: '', expected_costs: '',
     projected_profit: '', reinvestment_pct: 30, reserve_pct: 10, owner_equity_pct: 20,
     distribution_method: 'PROPORTIONAL',
+    business_model: '', market_analysis: '', competition_analysis: '', management_team: '',
+    use_of_funds: '', exit_timeline: '', compliance_certifications: '',
   });
 
   const [selected, setSelected] = useState(null);
@@ -31,14 +36,22 @@ export default function Projects() {
     api.get('/projects', { params: { status: '' } }).then((r) => setMine(r.data.projects || [])).catch(() => {});
     api.get('/projects/mine/investments').then((r) => setInvestments(r.data.investments || [])).catch(() => {});
   };
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    try { const u = JSON.parse(localStorage.getItem('afrikoba_user') || '{}'); setRole(u.role || ''); } catch (e) {}
+    load();
+  }, []);
+
+  const loadQueue = () => {
+    api.get('/projects/review-queue').then((r) => setQueue(r.data.queue || [])).catch(() => setQueue([]));
+  };
+  useEffect(() => { if (['ADMIN', 'MODERATOR', 'EXPERT'].includes(role)) loadQueue(); }, [role]);
 
   const createProject = async (e) => {
     e.preventDefault();
     try {
       const r = await api.post('/projects', form);
       ok(t('projects.submitted'));
-      setForm({ name: '', description: '', category: '', location: '', capital_required: '', min_investment: '', duration_days: '', expected_revenue: '', expected_costs: '', projected_profit: '', reinvestment_pct: 30, reserve_pct: 10, owner_equity_pct: 20, distribution_method: 'PROPORTIONAL' });
+      setForm({ name: '', description: '', category: '', location: '', capital_required: '', min_investment: '', duration_days: '', expected_revenue: '', expected_costs: '', projected_profit: '', reinvestment_pct: 30, reserve_pct: 10, owner_equity_pct: 20, distribution_method: 'PROPORTIONAL', business_model: '', market_analysis: '', competition_analysis: '', management_team: '', use_of_funds: '', exit_timeline: '', compliance_certifications: '' });
       load();
       setSelected(r.data.project.id);
     } catch (err) { error(err); }
@@ -49,6 +62,42 @@ export default function Projects() {
       await api.post(`/projects/${id}/submit`);
       ok(t('projects.submitted'));
       load();
+      if (['ADMIN', 'MODERATOR', 'EXPERT'].includes(role)) loadQueue();
+    } catch (err) { error(err); }
+  };
+
+  const payConsultation = async (id) => {
+    try {
+      await api.post(`/projects/${id}/consultation/pay`, { unique_reference: `pcf-${Date.now()}` });
+      ok(t('projects.fee_paid'));
+      load();
+      if (['ADMIN', 'MODERATOR', 'EXPERT'].includes(role)) loadQueue();
+    } catch (err) { error(err); }
+  };
+
+  const runAiReview = async (id) => {
+    try {
+      const r = await api.post(`/projects/${id}/ai-review/re-run`);
+      const s = r.data.review?.review?.score;
+      ok(`${t('projects.ai_score')}: ${s ?? '—'} (${r.data.review?.review?.recommended_action || ''})`);
+      loadQueue();
+    } catch (err) { error(err); }
+  };
+
+  const workflow = async (id, stage, decision) => {
+    const reason = decision === 'APPROVED' ? null : prompt(t('projects.reason'));
+    try {
+      await api.post(`/projects/${id}/workflow`, { stage, decision, reason: reason || undefined });
+      ok(`${stage}: ${decision}`);
+      load(); loadQueue();
+    } catch (err) { error(err); }
+  };
+
+  const expertPublish = async (id) => {
+    try {
+      await api.post(`/projects/${id}/publish`);
+      ok(t('projects.published'));
+      load(); loadQueue();
     } catch (err) { error(err); }
   };
 
@@ -101,6 +150,9 @@ export default function Projects() {
     { id: 'myprojects', label: t('projects.myprojects_tab') },
     { id: 'myinvest', label: t('projects.myinvest_tab') },
   ];
+  if (['ADMIN', 'MODERATOR', 'EXPERT'].includes(role)) {
+    tabs.push({ id: 'review', label: `${t('projects.review_queue')} (${queue.length})` });
+  }
 
   const fmt = (v) => money(v);
 
@@ -158,6 +210,20 @@ export default function Projects() {
                   </select>
                 </label>
               </div>
+              <button type="button" className="btn btn-secondary" style={{ justifySelf: 'start' }} onClick={() => setExpandedForm(!expandedForm)}>
+                {expandedForm ? '− ' : '+ '}{t('projects.standard_form')}
+              </button>
+              {expandedForm && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                  <label>{t('projects.business_model')}<textarea rows="2" value={form.business_model} onChange={(e) => setForm({ ...form, business_model: e.target.value })} /></label>
+                  <label>{t('projects.market_analysis')}<textarea rows="2" value={form.market_analysis} onChange={(e) => setForm({ ...form, market_analysis: e.target.value })} /></label>
+                  <label>{t('projects.competition_analysis')}<textarea rows="2" value={form.competition_analysis} onChange={(e) => setForm({ ...form, competition_analysis: e.target.value })} /></label>
+                  <label>{t('projects.management_team')}<textarea rows="2" value={form.management_team} onChange={(e) => setForm({ ...form, management_team: e.target.value })} /></label>
+                  <label>{t('projects.use_of_funds')}<textarea rows="2" value={form.use_of_funds} onChange={(e) => setForm({ ...form, use_of_funds: e.target.value })} /></label>
+                  <label>{t('projects.exit_timeline')}<textarea rows="2" value={form.exit_timeline} onChange={(e) => setForm({ ...form, exit_timeline: e.target.value })} /></label>
+                  <label>{t('projects.compliance_certifications')}<textarea rows="2" value={form.compliance_certifications} onChange={(e) => setForm({ ...form, compliance_certifications: e.target.value })} /></label>
+                </div>
+              )}
               <button className="btn" type="submit">{t('projects.submit')}</button>
             </form>
           </div>
@@ -230,13 +296,17 @@ export default function Projects() {
                 <tbody>
                   {mine.map((p) => (
                     <tr key={p.id}>
-                      <td><strong>{p.name}</strong></td>
+                      <td><strong>{p.name}</strong>{p.ai_score != null ? <div className="roles-tag" style={{ margin: 0 }}>AI: {p.ai_score} (x{p.ai_review_count ?? 0})</div> : null}</td>
                       <td>{fmt(p.amount_raised)}</td>
                       <td>{fmt(p.capital_required)}</td>
                       <td><span className="badge info">{p.status}</span></td>
                       <td>
                         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                           {p.status === 'DRAFT' && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => submitProject(p.id)}>{t('projects.submit')}</button>}
+                          {p.consultation_paid_at == null && ['DRAFT', 'SUBMITTED', 'INITIAL_REVIEW', 'DUE_DILIGENCE', 'RISK_ASSESSMENT', 'GOVERNANCE_REVIEW'].includes(p.status) && (
+                            <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => payConsultation(p.id)}>{t('projects.pay_fee')}</button>
+                          )}
+                          <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => runAiReview(p.id)}>{t('projects.ai_rereun')}</button>
                           {['PUBLISHED', 'FUNDING', 'ACTIVE', 'APPROVED'].includes(p.status) && (
                             <>
                               <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => disburse(p.id)}>{t('projects.disburse')}</button>
@@ -310,6 +380,63 @@ export default function Projects() {
                       <td><span className="badge info">{i.status}</span></td>
                     </tr>
                   ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+    {tab === 'review' && (
+        <div className="card">
+          <h3 style={{ margin: '0 0 14px' }}>{t('projects.review_queue')}</h3>
+          <button className="btn btn-secondary" style={{ marginBottom: 12 }} onClick={loadQueue}>{t('projects.refresh')}</button>
+          {queue.length === 0 ? (
+            <p className="roles-tag">{t('projects.error')}</p>
+          ) : (
+            <div style={{ overflowX: 'auto' }}>
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>{t('projects.name')}</th>
+                    <th>{t('projects.owner')}</th>
+                    <th>{t('projects.status')}</th>
+                    <th>AI</th>
+                    <th>{t('projects.fee')}</th>
+                    <th>{t('projects.actions')}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {queue.map((p) => {
+                    const flags = p.risk_flags && Array.isArray(p.risk_flags) ? p.risk_flags : (typeof p.risk_flags === 'string' ? JSON.parse(p.risk_flags || '[]') : []);
+                    return (
+                      <tr key={p.id}>
+                        <td>
+                          <strong>{p.name}</strong>
+                          {flags.length > 0 && <div className="roles-tag" style={{ margin: 0 }}>⚠ {flags.join('; ')}</div>}
+                        </td>
+                        <td>{p.owner_name || p.owner_user_id}</td>
+                        <td><span className="badge info">{p.status}</span></td>
+                        <td>
+                          {p.ai_latest_score != null
+                            ? <b style={{ color: p.ai_latest_score >= 75 ? '#22c55e' : p.ai_latest_score >= 50 ? '#f59e0b' : '#ef4444' }}>{p.ai_latest_score}</b>
+                            : '—'}
+                          {p.recommended_action ? <div className="roles-tag" style={{ margin: 0 }}>{p.recommended_action}</div> : null}
+                        </td>
+                        <td>{p.consultation_fee != null && p.consultation_fee > 0 ? (p.consultation_paid_at ? '✓' : fmt(p.consultation_fee)) : '—'}</td>
+                        <td>
+                          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                            {p.status === 'SUBMITTED' && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => workflow(p.id, 'INITIAL_REVIEW', 'APPROVED')}>{t('projects.initial_review')}</button>}
+                            {p.status === 'INITIAL_REVIEW' && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => workflow(p.id, 'DUE_DILIGENCE', 'APPROVED')}>{t('projects.due_diligence')}</button>}
+                            {p.status === 'DUE_DILIGENCE' && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => workflow(p.id, 'RISK_ASSESSMENT', 'APPROVED')}>{t('projects.risk_assessment')}</button>}
+                            {p.status === 'RISK_ASSESSMENT' && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => workflow(p.id, 'GOVERNANCE_REVIEW', 'APPROVED')}>{t('projects.governance_review')}</button>}
+                            {p.status === 'APPROVED' && <button className="btn" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => expertPublish(p.id)}>{t('projects.publish')}</button>}
+                            <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => runAiReview(p.id)}>AI↺</button>
+                            <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => workflow(p.id, p.status === 'SUBMITTED' ? 'INITIAL_REVIEW' : p.status === 'INITIAL_REVIEW' ? 'DUE_DILIGENCE' : p.status === 'DUE_DILIGENCE' ? 'RISK_ASSESSMENT' : 'GOVERNANCE_REVIEW', 'REJECTED')}>{t('projects.reject')}</button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

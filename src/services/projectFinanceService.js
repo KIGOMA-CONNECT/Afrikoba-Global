@@ -736,28 +736,222 @@ async function deleteProjectDocument(userId, projectId, documentId) {
 }
 
 // ============================================================================
-// AI REVIEW (ADVISORY ONLY) & AUDIT TRAIL
+// PHASE 3: SUBMISSION QUALITY / AI SCORING / CONSULTATION FEE
 // ============================================================================
 
+const MODEL_VERSION = 'afrikoba-finance-v1';
+
+function completeness(project) {
+  const required = [
+    ['name', 'name'],
+    ['description', 'description'],
+    ['business_plan', 'business_plan'],
+    ['business_model', 'business_model'],
+    ['market_analysis', 'market_analysis'],
+    ['competition_analysis', 'competition_analysis'],
+    ['management_team', 'management_team'],
+    ['use_of_funds', 'use_of_funds'],
+    ['exit_timeline', 'exit_timeline'],
+    ['location', 'location'],
+  ];
+  const present = required.filter(([, key]) => {
+    const v = project[key];
+    return typeof v === 'string' && v.trim().length >= 10;
+  }).length;
+  return present / required.length;
+}
+
 /**
- * Advisory-only AI review placeholder. Scores the submission and flags risks
- * but NEVER authorizes money. Experts remain the final authority.
+ * Deterministic, advisory-only AI scoring. Uses the submitted business plan
+ * numbers (never authorizes money) and produces:
+ *   - score      0-100 fundability index
+ *   - risk_flags human-checkable warnings
+ *   - confidence how much of the score rests on hard submitted figures
+ * Append-only; every run creates a project_ai_reviews row.
  */
-async function getAiReview(projectId) {
+async function runAiReview(projectId) {
   const p = await getProject(projectId);
-  const score = 70;
-  const flags = ['Uhalali wa hati bado haujathibitishwa', 'Muswada wa bajeti unahitaji uthibitisho'];
+
+  const revenue = Number(p.expected_revenue) || 0;
+  const costs = Number(p.expected_costs) || 0;
+  const cap = Number(p.capital_required) || 0;
+  const profit = Number(p.projected_profit) || Math.max(0, revenue - costs);
+  const margin = revenue > 0 ? profit / revenue : 0;
+  const reinvest = Number(p.reinvestment_pct) || 0;
+  const reserve = Number(p.reserve_pct) || 0;
+  const equity = Number(p.owner_equity_pct) || 0;
+  const durationDays = Number(p.duration_days) || 1;
+
+  const financial = Math.max(0, Math.min(30, margin * 30));
+  const scale = Math.min(15, (cap / 1000000) * 3);
+  const runway = Math.max(0, Math.min(15, (durationDays / 365) * 15));
+  const reinvestmentSafety = reinvest >= reserve ? 5 : 0;
+  const equityCommitment = equity >= 20 ? 5 : equity >= 10 ? 3 : 0;
+  const quality = completeness(p) * 20;
+  const planCoverage = [p.business_plan, p.business_model, p.market_analysis].filter(
+    (x) => typeof x === 'string' && x.trim().length >= 40
+  ).length;
+
+  const rawScore = financial + scale + runway + reinvestmentSafety + equityCommitment + quality + planCoverage * 5;
+  const score = round2(Math.min(100, rawScore));
+
+  const riskFlags = [];
+  if (revenue <= 0) riskFlags.push('Hakuna makadirio ya mapato');
+  if (costs <= 0) riskFlags.push('Hakuna makadirio ya gharama');
+  if (margin < 0.15) riskFlags.push('Pembe ya faida iko chini ya 15%');
+  if (cap <= 0) riskFlags.push('Hakuna mtaji uliotajwa');
+  if (reserve < 10) riskFlags.push('Akiba ya waterfall iko chini ya 10%');
+  if (reinvest < reserve) riskFlags.push('Reinvestment ni chini ya akiba ya reserve');
+  if (equity < 10) riskFlags.push('Mchango wa mwenyewe ni chini ya 10%');
+  if (durationDays < 30) riskFlags.push('Muda wa mradi ni mfupi sana');
+  if (margin > 0.6) riskFlags.push('Pembe ya faida ni juu isivyo kawaida (verify)');
+  if (completeness(p) < 0.6) riskFlags.push('Fomu ya usajili haijakamilika');
+
+  const confidence =
+    revenue > 0 && costs > 0 && cap > 0 && planCoverage >= 2
+      ? round2(Math.min(0.95, financial / 30 + 0.3))
+      : round2(Math.max(0.3, quality / 20 + 0.15));
+
+  const recommendedAction = score >= 75 ? 'PRIORITIZE_REVIEW' : score >= 50 ? 'REVIEW' : 'ADVISE_IMPROVEMENTS';
+
+  const insert = await pool.query(
+    `INSERT INTO project_ai_reviews
+       (project_id, score, risk_flags, confidence, model_version, financial_health, submission_quality, recommended_action)
+     VALUES ($1, $2, $3::jsonb, $4, $5, $6::jsonb, $7::jsonb, $8)
+     RETURNING *`,
+    [
+      projectId,
+      score,
+      JSON.stringify(riskFlags),
+      confidence,
+      MODEL_VERSION,
+      JSON.stringify({ margin, revenue, costs, profit, reinvest, reserve, equity, durationDays }),
+      JSON.stringify({ completeness: completeness(p), business_plan: !!p.business_plan, market_analysis: !!p.market_analysis }),
+      recommendedAction,
+    ]
+  );
+
+  await pool.query(
+    `UPDATE projects SET ai_score = $1, ai_review_count = ai_review_count + 1, updated_at = NOW() WHERE id = $2`,
+    [score, projectId]
+  );
+
+  await logAudit({ eventType: 'AI_REVIEW_RUN', action: 'CREATE', entityType: 'PROJECT_AI_REVIEW', entityId: insert.rows[0].id, afterData: { project_id: projectId, score, risk_flags: riskFlags.length, recommended_action: recommendedAction } });
+
   return {
-    project_id: projectId,
     advisory_only: true,
-    score,
-    risk_flags: flags,
-    confidence: 'LOW',
-    model_version: 'v1-advisory',
-    reviewed_at: new Date().toISOString(),
     final_authority: 'EXPERT_TEAM',
-    name: p.name,
+    model_version: MODEL_VERSION,
+    review: insert.rows[0],
   };
+}
+
+/** Latest AI review for display (no new run). */
+async function getAiReview(projectId) {
+  const r = await pool.query(
+    'SELECT * FROM project_ai_reviews WHERE project_id = $1 ORDER BY id DESC LIMIT 1',
+    [projectId]
+  );
+  if (r.rows.length === 0) return { project_id: projectId, review: null };
+  return { project_id: projectId, advisory_only: true, final_authority: 'EXPERT_TEAM', review: r.rows[0] };
+}
+
+/**
+ * Idempotent consultation-fee payment. Debits the owner wallet and books the
+ * fee into PROJECT_CONSULTATION_FEE. If a transaction with the same reference
+ * already exists, the saved consultation is returned (no double charge).
+ */
+async function payConsultationFee(projectId, userId, uniqueReference) {
+  const p = await getProject(projectId);
+  if (Number(p.owner_user_id) !== Number(userId)) {
+    throw new ValidityError('Unaweza kulipa consultation fee kwa mradi wako tu.', 403);
+  }
+  if (p.consultation_paid_at) return { already_paid: true, amount: Number(p.consultation_fee), paid_at: p.consultation_paid_at };
+
+  const fee = Number(p.consultation_fee) > 0 ? Number(p.consultation_fee) : 0;
+  if (fee <= 0) throw new ValidityError('Consultation fee kwa mradi huu haijawekwa.', 400);
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const claim = await fin.claimOperation({
+      client,
+      operationType: 'PROJECT_CONSULTATION',
+      reference: uniqueReference,
+      userId,
+      amount: fee,
+    });
+    if (!claim) {
+      const existing = await client.query(
+        `SELECT * FROM project_consultations WHERE unique_reference = $1 ORDER BY id DESC LIMIT 1`,
+        [uniqueReference]
+      );
+      await client.query('COMMIT');
+      return { already_paid: true, consultation: existing.rows[0] };
+    }
+
+    await fin.debitWallet({
+      client,
+      userId,
+      amount: fee,
+      reference: uniqueReference,
+      toAccount: 'PROJECT_CONSULTATION_FEE',
+      description: `Consultation fee - ${p.name}`,
+      productType: 'PROJECT',
+      productRef: String(projectId),
+    });
+
+    const inserted = await client.query(
+      `INSERT INTO project_consultations (project_id, owner_user_id, amount, unique_reference)
+       VALUES ($1, $2, $3, $4) RETURNING *`,
+      [projectId, userId, fee, uniqueReference]
+    );
+    await client.query(
+      `UPDATE projects SET consultation_paid_at = NOW(), updated_at = NOW() WHERE id = $1`,
+      [projectId]
+    );
+    await client.query('COMMIT');
+
+    await logAudit({ eventType: 'CONSULTATION_FEE_PAID', action: 'CREATE', entityType: 'PROJECT_CONSULTATION', userId, entityId: inserted.rows[0].id, afterData: { project_id: projectId, amount: fee, reference: uniqueReference } });
+
+    return { already_paid: false, consultation: inserted.rows[0] };
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+async function listConsultations(projectId) {
+  const r = await pool.query(
+    `SELECT * FROM project_consultations WHERE project_id = $1 ORDER BY id DESC`,
+    [projectId]
+  );
+  return r.rows;
+}
+
+/**
+ * Expert review queue: projects awaiting expert review joined with their latest
+ * AI score and consultation-fee status. Experts remain the final authority.
+ */
+async function listProjectsForReview() {
+  const r = await pool.query(
+    `SELECT p.id, p.name, p.category, p.location, p.status, p.capital_required,
+            p.consultation_fee, p.consultation_paid_at, p.ai_score, p.ai_review_count,
+            p.owner_user_id, u.full_name AS owner_name,
+            a.score AS ai_latest_score, a.recommended_action, a.risk_flags, a.model_version,
+            COUNT(c.id) AS consultation_count, MAX(c.paid_at) AS consultation_paid
+     FROM projects p
+     JOIN users u ON u.id = p.owner_user_id
+     LEFT JOIN project_ai_reviews a ON a.id = (
+       SELECT id FROM project_ai_reviews WHERE project_id = p.id ORDER BY id DESC LIMIT 1)
+     LEFT JOIN project_consultations c ON c.project_id = p.id AND c.status = 'PAID'
+     WHERE p.status IN ('SUBMITTED','INITIAL_REVIEW','DUE_DILIGENCE','RISK_ASSESSMENT','GOVERNANCE_REVIEW')
+     GROUP BY p.id, u.full_name, a.score, a.recommended_action, a.risk_flags, a.model_version
+     ORDER BY p.updated_at DESC`
+  );
+  return r.rows;
 }
 
 async function getAuditTrail(projectId) {
@@ -811,5 +1005,9 @@ module.exports = {
   getProjectDocument,
   deleteProjectDocument,
   getAiReview,
+  runAiReview,
+  payConsultationFee,
+  listConsultations,
+  listProjectsForReview,
   getAuditTrail,
 };

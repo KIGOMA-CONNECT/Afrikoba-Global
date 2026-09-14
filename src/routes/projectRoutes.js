@@ -194,8 +194,41 @@ router.get('/projects/:id/ai-review', async (req, res, next) => {
 
 router.post('/projects/:id/ai-review/re-run', async (req, res, next) => {
   try {
-    const review = await projectFinance.getAiReview(parseInt(req.params.id, 10));
-    return res.json({ success: true, review, re_run: true });
+    const review = await projectFinance.runAiReview(parseInt(req.params.id, 10));
+    return res.json({ success: true, review });
+  } catch (e) { next(e); }
+});
+
+// --- Phase 3: consultation fee & expert review queue -----------------------------
+router.post('/projects/:id/consultation/pay', async (req, res, next) => {
+  try {
+    const { unique_reference } = req.body;
+    if (!unique_reference) {
+      return res.status(400).json({ success: false, message: 'unique_reference inahitajika.' });
+    }
+    const result = await projectFinance.payConsultationFee(parseInt(req.params.id, 10), req.user.id, unique_reference);
+    return res.status(result.already_paid ? 200 : 201).json({ success: true, ...result });
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/:id/consultation/status', async (req, res, next) => {
+  try {
+    const project = await projectService.getProject(parseInt(req.params.id, 10));
+    const consultations = await projectFinance.listConsultations(parseInt(req.params.id, 10));
+    return res.json({
+      success: true,
+      fee: Number(project.consultation_fee) || 0,
+      paid_at: project.consultation_paid_at || null,
+      consultation_count: consultations.length,
+      consultations,
+    });
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/review-queue', requireRoles('ADMIN', 'MODERATOR', 'EXPERT'), async (req, res, next) => {
+  try {
+    const queue = await projectFinance.listProjectsForReview();
+    return res.json({ success: true, queue });
   } catch (e) { next(e); }
 });
 

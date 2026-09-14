@@ -90,6 +90,12 @@ async function submitProject(userId, projectId) {
     [projectId]
   );
   await logAudit({ eventType: 'PROJECT_SUBMITTED', action: 'SUBMIT', entityType: 'PROJECT', userId, entityId: projectId });
+  try {
+    await projectFinance.runAiReview(projectId);
+  } catch (e) {
+    // AI scoring is advisory-only; a failed run must never block submission.
+    logAudit({ eventType: 'AI_REVIEW_FAILED', action: 'CREATE', entityType: 'PROJECT_AI_REVIEW', userId, entityId: projectId, afterData: { error: e.message } });
+  }
   return r.rows[0];
 }
 
