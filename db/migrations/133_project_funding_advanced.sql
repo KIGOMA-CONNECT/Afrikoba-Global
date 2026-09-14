@@ -17,7 +17,20 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_project_investment_refund_reference
 -- Fast lookups for the expire sweep and investor refund queries
 CREATE INDEX IF NOT EXISTS ix_projects_funding_deadline
   ON projects (funding_deadline)
-  WHERE funding_deadline IS NOT NULL AND status IN ('FUNDING');
+  WHERE funding_deadline IS NOT NULL AND status IN ('FUNDING', 'EXPIRED');
 
 CREATE INDEX IF NOT EXISTS ix_project_investments_project_status
   ON project_investments (project_id, status);
+
+-- Allow the new lifecycle states (funding deadline expiry / refunded investments)
+ALTER TABLE projects DROP CONSTRAINT IF EXISTS projects_status_check;
+ALTER TABLE projects ADD CONSTRAINT projects_status_check CHECK (
+  status IN ('DRAFT','SUBMITTED','INITIAL_REVIEW','DUE_DILIGENCE','RISK_ASSESSMENT',
+             'GOVERNANCE_REVIEW','APPROVED','REJECTED','PUBLISHED','FUNDING',
+             'ACTIVE','COMPLETED','CANCELLED','EXPIRED')
+);
+
+ALTER TABLE project_investments DROP CONSTRAINT IF EXISTS project_investments_status_check;
+ALTER TABLE project_investments ADD CONSTRAINT project_investments_status_check CHECK (
+  status IN ('PENDING','CONFIRMED','CANCELLED','REFUNDED')
+);

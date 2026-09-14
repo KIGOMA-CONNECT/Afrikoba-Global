@@ -338,6 +338,30 @@ router.get('/projects/:id/cap-table', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// Phase 6: lifecycle completion & settlement reporting
+router.post('/projects/:id/complete', async (req, res, next) => {
+  try {
+    const result = await projectFinance.completeProject({
+      projectId: parseInt(req.params.id, 10), actorUserId: req.user.id, actorRole: req.user.role,
+    });
+    return res.json({ success: true, ...result });
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/:id/settlement', async (req, res, next) => {
+  try {
+    const report = await projectFinance.getSettlementReport(parseInt(req.params.id, 10), { userId: req.user.id, role: req.user.role });
+    return res.json({ success: true, ...report });
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/mine/performance', async (req, res, next) => {
+  try {
+    const performance = await projectFinance.getMyPerformance(req.user.id);
+    return res.json({ success: true, ...performance });
+  } catch (e) { next(e); }
+});
+
 // --- Budget & Milestones ---------------------------------------------------
 router.post('/projects/:id/budget', async (req, res, next) => {
   try {

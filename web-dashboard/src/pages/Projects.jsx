@@ -16,6 +16,8 @@ export default function Projects() {
   const [transparency, setTransparency] = useState([]);
   const [transDetail, setTransDetail] = useState(null);
   const [capTable, setCapTable] = useState(null);
+  const [performance, setPerformance] = useState(null);
+  const [settlement, setSettlement] = useState(null);
   const [msg, setMsg] = useState({ type: '', text: '' });
   const [role, setRole] = useState('');
   const [expandedForm, setExpandedForm] = useState(false);
@@ -39,6 +41,7 @@ export default function Projects() {
     api.get('/projects', { params: { status: '' } }).then((r) => setMine(r.data.projects || [])).catch(() => {});
     api.get('/projects/mine/investments').then((r) => setInvestments(r.data.investments || [])).catch(() => {});
     api.get('/projects/mine/transparency').then((r) => setTransparency(r.data.investments || [])).catch(() => {});
+    api.get('/projects/mine/performance').then((r) => setPerformance(r.data)).catch(() => {});
   };
   useEffect(() => {
     try { const u = JSON.parse(localStorage.getItem('afrikoba_user') || '{}'); setRole(u.role || ''); } catch (e) {}
@@ -178,6 +181,24 @@ export default function Projects() {
       ok(`${t('projects.dividend_paid')} (wawekezaji: ${(r.data.paid || []).length})`);
       if (transDetail) viewTransparency(transDetail.project.id);
       load();
+    } catch (err) { error(err); }
+  };
+
+  const completeProject = async (id, name) => {
+    if (!window.confirm(`${t('projects.complete_confirm')} "${name}"?`)) return;
+    try {
+      const r = await api.post(`/projects/${id}/complete`);
+      const s = r.data.settlement || {};
+      ok(`${t('projects.completed')} · ${t('projects.returned_to_investors')}: ${fmt(s.returned_to_investors || 0)}, ${t('projects.owner_received')}: ${fmt(s.owner_received || 0)}`);
+      setSettlement(null);
+      load();
+    } catch (err) { error(err); }
+  };
+
+  const viewSettlement = async (id) => {
+    try {
+      const r = await api.get(`/projects/${id}/settlement`);
+      setSettlement(r.data);
     } catch (err) { error(err); }
   };
 
@@ -357,6 +378,12 @@ export default function Projects() {
                               <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => showFinancials(p.id)}>{t('projects.financials')}</button>
                             </>
                           )}
+                          {p.status === 'ACTIVE' && (
+                            <button className="btn" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => completeProject(p.id, p.name)}>{t('projects.complete')}</button>
+                          )}
+                          {p.status === 'COMPLETED' && (
+                            <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => viewSettlement(p.id)}>{t('projects.settlement')}</button>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -394,12 +421,78 @@ export default function Projects() {
               </div>
             </div>
           )}
+        {settlement && settlement.completed && (
+            <div style={{ marginTop: 18 }}>
+              <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 8 }}>
+                <h4 style={{ margin: 0 }}>{t('projects.settlement_report')}: {settlement.project.name}</h4>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px,1fr))', gap: 12 }}>
+                <div className="card"><div className="roles-tag">{t('projects.invested_total')}</div><b>{fmt(settlement.settlement.invested_total)}</b></div>
+                <div className="card"><div className="roles-tag">{t('projects.escrow')}</div><b>{fmt(settlement.settlement.escrow_balance)}</b></div>
+                <div className="card"><div className="roles-tag">{t('projects.returned_to_investors')}</div><b>{fmt(settlement.settlement.returned_to_investors)}</b></div>
+                <div className="card"><div className="roles-tag">{t('projects.owner_received')}</div><b>{fmt(settlement.settlement.owner_received)}</b></div>
+                <div className="card"><div className="roles-tag">{t('projects.reserve_released')}</div><b>{fmt(settlement.settlement.reserve_released)}</b></div>
+                <div className="card"><div className="roles-tag">{t('projects.dividend_allocated')}</div><b>{fmt(settlement.settlement.dividend_allocated)}</b></div>
+                <div className="card"><div className="roles-tag">{t('projects.dividend_pending')}</div><b>{fmt(settlement.settlement.dividend_pending)}</b></div>
+              </div>
+              {Array.isArray(settlement.settlement.summary) === false && settlement.settlement.summary && typeof settlement.settlement.summary === 'object' && Array.isArray(settlement.settlement.summary.returned_to_investors) && (
+                <div style={{ marginTop: 12, overflowX: 'auto' }}>
+                  <table className="table">
+                    <thead>
+                      <tr><th>{t('projects.investor')}</th><th>{t('projects.amount')}</th></tr>
+                    </thead>
+                    <tbody>
+                      {settlement.settlement.summary.returned_to_investors.map((d, idx) => (
+                        <tr key={idx}><td>{d.investor_user_id}</td><td>{fmt(d.amount)}</td></tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 
       {tab === 'myinvest' && (
         <div className="card">
           <h3 style={{ margin: '0 0 14px' }}>{t('projects.myinvest_tab')}</h3>
+          {performance && (
+            <div style={{ marginBottom: 16, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px,1fr))', gap: 12 }}>
+              <div className="card"><div className="roles-tag">{t('projects.total_invested')}</div><b>{fmt(performance.totals.invested)}</b></div>
+              <div className="card"><div className="roles-tag">{t('projects.received')}</div><b>{fmt(performance.totals.received)}</b></div>
+              <div className="card"><div className="roles-tag">{t('projects.pending_payout')}</div><b>{fmt(performance.totals.pending)}</b></div>
+              <div className="card"><div className="roles-tag">ROI</div><b style={{ color: performance.totals.roi_percent >= 0 ? '#15803d' : '#dc2626' }}>{performance.totals.roi_percent}%</b></div>
+            </div>
+          )}
+          {performance && performance.investments.length > 0 && (
+            <div style={{ overflowX: 'auto', marginBottom: 18 }}>
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>{t('projects.name')}</th>
+                    <th>{t('projects.invested_amount')}</th>
+                    <th>{t('projects.received')}</th>
+                    <th>{t('projects.pending_payout')}</th>
+                    <th>ROI</th>
+                    <th>{t('projects.status')}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {performance.investments.map((i) => (
+                    <tr key={i.investment_id}>
+                      <td>{i.name}</td>
+                      <td>{fmt(i.invested)}</td>
+                      <td>{fmt(i.received)}</td>
+                      <td>{fmt(i.pending_total)}</td>
+                      <td style={{ color: i.roi_percent >= 0 ? '#15803d' : '#dc2626', fontWeight: 600 }}>{i.roi_percent}%</td>
+                      <td><span className="badge info">{i.project_status}</span></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
           {investments.length === 0 ? (
             <p className="roles-tag">{t('projects.error')}</p>
           ) : (
