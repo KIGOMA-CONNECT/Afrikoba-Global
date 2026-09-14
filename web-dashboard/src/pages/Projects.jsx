@@ -15,6 +15,7 @@ export default function Projects() {
   const [queue, setQueue] = useState([]);
   const [transparency, setTransparency] = useState([]);
   const [transDetail, setTransDetail] = useState(null);
+  const [capTable, setCapTable] = useState(null);
   const [msg, setMsg] = useState({ type: '', text: '' });
   const [role, setRole] = useState('');
   const [expandedForm, setExpandedForm] = useState(false);
@@ -23,7 +24,7 @@ export default function Projects() {
     name: '', description: '', category: '', location: '', capital_required: '',
     min_investment: '', duration_days: '', expected_revenue: '', expected_costs: '',
     projected_profit: '', reinvestment_pct: 30, reserve_pct: 10, owner_equity_pct: 20,
-    distribution_method: 'PROPORTIONAL',
+    distribution_method: 'PROPORTIONAL', funding_deadline: '',
     business_model: '', market_analysis: '', competition_analysis: '', management_team: '',
     use_of_funds: '', exit_timeline: '', compliance_certifications: '',
   });
@@ -54,7 +55,7 @@ export default function Projects() {
     try {
       const r = await api.post('/projects', form);
       ok(t('projects.submitted'));
-      setForm({ name: '', description: '', category: '', location: '', capital_required: '', min_investment: '', duration_days: '', expected_revenue: '', expected_costs: '', projected_profit: '', reinvestment_pct: 30, reserve_pct: 10, owner_equity_pct: 20, distribution_method: 'PROPORTIONAL', business_model: '', market_analysis: '', competition_analysis: '', management_team: '', use_of_funds: '', exit_timeline: '', compliance_certifications: '' });
+      setForm({ name: '', description: '', category: '', location: '', capital_required: '', min_investment: '', duration_days: '', expected_revenue: '', expected_costs: '', projected_profit: '', reinvestment_pct: 30, reserve_pct: 10, owner_equity_pct: 20, distribution_method: 'PROPORTIONAL', funding_deadline: '', business_model: '', market_analysis: '', competition_analysis: '', management_team: '', use_of_funds: '', exit_timeline: '', compliance_certifications: '' });
       load();
       setSelected(r.data.project.id);
     } catch (err) { error(err); }
@@ -155,6 +156,22 @@ export default function Projects() {
     } catch (err) { error(err); }
   };
 
+  const viewCapTable = async (id) => {
+    try {
+      const r = await api.get(`/projects/${id}/cap-table`);
+      setCapTable(r.data.capTable);
+    } catch (err) { error(err); }
+  };
+
+  const refundInvestment = async (investmentId, projectId, projectName) => {
+    if (!window.confirm(`${t('projects.refund_confirm')} ${projectName}?`)) return;
+    try {
+      const r = await api.post(`/projects/${projectId}/investments/${investmentId}/refund`);
+      ok(`${t('projects.refunded')}${r.data.amount != null ? ` ${fmt(r.data.amount)}` : ''}`);
+      load();
+    } catch (err) { error(err); }
+  };
+
   const payDividends = async (id) => {
     try {
       const r = await api.post(`/projects/${id}/dividend/payout`);
@@ -220,6 +237,9 @@ export default function Projects() {
                 <label>{t('projects.projected_profit')}<input type="number" value={form.projected_profit} onChange={(e) => setForm({ ...form, projected_profit: e.target.value })} /></label>
               </div>
               <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                <label style={{ minWidth: 220 }}>{t('projects.funding_deadline')}<input type="datetime-local" value={form.funding_deadline} onChange={(e) => setForm({ ...form, funding_deadline: e.target.value })} /></label>
+              </div>
+              <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
                 <label style={{ minWidth: 130 }}>{t('projects.reinvestment_pct')}<input type="number" value={form.reinvestment_pct} onChange={(e) => setForm({ ...form, reinvestment_pct: e.target.value })} /></label>
                 <label style={{ minWidth: 130 }}>{t('projects.reserve_pct')}<input type="number" value={form.reserve_pct} onChange={(e) => setForm({ ...form, reserve_pct: e.target.value })} /></label>
                 <label style={{ minWidth: 130 }}>{t('projects.owner_equity_pct')}<input type="number" value={form.owner_equity_pct} onChange={(e) => setForm({ ...form, owner_equity_pct: e.target.value })} /></label>
@@ -262,6 +282,7 @@ export default function Projects() {
                       <th>{t('projects.raised')}</th>
                       <th>{t('projects.funded')}</th>
                       <th>{t('projects.min_investment')}</th>
+                      <th>{t('projects.funding_deadline')}</th>
                       <th>{t('projects.status')}</th>
                       <th>{t('projects.invest')}</th>
                     </tr>
@@ -283,6 +304,7 @@ export default function Projects() {
                             </div>
                           </td>
                           <td>{fmt(p.min_investment)}</td>
+                          <td>{p.funding_deadline ? new Date(p.funding_deadline).toLocaleDateString() : '—'}</td>
                           <td><span className="badge info">{p.status}</span></td>
                           <td><button className="btn" style={{ padding: '4px 12px' }} onClick={() => invest(p.id)}>{t('projects.invest')}</button></td>
                         </tr>
@@ -389,15 +411,25 @@ export default function Projects() {
                     <th>{t('projects.amount')}</th>
                     <th>%</th>
                     <th>{t('projects.status')}</th>
+                    <th>{t('projects.actions')}</th>
                   </tr>
                 </thead>
                 <tbody>
                   {investments.map((i) => (
                     <tr key={i.id}>
-                      <td><strong>{i.project_name}</strong></td>
+                      <td>
+                        <strong>{i.project_name}</strong>
+                        {i.project_status === 'EXPIRED' && <div className="roles-tag" style={{ margin: 0 }}>{t('projects.expired')}</div>}
+                      </td>
                       <td>{fmt(i.amount)}</td>
                       <td>{i.participation_pct != null ? Number(i.participation_pct).toFixed(2) : '—'}%</td>
                       <td><span className="badge info">{i.status}</span></td>
+                      <td>
+                        {i.project_status === 'EXPIRED' && i.status === 'CONFIRMED' && (
+                          <button className="btn btn-success" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => refundInvestment(i.id, i.project_id, i.project_name)}>{t('projects.refund')}</button>
+                        )}
+                        {i.refund_reference && <span className="roles-tag" style={{ margin: 0 }}>✓ {t('projects.refunded')}</span>}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -532,6 +564,45 @@ export default function Projects() {
                   </div>
                 </div>
               )}
+
+              <div style={{ marginTop: 14 }}>
+                <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+                  <h4 style={{ margin: 0 }}>{t('projects.cap_table')}</h4>
+                  <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => viewCapTable(transDetail.project.id)}>{t('projects.load_cap_table')}</button>
+                </div>
+                {capTable && (
+                  <div style={{ overflowX: 'auto', marginTop: 8 }}>
+                    <div className="roles-tag" style={{ marginBottom: 8 }}>
+                      {fmt(capTable.project.amount_raised)} / {fmt(capTable.project.capital_required)} · {t('projects.investors')}: {capTable.total_investors}
+                      {capTable.project.funding_deadline ? ` · ${t('projects.funding_deadline')}: ${new Date(capTable.project.funding_deadline).toLocaleString()}` : ''}
+                    </div>
+                    <table className="table">
+                      <thead>
+                        <tr>
+                          <th>#</th>
+                          <th>{t('projects.investor')}</th>
+                          <th>{t('projects.amount')}</th>
+                          <th>%</th>
+                          <th>{t('projects.paid_payout')}</th>
+                          <th>{t('projects.status')}</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {capTable.investors.map((inv, idx) => (
+                          <tr key={inv.investment_id}>
+                            <td>{idx + 1}</td>
+                            <td>{inv.full_name || `+${inv.phone_number}`}</td>
+                            <td>{fmt(inv.amount)}</td>
+                            <td>{inv.participation_pct != null ? Number(inv.participation_pct).toFixed(2) : '—'}%</td>
+                            <td>{fmt(inv.total_payouts)}</td>
+                            <td><span className="badge info">{inv.status}</span></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
 
               {transDetail.roles.authorized_view && transDetail.all_pending_payouts.length > 0 && (
                 <div style={{ marginTop: 14 }}>

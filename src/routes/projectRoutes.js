@@ -323,6 +323,21 @@ router.post('/projects/:id/invest', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// Phase 5: investment refund (project must be EXPIRED) and cap table
+router.post('/projects/:id/investments/:investmentId/refund', async (req, res, next) => {
+  try {
+    const result = await projectService.refundInvestment(parseInt(req.params.id, 10), parseInt(req.params.investmentId, 10), req.user.id);
+    return res.json({ success: true, ...result });
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/:id/cap-table', async (req, res, next) => {
+  try {
+    const capTable = await projectService.getCapTable(parseInt(req.params.id, 10), { userId: req.user.id, role: req.user.role });
+    return res.json({ success: true, capTable });
+  } catch (e) { next(e); }
+});
+
 // --- Budget & Milestones ---------------------------------------------------
 router.post('/projects/:id/budget', async (req, res, next) => {
   try {

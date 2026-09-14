@@ -14,6 +14,7 @@ const { dispatchOutbox } = require('../services/outboxService');
 const { ensureAll: ensurePartitions } = require('../services/partitionService');
 const { runDueStandingOrders } = require('../services/saccosStandingOrderService');
 const { snapshotRateHistory } = require('../services/currencyService');
+const { expireUnfundedProjects } = require('../services/projectService');
 const logger = require('../utils/logger');
 
 /**
@@ -155,7 +156,18 @@ function startAllJobs() {
     }
   });
 
-  logger.info('CRON', 'Cron Jobs zimeanzishwa (reconciliation, ROSCA payout, DB maintenance, split payment, scheduled payments, autopilot, seller verification, auto-invest, outbox dispatcher, partition future)');
+  // Funding deadline expiry - kila siku saa 00:10, gusa miradi iliyo FUNDING
+  // ambayo muda wa ufadhili umepita na haijafikia lengo.
+  cron.schedule('10 0 * * *', async () => {
+    try {
+      const r = await expireUnfundedProjects();
+      if (r.expired > 0) logger.info('CRON-FUNDING-EXPIRE', `Miradi iliyoexpire: ${r.expired}`);
+    } catch (e) {
+      logger.error('CRON-FUNDING-EXPIRE', e.message);
+    }
+  });
+
+  logger.info('CRON', 'Cron Jobs zimeanzishwa (reconciliation, ROSCA payout, DB maintenance, split payment, scheduled payments, autopilot, seller verification, auto-invest, outbox dispatcher, partition future, funding deadline expiry, FX history)');
 }
 
 module.exports = { startAllJobs };

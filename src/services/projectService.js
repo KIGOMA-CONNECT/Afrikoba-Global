@@ -68,10 +68,10 @@ async function createProject(userId, data) {
         reinvestment_pct, reserve_pct, owner_equity_pct, distribution_method,
         risks, assumptions, business_plan,
         business_model, market_analysis, competition_analysis, management_team,
-        use_of_funds, exit_timeline, compliance_certifications, status, current_stage)
+        use_of_funds, exit_timeline, compliance_certifications, funding_deadline, status, current_stage)
      VALUES
        ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,
-        $19,$20,$21,$22,$23,$24,$25,'DRAFT','DRAFT')
+        $19,$20,$21,$22,$23,$24,$25,$26,'DRAFT','DRAFT')
      RETURNING *`,
     [userId, data.name, data.description, data.category, data.location,
      data.capital_required, data.min_investment, data.duration_days,
@@ -79,7 +79,8 @@ async function createProject(userId, data) {
      data.reinvestment_pct, data.reserve_pct, data.owner_equity_pct,
      data.distribution_method, data.risks, data.assumptions, data.business_plan,
      data.business_model, data.market_analysis, data.competition_analysis, data.management_team,
-     data.use_of_funds, data.exit_timeline, data.compliance_certifications]
+     data.use_of_funds, data.exit_timeline, data.compliance_certifications,
+     data.funding_deadline || null]
   );
   await logAudit({ eventType: 'PROJECT_CREATED', action: 'CREATE', entityType: 'PROJECT', userId, entityId: r.rows[0].id, afterData: { name: data.name } });
   return r.rows[0];
@@ -192,6 +193,7 @@ async function invest(userId, projectId, { amount, unique_reference, agreement_v
   if (!amt || amt <= 0) throw new ValidityError('Kiasi si sahihi.');
   const p = await getProject(projectId);
   if (!['PUBLISHED', 'FUNDING'].includes(p.status)) throw new ValidityError('Mradi huu haukubali uwekezaji kwa sasa.');
+  if (p.funding_deadline && new Date(p.funding_deadline) < new Date()) throw new ValidityError('Muda wa ufadhili umekwisha.');
   const min = Number(p.min_investment) || 0;
   if (amt < min) throw new ValidityError(`Kiasi cha chini cha uwekezaji ni ${min}.`);
   const raised = Number(p.amount_raised) || 0;
@@ -488,6 +490,133 @@ async function computeDistribution(userId, projectId, { gross_profit, period_lab
 }
 
 // ============================================================================
+// FUNDING DEADLINE EXPIRY
+// ============================================================================
+
+/**
+ * Sweep: expire all FUNDING projects whose funding_deadline has passed and
+ * amount_raised < capital_required. Best-effort; errors are logged per-project.
+ */
+async function expireUnfundedProjects(client = pool) {
+  const r = await client.query(
+    `UPDATE projects
+       SET status = 'EXPIRED', funding_expired_at = NOW(), updated_at = NOW()
+     WHERE funding_deadline IS NOT NULL
+       AND funding_deadline < NOW()
+       AND status IN ('FUNDING')
+       AND amount_raised < capital_required
+     RETURNING id, name, owner_user_id, amount_raised, capital_required`
+  );
+  for (const p of r.rows) {
+    try {
+      await logAudit({
+        eventType: 'PROJECT_FUNDING_EXPIRED', action: 'EXPIRE', entityType: 'PROJECT',
+        userId: p.owner_user_id, entityId: p.id,
+        afterData: { amount_raised: p.amount_raised, capital_required: p.capital_required },
+      });
+    } catch (_) { /* best-effort */ }
+  }
+  return { expired: r.rows.length, ids: r.rows.map(p => p.id) };
+}
+
+// ============================================================================
+// INVESTMENT REFUND
+// ============================================================================
+
+/**
+ * Refund a confirmed investment when the project has EXPIRED (failed to reach
+ * funding target). Double-entry: DR PROJECT_INVESTMENT_ACCOUNT / CR CUSTOMER_WALLET.
+ * Idempotent via refund_reference UNIQUE.
+ */
+async function refundInvestment(projectId, investmentId, userId) {
+  const p = await getProject(projectId);
+  if (p.status !== 'EXPIRED') throw new ValidityError('Mradi haujaexpira; not yet eligible for refund.');
+
+  const invR = await pool.query(
+    `SELECT * FROM project_investments WHERE id = $1 AND project_id = $2`,
+    [investmentId, projectId]
+  );
+  if (invR.rows.length === 0) throw new ValidityError('Uwekezaji haujapatikana.', 404);
+  const inv = invR.rows[0];
+  if (inv.investor_user_id !== userId) throw new ValidityError('Huna ruhusa ya kurejesha uwekezaji huu.', 403);
+  if (inv.status !== 'CONFIRMED') throw new ValidityError(`Hali ya uwekezaji (${inv.status}) hairuhusu kurejeshwa.`);
+  if (inv.refund_reference) {
+    return { success: true, refund_reference: inv.refund_reference, refunded_at: inv.refunded_at, already_refunded: true };
+  }
+
+  const refundRef = generateReference('PREF');
+  const amt = Number(inv.amount);
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(
+      `UPDATE project_investments SET refund_reference = $1, refunded_at = NOW(), status = 'REFUNDED' WHERE id = $2`,
+      [refundRef, investmentId]
+    );
+    await client.query(
+      `UPDATE projects SET amount_raised = GREATEST(amount_raised - $1, 0) WHERE id = $2`,
+      [amt, projectId]
+    );
+    await fin.creditWallet({ client, userId, amount: amt, reference: refundRef, fromAccount: PROJECT_ACCOUNT, description: 'Project investment refund' });
+    await client.query(
+      `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
+       VALUES ($1,$2,$3,0,$3,'SUCCESS','PROJECT_REFUND',$4)`,
+      [refundRef, userId, amt, JSON.stringify({ project_id: projectId, investment_id: inv.id, refund_reference: refundRef })]
+    );
+    await logAudit({ eventType: 'PROJECT_REFUND', action: 'REFUND', entityType: 'PROJECT_INVESTMENT', userId, entityId: investmentId, referenceId: refundRef, amount: amt });
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+  return { success: true, refund_reference: refundRef, amount: amt };
+}
+
+// ============================================================================
+// CAP TABLE
+// ============================================================================
+
+async function getCapTable(projectId, { userId, role } = {}) {
+  const p = await getProject(projectId);
+  const invAccess = await pool.query(
+    `SELECT investor_user_id FROM project_investments
+      WHERE project_id = $1 AND investor_user_id = $2 AND status IN ('CONFIRMED','REFUNDED')`,
+    [projectId, userId]
+  );
+  const isOwner = p.owner_user_id === userId;
+  const isExpert = ['ADMIN', 'MODERATOR', 'EXPERT'].includes(role);
+  const isInvestor = invAccess.rows.length > 0;
+  if (!isOwner && !isExpert && !isInvestor) throw new ValidityError('Huna ruhusa ya kuona orodha ya wawekezaji.', 403);
+  const r = await pool.query(
+    `SELECT i.id AS investment_id, i.investor_user_id, u.full_name, u.phone_number,
+            i.amount, i.participation_pct, i.status, i.refund_reference, i.refunded_at, i.created_at
+       FROM project_investments i
+       JOIN users u ON u.id = i.investor_user_id
+      WHERE i.project_id = $1
+      ORDER BY i.created_at ASC`,
+    [projectId]
+  );
+  const payouts = await pool.query(
+    `SELECT investor_user_id, COALESCE(SUM(entitlement),0) AS total_entitlement
+       FROM project_investor_payouts
+      WHERE project_id = $1 AND status = 'PAID'
+      GROUP BY investor_user_id`,
+    [projectId]
+  );
+  const paidMap = {};
+  for (const row of payouts.rows) paidMap[row.investor_user_id] = Number(row.total_entitlement);
+  return {
+    project: { id: p.id, name: p.name, capital_required: p.capital_required, amount_raised: p.amount_raised, funding_deadline: p.funding_deadline, status: p.status },
+    investors: r.rows.map(inv => ({ ...inv, total_payouts: paidMap[inv.investor_user_id] || 0 })),
+    total_investors: r.rows.length,
+    is_owner: isOwner,
+  };
+}
+
+// ============================================================================
 // READ / OVERVIEW
 // ============================================================================
 
@@ -561,4 +690,7 @@ module.exports = {
   listProjects,
   listMyInvestments,
   getProjectFinancials,
+  expireUnfundedProjects,
+  refundInvestment,
+  getCapTable,
 };
