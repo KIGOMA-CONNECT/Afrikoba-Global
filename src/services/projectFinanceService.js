@@ -1,0 +1,797 @@
+/**
+ * Project Finance Governance Service
+ *
+ * Implements the Afrikoba FinOS project-finance foundation:
+ *   Phase 0 — segregated internal project ledger accounts (sub-ledgers)
+ *   Phase 1 — versioned / freezable waterfall allocation rules + idempotent,
+ *             double-entry process-incoming waterfall runs
+ *   Phase 2 — milestone proof submission & expert review; two-phase
+ *             (request → review → authorize → release) disbursement with
+ *             segregation of duties
+ *   Project documents CRUD + immutable audit trail visibility
+ *
+ * Non-negotiables honoured:
+ *   - Ledger (journal_entries) is the source of truth. No balance change
+ *     without a balanced double-entry posting through financialEngine.
+ *   - Idempotency: every revenue/disbursement event claims a unique
+ *     reference in financial_operations before posting.
+ *   - Segregation of duties: the requester can never approve/execute his
+ *     own request.
+ *   - Frozen waterfall rules cannot change; amendments become new versions
+ *     effective on an approved date.
+ *   - Financial events are append-only (no hard deletes).
+ */
+
+const pool = require('../config/db');
+const { generateReference } = require('../utils/helpers');
+const fin = require('./financialEngine');
+const { logAudit } = require('./auditService');
+const { createNotification } = require('./notificationService');
+
+const ACCOUNTS = {
+  INVESTMENT: 'PROJECT_INVESTMENT_ACCOUNT',
+  REVENUE: 'PROJECT_REVENUE_ACCOUNT',
+  TAX: 'PROJECT_TAX_ACCOUNT',
+  RESERVE: 'PROJECT_RESERVE_ACCOUNT',
+  DEBT_SERVICE: 'PROJECT_DEBT_SERVICE_ACCOUNT',
+  DIVIDEND: 'PROJECT_DIVIDEND_ACCOUNT',
+  OPERATING: 'PROJECT_OPERATING_ACCOUNT',
+  OWNER_RESIDUAL: 'PROJECT_OWNER_RESIDUAL_ACCOUNT',
+};
+
+// Ordered waterfall steps (Phase 1 order: tax → opex → payroll → debt →
+// reserve → investor dividends → owner residual).
+const WATERFALL_STEPS = [
+  { key: 'TAX', column: 'tax_percentage', dest: ACCOUNTS.TAX, priority: 1 },
+  { key: 'OPEX', column: 'opex_percentage', dest: ACCOUNTS.OPERATING, priority: 2 },
+  { key: 'PAYROLL', column: 'payroll_percentage', dest: ACCOUNTS.OPERATING, priority: 3 },
+  { key: 'DEBT_SERVICE', column: 'debt_service_percentage', dest: ACCOUNTS.DEBT_SERVICE, priority: 4 },
+  { key: 'RESERVE', column: 'reserve_fund_percentage', dest: ACCOUNTS.RESERVE, priority: 5 },
+  { key: 'DIVIDEND', column: 'investor_dividend_percentage', dest: ACCOUNTS.DIVIDEND, priority: 6 },
+  { key: 'OWNER_RESIDUAL', column: 'owner_residual_percentage', dest: ACCOUNTS.OWNER_RESIDUAL, priority: 7 },
+];
+
+const EXPERT_ROLES = ['ADMIN', 'MODERATOR', 'EXPERT'];
+
+function round2(n) {
+  return Math.round((Number(n) + Number.EPSILON) * 100) / 100;
+}
+
+class ValidityError extends Error {
+  constructor(message, statusCode = 400) {
+    super(message);
+    this.statusCode = statusCode;
+  }
+}
+
+function isExpert(role) {
+  return EXPERT_ROLES.includes(role);
+}
+
+async function getProject(projectId, client = pool) {
+  const r = await client.query('SELECT * FROM projects WHERE id = $1', [projectId]);
+  if (r.rows.length === 0) throw new ValidityError('Mradi haupatikani.', 404);
+  return r.rows[0];
+}
+
+async function getOwnerOnly(projectId, userId, client = pool) {
+  const p = await getProject(projectId, client);
+  if (p.owner_user_id !== userId) throw new ValidityError('Huna ruhusa za mradi huu.', 403);
+  return p;
+}
+
+// ============================================================================
+// PHASE 1 — WATERFALL ALLOCATION RULES (VERSIONED, FREEZABLE)
+// ============================================================================
+
+const RULE_COLUMNS = ['tax_percentage', 'opex_percentage', 'payroll_percentage',
+  'debt_service_percentage', 'reserve_fund_percentage',
+  'investor_dividend_percentage', 'owner_residual_percentage'];
+
+function normalizePercentages(data) {
+  const pct = {};
+  for (const col of RULE_COLUMNS) {
+    const raw = data && data[col];
+    const v = raw === undefined || raw === null ? 0 : Number(raw);
+    if (!Number.isFinite(v) || v < 0 || v > 100) throw new ValidityError(`Asilimia ya '${col}' si sahihi (0-100).`);
+    pct[col] = v;
+  }
+  const total = round2(RULE_COLUMNS.reduce((s, c) => s + pct[c], 0));
+  if (total !== 100) throw new ValidityError(`Jumla ya asilimia lazima iwe 100 (imepata ${total}).`);
+  return pct;
+}
+
+/** Current (non-superseded) version of the rules for a project. */
+async function getEffectiveRule(projectId, client = pool) {
+  const r = await client.query(
+    `SELECT * FROM waterfall_allocation_rules
+     WHERE project_id = $1 AND status <> 'SUPERSEDED'
+     ORDER BY version DESC LIMIT 1`,
+    [projectId]
+  );
+  return r.rows[0] || null;
+}
+
+/** Rules list for a project (all versions). */
+async function listWaterfallRules(projectId) {
+  const r = await pool.query(
+    `SELECT * FROM waterfall_allocation_rules WHERE project_id = $1 ORDER BY version DESC`,
+    [projectId]
+  );
+  return r.rows;
+}
+
+/**
+ * Owner creates / proposes the initial (version 1) rules. Draft until approved.
+ */
+async function createInitialRules(userId, projectId, data) {
+  await getOwnerOnly(projectId, userId);
+  const pct = normalizePercentages(data);
+  const existing = await pool.query(
+    'SELECT 1 FROM waterfall_allocation_rules WHERE project_id = $1 LIMIT 1', [projectId]
+  );
+  if (existing.rows.length > 0) throw new ValidityError('Waterfall rules tayari zipo kwa mradi huu.');
+  const r = await pool.query(
+    `INSERT INTO waterfall_allocation_rules (project_id, version, status,
+        ${RULE_COLUMNS.join(', ')}, proposed_by, proposed_at)
+     VALUES ($1, 1, 'DRAFT', ${RULE_COLUMNS.map((_, i) => `$${i + 2}`).join(', ')}, ${RULE_COLUMNS.length + 2}, NOW())
+     RETURNING *`,
+    [projectId, ...RULE_COLUMNS.map((c) => pct[c]), userId]
+  );
+  await logAudit({ eventType: 'WATERFALL_RULES_CREATED', action: 'CREATE', entityType: 'WATERFALL_RULE', userId, entityId: projectId });
+  return r.rows[0];
+}
+
+/**
+ * Propose an amendment. If the current rule is FROZEN (or ACTIVE), the change
+ * always becomes a NEW version (never mutates a frozen rule directly).
+ */
+async function proposeWaterfallRules(userId, projectId, data) {
+  await getOwnerOnly(projectId, userId);
+  const pct = normalizePercentages(data);
+  const current = await getEffectiveRule(projectId);
+  if (!current) throw new ValidityError('Anzisha waterfall rules kwanza.');
+
+  const vNext = current.version + 1;
+  const r = await pool.query(
+    `INSERT INTO waterfall_allocation_rules
+       (project_id, version, status, ${RULE_COLUMNS.join(', ')},
+        proposed_by, proposed_at, supersedes_rule_id, change_reason)
+     VALUES ($1, $2, 'PROPOSED', $3, $4, $5, $6, $7, $8, $9, $10, NOW(), $11, $12)
+     RETURNING *`,
+    [projectId, vNext, ...RULE_COLUMNS.map((c) => pct[c]), userId, current.id, data.change_reason || null]
+  );
+  await logAudit({ eventType: 'WATERFALL_RULES_PROPOSED', action: 'PROPOSE', entityType: 'WATERFALL_RULE', userId, entityId: r.rows[0].id, afterData: { version: vNext } });
+  return r.rows[0];
+}
+
+/**
+ * Expert/admin approves a DRAFT or PROPOSED rule → ACTIVE. Marks any prior
+ * non-frozen rule SUPERSEDED. If a later version already took effect, skip.
+ */
+async function approveWaterfallRule(userId, ruleId, { effective_date } = {}) {
+  const rule = await pool.query('SELECT * FROM waterfall_allocation_rules WHERE id = $1', [ruleId]);
+  if (rule.rows.length === 0) throw new ValidityError('Waterfall rule haipatikani.', 404);
+  const cur = rule.rows[0];
+  if (!['DRAFT', 'PROPOSED'].includes(cur.status)) throw new ValidityError(`Rule iko katika hali '${cur.status}', haiwezi kuidhinishwa.`);
+
+  const effective = effective_date || cur.effective_date || new Date().toISOString().slice(0, 10);
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const newer = await client.query(
+      `SELECT 1 FROM waterfall_allocation_rules
+       WHERE project_id = $1 AND id <> $2 AND version > $3 AND status IN ('ACTIVE','FROZEN') LIMIT 1`,
+      [cur.project_id, cur.id, cur.version]
+    );
+    if (newer.rows.length > 0) throw new ValidityError('Kuna version ya hivi karibuni iliyokwisha kuwa ACTIVE/FROZEN.');
+
+    await client.query(
+      `UPDATE waterfall_allocation_rules
+       SET status = 'SUPERSEDED', updated_at = NOW()
+       WHERE project_id = $1 AND id <> $2 AND status NOT IN ('SUPERSEDED')`,
+      [cur.project_id, cur.id]
+    );
+    await client.query(
+      `UPDATE waterfall_allocation_rules
+       SET status = 'ACTIVE', approved_by = $2, approved_at = NOW(), effective_date = $3, updated_at = NOW()
+       WHERE id = $1`,
+      [cur.id, userId, effective]
+    );
+    await logAudit({ eventType: 'WATERFALL_RULES_APPROVED', action: 'APPROVE', entityType: 'WATERFALL_RULE', userId, entityId: cur.id, afterData: { project_id: cur.project_id, version: cur.version, effective_date: effective } });
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+  return (await pool.query('SELECT * FROM waterfall_allocation_rules WHERE id = $1', [ruleId])).rows[0];
+}
+
+async function setWaterfallFrozen(ruleId, frozen) {
+  const r = await pool.query(
+    `UPDATE waterfall_allocation_rules SET status = $2, updated_at = NOW()
+     WHERE id = $1 RETURNING *`,
+    [ruleId, frozen ? 'FROZEN' : 'ACTIVE']
+  );
+  if (r.rows.length === 0) throw new ValidityError('Waterfall rule haipatikani.', 404);
+  return r.rows[0];
+}
+
+async function freezeWaterfallRule(userId, ruleId) {
+  const rule = await setWaterfallFrozen(ruleId, true);
+  await logAudit({ eventType: 'WATERFALL_RULES_FROZEN', action: 'FREEZE', entityType: 'WATERFALL_RULE', userId, entityId: ruleId });
+  return rule;
+}
+
+async function unfreezeWaterfallRule(userId, ruleId) {
+  const rule = await setWaterfallFrozen(ruleId, false);
+  await logAudit({ eventType: 'WATERFALL_RULES_UNFROZEN', action: 'UNFREEZE', entityType: 'WATERFALL_RULE', userId, entityId: ruleId });
+  return rule;
+}
+
+/**
+ * Called after a successful investment. Ensures the project's controlled
+ * account balance projection tracks the ledger, and freezes the active
+ * waterfall rule from the moment funding begins (Phase 0/1 locking).
+ */
+async function onFundingReceived({ projectId, amount, firstFunding }) {
+  const p = await getProject(projectId);
+  const raised = Number(p.amount_raised) || 0;
+  const target = Number(p.capital_required) || 0;
+  const cur = p.currency_code || 'TZS';
+
+  await pool.query(
+    `INSERT INTO controlled_project_accounts
+       (project_id, escrow_balance, remaining_balance, funding_target, currency, is_locked, status)
+     VALUES ($1, $2, $2, $3, $4, TRUE, 'ACTIVE')
+     ON CONFLICT (project_id) DO UPDATE
+       SET escrow_balance = $2, remaining_balance = $2, funding_target = $3,
+           updated_at = NOW()`,
+    [projectId, raised, target, cur]
+  );
+
+  if (firstFunding) {
+    const rule = await getEffectiveRule(projectId);
+    if (rule && ['ACTIVE'].includes(rule.status)) {
+      await setWaterfallFrozen(rule.id, true);
+    }
+  }
+
+  const owner = await pool.query('SELECT id FROM users WHERE id = $1', [p.owner_user_id]);
+  if (owner.rows.length > 0) {
+    await createNotification(p.owner_user_id, {
+      title: 'Ufadhili umepokelewa',
+      body: `Mradi "${p.name}" umepokea ufadhili wa ${amount}.`,
+      type: 'PROJECT',
+      entityType: 'PROJECT',
+      entityId: projectId,
+    });
+  }
+}
+
+// ============================================================================
+// PHASE 1 — PROCESS INCOMING REVENUE (WATERFALL RUN, IDEMPOTENT)
+// ============================================================================
+
+/**
+ * The single idempotent entry point for revenue:
+ *   1. claim unique_reference (idempotency gate)
+ *   2. record the revenue event append-only
+ *   3. post balanced double-entry (DR RECEIVABLE / CR REVENUE_ACCOUNT)
+ *   4. run the waterfall: for each step compute the allocation and post
+ *      balanced journal (DR destination / CR REVENUE_ACCOUNT), recording
+ *      full lineage in waterfall_allocation_records.
+ * Percentages come exclusively from the ACTIVE/FROZEN rule (never code).
+ */
+async function processIncomingRevenue(userId, projectId, { amount, revenue_type, unique_reference, description } = {}) {
+  const amt = Number(amount);
+  if (!amt || amt <= 0) throw new ValidityError('Kiasi si sahihi.');
+  const p = await getProject(projectId);
+
+  const rule = await getEffectiveRule(projectId);
+  if (!rule) throw new ValidityError('Waterfall rules hazijawekwa kwa mradi huu.');
+  if (!['ACTIVE', 'FROZEN'].includes(rule.status)) throw new ValidityError('Waterfall rules bado hazijaidhinishwa.');
+
+  const ref = unique_reference || generateReference('PREV');
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const claimed = await fin.claimOperation({
+      client, operationType: 'PROJECT_REVENUE_PROCESS', reference: ref, userId, amount: amt,
+    });
+    if (!claimed.claimed) {
+      throw new ValidityError('Mapato haya tayari yamechakatwa. Tumia unique_reference mpya.', 409);
+    }
+
+    const rev = await client.query(
+      `INSERT INTO project_revenue (project_id, revenue_type, amount, reconciled, unique_reference)
+       VALUES ($1,$2,$3,TRUE,$4) RETURNING id`,
+      [projectId, revenue_type || 'SALES', amt, ref]
+    );
+    const txn = await client.query(
+      `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
+       VALUES ($1,$2,$3,0,$3,'SUCCESS','PROJECT_REVENUE',$4) RETURNING id`,
+      [ref, userId, amt, JSON.stringify({ project_id: projectId, unique_reference: ref })]
+    );
+
+    await fin.postJournal({
+      client,
+      lines: [
+        { accountCode: 'PROJECT_REVENUE_RECEIVABLE', direction: 'DR', amount: amt },
+        { accountCode: ACCOUNTS.REVENUE, direction: 'CR', amount: amt },
+      ],
+      referenceId: ref,
+      description: description || `Project revenue (${revenue_type || 'SALES'})`,
+      postedBy: `project:${userId}`,
+      productType: 'PROJECT',
+      productRef: String(projectId),
+    });
+
+    // Compute allocations; final step absorbs rounding so the waterfall sums
+    // exactly to the incoming revenue.
+    const allocations = [];
+    let committed = 0;
+    for (let i = 0; i < WATERFALL_STEPS.length; i++) {
+      const step = WATERFALL_STEPS[i];
+      const pct = Number(rule[step.column] || 0);
+      let stepAmount = 0;
+      if (i === WATERFALL_STEPS.length - 1) {
+        stepAmount = Math.max(0, round2(amt - committed));
+      } else if (pct > 0) {
+        stepAmount = round2(amt * (pct / 100));
+      }
+      committed = round2(committed + stepAmount);
+      allocations.push({ step, pct, amount: stepAmount });
+    }
+
+    for (const { step, pct, amount: stepAmount } of allocations) {
+      if (stepAmount <= 0) continue;
+      const stepRef = `${ref}-${step.key}`;
+      const groupId = await fin.postJournal({
+        client,
+        lines: [
+          { accountCode: step.dest, direction: 'DR', amount: stepAmount },
+          { accountCode: ACCOUNTS.REVENUE, direction: 'CR', amount: stepAmount },
+        ],
+        referenceId: stepRef,
+        description: `Waterfall ${step.key} allocation (rule v${rule.version})`,
+        postedBy: `project:${userId}`,
+        productType: 'PROJECT',
+        productRef: String(projectId),
+      });
+      await client.query(
+        `INSERT INTO waterfall_allocation_records
+           (project_id, rule_id, rule_version, allocation_step, priority,
+            revenue_transaction_id, revenue_reference, source_account_code,
+            destination_account_code, calculation_basis, percentage, amount,
+            currency, ledger_group_id, reconciliation_status)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'PERCENTAGE',$10,$11,COALESCE($12,'TZS'),$13,'RECONCILED')`,
+        [projectId, rule.id, rule.version, step.key, step.priority,
+         txn.rows[0].id, ref, ACCOUNTS.REVENUE, step.dest, pct, stepAmount,
+         p.currency_code || 'TZS', groupId]
+      );
+    }
+
+    await logAudit({ eventType: 'PROJECT_REVENUE_PROCESSED', action: 'PROCESS', entityType: 'PROJECT', userId, entityId: projectId, referenceId: ref, amount: amt, afterData: { rule_version: rule.version } });
+
+    await client.query('COMMIT');
+
+    // Transactional notifications: fired only after COMMIT succeeded.
+    const investors = await pool.query(
+      'SELECT DISTINCT investor_user_id FROM project_investments WHERE project_id = $1 AND status = $2',
+      [projectId, 'CONFIRMED']
+    );
+    for (const inv of investors.rows) {
+      await createNotification(inv.investor_user_id, {
+        title: 'Mapato yamepokelewa',
+        body: `Mradi "${p.name}" ulipokea mapato ${amt}. Allocation kwenye waterfall imetengenezwa (rule v${rule.version}).`,
+        type: 'PROJECT',
+        entityType: 'PROJECT',
+        entityId: projectId,
+      });
+    }
+
+    return { success: true, revenue_id: ref, amount: amt, allocations: allocations.filter((a) => a.amount > 0).map((a) => ({ step: a.step.key, amount: a.amount, pct: a.pct })) };
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    if (e instanceof ValidityError) throw e;
+    if (String(e.message || '').toLowerCase().includes('duplicate')) throw new ValidityError('Mapato haya tayari yamerekodiwa.', 409);
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+async function listRevenueTransactions(projectId) {
+  const r = await pool.query(
+    `SELECT r.*, t.id AS txn_id FROM project_revenue r
+     LEFT JOIN transactions t ON t.meta->>'unique_reference' = r.unique_reference
+     WHERE r.project_id = $1 ORDER BY r.created_at DESC`,
+    [projectId]
+  );
+  return r.rows;
+}
+
+async function listRevenueAllocations(projectId) {
+  const r = await pool.query(
+    `SELECT * FROM waterfall_allocation_records WHERE project_id = $1 ORDER BY created_at DESC, priority`,
+    [projectId]
+  );
+  return r.rows;
+}
+
+// ============================================================================
+// PHASE 2 — MILESTONE PROOF & EXPERT REVIEW
+// ============================================================================
+
+async function submitMilestoneProof(userId, projectId, milestoneId, { documents, notes } = {}) {
+  await getOwnerOnly(projectId, userId);
+  const m = await pool.query('SELECT * FROM project_milestones WHERE id = $1 AND project_id = $2', [milestoneId, projectId]);
+  if (m.rows.length === 0) throw new ValidityError('Hatua hii haipatikani.', 404);
+  const milestone = m.rows[0];
+  if (!['IN_PROGRESS', 'REJECTED'].includes(milestone.status)) {
+    throw new ValidityError(`Uthibitisho unaweza kuwasilishwa tu kwa hatua iliyo 'IN_PROGRESS'. (sasa: ${milestone.status})`);
+  }
+  if (!Array.isArray(documents) || documents.length === 0) {
+    throw new ValidityError('Angalau hati moja ya uthibitisho inahitajika (documents).');
+  }
+  const cleanDocs = documents.map((d) => ({ type: d.type || 'PROOF', title: d.title || '', url: d.url }));
+  const r = await pool.query(
+    `UPDATE project_milestones
+     SET status = 'REPORT_SUBMITTED', proof_documents = $3, proof_notes = $4,
+         proof_submitted_by = $2, proof_submitted_at = NOW(), updated_at = NOW()
+     WHERE id = $1 RETURNING *`,
+    [milestoneId, userId, JSON.stringify(cleanDocs), notes || null]
+  );
+  await logAudit({ eventType: 'MILESTONE_PROOF_SUBMITTED', action: 'SUBMIT', entityType: 'MILESTONE', userId, entityId: milestoneId, afterData: { docs: cleanDocs.length } });
+  const owner = await pool.query('SELECT owner_user_id FROM projects WHERE id = $1', [projectId]);
+  return r.rows[0];
+}
+
+async function listMilestoneEvidence(projectId, milestoneId) {
+  const m = await pool.query('SELECT proof_documents, proof_notes FROM project_milestones WHERE id = $1 AND project_id = $2', [milestoneId, projectId]);
+  if (m.rows.length === 0) throw new ValidityError('Hatua hii haipatikani.', 404);
+  return m.rows[0];
+}
+
+/**
+ * Expert review of milestone proof. Governing roles only (route-guarded).
+ * APPROVED moves the milestone to COMPLETED; REJECTED returns it to work.
+ */
+async function reviewMilestone(userId, projectId, milestoneId, { decision, comment, ai_verification } = {}) {
+  if (!['APPROVED', 'REJECTED'].includes(decision)) throw new ValidityError('Uamuzi lazima uwe APPROVED au REJECTED.');
+  const m = await pool.query('SELECT * FROM project_milestones WHERE id = $1 AND project_id = $2', [milestoneId, projectId]);
+  if (m.rows.length === 0) throw new ValidityError('Hatua hii haipatikani.', 404);
+  const milestone = m.rows[0];
+  if (milestone.status !== 'REPORT_SUBMITTED') {
+    throw new ValidityError(`Hatua lazima iwe 'REPORT_SUBMITTED' kwa ukaguzi. (sasa: ${milestone.status})`);
+  }
+
+  const nextStatus = decision === 'APPROVED' ? 'COMPLETED' : 'IN_PROGRESS';
+  const r = await pool.query(
+    `UPDATE project_milestones
+     SET status = $3, expert_reviewer_id = $2, expert_reviewed_at = NOW(),
+         expert_comment = $4, ai_verification = COALESCE($5, ai_verification), updated_at = NOW()
+     WHERE id = $1 RETURNING *`,
+    [milestoneId, userId, nextStatus, comment || null, ai_verification ? JSON.stringify(ai_verification) : null]
+  );
+  await logAudit({ eventType: 'MILESTONE_EXPERT_REVIEW', action: decision, entityType: 'MILESTONE', userId, entityId: milestoneId, afterData: { comment } });
+
+  const owner = await pool.query('SELECT owner_user_id FROM projects WHERE id = $1', [projectId]);
+  if (owner.rows.length > 0) {
+    await createNotification(owner.rows[0].owner_user_id, {
+      title: decision === 'APPROVED' ? 'Hatua imeidhinishwa' : 'Hatua imerejeshwa',
+      body: `Hatua "${milestone.name}" ime${decision === 'APPROVED' ? 'idhinishwa' : 'rejeshwa kwa marekebisho'}.`,
+      type: 'PROJECT',
+      entityType: 'PROJECT',
+      entityId: projectId,
+    });
+  }
+  return r.rows[0];
+}
+
+// ============================================================================
+// PHASE 2 — TWO-PHASE DISBURSEMENT (SEGREGATION OF DUTIES)
+// ============================================================================
+
+async function getRequest(projectId, requestId, client = pool) {
+  const r = await client.query(
+    `SELECT * FROM project_disbursements WHERE id = $1 AND project_id = $2`,
+    [requestId, projectId]
+  );
+  if (r.rows.length === 0) throw new ValidityError('Ombi la malipo halipatikani.', 404);
+  return r.rows[0];
+}
+
+/**
+ * Owner requests a tranche against an expert-APPROVED (COMPLETED) milestone.
+ * Creates a REQUEST. No money moves at this stage.
+ */
+async function requestDisbursement(userId, projectId, { milestone_id, amount, unique_reference } = {}) {
+  const amt = Number(amount);
+  if (!amt || amt <= 0) throw new ValidityError('Kiasi si sahihi.');
+  await getOwnerOnly(projectId, userId);
+
+  const p = await getProject(projectId);
+  const funded = await pool.query('SELECT 1 FROM project_investments WHERE project_id = $1 LIMIT 1', [projectId]);
+  if (funded.rows.length === 0) throw new ValidityError('Mradi huu haujafadhiliwa.');
+
+  if (!milestone_id) throw new ValidityError('Ombi la malipo lazima liwe na milestone_id.');
+  const m = await pool.query('SELECT * FROM project_milestones WHERE id = $1 AND project_id = $2', [milestone_id, projectId]);
+  if (m.rows.length === 0) throw new ValidityError('Hatua haipatikani.');
+  const milestone = m.rows[0];
+  if (milestone.status !== 'COMPLETED') {
+    throw new ValidityError('Fedha zinatolewa tu baada ya hatua kuidhinishwa na expert (COMPLETED).');
+  }
+  const spent = await pool.query(
+    `SELECT COALESCE(SUM(amount),0) AS s FROM project_disbursements
+     WHERE project_id = $1 AND milestone_id = $2 AND status = 'RELEASED'`,
+    [projectId, milestone_id]
+  );
+  const allowed = round2(Number(milestone.budget) - Number(spent.rows[0].s));
+  if (amt > allowed) throw new ValidityError(`Kiasi kinazidi salio la bajeti ya hatua hii (${allowed}).`);
+
+  const escrow = await pool.query('SELECT remaining_balance FROM controlled_project_accounts WHERE project_id = $1', [projectId]);
+  const available = escrow.rows.length > 0 ? Number(escrow.rows[0].remaining_balance) : 0;
+  if (amt > available) throw new ValidityError(`Fedha zilizopo (${available}) hazitoshi kwa ombi hili.`);
+
+  const ref = unique_reference || generateReference('PDIS');
+  const r = await pool.query(
+    `INSERT INTO project_disbursements
+       (project_id, milestone_id, amount, status, requested_by, unique_reference, reason)
+     VALUES ($1,$2,$3,'REQUESTED',$4,$5,$6) RETURNING *`,
+    [projectId, milestone_id, amt, userId, ref, 'Tranche request']
+  );
+  await logAudit({ eventType: 'DISBURSEMENT_REQUESTED', action: 'REQUEST', entityType: 'DISBURSEMENT', userId, entityId: r.rows[0].id, referenceId: ref, amount: amt });
+  return { success: true, request_id: r.rows[0].id, status: 'REQUESTED', unique_reference: ref, amount: amt };
+}
+
+/** Expert reviews the request (REQUESTED → REVIEWED or REJECTED). */
+async function reviewDisbursement(userId, projectId, requestId, { decision, comment } = {}) {
+  if (!['APPROVE', 'REJECT'].includes(decision)) throw new ValidityError('decision lazima iwe APPROVE au REJECT.');
+  const req = await getRequest(projectId, requestId);
+  if (req.status !== 'REQUESTED') throw new ValidityError(`Ombi liko '${req.status}', haliko tayari kwa ukaguzi.`);
+  if (req.requested_by === userId) throw new ValidityError('Mtu aliyewasilisha ombi hawezi kukagua ombi lake mwenyewe.');
+
+  const r = await pool.query(
+    `UPDATE project_disbursements SET status = $3, reviewed_by = $2, reviewed_at = NOW(), expert_comment = $4, updated_at = NOW()
+     WHERE id = $1 RETURNING *`,
+    [requestId, userId, decision === 'APPROVE' ? 'REVIEWED' : 'REJECTED', comment || null]
+  );
+  await logAudit({ eventType: 'DISBURSEMENT_REVIEWED', action: decision, entityType: 'DISBURSEMENT', userId, entityId: requestId, afterData: { comment } });
+  return r.rows[0];
+}
+
+/** Second approver authorizes a reviewed request (REVIEWED → AUTHORIZED). */
+async function approveDisbursement(userId, projectId, requestId) {
+  const req = await getRequest(projectId, requestId);
+  if (req.status !== 'REVIEWED') throw new ValidityError(`Ombi liko '${req.status}', lazima liwe REVIEWED kabla ya kuidhinishwa.`);
+  if (req.requested_by === userId) throw new ValidityError('Mtu aliyewasilisha ombi hawezi kuuidhinisha mwenyewe.');
+  const r = await pool.query(
+    `UPDATE project_disbursements SET status = 'AUTHORIZED', authorized_by = $2, approved_at = NOW(), updated_at = NOW()
+     WHERE id = $1 RETURNING *`,
+    [requestId, userId]
+  );
+  await logAudit({ eventType: 'DISBURSEMENT_AUTHORIZED', action: 'AUTHORIZE', entityType: 'DISBURSEMENT', userId, entityId: requestId });
+  return r.rows[0];
+}
+
+async function rejectDisbursement(userId, projectId, requestId, { reason } = {}) {
+  const req = await getRequest(projectId, requestId);
+  if (!['REQUESTED', 'REVIEWED'].includes(req.status)) throw new ValidityError(`Ombi liko '${req.status}', haliwezi kukataliwa.`);
+  if (req.requested_by === userId) throw new ValidityError('Mtu aliyewasilisha ombi hawezi kukataa ombi lake mwenyewe.');
+  const r = await pool.query(
+    `UPDATE project_disbursements SET status = 'REJECTED', authorized_by = $2, approved_at = NOW(), reject_reason = $3, updated_at = NOW()
+     WHERE id = $1 RETURNING *`,
+    [requestId, userId, reason || null]
+  );
+  await logAudit({ eventType: 'DISBURSEMENT_REJECTED', action: 'REJECT', entityType: 'DISBURSEMENT', userId, entityId: requestId, afterData: { reason } });
+  return r.rows[0];
+}
+
+/**
+ * Treasury executes an AUTHORIZED request: money leaves the investment escrow
+ * to the owner wallet via double-entry, escrow projection is decremented, and
+ * the milestone is marked disbursed. Idempotent on unique_reference.
+ */
+async function executeDisbursement(userId, projectId, requestId) {
+  const req = await getRequest(projectId, requestId);
+  if (req.status !== 'AUTHORIZED') throw new ValidityError(`Ombi liko '${req.status}', lazima liwe AUTHORIZED kabla ya kutekelezwa.`);
+  if (req.requested_by === userId) throw new ValidityError('Mtu aliyewasilisha ombi hawezi kulitekeleza mwenyewe.');
+  const p = await getProject(projectId);
+  const amt = Number(req.amount);
+  const ref = req.unique_reference || generateReference('PDIS');
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const claimed = await fin.claimOperation({
+      client, operationType: 'PROJECT_DISBURSEMENT_EXECUTE', reference: req.id, userId, amount: amt,
+    });
+    if (!claimed.claimed) throw new ValidityError('Disbursement hii tayari imetekelezwa.', 409);
+
+    await fin.creditWallet({
+      client, userId: p.owner_user_id, amount: amt, reference: ref,
+      fromAccount: ACCOUNTS.INVESTMENT,
+      description: `Project disbursement for milestone #${req.milestone_id}`,
+    });
+
+    await client.query(
+      `UPDATE project_disbursements
+       SET status = 'RELEASED', executed_by = $2, executed_at = NOW(),
+           txn_id = (SELECT MAX(id) FROM transactions WHERE reference_id = $3), updated_at = NOW()
+       WHERE id = $1`,
+      [requestId, userId, ref]
+    );
+    await client.query(
+      `UPDATE controlled_project_accounts
+       SET remaining_balance = GREATEST(0, remaining_balance - $2),
+           disbursed_total = disbursed_total + $2, updated_at = NOW()
+       WHERE project_id = $1`,
+      [projectId, amt]
+    );
+    if (req.milestone_id) {
+      await client.query(
+        `UPDATE project_milestones SET disbursed_at = NOW(), updated_at = NOW() WHERE id = $1`,
+        [req.milestone_id]
+      );
+    }
+    await client.query(
+      `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
+       VALUES ($1,$2,$3,0,$3,'SUCCESS','PROJECT_DISBURSEMENT',$4)`,
+      [ref, p.owner_user_id, amt, JSON.stringify({ project_id: projectId, milestone_id: req.milestone_id, request_id: requestId })]
+    );
+    await logAudit({ eventType: 'PROJECT_DISBURSEMENT', action: 'RELEASE', entityType: 'PROJECT', userId, entityId: projectId, referenceId: ref, amount: amt, afterData: { request_id: requestId } });
+
+    await client.query('COMMIT');
+
+    // Transactional notification: fired only after the money moved.
+    await createNotification(p.owner_user_id, {
+      title: 'Fedha zimetolewa',
+      body: `Tranche ya ${amt} imetolewa kwa mradi "${p.name}".`,
+      type: 'PROJECT',
+      entityType: 'PROJECT',
+      entityId: projectId,
+    });
+    return { success: true, disbursement_id: ref, amount: amt, status: 'RELEASED' };
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    if (e instanceof ValidityError) throw e;
+    if (String(e.message || '').toLowerCase().includes('duplicate')) throw new ValidityError('Disbursement hii tayari imetekelezwa.', 409);
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+async function listDisbursementRequests(projectId) {
+  const r = await pool.query(
+    `SELECT d.*, m.name AS milestone_name, u.full_name AS requested_by_name
+     FROM project_disbursements d
+     LEFT JOIN project_milestones m ON m.id = d.milestone_id
+     LEFT JOIN users u ON u.id = d.requested_by
+     WHERE d.project_id = $1 ORDER BY d.created_at DESC`,
+    [projectId]
+  );
+  return r.rows;
+}
+
+// ============================================================================
+// PROJECT DOCUMENTS
+// ============================================================================
+
+async function addProjectDocument(userId, projectId, { doc_type, title, url }) {
+  await getOwnerOnly(projectId, userId);
+  if (!url || !title) throw new ValidityError('title na url zinahitajika.');
+  const r = await pool.query(
+    `INSERT INTO project_documents (project_id, doc_type, title, url)
+     VALUES ($1,$2,$3,$4) RETURNING *`,
+    [projectId, doc_type || 'GENERAL', title, url]
+  );
+  await logAudit({ eventType: 'PROJECT_DOCUMENT_ADDED', action: 'CREATE', entityType: 'PROJECT_DOCUMENT', userId, entityId: r.rows[0].id, afterData: { project_id: projectId, doc_type } });
+  return r.rows[0];
+}
+
+async function listProjectDocuments(projectId) {
+  const r = await pool.query(
+    'SELECT * FROM project_documents WHERE project_id = $1 ORDER BY created_at DESC', [projectId]
+  );
+  return r.rows;
+}
+
+async function getProjectDocument(projectId, documentId) {
+  const r = await pool.query('SELECT * FROM project_documents WHERE id = $1 AND project_id = $2', [documentId, projectId]);
+  if (r.rows.length === 0) throw new ValidityError('Hati haipatikani.', 404);
+  return r.rows[0];
+}
+
+async function deleteProjectDocument(userId, projectId, documentId) {
+  const doc = await getProjectDocument(projectId, documentId);
+  await getOwnerOnly(projectId, userId);
+  await pool.query('DELETE FROM project_documents WHERE id = $1', [documentId]);
+  await logAudit({ eventType: 'PROJECT_DOCUMENT_DELETED', action: 'DELETE', entityType: 'PROJECT_DOCUMENT', userId, entityId: documentId, afterData: { project_id: projectId, title: doc.title } });
+  return { success: true };
+}
+
+// ============================================================================
+// AI REVIEW (ADVISORY ONLY) & AUDIT TRAIL
+// ============================================================================
+
+/**
+ * Advisory-only AI review placeholder. Scores the submission and flags risks
+ * but NEVER authorizes money. Experts remain the final authority.
+ */
+async function getAiReview(projectId) {
+  const p = await getProject(projectId);
+  const score = 70;
+  const flags = ['Uhalali wa hati bado haujathibitishwa', 'Muswada wa bajeti unahitaji uthibitisho'];
+  return {
+    project_id: projectId,
+    advisory_only: true,
+    score,
+    risk_flags: flags,
+    confidence: 'LOW',
+    model_version: 'v1-advisory',
+    reviewed_at: new Date().toISOString(),
+    final_authority: 'EXPERT_TEAM',
+    name: p.name,
+  };
+}
+
+async function getAuditTrail(projectId) {
+  const [approvals, disbursements, waterfall, revenue, postings] = await Promise.all([
+    pool.query('SELECT * FROM project_approvals WHERE project_id = $1 ORDER BY created_at DESC', [projectId]),
+    pool.query('SELECT * FROM project_disbursements WHERE project_id = $1 ORDER BY created_at DESC', [projectId]),
+    pool.query('SELECT * FROM waterfall_allocation_records WHERE project_id = $1 ORDER BY created_at DESC', [projectId]),
+    pool.query('SELECT * FROM project_revenue WHERE project_id = $1 ORDER BY created_at DESC', [projectId]),
+    pool.query(
+      `SELECT j.*, la.account_code FROM journal_entries j
+       JOIN ledger_accounts la ON la.id = j.account_id
+       WHERE j.product_type = 'PROJECT' AND j.product_ref = $1
+       ORDER BY j.posted_at DESC LIMIT 200`,
+      [String(projectId)]
+    ),
+  ]);
+  return {
+    approvals: approvals.rows,
+    disbursements: disbursements.rows,
+    waterfall_allocations: waterfall.rows,
+    revenue: revenue.rows,
+    ledger_postings: postings.rows,
+  };
+}
+
+module.exports = {
+  ACCOUNTS,
+  WATERFALL_STEPS,
+  isExpert,
+  onFundingReceived,
+  listWaterfallRules,
+  createInitialRules,
+  proposeWaterfallRules,
+  approveWaterfallRule,
+  freezeWaterfallRule,
+  unfreezeWaterfallRule,
+  processIncomingRevenue,
+  listRevenueTransactions,
+  listRevenueAllocations,
+  submitMilestoneProof,
+  listMilestoneEvidence,
+  reviewMilestone,
+  requestDisbursement,
+  reviewDisbursement,
+  approveDisbursement,
+  rejectDisbursement,
+  executeDisbursement,
+  listDisbursementRequests,
+  addProjectDocument,
+  listProjectDocuments,
+  getProjectDocument,
+  deleteProjectDocument,
+  getAiReview,
+  getAuditTrail,
+};

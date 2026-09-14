@@ -23,7 +23,8 @@ const { generateReference } = require('../utils/helpers');
 const fin = require('./financialEngine');
 const { logAudit } = require('./auditService');
 
-const PROJECT_ACCOUNT = 'PROJECT_FUND';
+const PROJECT_ACCOUNT = 'PROJECT_INVESTMENT_ACCOUNT';
+const projectFinance = require('./projectFinanceService');
 
 function round2(n) {
   return Math.round((Number(n) + Number.EPSILON) * 100) / 100;
@@ -221,6 +222,15 @@ async function invest(userId, projectId, { amount, unique_reference, agreement_v
     await logAudit({ eventType: 'PROJECT_INVEST', action: 'INVEST', entityType: 'PROJECT', userId, entityId: projectId, referenceId: ref, amount: amt });
 
     await client.query('COMMIT');
+
+    // Phase 0: keep the controlled-account projection synced and freeze the
+    // waterfall rule from the moment funding begins. Best-effort after commit.
+    const firstFunding = Number(p.amount_raised) === 0;
+    try {
+      await projectFinance.onFundingReceived({ projectId, amount: amt, firstFunding });
+    } catch (e) {
+      console.error('PROJECT_FINANCE', 'onFundingReceived failed:', e.message);
+    }
     return { success: true, investment_id: ref, participation_pct: round2(participation * 100) };
   } catch (e) {
     await client.query('ROLLBACK').catch(() => {});
@@ -276,63 +286,13 @@ async function listMilestones(projectId) {
 // ============================================================================
 
 /**
- * Release funds only against a milestone (budget-allowed) into the owner's wallet
- * via the financial engine. Idempotent via unique_reference.
+ * Governed disbursement: the owner may only REQUEST a tranche against an
+ * expert-approved milestone. No money moves here; release requires the
+ * expert review → authorize → execute path (projectFinanceService) with
+ * segregation of duties. Idempotent via unique_reference.
  */
 async function disburse(userId, projectId, { milestone_id, amount, unique_reference }) {
-  const amt = Number(amount);
-  if (!amt || amt <= 0) throw new ValidityError('Kiasi si sahihi.');
-  const p = await getProjectForOwner(projectId, userId);
-  const hasFunds = await pool.query('SELECT 1 FROM project_investments WHERE project_id = $1 LIMIT 1', [projectId]);
-  if (hasFunds.rows.length === 0) throw new ValidityError('Mradi huu haujafadhiliwa.');
-  const ref = unique_reference || generateReference('PDIS');
-
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-
-    let milestone = null;
-    if (milestone_id) {
-      const mr = await client.query('SELECT * FROM project_milestones WHERE id = $1 AND project_id = $2', [milestone_id, projectId]);
-      if (mr.rows.length === 0) throw new ValidityError('Hatua haipatikani.');
-      milestone = mr.rows[0];
-      if (Number(amt) > Number(milestone.budget)) throw new ValidityError('Kiasi kinazidi bajeti ya hatua hii.');
-    }
-
-    await client.query(
-      `INSERT INTO project_disbursements (project_id, milestone_id, amount, status, authorized_by, unique_reference)
-       VALUES ($1,$2,$3,'PENDING',$4,$5)`,
-      [projectId, milestone_id, amt, userId, ref]
-    );
-
-    await fin.creditWallet({ client, userId, amount: amt, reference: ref, fromAccount: PROJECT_ACCOUNT, description: 'Project milestone disbursement' });
-
-    await client.query(
-      `UPDATE project_disbursements SET status = 'RELEASED', txn_id = (SELECT MAX(id) FROM transactions WHERE reference_id = $1) WHERE unique_reference = $1`,
-      [ref]
-    );
-    if (milestone) {
-      await client.query(`UPDATE project_milestones SET status = 'IN_PROGRESS' WHERE id = $1`, [milestone.id]);
-    }
-    await client.query(
-      `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
-       VALUES ($1, $2, $3, 0, $3, 'SUCCESS', 'PROJECT_DISBURSEMENT', $4)`,
-      [ref, userId, amt, JSON.stringify({ project_id: projectId, milestone_id, unique_reference: ref })]
-    );
-    await logAudit({ eventType: 'PROJECT_DISBURSEMENT', action: 'RELEASE', entityType: 'PROJECT', userId, entityId: projectId, referenceId: ref, amount: amt });
-
-    await client.query('COMMIT');
-    return { success: true, disbursement_id: ref, amount: amt };
-  } catch (e) {
-    await client.query('ROLLBACK').catch(() => {});
-    if (e instanceof ValidityError) throw e;
-    if (String(e.message || '').toLowerCase().includes('duplicate') || String(e.message || '').includes('unique_reference')) {
-      throw new ValidityError('Malipo haya tayari yamefanywa.', 409);
-    }
-    throw e;
-  } finally {
-    client.release();
-  }
+  return projectFinance.requestDisbursement(userId, projectId, { milestone_id, amount, unique_reference });
 }
 
 // ============================================================================
@@ -373,13 +333,14 @@ async function recordRevenue(userId, projectId, { revenue_type, amount, unique_r
   try {
     await client.query('BEGIN');
 
-    // Revenue flows into the PROJECT_FUND ledger account (credit), offset by a
-    // receivable so the double-entry stays balanced.
+    // Revenue flows into the PROJECT_REVENUE_ACCOUNT ledger account (credit),
+    // offset by a receivable so the double-entry stays balanced. The waterfall
+    // allocation itself runs via /revenue/process-incoming (projectFinanceService).
     await fin.postJournal({
       client,
       lines: [
         { accountCode: 'PROJECT_REVENUE_RECEIVABLE', direction: 'DR', amount: amt },
-        { accountCode: PROJECT_ACCOUNT, direction: 'CR', amount: amt },
+        { accountCode: 'PROJECT_REVENUE_ACCOUNT', direction: 'CR', amount: amt },
       ],
       referenceId: ref,
       description: `Project revenue (${revenue_type})`,
