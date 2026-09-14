@@ -4,10 +4,10 @@
 -- submission form fields, consultation revenue ledger account.
 -- ============================================================================
 
--- Consultation fee ledger account (REVENUE, 4100 chart)
-INSERT INTO ledger_accounts (account_code, name, account_type, chart_of_account)
+-- Consultation fee ledger account (REVENUE)
+INSERT INTO ledger_accounts (account_code, name, account_type)
 VALUES
-  ('PROJECT_CONSULTATION_FEE', 'Project Consultation Fee Revenue', 'REVENUE', 4100)
+  ('PROJECT_CONSULTATION_FEE', 'Project Consultation Fee Revenue', 'REVENUE')
 ON CONFLICT (account_code) DO NOTHING;
 
 -- Expanded submission columns on projects (backward-compatible defaults)
