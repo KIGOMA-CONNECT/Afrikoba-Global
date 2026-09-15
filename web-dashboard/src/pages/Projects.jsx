@@ -1325,6 +1325,8 @@ export default function Projects() {
           {['ADMIN', 'MODERATOR', 'EXPERT'].includes(role) && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadDocumentPdf('/api/projects/ops/fees-register/pdf', 'fees-register.pdf')}>{t('projects.fees_register_pdf')}</button>}
           {['ADMIN', 'MODERATOR', 'EXPERT'].includes(role) && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadFinanceCsv('/api/projects/ops/refund-register/export', 'refund-register.csv')}>{t('projects.refund_register_csv')}</button>}
           {['ADMIN', 'MODERATOR', 'EXPERT'].includes(role) && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadDocumentPdf('/api/projects/ops/refund-register/pdf', 'refund-register.pdf')}>{t('projects.refund_register_pdf')}</button>}
+          {['ADMIN', 'MODERATOR', 'EXPERT'].includes(role) && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadFinanceCsv('/api/projects/ops/waterfall-summary/export', 'waterfall-summary.csv')}>{t('projects.waterfall_summary_csv')}</button>}
+          {['ADMIN', 'MODERATOR', 'EXPERT'].includes(role) && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadDocumentPdf('/api/projects/ops/waterfall-summary/pdf', 'waterfall-summary.pdf')}>{t('projects.waterfall_summary_pdf')}</button>}
         </div>
         {opsBook ? (
           <>

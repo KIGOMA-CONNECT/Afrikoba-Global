@@ -4341,6 +4341,164 @@ function renderRevenueRegisterPdf(v, stream) {
 }
 
 // ============================================================================
+// PHASE 37 — PLATFORM WATERFALL DISTRIBUTION SUMMARY (EXPERT-ONLY)
+// ============================================================================
+
+const WATERFALL_STEP_ORDER = ['TAX', 'OPEX', 'PAYROLL', 'DEBT_SERVICE', 'RESERVE', 'DIVIDEND', 'OWNER_RESIDUAL'];
+
+async function getWaterfallSummary({ role }) {
+  if (!isExpert(role)) {
+    throw new ValidityError('Huna ruhusa ya muhtasari wa waterfall wa jukwaa (expert only).', 403);
+  }
+  const r = await pool.query(
+    `SELECT p.id AS project_id, p.name, p.status, w.allocation_step, COUNT(*)::int AS runs,
+            SUM(w.amount)::numeric AS total
+     FROM waterfall_allocation_records w
+     JOIN projects p ON p.id = w.project_id
+     GROUP BY p.id, p.name, p.status, w.allocation_step
+     ORDER BY p.id, MIN(w.id)`
+  );
+  const batches = await pool.query(
+    `SELECT project_id, COUNT(DISTINCT revenue_reference)::int AS batches, SUM(amount)::numeric AS total
+     FROM waterfall_allocation_records GROUP BY project_id`
+  );
+  const bm = {};
+  for (const b of batches.rows) bm[b.project_id] = { batches: Number(b.batches || 0), revenue: round2(Number(b.total || 0)) };
+
+  const byProject = {};
+  for (const x of r.rows) {
+    if (!byProject[x.project_id]) {
+      byProject[x.project_id] = { id: x.project_id, name: x.name, status: x.status, steps: {} };
+    }
+    byProject[x.project_id].steps[x.allocation_step] = { runs: Number(x.runs || 0), total: round2(Number(x.total || 0)) };
+  }
+  const entries = Object.values(byProject)
+    .sort((a, b) => a.id - b.id)
+    .map((p) => {
+      const allocated = round2(Object.values(p.steps).reduce((s, x) => s + x.total, 0));
+      const revenue = bm[p.id] ? bm[p.id].revenue : 0;
+      const batches = bm[p.id] ? bm[p.id].batches : 0;
+      return {
+        id: p.id, name: p.name, status: p.status,
+        revenue, batches, allocated,
+        parity_ok: Math.abs(allocated - revenue) <= 1,
+        steps: p.steps,
+      };
+    });
+
+  const totalsByStep = {};
+  let tTotal = 0;
+  for (const x of r.rows) {
+    const amt = round2(Number(x.total || 0));
+    totalsByStep[x.allocation_step] = (totalsByStep[x.allocation_step] || 0) + amt;
+    tTotal += amt;
+  }
+  const totals = { projects: entries.length, batches: 0, revenue: 0, allocated: tTotal };
+  for (const e of entries) { totals.batches += e.batches; totals.revenue += e.revenue; }
+  const allOk = entries.every((e) => e.parity_ok);
+
+  return {
+    success: true,
+    generated_at: new Date().toISOString(),
+    summary: {
+      projects: totals.projects,
+      revenue_batches: totals.batches,
+      revenue_total: round2(totals.revenue),
+      allocated_total: round2(totals.allocated),
+      parity_ok: allOk,
+      by_step: totalsByStep,
+    },
+    entries,
+  };
+}
+
+async function exportWaterfallSummaryCsv({ role }) {
+  const r = await getWaterfallSummary({ role });
+  const esc = (v) => { const s = v === null || v === undefined ? '' : String(v); return `"${s.replace(/"/g, '""')}"`; };
+  const L = [];
+  L.push('AFRIKOBA GLOBAL - PLATFORM WATERFALL DISTRIBUTION SUMMARY');
+  L.push(`Generated at,${esc(r.generated_at)}`);
+  L.push(`Projects,${r.summary.projects}`);
+  L.push(`Revenue batches,${r.summary.revenue_batches}`);
+  L.push(`Revenue total,${r.summary.revenue_total}`);
+  L.push(`Allocated total,${r.summary.allocated_total}`);
+  L.push(`Parity,${r.summary.parity_ok ? 'OK' : 'FLAG'}`);
+  L.push('Step,total');
+  for (const st of WATERFALL_STEP_ORDER) {
+    if (r.summary.by_step[st]) L.push(`${esc(st)},${r.summary.by_step[st]}`);
+  }
+  L.push('');
+  L.push('project_id,project_name,status,revenue,batches,allocated,parity,TAX,OPEX,PAYROLL,DEBT_SERVICE,RESERVE,DIVIDEND,OWNER_RESIDUAL');
+  for (const x of r.entries) {
+    const row = [x.id, esc(x.name), esc(x.status), x.revenue, x.batches, x.allocated, x.parity_ok ? 'OK' : 'FLAG'];
+    for (const st of WATERFALL_STEP_ORDER) row.push(x.steps[st] ? x.steps[st].total : 0);
+    L.push(row.join(','));
+  }
+  return L.join('\n');
+}
+
+function renderWaterfallSummaryPdf(v, stream) {
+  const doc = new PDFDocument({ size: 'A4', landscape: true, margin: 36 });
+  doc.pipe(stream);
+  const G = '#0B5D1E';
+  const m = (n) => `${formatMoney(n)} TZS`;
+
+  doc.fontSize(16).fillColor(G).text('AFRIKOBA GLOBAL', { align: 'center' });
+  doc.fontSize(12).fillColor('#333').text('MUHTASARI WA WATERFALL WA JUKWAA / PLATFORM WATERFALL SUMMARY', { align: 'center' });
+  doc.fontSize(8).fillColor('#888').text(`Imetolewa / Generated: ${new Date(v.generated_at).toISOString()}`, { align: 'center' });
+  doc.moveDown(0.3);
+  vline(doc, doc.y + 4);
+
+  doc.fontSize(10).fillColor(G).text('Muhtasari / Summary');
+  vline(doc, doc.y + 2);
+  voucherField(doc, 'Miradi / Projects', String(v.summary.projects));
+  voucherField(doc, 'Kundi za mapato / Revenue batches', String(v.summary.revenue_batches));
+  voucherField(doc, 'Mapato / Revenue', m(v.summary.revenue_total));
+  voucherField(doc, 'Imegawanywa / Allocated', m(v.summary.allocated_total));
+  voucherField(doc, 'Ukaguzi / Parity', v.summary.parity_ok ? 'SAWAHI / PASS' : 'ATIBA / FLAG');
+  doc.moveDown(0.3);
+  doc.fontSize(9).fillColor(G).text('Mikopo kwa hatua / By step:');
+  for (const st of WATERFALL_STEP_ORDER) {
+    if (v.summary.by_step[st]) {
+      voucherField(doc, st, `${v.summary.by_step[st].runs || ''} runs  ·  ${m(v.summary.by_step[st])}`);
+    }
+  }
+  doc.moveDown(0.4);
+
+  const hdr = ['Proj', 'Mradi / Project', 'Hali', 'Mapato', 'Batches', 'Imegawanywa', ...WATERFALL_STEP_ORDER.map((s) => s.replace('_', ' ')), 'Ukaguzi'];
+  const cellW = { id: 34, name: 105, status: 62, r: 78, b: 46, a: 80, step: 82, ok: 40 };
+  let y = doc.y;
+  const drawRow = (cells, isHeader, stepWidths) => {
+    let x = 40;
+    doc.fontSize(6.5).fillColor(isHeader ? '#0B5D1E' : '#111');
+    cells.forEach((c, i) => {
+      doc.text(String(c || ''), x, y, { width: stepWidths[i], lineBreak: false });
+      x += stepWidths[i];
+    });
+    y += isHeader ? 11 : 13;
+  };
+  const widths = [cellW.id, cellW.name, cellW.status, cellW.r, cellW.b, cellW.a, ...WATERFALL_STEP_ORDER.map(() => cellW.step), cellW.ok];
+  drawRow(hdr, true, widths);
+  for (const x of v.entries) {
+    if (y > 520) { doc.addPage(); y = 36; drawRow(hdr, true, widths); }
+    const row = [String(x.id), x.name, x.status, m(x.revenue), String(x.batches), m(x.allocated)];
+    for (const st of WATERFALL_STEP_ORDER) row.push(x.steps[st] ? m(x.steps[st].total) : '—');
+    row.push(x.parity_ok ? 'OK' : 'FLAG');
+    drawRow(row, false, widths);
+  }
+
+  doc.moveDown(0.4);
+  vline(doc, y + 4);
+  doc.moveDown(0.7);
+  doc.fontSize(8).fillColor('#888').text('Imekaguliwa na / Reviewed by', { align: 'center' });
+  doc.moveDown(1.2);
+  doc.moveTo(210, doc.y).lineTo(420, doc.y).stroke('#aaa');
+  doc.fontSize(8).fillColor('#888').text('Mkaguzi Mkuu (Reviewer)', { align: 'center' });
+  doc.end();
+  return doc;
+}
+
+// ============================================================================
 // PHASE 36 — PLATFORM INVESTOR REFUND REGISTER (EXPERT-ONLY)
 // ============================================================================
 
@@ -6174,6 +6332,9 @@ module.exports = {
   getRefundRegister,
   exportRefundRegisterCsv,
   renderRefundRegisterPdf,
+  getWaterfallSummary,
+  exportWaterfallSummaryCsv,
+  renderWaterfallSummaryPdf,
   exportPlatformProjectRegisterCsv,
   preparePlatformProjectRegisterPdf,
   renderPlatformProjectRegisterPdf,

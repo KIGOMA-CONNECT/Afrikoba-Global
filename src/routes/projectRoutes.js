@@ -982,6 +982,31 @@ router.get('/projects/:id/settlement-register/pdf', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// Phase 37: platform waterfall distribution summary (expert-only) + export + pdf
+router.get('/projects/ops/waterfall-summary', async (req, res, next) => {
+  try {
+    return res.json(await projectFinance.getWaterfallSummary({ role: req.user.role }));
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/ops/waterfall-summary/export', async (req, res, next) => {
+  try {
+    const csv = await projectFinance.exportWaterfallSummaryCsv({ role: req.user.role });
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename=waterfall-summary.csv');
+    return res.send(csv);
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/ops/waterfall-summary/pdf', async (req, res, next) => {
+  try {
+    const data = await projectFinance.getWaterfallSummary({ role: req.user.role });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'inline; filename=waterfall-summary.pdf');
+    projectFinance.renderWaterfallSummaryPdf(data, res);
+  } catch (e) { next(e); }
+});
+
 // Phase 36: platform investor refund register (expert-only) + export + pdf
 router.get('/projects/ops/refund-register', async (req, res, next) => {
   try {
