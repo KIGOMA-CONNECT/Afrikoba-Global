@@ -1629,15 +1629,22 @@ async function getPlatformInvestorRegistry({ userId, role }) {
   if (!isExpert(role)) throw new ValidityError('Huna ruhusa ya rejesta ya wawekezaji.', 403);
   const r = await pool.query(
     `SELECT u.id AS user_id, u.full_name, u.phone_number,
-            COUNT(DISTINCT i.project_id)::int AS projects,
-            COALESCE(SUM(i.amount),0)::numeric AS invested_total,
-            COALESCE(SUM(CASE WHEN pi.status='PAID' THEN pi.entitlement ELSE 0 END),0)::numeric AS dividends_paid,
-            COALESCE(SUM(CASE WHEN pi.status='PENDING' THEN pi.entitlement ELSE 0 END),0)::numeric AS dividends_pending
+            COALESCE(ic.projects, 0)::int AS projects,
+            COALESCE(ic.invested_total, 0)::numeric AS invested_total,
+            COALESCE(pp.paid, 0)::numeric AS dividends_paid,
+            COALESCE(pp.pending, 0)::numeric AS dividends_pending
      FROM users u
-     LEFT JOIN project_investments i ON i.investor_user_id = u.id
-     LEFT JOIN project_investor_payouts pi ON pi.investor_user_id = u.id
-     WHERE EXISTS (SELECT 1 FROM project_investments x WHERE x.investor_user_id = u.id)
-     GROUP BY u.id, u.full_name, u.phone_number
+     LEFT JOIN (
+       SELECT investor_user_id, COUNT(DISTINCT project_id)::int AS projects, SUM(amount)::numeric AS invested_total
+       FROM project_investments GROUP BY investor_user_id
+     ) ic ON ic.investor_user_id = u.id
+     LEFT JOIN (
+       SELECT investor_user_id,
+              SUM(CASE WHEN status = 'PAID' THEN entitlement ELSE 0 END)::numeric AS paid,
+              SUM(CASE WHEN status = 'PENDING' THEN entitlement ELSE 0 END)::numeric AS pending
+       FROM project_investor_payouts GROUP BY investor_user_id
+     ) pp ON pp.investor_user_id = u.id
+     WHERE ic.investor_user_id IS NOT NULL
      ORDER BY invested_total DESC`
   );
   let total_invested = 0, total_paid = 0, total_pending = 0;
