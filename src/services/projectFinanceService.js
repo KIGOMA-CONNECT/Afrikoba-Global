@@ -4341,6 +4341,139 @@ function renderRevenueRegisterPdf(v, stream) {
 }
 
 // ============================================================================
+// PHASE 46 — PLATFORM FINANCE CONTROL AUDIT REGISTER (EXPERT-ONLY)
+// ============================================================================
+
+const FINANCE_AUDIT_ACTIONS = [
+  'DISBURSEMENT_REQUESTED', 'DISBURSEMENT_AUTHORIZED', 'DISBURSEMENT_REVIEWED',
+  'DRAWDOWN_REQUESTED', 'PROJECT_REVENUE_PROCESSED', 'WATERFALL_RULES_CREATED',
+  'WATERFALL_RULES_APPROVED', 'PROJECT_DIVIDEND_PAID', 'CONSULTATION_FEE_PAID',
+  'PROJECT_RESERVE_RELEASED', 'PROJECT_RESIDUAL_RELEASED', 'GOV_MEETING_CREATED',
+  'GOV_FIN_EXECUTION_CREATED', 'MILESTONE_PROOF_SUBMITTED', 'MILESTONE_EXPERT_REVIEW',
+  'PROJECT_FINANCIAL_RECONCILIATION', 'PROJECT_COMPLETED', 'PROJECT_LIQUIDATED',
+];
+
+async function getFinanceControlAuditRegister({ role }) {
+  if (!isExpert(role)) {
+    throw new ValidityError('Huna ruhusa ya rejesta ya ukaguzi wa fedha (expert only).', 403);
+  }
+  const r = await pool.query(
+    `SELECT al.id, al.user_id, u.full_name AS actor_name, al.action, al.entity_type, al.entity_id,
+            (al.meta->>'amount') AS amount, (al.meta->>'referenceId') AS reference_id,
+            al.created_at
+     FROM audit_logs al
+     JOIN users u ON u.id = al.user_id
+     WHERE al.action = ANY($1)
+     ORDER BY al.id`, [FINANCE_AUDIT_ACTIONS]
+  );
+  const byAction = {};
+  const byActor = {};
+  let totalAmount = 0, moneyEvents = 0;
+  const entries = r.rows.map((x) => {
+    const amt = x.amount !== null && x.amount !== undefined && String(x.amount).trim() !== '' ? Number(x.amount) : null;
+    const rec = {
+      id: x.id,
+      action: x.action,
+      actor: { id: x.user_id, name: x.actor_name },
+      entity_type: x.entity_type,
+      entity_id: x.entity_id,
+      amount: amt !== null && Number.isFinite(amt) ? round2(amt) : null,
+      reference_id: x.reference_id || null,
+      created_at: x.created_at,
+    };
+    byAction[x.action] = (byAction[x.action] || 0) + 1;
+    byActor[x.actor_name] = (byActor[x.actor_name] || 0) + 1;
+    if (rec.amount !== null) { totalAmount += rec.amount; moneyEvents += 1; }
+    return rec;
+  });
+  return {
+    success: true,
+    generated_at: new Date().toISOString(),
+    summary: {
+      events: entries.length,
+      money_events: moneyEvents,
+      total_amount: round2(totalAmount),
+      actors: Object.keys(byActor).length,
+      by_action: byAction,
+      by_actor: byActor,
+    },
+    entries,
+  };
+}
+
+async function exportFinanceControlAuditRegisterCsv({ role }) {
+  const r = await getFinanceControlAuditRegister({ role });
+  const esc = (v) => { const s = v === null || v === undefined ? '' : String(v); return `"${s.replace(/"/g, '""')}"`; };
+  const L = [];
+  L.push('AFRIKOBA GLOBAL - FINANCE CONTROL AUDIT REGISTER');
+  L.push(`Generated at,${esc(r.generated_at)}`);
+  L.push(`Events,${r.summary.events}`);
+  L.push(`Money events,${r.summary.money_events}`);
+  L.push(`Total amount,${r.summary.total_amount}`);
+  L.push(`Actors,${r.summary.actors}`);
+  L.push('');
+  L.push('id,action,actor_id,actor_name,entity_type,entity_id,amount,reference_id,created_at');
+  for (const x of r.entries) {
+    L.push([x.id, x.action, x.actor.id, esc(x.actor.name), x.entity_type,
+            x.entity_id === null ? '' : x.entity_id, x.amount === null ? '' : x.amount,
+            esc(x.reference_id || ''), esc(x.created_at)].join(','));
+  }
+  return L.join('\n');
+}
+
+function renderFinanceControlAuditRegisterPdf(v, stream) {
+  const doc = new PDFDocument({ size: 'A4', landscape: true, margin: 36 });
+  doc.pipe(stream);
+  const G = '#0B5D1E';
+  const m = (n) => `${formatMoney(n)} TZS`;
+
+  doc.fontSize(16).fillColor(G).text('AFRIKOBA GLOBAL', { align: 'center' });
+  doc.fontSize(12).fillColor('#333').text('REJESTA YA UKAGUZI WA FEDHA / FINANCE CONTROL AUDIT REGISTER', { align: 'center' });
+  doc.fontSize(8).fillColor('#888').text(`Imetolewa / Generated: ${new Date(v.generated_at).toISOString()}`, { align: 'center' });
+  doc.moveDown(0.3);
+  vline(doc, doc.y + 4);
+
+  doc.fontSize(10).fillColor(G).text('Muhtasari / Summary');
+  vline(doc, doc.y + 2);
+  voucherField(doc, 'Matukio / Events', String(v.summary.events));
+  voucherField(doc, 'Yenye kiasi / Money events', String(v.summary.money_events));
+  voucherField(doc, 'Kiasi / Total amount', m(v.summary.total_amount));
+  voucherField(doc, 'Watumiaji / Actors', String(v.summary.actors));
+  doc.moveDown(0.4);
+
+  const tbl = v.entries.map((x) => [
+    String(x.id), x.action, x.actor.name, x.entity_type,
+    x.entity_id === null ? '—' : String(x.entity_id),
+    x.amount === null ? '—' : m(x.amount), x.reference_id || '—',
+    String(x.created_at || '').slice(0, 19).replace('T', ' '),
+  ]);
+  const hdr = ['#', 'Kitendo', 'Mwigizaji', 'Aina', 'Ref', 'Kiasi', 'Reference ID', 'Tarehe'];
+  const widths = [30, 140, 130, 95, 50, 100, 150, 120];
+  let y = doc.y;
+  const drawRow = (cells, isHeader) => {
+    let x = 40;
+    doc.fontSize(6.5).fillColor(isHeader ? '#0B5D1E' : '#111');
+    cells.forEach((c, i) => {
+      doc.text(String(c || ''), x, y, { width: widths[i], lineBreak: false });
+      x += widths[i];
+    });
+    y += isHeader ? 11 : 13;
+  };
+  drawRow(hdr, true);
+  for (const row of tbl) { if (y > 520) { doc.addPage(); y = 36; drawRow(hdr, true); } drawRow(row, false); }
+
+  doc.moveDown(0.4);
+  vline(doc, y + 4);
+  doc.moveDown(0.7);
+  doc.fontSize(8).fillColor('#888').text('Imekaguliwa na / Reviewed by', { align: 'center' });
+  doc.moveDown(1.2);
+  doc.moveTo(210, doc.y).lineTo(420, doc.y).stroke('#aaa');
+  doc.fontSize(8).fillColor('#888').text('Mkaguzi Mkuu (Reviewer)', { align: 'center' });
+  doc.end();
+  return doc;
+}
+
+// ============================================================================
 // PHASE 45 — PLATFORM SETTLEMENT & CLOSE-OUT REGISTER (EXPERT-ONLY)
 // ============================================================================
 
@@ -7472,6 +7605,9 @@ module.exports = {
   getSettlementCloseOutRegister,
   exportSettlementCloseOutRegisterCsv,
   renderSettlementCloseOutRegisterPdf,
+  getFinanceControlAuditRegister,
+  exportFinanceControlAuditRegisterCsv,
+  renderFinanceControlAuditRegisterPdf,
   exportPlatformProjectRegisterCsv,
   preparePlatformProjectRegisterPdf,
   renderPlatformProjectRegisterPdf,

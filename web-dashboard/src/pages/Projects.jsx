@@ -1343,6 +1343,8 @@ export default function Projects() {
           {['ADMIN', 'MODERATOR', 'EXPERT'].includes(role) && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadDocumentPdf('/api/projects/ops/revenue-allocation-matrix/pdf', 'revenue-allocation-matrix.pdf')}>{t('projects.revenue_matrix_pdf')}</button>}
           {['ADMIN', 'MODERATOR', 'EXPERT'].includes(role) && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadFinanceCsv('/api/projects/ops/settlement-closeout/export', 'settlement-closeout.csv')}>{t('projects.settlement_closeout_csv')}</button>}
           {['ADMIN', 'MODERATOR', 'EXPERT'].includes(role) && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadDocumentPdf('/api/projects/ops/settlement-closeout/pdf', 'settlement-closeout.pdf')}>{t('projects.settlement_closeout_pdf')}</button>}
+          {['ADMIN', 'MODERATOR', 'EXPERT'].includes(role) && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadFinanceCsv('/api/projects/ops/finance-audit/export', 'finance-audit.csv')}>{t('projects.finance_audit_csv')}</button>}
+          {['ADMIN', 'MODERATOR', 'EXPERT'].includes(role) && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadDocumentPdf('/api/projects/ops/finance-audit/pdf', 'finance-audit.pdf')}>{t('projects.finance_audit_pdf')}</button>}
         </div>
         {opsBook ? (
           <>
