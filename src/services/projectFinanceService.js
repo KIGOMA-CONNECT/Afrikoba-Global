@@ -5997,7 +5997,7 @@ async function getScheduleMonitor({ role }) {
   const daysSince = (ts) => Math.floor((now - new Date(ts).getTime()) / DAY_MS);
 
   const activeRes = await pool.query(
-    `SELECT p.id, p.name, p.status, p.created_at, p.currency_code,
+    `SELECT p.id, p.name, p.status, p.created_at,
             COALESCE((SELECT remaining_balance FROM controlled_project_accounts WHERE project_id = p.id), 0)::numeric AS escrow,
             COALESCE((SELECT SUM(amount) FROM project_disbursements WHERE project_id = p.id AND status = 'RELEASED'), 0)::numeric AS disbursed
      FROM projects p
@@ -6037,7 +6037,6 @@ async function getScheduleMonitor({ role }) {
       escrow_held: round2(Number(p.escrow || 0)),
       disbursed_to_owner: round2(Number(p.disbursed || 0)),
       days_since_created: daysSince(p.created_at),
-      currency: p.currency_code || 'TZS',
     });
   });
   msRes.rows.forEach((m) => {
