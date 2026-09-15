@@ -4341,6 +4341,131 @@ function renderRevenueRegisterPdf(v, stream) {
 }
 
 // ============================================================================
+// PHASE 45 — PLATFORM SETTLEMENT & CLOSE-OUT REGISTER (EXPERT-ONLY)
+// ============================================================================
+
+async function getSettlementCloseOutRegister({ role }) {
+  if (!isExpert(role)) {
+    throw new ValidityError('Huna ruhusa ya rejesta ya kufunga mradi (expert only).', 403);
+  }
+  const r = await pool.query(
+    `SELECT s.*, p.name AS project_name, p.status AS project_status
+     FROM project_settlements s
+     JOIN projects p ON p.id = s.project_id
+     ORDER BY s.id`
+  );
+  let totalReturned = 0, totalInvested = 0, totalDividends = 0, totalOwner = 0;
+  const entries = r.rows.map((x) => {
+    let ref = null;
+    try { if (x.summary && typeof x.summary === 'object') ref = x.summary.reference; else if (x.summary) ref = JSON.parse(x.summary).reference; } catch (e) { ref = null; }
+    const invested = round2(Number(x.invested_total || 0));
+    const returned = round2(Number(x.returned_to_investors || 0));
+    const dividends = round2(Number(x.dividend_allocated || 0));
+    const owner = round2(Number(x.owner_received || 0));
+    totalReturned += returned; totalInvested += invested; totalDividends += dividends; totalOwner += owner;
+    const net = round2(returned + dividends - invested);
+    return {
+      id: x.id,
+      reference: ref || `SETTLE-${x.id}`,
+      project: { id: x.project_id, name: x.project_name, status: x.project_status },
+      invested_total: invested,
+      escrow_balance: round2(Number(x.escrow_balance || 0)),
+      returned_to_investors: returned,
+      owner_received: owner,
+      reserve_released: round2(Number(x.reserve_released || 0)),
+      revenue_total: round2(Number(x.revenue_total || 0)),
+      dividend_allocated: dividends,
+      dividend_pending: round2(Number(x.dividend_pending || 0)),
+      milestone_total: Number(x.milestone_total || 0),
+      milestone_completed: Number(x.milestone_completed || 0),
+      investor_net: net,
+      roi_pct: invested > 0 ? round2((net / invested) * 100) : 0,
+      created_at: x.created_at,
+    };
+  });
+  return {
+    success: true,
+    generated_at: new Date().toISOString(),
+    summary: {
+      settlements: entries.length,
+      total_invested_settled: round2(totalInvested),
+      total_returned: round2(totalReturned),
+      total_dividends_allocated: round2(totalDividends),
+      total_owner_received: round2(totalOwner),
+      total_investor_net: round2(totalReturned + totalDividends - totalInvested),
+    },
+    entries,
+  };
+}
+
+async function exportSettlementCloseOutRegisterCsv({ role }) {
+  const r = await getSettlementCloseOutRegister({ role });
+  const esc = (v) => { const s = v === null || v === undefined ? '' : String(v); return `"${s.replace(/"/g, '""')}"`; };
+  const L = [];
+  L.push('AFRIKOBA GLOBAL - SETTLEMENT & CLOSE-OUT REGISTER');
+  L.push(`Generated at,${esc(r.generated_at)}`);
+  L.push(`Settlements,${r.summary.settlements}`);
+  L.push(`Total invested settled,${r.summary.total_invested_settled}`);
+  L.push(`Total returned,${r.summary.total_returned}`);
+  L.push(`Total dividends allocated,${r.summary.total_dividends_allocated}`);
+  L.push(`Total owner received,${r.summary.total_owner_received}`);
+  L.push(`Total investor net,${r.summary.total_investor_net}`);
+  L.push('');
+  L.push('id,reference,project_id,project_name,project_status,invested_total,escrow_balance,returned_to_investors,owner_received,reserve_released,revenue_total,dividend_allocated,dividend_pending,milestone_total,milestone_completed,investor_net,roi_pct,created_at');
+  for (const x of r.entries) {
+    L.push([x.id, esc(x.reference), x.project.id, esc(x.project.name), esc(x.project.status),
+            x.invested_total, x.escrow_balance, x.returned_to_investors, x.owner_received, x.reserve_released,
+            x.revenue_total, x.dividend_allocated, x.dividend_pending, x.milestone_total, x.milestone_completed,
+            x.investor_net, x.roi_pct, esc(x.created_at)].join(','));
+  }
+  return L.join('\n');
+}
+
+function renderSettlementCloseOutRegisterPdf(v, stream) {
+  const doc = new PDFDocument({ size: 'A4', margin: 40 });
+  doc.pipe(stream);
+  const G = '#0B5D1E';
+  const m = (n) => `${formatMoney(n)} TZS`;
+  const ensure = () => { if (doc.y > 760) doc.addPage(); };
+
+  doc.fontSize(17).fillColor(G).text('AFRIKOBA GLOBAL', { align: 'center' });
+  doc.fontSize(11).fillColor('#333').text('REJESTA YA UKWAMISHAJI NA KUFUNGA / SETTLEMENT & CLOSE-OUT REGISTER', { align: 'center' });
+  doc.fontSize(8).fillColor('#888').text(`Imetolewa / Generated: ${new Date(v.generated_at).toISOString()}`, { align: 'center' });
+  doc.moveDown(0.3);
+  vline(doc, doc.y + 4);
+
+  doc.fontSize(10).fillColor(G).text('Muhtasari / Summary');
+  vline(doc, doc.y + 2);
+  voucherField(doc, 'Ukamishaji / Settlements', String(v.summary.settlements));
+  voucherField(doc, 'Kilichowekezwa / Invested settled', m(v.summary.total_invested_settled));
+  voucherField(doc, 'Kilichorejeshwa / Returned', m(v.summary.total_returned));
+  voucherField(doc, 'Gawio / Dividends allocated', m(v.summary.total_dividends_allocated));
+  voucherField(doc, 'Mmiliki alipokea / Owner received', m(v.summary.total_owner_received));
+  voucherField(doc, 'Matokeo wawekezaji / Investor net', m(v.summary.total_investor_net));
+  doc.moveDown(0.5);
+
+  for (const x of v.entries) {
+    ensure();
+    doc.fontSize(9).fillColor('#111').text(`${x.reference}  ·  ${x.project.name} (${x.project.id})  ·  ${x.project.status}`);
+    doc.fontSize(7).fillColor('#555').text(`   Invested ${m(x.invested_total)}  ·  escrow ${m(x.escrow_balance)}  ·  returned ${m(x.returned_to_investors)}`);
+    doc.fontSize(7).fillColor('#444').text(`   Revenue ${m(x.revenue_total)}  ·  dividends ${m(x.dividend_allocated)} (pending ${m(x.dividend_pending)})  ·  owner ${m(x.owner_received)}  ·  reserve ${m(x.reserve_released)}`);
+    doc.fontSize(7).fillColor('#888').text(`   Milestones ${x.milestone_completed}/${x.milestone_total}  ·  Investor net ${m(x.investor_net)}  ·  ROI ${x.roi_pct}%`);
+    doc.moveDown(0.35);
+  }
+
+  ensure();
+  doc.moveDown(0.5);
+  vline(doc, doc.y + 4);
+  doc.moveDown(0.7);
+  doc.fontSize(8).fillColor('#888').text('Imekaguliwa na / Reviewed by', { align: 'center' });
+  doc.moveDown(1.2);
+  doc.moveTo(210, doc.y).lineTo(420, doc.y).stroke('#aaa');
+  doc.fontSize(8).fillColor('#888').text('Mkaguzi Mkuu (Reviewer)', { align: 'center' });
+  doc.end();
+  return doc;
+}
+
+// ============================================================================
 // PHASE 44 — PLATFORM REVENUE & ALLOCATION MATRIX (EXPERT-ONLY)
 // ============================================================================
 
@@ -7344,6 +7469,9 @@ module.exports = {
   getRevenueAllocationMatrix,
   exportRevenueAllocationMatrixCsv,
   renderRevenueAllocationMatrixPdf,
+  getSettlementCloseOutRegister,
+  exportSettlementCloseOutRegisterCsv,
+  renderSettlementCloseOutRegisterPdf,
   exportPlatformProjectRegisterCsv,
   preparePlatformProjectRegisterPdf,
   renderPlatformProjectRegisterPdf,
