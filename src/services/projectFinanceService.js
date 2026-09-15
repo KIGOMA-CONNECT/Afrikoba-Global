@@ -4386,9 +4386,9 @@ async function getEscrowCertificate({ role }) {
       FROM project_reserve_releases GROUP BY project_id
     ) rz ON rz.project_id = p.id
     LEFT JOIN (
-      SELECT project_id,
-        SUM((summary->>'returned_to_investors_total')::numeric) AS escrow_returned
-      FROM project_settlements GROUP BY project_id
+      SELECT s.project_id, SUM((el->>'amount')::numeric) AS escrow_returned
+      FROM project_settlements s, jsonb_array_elements(s.summary->'returned_to_investors') el
+      GROUP BY s.project_id
     ) st ON st.project_id = p.id
     ORDER BY p.id
   `);
