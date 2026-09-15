@@ -4347,7 +4347,7 @@ function renderRevenueRegisterPdf(v, stream) {
 async function getPlatformProjectRegister({ userId, role }) {
   if (!isExpert(role)) throw new ValidityError('Huna ruhusa ya rejesta ya miradi.', 403);
   const projects = await pool.query(
-    `SELECT p.id, p.name, p.status, p.owner_user_id, p.currency_code, p.capital_required, p.amount_raised,
+    `SELECT p.id, p.name, p.status, p.owner_user_id, p.capital_required, p.amount_raised,
             u.full_name AS owner_name, u.phone_number AS owner_phone,
             (s.id IS NOT NULL) AS settled, (l.id IS NOT NULL) AS liquidated
      FROM projects p
@@ -4389,7 +4389,7 @@ async function getPlatformProjectRegister({ userId, role }) {
     return {
       id: p.id, name: p.name, status: p.status,
       owner_user_id: p.owner_user_id, owner_name: p.owner_name, owner_phone: p.owner_phone,
-      currency: p.currency_code || 'TZS',
+currency: 'TZS',
       capital_required: round2(capital),
       amount_raised: round2(raised),
       percent_funded: capital > 0 ? round2((raised / capital) * 100) : 0,
