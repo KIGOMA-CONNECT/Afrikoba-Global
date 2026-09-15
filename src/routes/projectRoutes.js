@@ -1058,8 +1058,33 @@ router.get('/projects/ops/schedule-monitor/pdf', async (req, res, next) => {
   try {
     const data = await projectFinance.prepareScheduleMonitorPdf({ role: req.user.role });
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', 'inline; filename=schedule-monitor.pdf');
+    res.setHeader('Content-Disposition', 'inline; filename=platform-schedule-monitor.pdf');
     projectFinance.renderScheduleMonitorPdf(data, res);
+  } catch (e) { next(e); }
+});
+
+// Phase 53: platform KPI & health dashboard (JSON / CSV / PDF) - expert only
+router.get('/projects/ops/kpi', async (req, res, next) => {
+  try {
+    return res.json(await projectFinance.getPlatformKpiDashboard({ userId: req.user.id, role: req.user.role }));
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/ops/kpi/export', async (req, res, next) => {
+  try {
+    const csv = await projectFinance.exportPlatformKpiCsv({ userId: req.user.id, role: req.user.role });
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename=platform-kpi.csv');
+    return res.send(csv);
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/ops/kpi/pdf', async (req, res, next) => {
+  try {
+    const data = await projectFinance.preparePlatformKpiPdf({ userId: req.user.id, role: req.user.role });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'inline; filename=platform-kpi.pdf');
+    projectFinance.renderPlatformKpiPdf(data, res);
   } catch (e) { next(e); }
 });
 

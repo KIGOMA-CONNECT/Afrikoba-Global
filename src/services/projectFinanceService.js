@@ -6493,6 +6493,215 @@ async function buildProjectArchive({ userId, role, projectId }) {
 }
 
 // ============================================================================
+// PHASE 53 — PLATFORM KPI & HEALTH DASHBOARD (EXPERT-ONLY, COMPOSED REGISTERS)
+// ============================================================================
+
+async function getPlatformKpiDashboard({ userId, role }) {
+  if (!isExpert(role)) {
+    throw new ValidityError('Huna mamlaka ya dashibodi ya KPI (expert only).', 403);
+  }
+  const ctx = { userId, role };
+  const [pfe, cert, kyc, sched] = await Promise.all([
+    getPlatformPfeBook(ctx),
+    getPfeMasterCertificate(ctx),
+    getKycComplianceRegister(ctx),
+    getScheduleMonitor(ctx),
+  ]);
+  const invCount = await pool.query('SELECT COUNT(*)::int AS n FROM project_investments');
+  const T = pfe.totals;
+  const V = cert.totals;
+  const K = kyc.summary;
+  const invested = Number(T.invested || 0);
+  const capitalReturned = round2(Number(V.escrow_returned || 0) + Number(V.dividends_paid || 0));
+  const walletClosing = Number(V.wallet_closing || 0);
+  const topProjects = [...pfe.projects].sort((a, b) => b.invested - a.invested).slice(0, 5).map((x) => ({
+    project_id: x.project_id, name: x.name, status: x.status, invested: x.invested,
+    escrow_held: x.escrow_held, disbursed: x.disbursed, escrow_returned: x.escrow_returned,
+    dividends_paid: x.dividends_paid, integrity_ok: x.integrity_ok,
+  }));
+  return {
+    success: true,
+    reference: `KPI-${Date.now()}`,
+    generated_at: new Date().toISOString(),
+    health: {
+      status: cert.certificate.status,
+      checks_ok: cert.certificate.checks.filter((c) => c.ok).length,
+      checks_total: cert.certificate.checks.length,
+      platform_variance: pfe.platform_variance,
+      integrity_flags: pfe.counts.integrity_flags,
+    },
+    capital: {
+      invested,
+      refunded: round2(T.refunded),
+      escrow_held: round2(T.escrow_held),
+      disbursed: round2(T.disbursed),
+      escrow_returned: round2(T.escrow_returned),
+      dividends_paid: round2(T.dividends_paid),
+      capital_recovery_pct: invested > 0 ? round2((capitalReturned / invested) * 100) : 0,
+      liquidity_ratio: invested > 0 ? round2((walletClosing / invested) * 100) : 0,
+      wallet_closing: round2(walletClosing),
+      fees: round2(V.fees),
+      revenue: round2(T.revenue_total),
+      owner_total: round2(V.owner_total),
+      statutory_total: round2(V.statutory_total),
+      reserve_released: round2(T.reserve_released),
+      residual_released: round2(T.residual_released),
+      dividends_pending: round2(T.dividends_pending),
+    },
+    activity: {
+      projects: pfe.counts.projects,
+      open: pfe.counts.open,
+      liquidated: pfe.counts.liquidated,
+      active_projects: sched.summary.active_projects,
+      milestones_due: sched.summary.milestones_due,
+      funding_deadlines: sched.summary.funding_deadlines,
+      overdue: sched.summary.overdue,
+      upcoming_deadlines: sched.summary.upcoming_deadlines,
+    },
+    investors: {
+      investors: K.investors,
+      kyc_verified: K.kyc_verified,
+      kyc_compliance_pct: K.investors > 0 ? round2((K.kyc_verified / K.investors) * 100) : 0,
+      missing_nida: K.missing_nida,
+      missing_documents: K.missing_documents,
+      investments: invCount.rows[0].n,
+      avg_check: invCount.rows[0].n > 0 ? round2(invested / invCount.rows[0].n) : 0,
+      dividends_collected: round2(K.dividends_paid),
+      active_invested: round2(K.active_invested),
+      refunded: round2(K.refunded),
+    },
+    top_projects: topProjects,
+    by_status: pfe.by_status,
+  };
+}
+
+async function exportPlatformKpiCsv({ userId, role }) {
+  const r = await getPlatformKpiDashboard({ userId, role });
+  const esc = (v) => { const s = v === null || v === undefined ? '' : String(v); return `"${s.replace(/"/g, '""')}"`; };
+  const L = [];
+  L.push('AFRIKOBA GLOBAL - PLATFORM KPI & HEALTH DASHBOARD');
+  L.push(`Reference,${esc(r.reference)}`);
+  L.push(`Generated at,${esc(r.generated_at)}`);
+  L.push(`Health status,${r.health.status}`);
+  L.push(`Reconciliation checks,${r.health.checks_ok}/${r.health.checks_total}`);
+  L.push(`Platform variance,${r.health.platform_variance}`);
+  L.push(`Integrity flags,${r.health.integrity_flags}`);
+  L.push('');
+  L.push('Capital');
+  L.push(`Invested,${r.capital.invested}`);
+  L.push(`Refunded,${r.capital.refunded}`);
+  L.push(`Escrow held,${r.capital.escrow_held}`);
+  L.push(`Disbursed,${r.capital.disbursed}`);
+  L.push(`Escrow returned,${r.capital.escrow_returned}`);
+  L.push(`Dividends paid,${r.capital.dividends_paid}`);
+  L.push(`Capital recovery %,${r.capital.capital_recovery_pct}`);
+  L.push(`Liquidity ratio %,${r.capital.liquidity_ratio}`);
+  L.push(`Wallet closing,${r.capital.wallet_closing}`);
+  L.push(`Fees,${r.capital.fees}`);
+  L.push(`Revenue,${r.capital.revenue}`);
+  L.push(`Owner total,${r.capital.owner_total}`);
+  L.push(`Statutory total,${r.capital.statutory_total}`);
+  L.push(`Reserve released,${r.capital.reserve_released}`);
+  L.push(`Residual released,${r.capital.residual_released}`);
+  L.push(`Dividends pending,${r.capital.dividends_pending}`);
+  L.push('');
+  L.push('Activity');
+  L.push(`Projects,${r.activity.projects}`);
+  L.push(`Open,${r.activity.open}`);
+  L.push(`Liquidated,${r.activity.liquidated}`);
+  L.push(`Active projects,${r.activity.active_projects}`);
+  L.push(`Milestones due,${r.activity.milestones_due}`);
+  L.push(`Funding deadlines,${r.activity.funding_deadlines}`);
+  L.push(`Overdue,${r.activity.overdue}`);
+  L.push(`Upcoming deadlines,${r.activity.upcoming_deadlines}`);
+  L.push('');
+  L.push('Investors');
+  L.push(`Investors,${r.investors.investors}`);
+  L.push(`KYC verified,${r.investors.kyc_verified}`);
+  L.push(`KYC compliance %,${r.investors.kyc_compliance_pct}`);
+  L.push(`Missing NIDA,${r.investors.missing_nida}`);
+  L.push(`Missing documents,${r.investors.missing_documents}`);
+  L.push(`Investments,${r.investors.investments}`);
+  L.push(`Average check,${r.investors.avg_check}`);
+  L.push(`Dividends collected,${r.investors.dividends_collected}`);
+  L.push(`Active invested,${r.investors.active_invested}`);
+  L.push(`Refunded investor capital,${r.investors.refunded}`);
+  L.push('');
+  L.push('project_id,name,status,invested,escrow_held,disbursed,escrow_returned,dividends_paid,integrity_ok');
+  for (const x of r.top_projects) {
+    L.push([x.project_id, esc(x.name), esc(x.status), x.invested, x.escrow_held, x.disbursed, x.escrow_returned, x.dividends_paid, x.integrity_ok ? 'yes' : 'no'].join(','));
+  }
+  return L.join('\n');
+}
+
+async function preparePlatformKpiPdf({ userId, role }) {
+  return getPlatformKpiDashboard({ userId, role });
+}
+
+function renderPlatformKpiPdf(v, stream) {
+  const doc = new PDFDocument({ size: 'A4', margin: 40 });
+  doc.pipe(stream);
+  const G = '#0B5D1E';
+  const R = '#B3261E';
+  const m = (n) => `${formatMoney(n)} TZS`;
+  const ensure = () => { if (doc.y > 740) doc.addPage(); };
+
+  doc.fontSize(17).fillColor(G).text('AFRIKOBA GLOBAL', { align: 'center' });
+  doc.fontSize(12).fillColor('#333').text('DASHIBODI YA KPI NA AFYA YA JWUKWA / PLATFORM KPI & HEALTH DASHBOARD', { align: 'center' });
+  doc.fontSize(8).fillColor('#888').text(`Ref: ${v.reference}  ·  Generated: ${new Date(v.generated_at).toISOString()}`, { align: 'center' });
+  doc.moveDown(0.3);
+  const status = v.health.status === 'RECONCILED';
+  doc.fontSize(11).fillColor(status ? G : R).text(status ? 'HALI: IMERIDHIWA / STATUS: RECONCILED' : 'HALI: EXCEPTIONS FOUND', { align: 'center' });
+  doc.moveDown(0.3);
+  voucherField(doc, 'Checks', `${v.health.checks_ok}/${v.health.checks_total} passed`);
+  voucherField(doc, 'Platform variance', m(v.health.platform_variance));
+  voucherField(doc, 'Integrity flags', String(v.health.integrity_flags));
+  vline(doc, doc.y + 4);
+
+  doc.fontSize(10).fillColor(G).text('Mtaji / Capital');
+  vline(doc, doc.y + 2);
+  voucherField(doc, 'Invested', m(v.capital.invested));
+  voucherField(doc, 'Refunded', m(v.capital.refunded));
+  voucherField(doc, 'Escrow held', m(v.capital.escrow_held));
+  voucherField(doc, 'Disbursed', m(v.capital.disbursed));
+  voucherField(doc, 'Escrow returned to investors', m(v.capital.escrow_returned));
+  voucherField(doc, 'Dividends paid', m(v.capital.dividends_paid));
+  voucherField(doc, 'Capital recovery', `${v.capital.capital_recovery_pct}%`);
+  voucherField(doc, 'Liquidity ratio', `${v.capital.liquidity_ratio}%`);
+  voucherField(doc, 'Wallet closing', m(v.capital.wallet_closing));
+  voucherField(doc, 'Fees (consultation)', m(v.capital.fees));
+  voucherField(doc, 'Revenue (waterfalled)', m(v.capital.revenue));
+  voucherField(doc, 'Owner distributions', m(v.capital.owner_total));
+  voucherField(doc, 'Statutory (tax+debt+opex)', m(v.capital.statutory_total));
+  doc.moveDown(0.3);
+
+  ensure();
+  doc.fontSize(10).fillColor(G).text('Shughuli / Activity');
+  vline(doc, doc.y + 2);
+  const act = v.activity;
+  doc.fontSize(9).fillColor('#111').text(`Projects ${act.projects} · Open ${act.open} · Liquidated ${act.liquidated} · Active (schedule) ${act.active_projects}`);
+  doc.fontSize(9).fillColor('#111').text(`Milestones due ${act.milestones_due} · Funding deadlines ${act.funding_deadlines} · Overdue ${act.overdue} · Upcoming ${act.upcoming_deadlines}`);
+  doc.moveDown(0.3);
+
+  ensure();
+  doc.fontSize(10).fillColor(G).text('Wawekezaji / Investors');
+  vline(doc, doc.y + 2);
+  const I = v.investors;
+  doc.fontSize(9).fillColor('#111').text(`Investors ${I.investors} (KYC verified ${I.kyc_verified} = ${I.kyc_compliance_pct}%)  ·  Investments ${I.investments}  ·  Avg check ${m(I.avg_check)}`);
+  doc.fontSize(9).fillColor('#111').text(`Dividends collected ${m(I.dividends_collected)}  ·  Active invested ${m(I.active_invested)}  ·  Refunded ${m(I.refunded)}`);
+  doc.moveDown(0.3);
+
+  ensure();
+  doc.fontSize(10).fillColor(G).text(`Miradi mikubwa 5 / Top 5 projects by invested`);
+  vline(doc, doc.y + 2);
+  for (const x of v.top_projects) {
+    doc.fontSize(8).fillColor(x.integrity_ok ? '#111' : R).text(`#${x.project_id}  ${x.name}  ·  ${x.status}  ·  ${m(x.invested)}  ·  escrow ${m(x.escrow_held)}  ·  disbursed ${m(x.disbursed)}  ·  returned ${m(x.escrow_returned)}  ·  div ${m(x.dividends_paid)}  ${x.integrity_ok ? '' : '(INTEGRITY FLAG)'}`);
+  }
+  doc.end();
+  return doc;
+}
+
+// ============================================================================
 // PHASE 37 — PLATFORM WATERFALL DISTRIBUTION SUMMARY (EXPERT-ONLY)
 // ============================================================================
 
@@ -8503,6 +8712,10 @@ module.exports = {
   prepareInvestorPlatformSummaryPdf,
   renderInvestorPlatformSummaryPdf,
   buildProjectArchive,
+  getPlatformKpiDashboard,
+  exportPlatformKpiCsv,
+  preparePlatformKpiPdf,
+  renderPlatformKpiPdf,
   getTaxRegister,
   exportTaxRegisterCsv,
   renderTaxRegisterPdf,
