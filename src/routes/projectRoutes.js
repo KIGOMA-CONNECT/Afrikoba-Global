@@ -982,6 +982,31 @@ router.get('/projects/:id/settlement-register/pdf', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// Phase 34: platform consultation / fees register (expert-only) + export + pdf
+router.get('/projects/ops/fees-register', async (req, res, next) => {
+  try {
+    return res.json(await projectFinance.getFeesRegister({ role: req.user.role }));
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/ops/fees-register/export', async (req, res, next) => {
+  try {
+    const csv = await projectFinance.exportFeesRegisterCsv({ role: req.user.role });
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename=fees-register.csv');
+    return res.send(csv);
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/ops/fees-register/pdf', async (req, res, next) => {
+  try {
+    const data = await projectFinance.getFeesRegister({ role: req.user.role });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'inline; filename=fees-register.pdf');
+    projectFinance.renderFeesRegisterPdf(data, res);
+  } catch (e) { next(e); }
+});
+
 // Phase 33: platform escrow trust certificate (expert-only) + export + pdf
 router.get('/projects/ops/escrow-certificate', async (req, res, next) => {
   try {

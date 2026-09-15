@@ -4341,6 +4341,107 @@ function renderRevenueRegisterPdf(v, stream) {
 }
 
 // ============================================================================
+// PHASE 34 — PLATFORM CONSULTATION / FEES REGISTER (EXPERT-ONLY)
+// ============================================================================
+
+async function getFeesRegister({ role }) {
+  if (!isExpert(role)) {
+    throw new ValidityError('Huna ruhusa ya rejesta ya ada za ushauri (expert only).', 403);
+  }
+  const r = await pool.query(
+    `SELECT pc.id, pc.project_id, pc.amount, pc.unique_reference, pc.wallet_txn_id, pc.paid_at, pc.status,
+            p.name AS project_name, p.status AS project_status, p.owner_user_id,
+            u.full_name AS owner_name, u.phone_number AS owner_phone
+     FROM project_consultations pc
+     JOIN projects p ON p.id = pc.project_id
+     JOIN users u ON u.id = pc.owner_user_id
+     ORDER BY pc.id`
+  );
+  const rows = r.rows.map((x) => ({
+    id: x.id,
+    project: { id: x.project_id, name: x.project_name, status: x.project_status },
+    owner: { id: x.owner_user_id, name: x.owner_name, phone_number: x.owner_phone },
+    amount: round2(Number(x.amount || 0)),
+    reference: x.unique_reference,
+    wallet_txn_id: x.wallet_txn_id,
+    paid_at: x.paid_at,
+    status: x.status,
+  }));
+  const total = round2(rows.reduce((s, x) => s + x.amount, 0));
+  return {
+    success: true,
+    generated_at: new Date().toISOString(),
+    summary: { entries: rows.length, total_paid: total, paid: rows.filter((x) => x.status === 'PAID').length },
+    entries: rows,
+  };
+}
+
+async function exportFeesRegisterCsv({ role }) {
+  const r = await getFeesRegister({ role });
+  const esc = (v) => { const s = v === null || v === undefined ? '' : String(v); return `"${s.replace(/"/g, '""')}"`; };
+  const L = [];
+  L.push('AFRIKOBA GLOBAL - CONSULTATION / FEES REGISTER');
+  L.push(`Generated at,${esc(r.generated_at)}`);
+  L.push(`Entries,${r.summary.entries}`);
+  L.push(`Total paid,${r.summary.total_paid}`);
+  L.push('');
+  L.push('id,project_id,project_name,project_status,owner_name,owner_phone,amount,reference,wallet_txn_id,paid_at,status');
+  for (const x of r.entries) {
+    L.push([x.id, x.project.id, esc(x.project.name), esc(x.project.status), esc(x.owner.name), esc(x.owner.phone_number), x.amount, esc(x.reference), x.wallet_txn_id || '', esc(x.paid_at), esc(x.status)].join(','));
+  }
+  return L.join('\n');
+}
+
+function renderFeesRegisterPdf(v, stream) {
+  const doc = new PDFDocument({ size: 'A4', landscape: true, margin: 36 });
+  doc.pipe(stream);
+  const G = '#0B5D1E';
+  const m = (n) => `${formatMoney(n)} TZS`;
+
+  doc.fontSize(16).fillColor(G).text('AFRIKOBA GLOBAL', { align: 'center' });
+  doc.fontSize(12).fillColor('#333').text('REJESTA YA ADA ZA USHAURI / CONSULTATION FEES REGISTER', { align: 'center' });
+  doc.fontSize(8).fillColor('#888').text(`Imetolewa / Generated: ${new Date(v.generated_at).toISOString()}`, { align: 'center' });
+  doc.moveDown(0.3);
+  vline(doc, doc.y + 4);
+
+  doc.fontSize(10).fillColor(G).text('Muhtasari / Summary');
+  vline(doc, doc.y + 2);
+  voucherField(doc, 'Mawimbi / Entries', String(v.summary.entries));
+  voucherField(doc, 'Jumla / Total paid', m(v.summary.total_paid));
+  voucherField(doc, 'Iliyolipwa / Paid', String(v.summary.paid));
+  doc.moveDown(0.4);
+
+  const tbl = v.entries.map((x) => [
+    String(x.id), String(x.project.id), x.project.name, x.project.status, `${x.owner.name} (${x.owner.phone_number})`,
+    m(x.amount), x.reference, x.wallet_txn_id ? `#${x.wallet_txn_id}` : '—', String(x.paid_at || '').slice(0, 19).replace('T', ' '), x.status,
+  ]);
+  const hdr = ['#', 'Proj', 'Mradi / Project', 'Hali', 'Mwenye / Owner', 'Kiasi', 'Ref', 'Wallet Txn', 'Tarehe', 'Hali Malipo'];
+  const widths = [26, 38, 110, 70, 150, 85, 90, 60, 110, 62];
+  let y = doc.y;
+  const drawRow = (cells, isHeader) => {
+    let x = 40;
+    doc.fontSize(7).fillColor(isHeader ? '#0B5D1E' : '#111');
+    cells.forEach((c, i) => {
+      doc.text(String(c || ''), x, y, { width: widths[i], lineBreak: false });
+      x += widths[i];
+    });
+    y += isHeader ? 12 : 14;
+  };
+  drawRow(hdr, true);
+  for (const row of tbl) { if (y > 520) { doc.addPage(); y = 36; drawRow(hdr, true); } drawRow(row, false); }
+
+  doc.moveDown(0.4);
+  vline(doc, y + 4);
+  doc.moveDown(0.7);
+  doc.fontSize(8).fillColor('#888').text('Imekaguliwa na / Reviewed by', { align: 'center' });
+  doc.moveDown(1.2);
+  doc.moveTo(210, doc.y).lineTo(420, doc.y).stroke('#aaa');
+  doc.fontSize(8).fillColor('#888').text('Mkaguzi Mkuu (Reviewer)', { align: 'center' });
+  doc.end();
+  return doc;
+}
+
+// ============================================================================
 // PHASE 33 — PLATFORM ESCROW TRUST CERTIFICATE (EXPERT-ONLY)
 // ============================================================================
 
@@ -5844,6 +5945,9 @@ module.exports = {
   getEscrowCertificate,
   exportEscrowCertificateCsv,
   renderEscrowCertificatePdf,
+  getFeesRegister,
+  exportFeesRegisterCsv,
+  renderFeesRegisterPdf,
   exportPlatformProjectRegisterCsv,
   preparePlatformProjectRegisterPdf,
   renderPlatformProjectRegisterPdf,
