@@ -4341,6 +4341,185 @@ function renderRevenueRegisterPdf(v, stream) {
 }
 
 // ============================================================================
+// PHASE 30 — SETTLEMENT CLOSE-OUT REGISTER (PER-INVESTOR RETURNS)
+// ============================================================================
+
+async function getSettlementRegister(projectId, { userId, role }) {
+  const p = await getProject(projectId);
+  const isOwner = p.owner_user_id === userId;
+  if (!isOwner && !isExpert(role)) {
+    throw new ValidityError('Huna ruhusa ya rejesta ya settlement.', 403);
+  }
+  const s = await pool.query(
+    `SELECT * FROM project_settlements WHERE project_id = $1`, [projectId]
+  );
+  if (s.rows.length === 0) {
+    return {
+      success: true,
+      project: { id: p.id, name: p.name, status: p.status },
+      currency: p.currency_code || 'TZS',
+      generated_at: new Date().toISOString(),
+      settled: false,
+      settlement: null,
+      investor_returns: [],
+      payouts: [],
+      summary: { settled: false, returned_to_investors_total: 0, dividends_paid: 0, dividends_pending: 0, owner_received: 0, reserve_released: 0 },
+    };
+  }
+  const st = s.rows[0];
+  const summary = st.summary && typeof st.summary === 'string' ? JSON.parse(st.summary) : (st.summary || {});
+  const returns = (Array.isArray(summary.returned_to_investors) ? summary.returned_to_investors : []).map((x) => ({
+    investor_user_id: Number(x.investor_user_id || x.investorId || 0),
+    amount: round2(Number(x.amount || 0)),
+  }));
+  const payouts = await pool.query(
+    `SELECT pi.id AS payout_id, pi.project_id, pi.status, pi.entitlement, pi.paid_at, pi.reference,
+            u.id AS investor_user_id, u.full_name, u.phone_number
+     FROM project_investor_payouts pi
+     LEFT JOIN users u ON u.id = pi.investor_user_id
+     WHERE pi.project_id = $1 ORDER BY pi.id`, [projectId]
+  );
+  const paid = payouts.rows.filter((x) => x.status === 'PAID');
+  const pending = payouts.rows.filter((x) => x.status === 'PENDING');
+  const returnsByInvestor = Object.fromEntries(returns.map((r) => [r.investor_user_id, r.amount]));
+  const investorReturns = [];
+  for (const ir of returns) {
+    const px = payouts.rows.filter((x) => Number(x.investor_user_id) === Number(ir.investor_user_id));
+    investorReturns.push({
+      investor_user_id: ir.investor_user_id,
+      full_name: px[0] ? px[0].full_name : null,
+      phone_number: px[0] ? px[0].phone_number : null,
+      escrow_return: ir.amount,
+      dividends_paid: round2(px.filter((x) => x.status === 'PAID').reduce((a, x) => a + Number(x.entitlement || 0), 0)),
+      dividends_pending: round2(px.filter((x) => x.status === 'PENDING').reduce((a, x) => a + Number(x.entitlement || 0), 0)),
+      total_returned: round2(ir.amount + px.filter((x) => x.status === 'PAID').reduce((a, x) => a + Number(x.entitlement || 0), 0)),
+    });
+  }
+  const settlement = {
+    id: st.id,
+    reference: summary.reference || `SETTLE-${projectId}`,
+    invested_total: round2(Number(st.invested_total || 0)),
+    escrow_balance: round2(Number(st.escrow_balance || 0)),
+    returned_to_investors: round2(Number(st.returned_to_investors || 0)),
+    owner_received: round2(Number(st.owner_received || 0)),
+    reserve_released: round2(Number(st.reserve_released || 0)),
+    revenue_total: round2(Number(st.revenue_total || 0)),
+    dividend_allocated: round2(Number(st.dividend_allocated || 0)),
+    dividend_pending: round2(Number(st.dividend_pending || 0)),
+    milestones_completed: st.milestone_completed, milestone_total: st.milestone_total,
+    created_by: st.created_by, created_at: st.created_at,
+  };
+  return {
+    success: true,
+    project: { id: p.id, name: p.name, status: p.status },
+    currency: p.currency_code || 'TZS',
+    generated_at: new Date().toISOString(),
+    settled: true,
+    settlement,
+    investor_returns: investorReturns,
+    payouts: payouts.rows.map((x) => ({ payout_id: x.payout_id, status: x.status, entitlement: round2(Number(x.entitlement || 0)), paid_at: x.paid_at, reference: x.reference, investor_user_id: x.investor_user_id, full_name: x.full_name, phone_number: x.phone_number })),
+    summary: {
+      settled: true,
+      returned_to_investors_total: round2(Number(st.returned_to_investors || 0)),
+      dividends_paid: round2(paid.reduce((a, x) => a + Number(x.entitlement || 0), 0)),
+      dividends_pending: round2(pending.reduce((a, x) => a + Number(x.entitlement || 0), 0)),
+      owner_received: round2(Number(st.owner_received || 0)),
+      reserve_released: round2(Number(st.reserve_released || 0)),
+    },
+  };
+}
+
+async function exportSettlementRegisterCsv(projectId, { userId, role }) {
+  const r = await getSettlementRegister(projectId, { userId, role });
+  const esc = (v) => { const s = v === null || v === undefined ? '' : String(v); return `"${s.replace(/"/g, '""')}"`; };
+  const L = [];
+  L.push(`Project,${esc(r.project.name)} (${r.project.id})`);
+  L.push(`Status,${r.project.status}`);
+  L.push(`Generated at,${esc(r.generated_at)}`);
+  if (!r.settled) { L.push('Settled,no'); return L.join('\n'); }
+  L.push(`Settled,yes (settlement #${r.settlement.id})`);
+  L.push(`Reference,${esc(r.settlement.reference)}`);
+  L.push(`Invested total,${r.settlement.invested_total}`);
+  L.push(`Escrow balance,${r.settlement.escrow_balance}`);
+  L.push(`Returned to investors,${r.settlement.returned_to_investors}`);
+  L.push(`Owner received,${r.settlement.owner_received}`);
+  L.push(`Reserve released,${r.settlement.reserve_released}`);
+  L.push(`Revenue total,${r.settlement.revenue_total}`);
+  L.push(`Dividend allocated,${r.settlement.dividend_allocated}`);
+  L.push(`Dividend pending,${r.settlement.dividend_pending}`);
+  L.push(`Milestones,${r.settlement.milestones_completed} / ${r.settlement.milestone_total}`);
+  L.push('');
+  L.push('investor_user_id,full_name,phone_number,escrow_return,dividends_paid,dividends_pending,total_returned');
+  for (const x of r.investor_returns) {
+    L.push([x.investor_user_id, esc(x.full_name || ''), esc(x.phone_number || ''), x.escrow_return, x.dividends_paid, x.dividends_pending, x.total_returned].join(','));
+  }
+  return L.join('\n');
+}
+
+async function prepareSettlementRegisterPdf(projectId, { userId, role }) {
+  const r = await getSettlementRegister(projectId, { userId, role });
+  const p = await getProject(projectId);
+  return { ...r, currency: p.currency_code || 'TZS' };
+}
+
+function renderSettlementRegisterPdf(v, stream) {
+  const doc = new PDFDocument({ size: 'A4', margin: 40 });
+  doc.pipe(stream);
+  const G = '#0B5D1E';
+  const m = (n) => `${formatMoney(n)} ${v.currency}`;
+  const ensure = () => { if (doc.y > 760) doc.addPage(); };
+
+  doc.fontSize(17).fillColor(G).text('AFRIKOBA GLOBAL', { align: 'center' });
+  doc.fontSize(11).fillColor('#333').text('REJESTA YA SETTLEMENT / SETTLEMENT CLOSE-OUT REGISTER', { align: 'center' });
+  doc.fontSize(8).fillColor('#888').text(`${v.project.name}  (${v.project.id})  ·  ${v.project.status}  ·  Imetolewa: ${new Date(v.generated_at).toISOString()}`, { align: 'center' });
+  doc.moveDown(0.5);
+  vline(doc, doc.y + 4);
+
+  if (!v.settled) {
+    doc.fontSize(10).fillColor(G).text('Mradi huu haujafanywa settlement / No settlement recorded');
+    doc.moveDown(0.8);
+    doc.fontSize(8).fillColor('#888').text('Mkaguzi Mkuu (Reviewer)', { align: 'center', width: 200, lineBreak: false });
+    doc.moveDown(1.6);
+    doc.moveTo(120, doc.y).lineTo(320, doc.y).stroke('#aaa');
+    doc.fontSize(8).fillColor('#888').text('Mkaguzi Mkuu (Reviewer)', { align: 'center', width: 200, lineBreak: false });
+    doc.end();
+    return doc;
+  }
+
+  doc.fontSize(10).fillColor(G).text('Muhtasari / Summary');
+  vline(doc, doc.y + 2);
+  voucherField(doc, 'Settlement', `#${v.settlement.id}  ·  ${v.settlement.reference}`);
+  voucherField(doc, 'Invested total', m(v.settlement.invested_total));
+  voucherField(doc, 'Escrow balance', m(v.settlement.escrow_balance));
+  voucherField(doc, 'Returned to investors', m(v.settlement.returned_to_investors));
+  voucherField(doc, 'Owner received', m(v.settlement.owner_received));
+  voucherField(doc, 'Reserve released', m(v.settlement.reserve_released));
+  voucherField(doc, 'Revenue total', m(v.settlement.revenue_total));
+  voucherField(doc, 'Dividend allocated / pending', `${m(v.settlement.dividend_allocated)} / ${m(v.settlement.dividend_pending)}`);
+  voucherField(doc, 'Milestones', `${v.settlement.milestones_completed} / ${v.settlement.milestone_total}`);
+  doc.moveDown(0.3);
+
+  doc.fontSize(10).fillColor(G).text(`Marejesho ya wawekezaji / Investor Returns (${v.investor_returns.length})`);
+  vline(doc, doc.y + 2);
+  for (const x of v.investor_returns) {
+    ensure();
+    doc.fontSize(8.5).fillColor('#111').text(`${x.full_name || 'Investor #' + x.investor_user_id}  ·  ${x.phone_number || ''}`);
+    doc.fontSize(7.5).fillColor('#555').text(`   Escrow ${m(x.escrow_return)}  ·  dividends paid ${m(x.dividends_paid)}  ·  pending ${m(x.dividends_pending)}  ·  total returned ${m(x.total_returned)}`);
+  }
+
+  ensure();
+  doc.moveDown(0.5);
+  vline(doc, doc.y + 4);
+  doc.moveDown(0.8);
+  doc.fontSize(8).fillColor('#888').text('Mkaguzi Mkuu (Reviewer)', { align: 'center', width: 200, lineBreak: false });
+  doc.moveDown(1.6);
+  doc.moveTo(120, doc.y).lineTo(320, doc.y).stroke('#aaa');
+  doc.fontSize(8).fillColor('#888').text('Mkaguzi Mkuu (Reviewer)', { align: 'center', width: 200, lineBreak: false });
+  doc.end();
+  return doc;
+}
+
+// ============================================================================
 // PHASE 29 — PLATFORM PROJECT REGISTER
 // ============================================================================
 
@@ -5203,6 +5382,10 @@ module.exports = {
   renderMyPerformancePdf,
   getPlatformInvestorRegistry,
   getPlatformProjectRegister,
+  getSettlementRegister,
+  exportSettlementRegisterCsv,
+  prepareSettlementRegisterPdf,
+  renderSettlementRegisterPdf,
   exportPlatformProjectRegisterCsv,
   preparePlatformProjectRegisterPdf,
   renderPlatformProjectRegisterPdf,
