@@ -6,6 +6,20 @@ function money(v) {
   return Number(v || 0).toLocaleString('en-US', { maximumFractionDigits: 0 });
 }
 
+const OPS_ROLES = ['ADMIN', 'MODERATOR', 'EXPERT'];
+
+function DocBtn({ label, chip, onClick, disabled }) {
+  return (
+    <button className="doc-card" onClick={onClick} disabled={disabled} title={label}>
+      <span className="doc-title">
+        <span className="doc-ico">{chip === 'PDF' ? '📕' : '📄'}</span>
+        <span>{label}</span>
+      </span>
+      <span className="doc-chip">{chip}</span>
+    </button>
+  );
+}
+
 export default function Projects() {
   const { t } = useT();
   const [tab, setTab] = useState('marketplace');
@@ -883,51 +897,56 @@ export default function Projects() {
                 <h4 style={{ margin: 0 }}>{t('projects.statement')}: {statement.project.name}</h4>
                 <span className="badge info">{statement.project.status}</span>
                 {statement.completed && <span className="badge info">✓ {t('projects.complete')}</span>}
-                <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadStatement(statement.project.id)}>{t('projects.statement_csv')}</button>
+                <div className="finance-toolbar" style={{ marginBottom: 10 }}>
+                <span className="finance-label">{t('projects.downloads')}</span>
+              </div>
+              <div className="doc-grid">
+                <DocBtn label={t('projects.statement_csv')} chip="CSV" onClick={() => downloadStatement(statement.project.id)} />
                 {(statement.project.status === 'COMPLETED' || statement.project.status === 'LIQUIDATED') && (
                   <>
-                    <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadReportCsv(statement.project.id, 'close-out', `project-${statement.project.id}-closeout.csv`)}>{t('projects.closeout_csv')}</button>
-                    <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadDocumentPdf(`/api/projects/${statement.project.id}/close-out/pdf`, `project-${statement.project.id}-closeout.pdf`)}>{t('projects.closeout_pdf')}</button>
-                    <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadReportCsv(statement.project.id, 'liquidation', `project-${statement.project.id}-liquidation.csv`)}>{t('projects.liquidation_csv')}</button>
+                    <DocBtn label={t('projects.closeout_csv')} chip="CSV" onClick={() => downloadReportCsv(statement.project.id, 'close-out', `project-${statement.project.id}-closeout.csv`)} />
+                    <DocBtn label={t('projects.closeout_pdf')} chip="PDF" onClick={() => downloadDocumentPdf(`/api/projects/${statement.project.id}/close-out/pdf`, `project-${statement.project.id}-closeout.pdf`)} />
+                    <DocBtn label={t('projects.liquidation_csv')} chip="CSV" onClick={() => downloadReportCsv(statement.project.id, 'liquidation', `project-${statement.project.id}-liquidation.csv`)} />
                     {statement.project.status === 'LIQUIDATED' && (
-                      <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadDocumentPdf(`/api/projects/${statement.project.id}/liquidation/pdf`, `project-${statement.project.id}-liquidation.pdf`)}>{t('projects.liquidation_pdf')}</button>
+                      <DocBtn label={t('projects.liquidation_pdf')} chip="PDF" onClick={() => downloadDocumentPdf(`/api/projects/${statement.project.id}/liquidation/pdf`, `project-${statement.project.id}-liquidation.pdf`)} />
                     )}
                     {(['ADMIN', 'MODERATOR', 'EXPERT'].includes(role) || Number((JSON.parse(localStorage.getItem('afrikoba_user') || '{}').id || 0)) === Number(statement.project.owner_user_id)) && (
                       <>
-                        <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadWaterfallCsv(statement.project.id)}>{t('projects.waterfall_csv')}</button>
-                        <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadDocumentPdf(`/api/projects/${statement.project.id}/waterfall-ledger/pdf`, `project-${statement.project.id}-waterfall-ledger.pdf`)}>{t('projects.waterfall_pdf')}</button>
-                        <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadFinanceCsv(`/api/projects/${statement.project.id}/payout-register/export`, `project-${statement.project.id}-payout-register.csv`)}>{t('projects.payout_register_csv')}</button>
-                        <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadDocumentPdf(`/api/projects/${statement.project.id}/payout-register/pdf`, `project-${statement.project.id}-payout-register.pdf`)}>{t('projects.payout_register_pdf')}</button>
+                        <DocBtn label={t('projects.waterfall_csv')} chip="CSV" onClick={() => downloadWaterfallCsv(statement.project.id)} />
+                        <DocBtn label={t('projects.waterfall_pdf')} chip="PDF" onClick={() => downloadDocumentPdf(`/api/projects/${statement.project.id}/waterfall-ledger/pdf`, `project-${statement.project.id}-waterfall-ledger.pdf`)} />
+                        <DocBtn label={t('projects.payout_register_csv')} chip="CSV" onClick={() => downloadFinanceCsv(`/api/projects/${statement.project.id}/payout-register/export`, `project-${statement.project.id}-payout-register.csv`)} />
+                        <DocBtn label={t('projects.payout_register_pdf')} chip="PDF" onClick={() => downloadDocumentPdf(`/api/projects/${statement.project.id}/payout-register/pdf`, `project-${statement.project.id}-payout-register.pdf`)} />
                         {statement.project.status === 'ACTIVE' && (
-                          <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadFinanceCsv(`/api/projects/${statement.project.id}/escrow-projection/export`, `project-${statement.project.id}-escrow-projection.csv`)}>{t('projects.escrow_projection_csv')}</button>
+                          <DocBtn label={t('projects.escrow_projection_csv')} chip="CSV" onClick={() => downloadFinanceCsv(`/api/projects/${statement.project.id}/escrow-projection/export`, `project-${statement.project.id}-escrow-projection.csv`)} />
                         )}
-                        <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadFinanceCsv(`/api/projects/${statement.project.id}/drawdown-schedule/export`, `project-${statement.project.id}-drawdown-schedule.csv`)}>{t('projects.drawdown_csv')}</button>
-                        <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadDocumentPdf(`/api/projects/${statement.project.id}/drawdown-schedule/pdf`, `project-${statement.project.id}-drawdown-schedule.pdf`)}>{t('projects.drawdown_pdf')}</button>
-                        <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadFinanceCsv(`/api/projects/${statement.project.id}/drawdown-workflow/export`, `project-${statement.project.id}-drawdown-workflow.csv`)}>{t('projects.drawdown_workflow_csv')}</button>
-                        <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadDocumentPdf(`/api/projects/${statement.project.id}/drawdown-workflow/pdf`, `project-${statement.project.id}-drawdown-workflow.pdf`)}>{t('projects.drawdown_workflow_pdf')}</button>
-                      <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadFinanceCsv(`/api/projects/${statement.project.id}/milestone-register/export`, `project-${statement.project.id}-milestone-register.csv`)}>{t('projects.milestone_register_csv')}</button>
-                        <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadDocumentPdf(`/api/projects/${statement.project.id}/milestone-register/pdf`, `project-${statement.project.id}-milestone-register.pdf`)}>{t('projects.milestone_register_pdf')}</button>
-                        <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadFinanceCsv(`/api/projects/${statement.project.id}/milestone-evidence/export`, `project-${statement.project.id}-milestone-evidence.csv`)}>{t('projects.milestone_evidence_csv')}</button>
-                        <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadDocumentPdf(`/api/projects/${statement.project.id}/milestone-evidence/pdf`, `project-${statement.project.id}-milestone-evidence.pdf`)}>{t('projects.milestone_evidence_pdf')}</button>
-                        <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadFinanceCsv(`/api/projects/${statement.project.id}/waterfall-governance/export`, `project-${statement.project.id}-waterfall-governance.csv`)}>{t('projects.waterfall_governance_csv')}</button>
-                        <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadFinanceCsv(`/api/projects/${statement.project.id}/reserve-releases/export`, `project-${statement.project.id}-reserve-releases.csv`)}>{t('projects.reserve_releases_csv')}</button>
-                        <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadDocumentPdf(`/api/projects/${statement.project.id}/reserve-releases/pdf`, `project-${statement.project.id}-reserve-releases.pdf`)}>{t('projects.reserve_releases_pdf')}</button>
-                        <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadFinanceCsv(`/api/projects/${statement.project.id}/funding-intake/export`, `project-${statement.project.id}-funding-intake.csv`)}>{t('projects.funding_intake_csv')}</button>
-                        <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadDocumentPdf(`/api/projects/${statement.project.id}/funding-intake/pdf`, `project-${statement.project.id}-funding-intake.pdf`)}>{t('projects.funding_intake_pdf')}</button>
-                        <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadFinanceCsv(`/api/projects/${statement.project.id}/settlement-register/export`, `project-${statement.project.id}-settlement-register.csv`)}>{t('projects.settlement_register_csv')}</button>
-                        <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadDocumentPdf(`/api/projects/${statement.project.id}/settlement-register/pdf`, `project-${statement.project.id}-settlement-register.pdf`)}>{t('projects.settlement_register_pdf')}</button>
-                        <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadFinanceCsv(`/api/projects/${statement.project.id}/wallet-journal/export`, `project-${statement.project.id}-wallet-journal.csv`)}>{t('projects.wallet_journal_csv')}</button>
-                        <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadDocumentPdf(`/api/projects/${statement.project.id}/wallet-journal/pdf`, `project-${statement.project.id}-wallet-journal.pdf`)}>{t('projects.wallet_journal_pdf')}</button>
+                        <DocBtn label={t('projects.drawdown_csv')} chip="CSV" onClick={() => downloadFinanceCsv(`/api/projects/${statement.project.id}/drawdown-schedule/export`, `project-${statement.project.id}-drawdown-schedule.csv`)} />
+                        <DocBtn label={t('projects.drawdown_pdf')} chip="PDF" onClick={() => downloadDocumentPdf(`/api/projects/${statement.project.id}/drawdown-schedule/pdf`, `project-${statement.project.id}-drawdown-schedule.pdf`)} />
+                        <DocBtn label={t('projects.drawdown_workflow_csv')} chip="CSV" onClick={() => downloadFinanceCsv(`/api/projects/${statement.project.id}/drawdown-workflow/export`, `project-${statement.project.id}-drawdown-workflow.csv`)} />
+                        <DocBtn label={t('projects.drawdown_workflow_pdf')} chip="PDF" onClick={() => downloadDocumentPdf(`/api/projects/${statement.project.id}/drawdown-workflow/pdf`, `project-${statement.project.id}-drawdown-workflow.pdf`)} />
+                        <DocBtn label={t('projects.milestone_register_csv')} chip="CSV" onClick={() => downloadFinanceCsv(`/api/projects/${statement.project.id}/milestone-register/export`, `project-${statement.project.id}-milestone-register.csv`)} />
+                        <DocBtn label={t('projects.milestone_register_pdf')} chip="PDF" onClick={() => downloadDocumentPdf(`/api/projects/${statement.project.id}/milestone-register/pdf`, `project-${statement.project.id}-milestone-register.pdf`)} />
+                        <DocBtn label={t('projects.milestone_evidence_csv')} chip="CSV" onClick={() => downloadFinanceCsv(`/api/projects/${statement.project.id}/milestone-evidence/export`, `project-${statement.project.id}-milestone-evidence.csv`)} />
+                        <DocBtn label={t('projects.milestone_evidence_pdf')} chip="PDF" onClick={() => downloadDocumentPdf(`/api/projects/${statement.project.id}/milestone-evidence/pdf`, `project-${statement.project.id}-milestone-evidence.pdf`)} />
+                        <DocBtn label={t('projects.waterfall_governance_csv')} chip="CSV" onClick={() => downloadFinanceCsv(`/api/projects/${statement.project.id}/waterfall-governance/export`, `project-${statement.project.id}-waterfall-governance.csv`)} />
+                        <DocBtn label={t('projects.reserve_releases_csv')} chip="CSV" onClick={() => downloadFinanceCsv(`/api/projects/${statement.project.id}/reserve-releases/export`, `project-${statement.project.id}-reserve-releases.csv`)} />
+                        <DocBtn label={t('projects.reserve_releases_pdf')} chip="PDF" onClick={() => downloadDocumentPdf(`/api/projects/${statement.project.id}/reserve-releases/pdf`, `project-${statement.project.id}-reserve-releases.pdf`)} />
+                        <DocBtn label={t('projects.funding_intake_csv')} chip="CSV" onClick={() => downloadFinanceCsv(`/api/projects/${statement.project.id}/funding-intake/export`, `project-${statement.project.id}-funding-intake.csv`)} />
+                        <DocBtn label={t('projects.funding_intake_pdf')} chip="PDF" onClick={() => downloadDocumentPdf(`/api/projects/${statement.project.id}/funding-intake/pdf`, `project-${statement.project.id}-funding-intake.pdf`)} />
+                        <DocBtn label={t('projects.settlement_register_csv')} chip="CSV" onClick={() => downloadFinanceCsv(`/api/projects/${statement.project.id}/settlement-register/export`, `project-${statement.project.id}-settlement-register.csv`)} />
+                        <DocBtn label={t('projects.settlement_register_pdf')} chip="PDF" onClick={() => downloadDocumentPdf(`/api/projects/${statement.project.id}/settlement-register/pdf`, `project-${statement.project.id}-settlement-register.pdf`)} />
+                        <DocBtn label={t('projects.wallet_journal_csv')} chip="CSV" onClick={() => downloadFinanceCsv(`/api/projects/${statement.project.id}/wallet-journal/export`, `project-${statement.project.id}-wallet-journal.csv`)} />
+                        <DocBtn label={t('projects.wallet_journal_pdf')} chip="PDF" onClick={() => downloadDocumentPdf(`/api/projects/${statement.project.id}/wallet-journal/pdf`, `project-${statement.project.id}-wallet-journal.pdf`)} />
                         {auth?.user?.id && (
                           <>
-                            <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadFinanceCsv(`/api/projects/${statement.project.id}/investor/${auth.user.id}/dividend-advice/export`, `dividend-advice-${statement.project.id}-${auth.user.id}.csv`)}>{t('projects.dividend_advice_csv')}</button>
-                            <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadDocumentPdf(`/api/projects/${statement.project.id}/investor/${auth.user.id}/dividend-advice/pdf`, `dividend-advice-${statement.project.id}-${auth.user.id}.pdf`)}>{t('projects.dividend_advice_pdf')}</button>
+                            <DocBtn label={t('projects.dividend_advice_csv')} chip="CSV" onClick={() => downloadFinanceCsv(`/api/projects/${statement.project.id}/investor/${auth.user.id}/dividend-advice/export`, `dividend-advice-${statement.project.id}-${auth.user.id}.csv`)} />
+                            <DocBtn label={t('projects.dividend_advice_pdf')} chip="PDF" onClick={() => downloadDocumentPdf(`/api/projects/${statement.project.id}/investor/${auth.user.id}/dividend-advice/pdf`, `dividend-advice-${statement.project.id}-${auth.user.id}.pdf`)} />
                           </>
                         )}
-                        </>
-                      )}
+                      </>
+                    )}
                   </>
                 )}
+              </div>
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px,1fr))', gap: 12 }}>
                 <div className="card"><div className="roles-tag">{t('projects.invested_total')}</div><b>{fmt(statement.funds.invested_confirmed)}</b></div>
@@ -1315,38 +1334,43 @@ export default function Projects() {
           <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={loadOpsBook}>{t('projects.refresh')}</button>
           {opsBook && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={downloadOpsCsv}>{t('projects.ops_csv')}</button>}
           {opsBook && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadDocumentPdf('/api/projects/ops/pfe-book/pdf', 'platform-pfe-book.pdf')}>{t('projects.ops_pdf')}</button>}
-          {['ADMIN', 'MODERATOR', 'EXPERT'].includes(role) && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadFinanceCsv('/api/projects/ops/dividend-ledger/export', 'platform-dividend-ledger.csv')}>{t('projects.dividend_ledger_csv')}</button>}
-          {['ADMIN', 'MODERATOR', 'EXPERT'].includes(role) && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadDocumentPdf('/api/projects/ops/dividend-ledger/pdf', 'platform-dividend-ledger.pdf')}>{t('projects.dividend_ledger_pdf')}</button>}
-          {['ADMIN', 'MODERATOR', 'EXPERT'].includes(role) && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadFinanceCsv('/api/projects/ops/investor-registry/export', 'platform-investor-registry.csv')}>{t('projects.investor_registry_csv')}</button>}
-          {['ADMIN', 'MODERATOR', 'EXPERT'].includes(role) && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadDocumentPdf('/api/projects/ops/investor-registry/pdf', 'platform-investor-registry.pdf')}>{t('projects.investor_registry_pdf')}</button>}
-          {['ADMIN', 'MODERATOR', 'EXPERT'].includes(role) && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadFinanceCsv('/api/projects/ops/project-register/export', 'platform-project-register.csv')}>{t('projects.project_register_csv')}</button>}
-          {['ADMIN', 'MODERATOR', 'EXPERT'].includes(role) && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadDocumentPdf('/api/projects/ops/project-register/pdf', 'platform-project-register.pdf')}>{t('projects.project_register_pdf')}</button>}
-          {['ADMIN', 'MODERATOR', 'EXPERT'].includes(role) && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadFinanceCsv('/api/projects/ops/escrow-certificate/export', 'escrow-trust-certificate.csv')}>{t('projects.escrow_certificate_csv')}</button>}
-          {['ADMIN', 'MODERATOR', 'EXPERT'].includes(role) && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadDocumentPdf('/api/projects/ops/escrow-certificate/pdf', 'escrow-trust-certificate.pdf')}>{t('projects.escrow_certificate_pdf')}</button>}
-          {['ADMIN', 'MODERATOR', 'EXPERT'].includes(role) && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadFinanceCsv('/api/projects/ops/fees-register/export', 'fees-register.csv')}>{t('projects.fees_register_csv')}</button>}
-          {['ADMIN', 'MODERATOR', 'EXPERT'].includes(role) && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadDocumentPdf('/api/projects/ops/fees-register/pdf', 'fees-register.pdf')}>{t('projects.fees_register_pdf')}</button>}
-          {['ADMIN', 'MODERATOR', 'EXPERT'].includes(role) && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadFinanceCsv('/api/projects/ops/refund-register/export', 'refund-register.csv')}>{t('projects.refund_register_csv')}</button>}
-          {['ADMIN', 'MODERATOR', 'EXPERT'].includes(role) && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadDocumentPdf('/api/projects/ops/refund-register/pdf', 'refund-register.pdf')}>{t('projects.refund_register_pdf')}</button>}
-          {['ADMIN', 'MODERATOR', 'EXPERT'].includes(role) && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadFinanceCsv('/api/projects/ops/waterfall-summary/export', 'waterfall-summary.csv')}>{t('projects.waterfall_summary_csv')}</button>}
-          {['ADMIN', 'MODERATOR', 'EXPERT'].includes(role) && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadDocumentPdf('/api/projects/ops/waterfall-summary/pdf', 'waterfall-summary.pdf')}>{t('projects.waterfall_summary_pdf')}</button>}
-          {['ADMIN', 'MODERATOR', 'EXPERT'].includes(role) && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadFinanceCsv('/api/projects/ops/tax-register/export', 'tax-register.csv')}>{t('projects.tax_register_csv')}</button>}
-          {['ADMIN', 'MODERATOR', 'EXPERT'].includes(role) && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadDocumentPdf('/api/projects/ops/tax-register/pdf', 'tax-register.pdf')}>{t('projects.tax_register_pdf')}</button>}
-          {['ADMIN', 'MODERATOR', 'EXPERT'].includes(role) && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadFinanceCsv('/api/projects/ops/debt-service-register/export', 'debt-service-register.csv')}>{t('projects.debt_service_csv')}</button>}
-          {['ADMIN', 'MODERATOR', 'EXPERT'].includes(role) && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadDocumentPdf('/api/projects/ops/debt-service-register/pdf', 'debt-service-register.pdf')}>{t('projects.debt_service_pdf')}</button>}
-          {['ADMIN', 'MODERATOR', 'EXPERT'].includes(role) && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadFinanceCsv('/api/projects/ops/operating-expenses/export', 'operating-expenses.csv')}>{t('projects.operating_expenses_csv')}</button>}
-          {['ADMIN', 'MODERATOR', 'EXPERT'].includes(role) && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadDocumentPdf('/api/projects/ops/operating-expenses/pdf', 'operating-expenses.pdf')}>{t('projects.operating_expenses_pdf')}</button>}
-          {['ADMIN', 'MODERATOR', 'EXPERT'].includes(role) && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadFinanceCsv('/api/projects/ops/kyc-register/export', 'kyc-register.csv')}>{t('projects.kyc_register_csv')}</button>}
-          {['ADMIN', 'MODERATOR', 'EXPERT'].includes(role) && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadDocumentPdf('/api/projects/ops/kyc-register/pdf', 'kyc-register.pdf')}>{t('projects.kyc_register_pdf')}</button>}
-          {['ADMIN', 'MODERATOR', 'EXPERT'].includes(role) && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadFinanceCsv('/api/projects/ops/owner-distributions/export', 'owner-distributions.csv')}>{t('projects.owner_distributions_csv')}</button>}
-          {['ADMIN', 'MODERATOR', 'EXPERT'].includes(role) && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadDocumentPdf('/api/projects/ops/owner-distributions/pdf', 'owner-distributions.pdf')}>{t('projects.owner_distributions_pdf')}</button>}
-          {['ADMIN', 'MODERATOR', 'EXPERT'].includes(role) && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadFinanceCsv('/api/projects/ops/revenue-allocation-matrix/export', 'revenue-allocation-matrix.csv')}>{t('projects.revenue_matrix_csv')}</button>}
-          {['ADMIN', 'MODERATOR', 'EXPERT'].includes(role) && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadDocumentPdf('/api/projects/ops/revenue-allocation-matrix/pdf', 'revenue-allocation-matrix.pdf')}>{t('projects.revenue_matrix_pdf')}</button>}
-          {['ADMIN', 'MODERATOR', 'EXPERT'].includes(role) && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadFinanceCsv('/api/projects/ops/settlement-closeout/export', 'settlement-closeout.csv')}>{t('projects.settlement_closeout_csv')}</button>}
-          {['ADMIN', 'MODERATOR', 'EXPERT'].includes(role) && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadDocumentPdf('/api/projects/ops/settlement-closeout/pdf', 'settlement-closeout.pdf')}>{t('projects.settlement_closeout_pdf')}</button>}
-          {['ADMIN', 'MODERATOR', 'EXPERT'].includes(role) && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadFinanceCsv('/api/projects/ops/finance-audit/export', 'finance-audit.csv')}>{t('projects.finance_audit_csv')}</button>}
-          {['ADMIN', 'MODERATOR', 'EXPERT'].includes(role) && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadDocumentPdf('/api/projects/ops/finance-audit/pdf', 'finance-audit.pdf')}>{t('projects.finance_audit_pdf')}</button>}
-          {['ADMIN', 'MODERATOR', 'EXPERT'].includes(role) && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadFinanceCsv('/api/projects/ops/pfe-certificate/export', 'pfe-certificate.csv')}>{t('projects.pfe_certificate_csv')}</button>}
-          {['ADMIN', 'MODERATOR', 'EXPERT'].includes(role) && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadDocumentPdf('/api/projects/ops/pfe-certificate/pdf', 'pfe-certificate.pdf')}>{t('projects.pfe_certificate_pdf')}</button>}
+          <div className="finance-toolbar" style={{ marginTop: 4, marginBottom: 10, width: '100%' }}>
+            <span className="finance-label">{t('projects.platform_registers')}</span>
+          </div>
+          <div className="doc-grid">
+            {OPS_ROLES.includes(role) && <DocBtn label={t('projects.dividend_ledger_csv')} chip="CSV" onClick={() => downloadFinanceCsv('/api/projects/ops/dividend-ledger/export', 'platform-dividend-ledger.csv')} />}
+            {OPS_ROLES.includes(role) && <DocBtn label={t('projects.dividend_ledger_pdf')} chip="PDF" onClick={() => downloadDocumentPdf('/api/projects/ops/dividend-ledger/pdf', 'platform-dividend-ledger.pdf')} />}
+            {OPS_ROLES.includes(role) && <DocBtn label={t('projects.investor_registry_csv')} chip="CSV" onClick={() => downloadFinanceCsv('/api/projects/ops/investor-registry/export', 'platform-investor-registry.csv')} />}
+            {OPS_ROLES.includes(role) && <DocBtn label={t('projects.investor_registry_pdf')} chip="PDF" onClick={() => downloadDocumentPdf('/api/projects/ops/investor-registry/pdf', 'platform-investor-registry.pdf')} />}
+            {OPS_ROLES.includes(role) && <DocBtn label={t('projects.project_register_csv')} chip="CSV" onClick={() => downloadFinanceCsv('/api/projects/ops/project-register/export', 'platform-project-register.csv')} />}
+            {OPS_ROLES.includes(role) && <DocBtn label={t('projects.project_register_pdf')} chip="PDF" onClick={() => downloadDocumentPdf('/api/projects/ops/project-register/pdf', 'platform-project-register.pdf')} />}
+            {OPS_ROLES.includes(role) && <DocBtn label={t('projects.escrow_certificate_csv')} chip="CSV" onClick={() => downloadFinanceCsv('/api/projects/ops/escrow-certificate/export', 'escrow-trust-certificate.csv')} />}
+            {OPS_ROLES.includes(role) && <DocBtn label={t('projects.escrow_certificate_pdf')} chip="PDF" onClick={() => downloadDocumentPdf('/api/projects/ops/escrow-certificate/pdf', 'escrow-trust-certificate.pdf')} />}
+            {OPS_ROLES.includes(role) && <DocBtn label={t('projects.fees_register_csv')} chip="CSV" onClick={() => downloadFinanceCsv('/api/projects/ops/fees-register/export', 'fees-register.csv')} />}
+            {OPS_ROLES.includes(role) && <DocBtn label={t('projects.fees_register_pdf')} chip="PDF" onClick={() => downloadDocumentPdf('/api/projects/ops/fees-register/pdf', 'fees-register.pdf')} />}
+            {OPS_ROLES.includes(role) && <DocBtn label={t('projects.refund_register_csv')} chip="CSV" onClick={() => downloadFinanceCsv('/api/projects/ops/refund-register/export', 'refund-register.csv')} />}
+            {OPS_ROLES.includes(role) && <DocBtn label={t('projects.refund_register_pdf')} chip="PDF" onClick={() => downloadDocumentPdf('/api/projects/ops/refund-register/pdf', 'refund-register.pdf')} />}
+            {OPS_ROLES.includes(role) && <DocBtn label={t('projects.waterfall_summary_csv')} chip="CSV" onClick={() => downloadFinanceCsv('/api/projects/ops/waterfall-summary/export', 'waterfall-summary.csv')} />}
+            {OPS_ROLES.includes(role) && <DocBtn label={t('projects.waterfall_summary_pdf')} chip="PDF" onClick={() => downloadDocumentPdf('/api/projects/ops/waterfall-summary/pdf', 'waterfall-summary.pdf')} />}
+            {OPS_ROLES.includes(role) && <DocBtn label={t('projects.tax_register_csv')} chip="CSV" onClick={() => downloadFinanceCsv('/api/projects/ops/tax-register/export', 'tax-register.csv')} />}
+            {OPS_ROLES.includes(role) && <DocBtn label={t('projects.tax_register_pdf')} chip="PDF" onClick={() => downloadDocumentPdf('/api/projects/ops/tax-register/pdf', 'tax-register.pdf')} />}
+            {OPS_ROLES.includes(role) && <DocBtn label={t('projects.debt_service_csv')} chip="CSV" onClick={() => downloadFinanceCsv('/api/projects/ops/debt-service-register/export', 'debt-service-register.csv')} />}
+            {OPS_ROLES.includes(role) && <DocBtn label={t('projects.debt_service_pdf')} chip="PDF" onClick={() => downloadDocumentPdf('/api/projects/ops/debt-service-register/pdf', 'debt-service-register.pdf')} />}
+            {OPS_ROLES.includes(role) && <DocBtn label={t('projects.operating_expenses_csv')} chip="CSV" onClick={() => downloadFinanceCsv('/api/projects/ops/operating-expenses/export', 'operating-expenses.csv')} />}
+            {OPS_ROLES.includes(role) && <DocBtn label={t('projects.operating_expenses_pdf')} chip="PDF" onClick={() => downloadDocumentPdf('/api/projects/ops/operating-expenses/pdf', 'operating-expenses.pdf')} />}
+            {OPS_ROLES.includes(role) && <DocBtn label={t('projects.kyc_register_csv')} chip="CSV" onClick={() => downloadFinanceCsv('/api/projects/ops/kyc-register/export', 'kyc-register.csv')} />}
+            {OPS_ROLES.includes(role) && <DocBtn label={t('projects.kyc_register_pdf')} chip="PDF" onClick={() => downloadDocumentPdf('/api/projects/ops/kyc-register/pdf', 'kyc-register.pdf')} />}
+            {OPS_ROLES.includes(role) && <DocBtn label={t('projects.owner_distributions_csv')} chip="CSV" onClick={() => downloadFinanceCsv('/api/projects/ops/owner-distributions/export', 'owner-distributions.csv')} />}
+            {OPS_ROLES.includes(role) && <DocBtn label={t('projects.owner_distributions_pdf')} chip="PDF" onClick={() => downloadDocumentPdf('/api/projects/ops/owner-distributions/pdf', 'owner-distributions.pdf')} />}
+            {OPS_ROLES.includes(role) && <DocBtn label={t('projects.revenue_matrix_csv')} chip="CSV" onClick={() => downloadFinanceCsv('/api/projects/ops/revenue-allocation-matrix/export', 'revenue-allocation-matrix.csv')} />}
+            {OPS_ROLES.includes(role) && <DocBtn label={t('projects.revenue_matrix_pdf')} chip="PDF" onClick={() => downloadDocumentPdf('/api/projects/ops/revenue-allocation-matrix/pdf', 'revenue-allocation-matrix.pdf')} />}
+            {OPS_ROLES.includes(role) && <DocBtn label={t('projects.settlement_closeout_csv')} chip="CSV" onClick={() => downloadFinanceCsv('/api/projects/ops/settlement-closeout/export', 'settlement-closeout.csv')} />}
+            {OPS_ROLES.includes(role) && <DocBtn label={t('projects.settlement_closeout_pdf')} chip="PDF" onClick={() => downloadDocumentPdf('/api/projects/ops/settlement-closeout/pdf', 'settlement-closeout.pdf')} />}
+            {OPS_ROLES.includes(role) && <DocBtn label={t('projects.finance_audit_csv')} chip="CSV" onClick={() => downloadFinanceCsv('/api/projects/ops/finance-audit/export', 'finance-audit.csv')} />}
+            {OPS_ROLES.includes(role) && <DocBtn label={t('projects.finance_audit_pdf')} chip="PDF" onClick={() => downloadDocumentPdf('/api/projects/ops/finance-audit/pdf', 'finance-audit.pdf')} />}
+            {OPS_ROLES.includes(role) && <DocBtn label={t('projects.pfe_certificate_csv')} chip="CSV" onClick={() => downloadFinanceCsv('/api/projects/ops/pfe-certificate/export', 'pfe-certificate.csv')} />}
+            {OPS_ROLES.includes(role) && <DocBtn label={t('projects.pfe_certificate_pdf')} chip="PDF" onClick={() => downloadDocumentPdf('/api/projects/ops/pfe-certificate/pdf', 'pfe-certificate.pdf')} />}
+          </div>
         </div>
         {opsBook ? (
           <>
