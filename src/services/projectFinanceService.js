@@ -1800,6 +1800,189 @@ async function getCloseOutReport(projectId, { userId, role }) {
   };
 }
 
+/**
+ * Per-stakeholder financial statement for a project in ANY state: sums up the
+ * whole lifecycle (invested, escrow, disbursements, dividends, refunds,
+ * close-out releases) into a single consolidated view for the owner, confirmed
+ * investors, or experts. Mirrors the close-out break-down once completed.
+ */
+async function getProjectStatement(projectId, { userId, role }) {
+  const p = await getProject(projectId);
+  const isOwner = p.owner_user_id === userId;
+  const invRes = await pool.query(
+    `SELECT 1 FROM project_investments WHERE project_id = $1 AND investor_user_id = $2 AND status IN ('CONFIRMED','REFUNDED') LIMIT 1`,
+    [projectId, userId]
+  );
+  const isInvestor = invRes.rows.length > 0;
+  if (!isOwner && !isInvestor && !isExpert(role)) {
+    throw new ValidityError('Huna ruhusa ya taarifa ya mradi huu.', 403);
+  }
+
+  const settled = await pool.query('SELECT * FROM project_settlements WHERE project_id = $1', [projectId]);
+  const settlement = settled.rows[0] || null;
+  const completed = !!settlement;
+
+  const agg = await pool.query(
+    `SELECT
+       COALESCE(SUM(CASE WHEN i.status='CONFIRMED' THEN i.amount END),0)::numeric AS invested_confirmed,
+       COALESCE(SUM(CASE WHEN i.status='REFUNDED' THEN i.amount END),0)::numeric AS invested_refunded
+     FROM project_investments i WHERE i.project_id = $1`,
+    [projectId]
+  );
+  const disbursed = await pool.query(
+    `SELECT COALESCE(SUM(amount),0)::numeric AS total FROM project_disbursements WHERE project_id = $1 AND status='RELEASED'`,
+    [projectId]
+  );
+  const divPaid = await pool.query(
+    `SELECT COALESCE(SUM(entitlement),0)::numeric AS total FROM project_investor_payouts WHERE project_id=$1 AND status='PAID'`,
+    [projectId]
+  );
+  const divPending = await pool.query(
+    `SELECT COALESCE(SUM(entitlement),0)::numeric AS total FROM project_investor_payouts WHERE project_id=$1 AND status='PENDING'`,
+    [projectId]
+  );
+  const revenue = await pool.query(
+    `SELECT COALESCE(SUM(amount),0)::numeric AS total FROM waterfall_allocation_records WHERE project_id=$1`,
+    [projectId]
+  );
+  const waterfall = await pool.query(
+    `SELECT allocation_step, COUNT(*)::int AS runs, SUM(amount)::numeric AS total
+     FROM waterfall_allocation_records WHERE project_id = $1 GROUP BY allocation_step ORDER BY allocation_step`,
+    [projectId]
+  );
+  const releases = await pool.query(
+    `SELECT reserve_type, amount, released_to, reference, status, created_at
+     FROM project_reserve_releases WHERE project_id = $1 ORDER BY id`,
+    [projectId]
+  );
+  const milestones = await pool.query(
+    `SELECT phase, name, status, budget FROM project_milestones WHERE project_id = $1 ORDER BY id`,
+    [projectId]
+  );
+  const consultation = await pool.query(
+    `SELECT id, amount, status, payment_reference FROM project_consultation_fees WHERE project_id = $1 ORDER BY id DESC LIMIT 1`,
+    [projectId]
+  );
+  const investors = await pool.query(
+    `SELECT i.investor_user_id, u.full_name, u.phone_number, i.amount AS invested, i.participation_pct,
+            i.status AS investment_status, i.refund_reference, i.refunded_at,
+            COALESCE(pa.paid,0)::numeric AS dividends_paid,
+            COALESCE(pn.pending,0)::numeric AS dividends_pending
+     FROM project_investments i
+     JOIN users u ON u.id = i.investor_user_id
+     LEFT JOIN (SELECT investor_user_id, SUM(entitlement)::numeric AS paid FROM project_investor_payouts
+                WHERE project_id = $1 AND status='PAID' GROUP BY investor_user_id) pa ON pa.investor_user_id = i.investor_user_id
+     LEFT JOIN (SELECT investor_user_id, SUM(entitlement)::numeric AS pending FROM project_investor_payouts
+                WHERE project_id = $1 AND status='PENDING' GROUP BY investor_user_id) pn ON pn.investor_user_id = i.investor_user_id
+     WHERE i.project_id = $1 ORDER BY i.id`,
+    [projectId]
+  );
+
+  const returnedMap = {};
+  let returnedTotal = 0;
+  if (settlement && settlement.summary && Array.isArray(settlement.summary.returned_to_investors)) {
+    for (const x of settlement.summary.returned_to_investors) {
+      returnedMap[x.investor_user_id] = Number(x.amount || 0);
+    }
+    returnedTotal = Number(settlement.summary.returned_to_investors_total || 0);
+    if (!(returnedTotal > 0)) {
+      returnedTotal = Object.values(returnedMap).reduce((a, b) => a + b, 0);
+    }
+  }
+
+  const investedConfirmed = Number(agg.rows[0].invested_confirmed || 0);
+  const investedRefunded = Number(agg.rows[0].invested_refunded || 0);
+  const disbursedTotal = Number(disbursed.rows[0].total || 0);
+  const escrowHeld = completed
+    ? Number(settlement.escrow_balance || 0)
+    : Math.max(0, investedConfirmed - disbursedTotal);
+
+  const investorPositions = investors.rows.map((x) => {
+    const invested = Number(x.invested || 0);
+    const dividendsPaid = Number(x.dividends_paid || 0);
+    const dividendsPending = Number(x.dividends_pending || 0);
+    const refunded = x.refunded_at ? invested : 0;
+    const escrowReturn = returnedMap[x.investor_user_id] || 0;
+    const received = round2(escrowReturn + dividendsPaid + refunded);
+    const roi = invested > 0 ? round2(((received - invested) / invested) * 100) : 0;
+    return {
+      investor_user_id: x.investor_user_id, full_name: x.full_name, phone_number: x.phone_number,
+      invested: round2(invested), participation_pct: Number(x.participation_pct || 0),
+      escrow_return: round2(escrowReturn), dividends_paid: round2(dividendsPaid),
+      dividends_pending: round2(dividendsPending), refunded: round2(refunded),
+      received, roi_percent: roi, investment_status: x.investment_status,
+    };
+  });
+
+  const releaseRows = releases.rows.map((r) => ({
+    reserve_type: r.reserve_type, amount: Number(r.amount || 0), released_to: r.released_to,
+    reference: r.reference, status: r.status, created_at: r.created_at,
+  }));
+
+  return {
+    project: { id: p.id, name: p.name, status: p.status, current_stage: p.current_stage, completed_at: p.completed_at, capital_required: p.capital_required, amount_raised: p.amount_raised },
+    completed,
+    settlement,
+    funds: {
+      invested_confirmed: round2(investedConfirmed),
+      invested_refunded: round2(investedRefunded),
+      escrow_held: round2(escrowHeld),
+      disbursed_to_owner: round2(disbursedTotal),
+      dividends_paid_to_investors: round2(Number(divPaid.rows[0].total || 0)),
+      dividends_pending: round2(Number(divPending.rows[0].total || 0)),
+      escrow_returned_to_investors: completed ? round2(returnedTotal) : 0,
+      reserve_released_to_owner: round2(releaseRows.filter((r) => r.reserve_type === 'DISTRIBUTION_RESERVE').reduce((a, r) => a + r.amount, 0)),
+      residual_released_to_owner: round2(releaseRows.filter((r) => r.reserve_type === 'OWNER_RESIDUAL').reduce((a, r) => a + r.amount, 0)),
+      revenue_total: round2(Number(revenue.rows[0].total || 0)),
+    },
+    investors: investorPositions,
+    releases: releaseRows,
+    waterfall: waterfall.rows,
+    milestones: milestones.rows,
+    milestone_total: milestones.rows.length,
+    milestone_completed: milestones.rows.filter((m) => m.status === 'COMPLETED').length,
+    consultation: consultation.rows[0] || null,
+  };
+}
+
+/** Build a CSV export of the project statement. */
+async function exportProjectStatementCsv(projectId, opts) {
+  const st = await getProjectStatement(projectId, opts);
+  const L = [];
+  const esc = (v) => {
+    const s = v === null || v === undefined ? '' : String(v);
+    return `"${s.replace(/"/g, '""')}"`;
+  };
+  L.push(`Project Statement: ${st.project.name} (id ${st.project.id})`);
+  L.push(`Status,${esc(st.project.status)},Completed,${st.completed ? 'yes' : 'no'}`);
+  const f = st.funds;
+  L.push('Summary');
+  const summaryKeys = [
+    ['invested_confirmed', 'Invested (confirmed)'],
+    ['invested_refunded', 'Invested (refunded)'],
+    ['escrow_held', 'Escrow held'],
+    ['disbursed_to_owner', 'Disbursed to owner'],
+    ['dividends_paid_to_investors', 'Dividends paid'],
+    ['dividends_pending', 'Dividends pending'],
+    ['escrow_returned_to_investors', 'Escrow returned to investors'],
+    ['reserve_released_to_owner', 'Reserve released to owner'],
+    ['residual_released_to_owner', 'Residual released to owner'],
+    ['revenue_total', 'Total revenue processed'],
+  ];
+  for (const [k, label] of summaryKeys) L.push(`${label},${esc(f[k])}`);
+  L.push('');
+  L.push('Investors');
+  L.push('Investor,Invested,Participation %,Escrow return,Dividends paid,Refunded,Total received,ROI %,Status');
+  for (const inv of st.investors) {
+    L.push([
+      esc(inv.full_name || `+${inv.phone_number}`), inv.invested, inv.participation_pct,
+      inv.escrow_return, inv.dividends_paid, inv.refunded, inv.received, `${inv.roi_percent}%`,
+      esc(inv.investment_status),
+    ].join(','));
+  }
+  return L.join('\n');
+}
+
 module.exports = {
   ACCOUNTS,
   WATERFALL_STEPS,
@@ -1843,4 +2026,6 @@ module.exports = {
   releaseOwnerReserve,
   releaseOwnerResidual,
   getCloseOutReport,
+  getProjectStatement,
+  exportProjectStatementCsv,
 };

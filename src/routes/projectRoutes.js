@@ -388,6 +388,23 @@ router.get('/projects/:id/close-out', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// Phase 9: per-stakeholder project statement (any lifecycle state) + CSV export
+router.get('/projects/:id/statement', async (req, res, next) => {
+  try {
+    const statement = await projectFinance.getProjectStatement(parseInt(req.params.id, 10), { userId: req.user.id, role: req.user.role });
+    return res.json({ success: true, ...statement });
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/:id/statement/export', async (req, res, next) => {
+  try {
+    const csv = await projectFinance.exportProjectStatementCsv(parseInt(req.params.id, 10), { userId: req.user.id, role: req.user.role });
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename=project-${req.params.id}-statement.csv`);
+    return res.send(csv);
+  } catch (e) { next(e); }
+});
+
 // --- Budget & Milestones ---------------------------------------------------
 router.post('/projects/:id/budget', async (req, res, next) => {
   try {

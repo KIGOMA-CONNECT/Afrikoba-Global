@@ -19,6 +19,7 @@ export default function Projects() {
   const [performance, setPerformance] = useState(null);
   const [settlement, setSettlement] = useState(null);
   const [closeOut, setCloseOut] = useState(null);
+  const [statement, setStatement] = useState(null);
   const [msg, setMsg] = useState({ type: '', text: '' });
   const [role, setRole] = useState('');
   const [expandedForm, setExpandedForm] = useState(false);
@@ -226,6 +227,33 @@ export default function Projects() {
     } catch (err) { error(err); }
   };
 
+  const viewStatement = async (id) => {
+    try {
+      const r = await api.get(`/projects/${id}/statement`);
+      setStatement(r.data);
+      setSettlement(null);
+      setCloseOut(null);
+    } catch (err) { error(err); }
+  };
+
+  const downloadStatement = (id) => {
+    const token = localStorage.getItem('afrikoba_token');
+    fetch(`/api/projects/${id}/statement/export`, { headers: { Authorization: `Bearer ${token}` } })
+      .then((r) => {
+        if (!r.ok) throw new Error();
+        return r.blob();
+      })
+      .then((blob) => {
+        const u = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = u;
+        a.download = `project-${id}-statement.csv`;
+        a.click();
+        URL.revokeObjectURL(u);
+      })
+      .catch(() => ok(t('projects.error')));
+  };
+
   const tabs = [
     { id: 'marketplace', label: t('projects.marketplace_tab') },
     { id: 'myprojects', label: t('projects.myprojects_tab') },
@@ -394,6 +422,9 @@ export default function Projects() {
                             <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => payConsultation(p.id)}>{t('projects.pay_fee')}</button>
                           )}
                           <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => runAiReview(p.id)}>{t('projects.ai_rereun')}</button>
+                          {['PUBLISHED', 'FUNDING', 'APPROVED', 'ACTIVE', 'COMPLETED'].includes(p.status) && (
+                            <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => viewStatement(p.id)}>{t('projects.statement')}</button>
+                          )}
                           {['PUBLISHED', 'FUNDING', 'ACTIVE', 'APPROVED'].includes(p.status) && (
                             <>
                               <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => disburse(p.id)}>{t('projects.disburse')}</button>
@@ -523,6 +554,93 @@ export default function Projects() {
               </div>
             </div>
           )}
+          {statement && (
+            <div style={{ marginTop: 16 }}>
+              <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 8, flexWrap: 'wrap' }}>
+                <h4 style={{ margin: 0 }}>{t('projects.statement')}: {statement.project.name}</h4>
+                <span className="badge info">{statement.project.status}</span>
+                {statement.completed && <span className="badge info">✓ {t('projects.complete')}</span>}
+                <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadStatement(statement.project.id)}>{t('projects.statement_csv')}</button>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px,1fr))', gap: 12 }}>
+                <div className="card"><div className="roles-tag">{t('projects.invested_total')}</div><b>{fmt(statement.funds.invested_confirmed)}</b></div>
+                <div className="card"><div className="roles-tag">{t('projects.escrow')}</div><b>{fmt(statement.funds.escrow_held)}</b></div>
+                <div className="card"><div className="roles-tag">{t('projects.disbursed_to_owner')}</div><b>{fmt(statement.funds.disbursed_to_owner)}</b></div>
+                <div className="card"><div className="roles-tag">{t('projects.dividend_paid_inv')}</div><b>{fmt(statement.funds.dividends_paid_to_investors)}</b></div>
+                <div className="card"><div className="roles-tag">{t('projects.dividend_pending')}</div><b>{fmt(statement.funds.dividends_pending)}</b></div>
+                <div className="card"><div className="roles-tag">{t('projects.escrow_return')}</div><b>{fmt(statement.funds.escrow_returned_to_investors)}</b></div>
+                <div className="card"><div className="roles-tag">{t('projects.reserve_to_owner')}</div><b>{fmt(statement.funds.reserve_released_to_owner)}</b></div>
+                <div className="card"><div className="roles-tag">{t('projects.residual_to_owner')}</div><b>{fmt(statement.funds.residual_released_to_owner)}</b></div>
+                <div className="card"><div className="roles-tag">{t('projects.revenue_processed')}</div><b>{fmt(statement.funds.revenue_total)}</b></div>
+              </div>
+              <div style={{ marginTop: 12, overflowX: 'auto' }}>
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>{t('projects.investor')}</th>
+                      <th>{t('projects.invested_amount')}</th>
+                      <th>%</th>
+                      <th>{t('projects.escrow_return')}</th>
+                      <th>{t('projects.dividend_paid_inv')}</th>
+                      <th>{t('projects.refund')}</th>
+                      <th>{t('projects.received')}</th>
+                      <th>ROI</th>
+                      <th>{t('projects.status')}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {statement.investors.map((inv) => (
+                      <tr key={inv.investor_user_id}>
+                        <td>{inv.full_name || `+${inv.phone_number}`}</td>
+                        <td>{fmt(inv.invested)}</td>
+                        <td>{Number(inv.participation_pct).toFixed(2)}%</td>
+                        <td>{fmt(inv.escrow_return)}</td>
+                        <td>{fmt(inv.dividends_paid)}</td>
+                        <td>{fmt(inv.refunded)}</td>
+                        <td>{fmt(inv.received)}</td>
+                        <td style={{ color: inv.roi_percent >= 0 ? '#15803d' : '#dc2626', fontWeight: 600 }}>{inv.roi_percent}%</td>
+                        <td><span className="badge info">{inv.investment_status}</span></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {statement.releases.length > 0 && (
+                <div style={{ marginTop: 12 }}>
+                  <h5>{t('projects.close_out_payout')}</h5>
+                  <div style={{ overflowX: 'auto' }}>
+                    <table className="table">
+                      <thead>
+                        <tr><th>{t('projects.reserve_type')}</th><th>{t('projects.amount')}</th><th>To</th><th>Ref</th><th>{t('projects.status')}</th><th>Date</th></tr>
+                      </thead>
+                      <tbody>
+                        {statement.releases.map((r, idx) => (
+                          <tr key={idx}>
+                            <td>{r.reserve_type}</td>
+                            <td>{fmt(r.amount)}</td>
+                            <td>{r.released_to}</td>
+                            <td style={{ fontSize: 11 }}>{r.reference}</td>
+                            <td><span className="badge info">{r.status}</span></td>
+                            <td>{r.created_at ? new Date(r.created_at).toLocaleString() : '—'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+              {statement.waterfall.length > 0 && (
+                <div className="roles-tag" style={{ marginTop: 8 }}>
+                  {t('projects.waterfall_runs')}: {statement.waterfall.map((w) => `${w.allocation_step} ×${w.runs} (${fmt(w.total)})`).join(' · ')}
+                </div>
+              )}
+              {statement.milestones.length > 0 && (
+                <div className="roles-tag" style={{ marginTop: 4 }}>
+                  {t('projects.milestone')}: {statement.milestone_completed}/{statement.milestone_total}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 
@@ -590,10 +708,15 @@ export default function Projects() {
                       <td>{i.participation_pct != null ? Number(i.participation_pct).toFixed(2) : '—'}%</td>
                       <td><span className="badge info">{i.status}</span></td>
                       <td>
-                        {i.project_status === 'EXPIRED' && i.status === 'CONFIRMED' && (
-                          <button className="btn btn-success" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => refundInvestment(i.id, i.project_id, i.project_name)}>{t('projects.refund')}</button>
-                        )}
-                        {i.refund_reference && <span className="roles-tag" style={{ margin: 0 }}>✓ {t('projects.refunded')}</span>}
+                        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                          {['PUBLISHED', 'FUNDING', 'APPROVED', 'ACTIVE', 'COMPLETED'].includes(i.project_status) && (
+                            <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => viewStatement(i.project_id)}>{t('projects.statement')}</button>
+                          )}
+                          {i.project_status === 'EXPIRED' && i.status === 'CONFIRMED' && (
+                            <button className="btn btn-success" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => refundInvestment(i.id, i.project_id, i.project_name)}>{t('projects.refund')}</button>
+                          )}
+                          {i.refund_reference && <span className="roles-tag" style={{ margin: 0 }}>✓ {t('projects.refunded')}</span>}
+                        </div>
                       </td>
                     </tr>
                   ))}
