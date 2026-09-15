@@ -197,14 +197,21 @@ async function invest(userId, projectId, { amount, unique_reference, agreement_v
   if (p.funding_deadline && new Date(p.funding_deadline) < new Date()) throw new ValidityError('Muda wa ufadhili umekwisha.');
   const min = Number(p.min_investment) || 0;
   if (amt < min) throw new ValidityError(`Kiasi cha chini cha uwekezaji ni ${min}.`);
-  const raised = Number(p.amount_raised) || 0;
-  if (raised + amt > Number(p.capital_required)) throw new ValidityError('Mradi umekamilisha mahitaji ya ufadhili.');
 
   const ref = unique_reference || generateReference('PINV');
 
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    await client.query('SELECT id FROM projects WHERE id = $1 FOR UPDATE', [projectId]);
+    const cur = await client.query(
+      `SELECT status, amount_raised, capital_required FROM projects WHERE id = $1`, [projectId]
+    );
+    const row = cur.rows[0];
+    if (!['PUBLISHED', 'FUNDING'].includes(row.status)) throw new ValidityError('Mradi huu haukubali uwekezaji kwa sasa.');
+    const remaining = Number(row.capital_required) - Number(row.amount_raised);
+    if (remaining <= 0) throw new ValidityError('Mradi umekamilisha mahitaji ya ufadhili.');
+    if (amt > remaining) throw new ValidityError(`Uwekezaji unazidi salio. Kiasi kilichobakia kujaza ni ${remaining}.`);
 
     await client.query(
       `INSERT INTO project_investments (project_id, investor_user_id, amount, agreement_version, status, unique_reference)
@@ -239,8 +246,11 @@ async function invest(userId, projectId, { amount, unique_reference, agreement_v
 
     // Phase 0: keep the controlled-account projection synced and freeze the
     // waterfall rule from the moment funding begins. Best-effort after commit.
-    const firstFunding = Number(p.amount_raised) === 0;
     try {
+      const cur = await pool.query(
+        'SELECT amount_raised FROM projects WHERE id = $1', [projectId]
+      );
+      const firstFunding = Number(cur.rows[0]?.amount_raised || 0) <= amt;
       await projectFinance.onFundingReceived({ projectId, amount: amt, firstFunding });
     } catch (e) {
       console.error('PROJECT_FINANCE', 'onFundingReceived failed:', e.message);

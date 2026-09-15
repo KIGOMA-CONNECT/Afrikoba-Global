@@ -27,6 +27,7 @@ export default function Projects() {
   const [ddMilestones, setDdMilestones] = useState([]);
   const [ddForm, setDdForm] = useState({ total_amount: '', tranches: 2, milestone_id: '' });
   const [ddEdits, setDdEdits] = useState({});
+  const [stmt, setStmt] = useState(null);
   const [msg, setMsg] = useState({ type: '', text: '' });
   const [opsBook, setOpsBook] = useState(null);
   const [role, setRole] = useState('');
@@ -430,6 +431,38 @@ export default function Projects() {
         const a = document.createElement('a');
         a.href = u;
         a.download = 'platform-pfe-book.csv';
+        a.click();
+        URL.revokeObjectURL(u);
+      })
+      .catch(() => ok(t('projects.error')));
+  };
+
+  const forceClose = async (id, action) => {
+    const label = action === 'ACTIVATE' ? t('projects.force_close_activate') : t('projects.force_close_refund');
+    if (!window.confirm(t('projects.force_close_confirm') + label + '?')) return;
+    try {
+      await api.post(`/projects/${id}/funding/force-close`, { action });
+      ok(`${label} OK`);
+      viewProject(id);
+    } catch (err) { error(err); }
+  };
+
+  const loadStmt = async (id) => {
+    try {
+      const r = await api.get(`/projects/${id}/investor-statement`);
+      setStmt(r.data);
+    } catch (err) { error(err); }
+  };
+
+  const downloadStmtCsv = (id) => {
+    const token = localStorage.getItem('afrikoba_token');
+    fetch(`/api/projects/${id}/investor-statement/export`, { headers: { Authorization: `Bearer ${token}` } })
+      .then((res) => (res.ok ? res.blob() : Promise.reject()))
+      .then((blob) => {
+        const u = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = u;
+        a.download = 'investor-statement.csv';
         a.click();
         URL.revokeObjectURL(u);
       })
@@ -1394,6 +1427,40 @@ export default function Projects() {
                       <li key={idx}><b>{e.action}</b> — {new Date(e.created_at).toLocaleString()}</li>
                     ))}
                   </ul>
+                </div>
+              )}
+
+              {['ADMIN', 'MODERATOR', 'EXPERT'].includes(role) && ['FUNDING', 'PUBLISHED'].includes(transDetail.project.status) && (
+                <div style={{ marginTop: 14, display: 'flex', gap: 8 }}>
+                  <button className="btn" style={{ padding: '6px 14px', fontSize: 13 }} onClick={() => forceClose(transDetail.project.id, 'ACTIVATE')}>{t('projects.force_close_activate')}</button>
+                  <button className="btn btn-secondary" style={{ padding: '6px 14px', fontSize: 13, color: '#dc2626' }} onClick={() => forceClose(transDetail.project.id, 'REFUND')}>{t('projects.force_close_refund')}</button>
+                </div>
+              )}
+
+              <div style={{ marginTop: 14 }}>
+                <button className="btn btn-secondary" style={{ padding: '6px 14px', fontSize: 13 }} onClick={() => loadStmt(transDetail.project.id)}>{t('projects.inv_statement')}</button>
+                {stmt && <button className="btn btn-secondary" style={{ marginLeft: 8, padding: '6px 14px', fontSize: 13 }} onClick={() => downloadStmtCsv(transDetail.project.id)}>{t('projects.statement_csv')}</button>}
+              </div>
+              {stmt && (
+                <div style={{ marginTop: 10, overflowX: 'auto' }}>
+                  <h5>{t('projects.inv_statement')}</h5>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(140px,1fr))', gap: 10 }}>
+                    <div className="card"><div className="roles-tag">{t('projects.total_invested')}</div><b>{fmt(stmt.my_investments.filter((i) => i.status === 'CONFIRMED').reduce((a, i) => a + i.amount, 0))}</b></div>
+                    <div className="card"><div className="roles-tag">{t('projects.dividend_paid_inv')}</div><b>{fmt(stmt.dividends.paid_total)}</b></div>
+                    <div className="card"><div className="roles-tag">{t('projects.dividend_pending')}</div><b>{fmt(stmt.dividends.pending_total)}</b></div>
+                    <div className="card"><div className="roles-tag">{t('projects.escrow_return')}</div><b>{fmt(stmt.escrow_returned)}</b></div>
+                    <div className="card"><div className="roles-tag">{t('projects.realized_net')}</div><b style={{ color: stmt.realized >= 0 ? '#15803d' : '#dc2626' }}>{fmt(stmt.realized)}</b></div>
+                  </div>
+                  {stmt.dividends.rows.length > 0 && (
+                    <table className="table" style={{ marginTop: 8 }}>
+                      <thead><tr><th>#</th><th>{t('projects.amount')}</th><th>{t('projects.status')}</th><th>{t('projects.receipt_ref')}</th><th>{t('projects.paid_at')}</th></tr></thead>
+                      <tbody>
+                        {stmt.dividends.rows.map((d, idx) => (
+                          <tr key={d.id}><td>{idx + 1}</td><td>{fmt(d.entitlement)}</td><td><span className="badge info">{d.status}</span></td><td>{d.reference}</td><td>{d.paid_at ? new Date(d.paid_at).toLocaleString() : '—'}</td></tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
                 </div>
               )}
             </div>

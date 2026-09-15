@@ -40,6 +40,8 @@ const ACCOUNTS = {
   OWNER_RESIDUAL: 'PROJECT_OWNER_RESIDUAL_ACCOUNT',
 };
 
+const INVESTMENT_ACCOUNT = 'PROJECT_INVESTMENT_ACCOUNT';
+
 // Ordered waterfall steps (Phase 1 order: tax → opex → payroll → debt →
 // reserve → investor dividends → owner residual).
 const WATERFALL_STEPS = [
@@ -1787,6 +1789,208 @@ async function exportPlatformPfeBookCsv({ userId, role }) {
   return L.join('\n');
 }
 
+// ============================================================================
+// PHASE 17 — FUNDING CAP ENFORCEMENT + ADMIN FORCE-CLOSE + INVESTOR STATEMENT
+// ============================================================================
+
+async function forceCloseFunding(userId, role, projectId, { action } = {}) {
+  if (!isExpert(role)) throw new ValidityError('Huna mamlaka ya kufunga ufadhili.', 403);
+  if (!['ACTIVATE', 'REFUND'].includes(action)) throw new ValidityError('Kitendo hakijatambuliwa.');
+
+  const pRes = await pool.query(
+    'SELECT id, name, status, capital_required, amount_raised, owner_user_id FROM projects WHERE id = $1', [projectId]
+  );
+  if (pRes.rows.length === 0) throw new ValidityError('Mradi haupatikani.', 404);
+  const p = pRes.rows[0];
+
+  if (action === 'ACTIVATE') {
+    if (p.status !== 'FUNDING') throw new ValidityError('Amilisha nguvu inaruhusu mradi wa FUNDING tu.');
+    const pct = p.capital_required > 0
+      ? (Number(p.amount_raised) / Number(p.capital_required)) * 100 : 0;
+    if (pct < 50) throw new ValidityError(`Ufadhili ni ${Math.round(pct)}% tu; lazima uwe ≥ 50% kuanzisha mradi (hali: ACTIVE).`);
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query("UPDATE projects SET status='ACTIVE', updated_at = NOW() WHERE id = $1", [projectId]);
+      await client.query(
+        `UPDATE controlled_project_accounts
+           SET status = 'ACTIVE', is_locked = TRUE,
+               funding_target = (SELECT capital_required FROM projects WHERE id = $1),
+               escrow_balance = remaining_balance, updated_at = NOW()
+         WHERE project_id = $1`, [projectId]
+      );
+      await client.query(
+        `INSERT INTO audit_logs (event_type, action, entity_type, entity_id, user_id, reference_id, after_data)
+         VALUES ('FORCE_CLOSE','ACTIVATE','PROJECT',$1,$2,NULL,$3)`,
+        [projectId, userId, JSON.stringify({ funded_pct: Math.round(pct) })]
+      );
+      await client.query('COMMIT');
+    } catch (e) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw e;
+    } finally {
+      client.release();
+    }
+
+    createNotification(p.owner_user_id, {
+      title: 'Mradi umefunguliwa kwa nguvu',
+      body: `Mradi "${p.name}" umewashwa kuwa ACTIVE na meneja wa jukwaa.`,
+      type: 'PROJECT', entityType: 'PROJECT', entityId: projectId,
+    }).catch(() => {});
+
+    return { success: true, status: 'ACTIVE', funded_pct: Math.round(pct) };
+  }
+
+  // REFUND action
+  if (!['FUNDING', 'PUBLISHED', 'EXPIRED'].includes(p.status)) {
+    throw new ValidityError('Urefu wa urejeshaji unaruhusu hali ya FUNDING/PUBLISHED/EXPIRED tu.');
+  }
+
+  const invRes = await pool.query(
+    "SELECT id, investor_user_id, amount FROM project_investments WHERE project_id = $1 AND status = 'CONFIRMED'", [projectId]
+  );
+  if (invRes.rows.length === 0) throw new ValidityError('Hakuna uwekezaji uliothibitishwa kurejeshwa.');
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    for (const inv of invRes.rows) {
+      const amt = Number(inv.amount);
+      const ref = generateReference('PREF');
+      await client.query(
+        "UPDATE project_investments SET refund_reference = $1, refunded_at = NOW(), status = 'REFUNDED' WHERE id = $2",
+        [ref, inv.id]
+      );
+      await client.query('UPDATE projects SET amount_raised = GREATEST(amount_raised - $1, 0) WHERE id = $2', [amt, projectId]);
+      await client.query(
+        `UPDATE controlled_project_accounts SET remaining_balance = GREATEST(remaining_balance - $1, 0), updated_at = NOW()
+         WHERE project_id = $2`, [amt, projectId]
+      );
+      await fin.creditWallet({ client, userId: inv.investor_user_id, amount: amt, reference: ref, fromAccount: INVESTMENT_ACCOUNT, description: 'Funding cancelled refund' });
+      await client.query(
+        `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
+         VALUES ($1,$2,$3,0,$3,'SUCCESS','PROJECT_REFUND',$4)`,
+        [ref, inv.investor_user_id, amt, JSON.stringify({ project_id: projectId, investment_id: inv.id, refund_reference: ref })]
+      );
+      createNotification(inv.investor_user_id, {
+        title: 'Uwekezaji umerudishwa',
+        body: `Uwekezaji wako TZS ${amt.toLocaleString('en-US')} katika mradi umerejeshwa kwa kufuta ufadhili. Rejea: ${ref}`,
+        type: 'PROJECT', entityType: 'PROJECT', entityId: projectId,
+      }).catch(() => {});
+    }
+
+    await client.query("UPDATE projects SET status = 'CANCELLED', amount_raised = 0, updated_at = NOW() WHERE id = $1", [projectId]);
+    await client.query("UPDATE controlled_project_accounts SET remaining_balance = 0, status = 'CLOSED', updated_at = NOW() WHERE project_id = $1", [projectId]);
+    await client.query(
+      `INSERT INTO audit_logs (event_type, action, entity_type, entity_id, user_id, reference_id, after_data)
+       VALUES ('FORCE_CLOSE','REFUND_CANCEL','PROJECT',$1,$2,NULL,$3)`,
+      [projectId, userId, JSON.stringify({ refunded_count: invRes.rows.length })]
+    );
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+
+  return { success: true, status: 'CANCELLED', refunded_count: invRes.rows.length };
+}
+
+async function getInvestorStatement({ userId, role }, projectId) {
+  const pRes = await pool.query(
+    'SELECT id, name, status, capital_required, currency_code, owner_user_id FROM projects WHERE id = $1', [projectId]
+  );
+  if (pRes.rows.length === 0) throw new ValidityError('Mradi haupatikani.', 404);
+  const p = pRes.rows[0];
+
+  const invRes = await pool.query(
+    `SELECT * FROM project_investments WHERE project_id = $1 AND investor_user_id = $2 AND status IN ('CONFIRMED','REFUNDED')`,
+    [projectId, userId]
+  );
+  const isInvestor = invRes.rows.length > 0;
+  const isOwner = Number(p.owner_user_id) === Number(userId);
+  if (!isInvestor && !isOwner && !isExpert(role)) {
+    throw new ValidityError('Huna ruhusa ya kuona taarifa hii.', 403);
+  }
+
+  const payoutRes = await pool.query(
+    'SELECT * FROM project_investor_payouts WHERE project_id = $1 AND investor_user_id = $2 ORDER BY created_at',
+    [projectId, userId]
+  );
+  const paidRows = payoutRes.rows.filter((r) => r.status === 'PAID');
+  const pendingRows = payoutRes.rows.filter((r) => r.status === 'PENDING');
+  const paidTotal = paidRows.reduce((a, r) => a + Number(r.entitlement || 0), 0);
+  const pendingTotal = pendingRows.reduce((a, r) => a + Number(r.entitlement || 0), 0);
+
+  const stRes = await pool.query('SELECT summary FROM project_settlements WHERE project_id = $1', [projectId]);
+  const summary = stRes.rows[0]?.summary || {};
+  const escrowReturned = (() => {
+    if (!Array.isArray(summary.returned_to_investors)) return 0;
+    const row = summary.returned_to_investors.find((x) => Number(x.investor_user_id) === Number(userId));
+    return row ? Number(row.amount || 0) : 0;
+  })();
+
+  const ruleRes = await pool.query(
+    'SELECT waterfall_percentages FROM project_waterfall_rules WHERE project_id = $1 ORDER BY id DESC LIMIT 1', [projectId]
+  );
+  const waterfallConfig = ruleRes.rows[0]?.waterfall_percentages || {};
+
+  const invested = invRes.rows.filter((r) => r.status === 'CONFIRMED')
+    .reduce((a, r) => a + Number(r.amount || 0), 0);
+  const refunded = invRes.rows.filter((r) => r.status === 'REFUNDED')
+    .reduce((a, r) => a + Number(r.amount || 0), 0);
+  const realized = round2(paidTotal + refunded + escrowReturned - invested);
+
+  return {
+    success: true,
+    project: { id: p.id, name: p.name, status: p.status, currency_code: p.currency_code, capital_required: Number(p.capital_required) },
+    my_investments: invRes.rows.map((r) => ({
+      investment_id: r.id, amount: Number(r.amount), participation_pct: Number(r.participation_pct),
+      status: r.status, refund_reference: r.refund_reference, created_at: r.created_at,
+    })),
+    dividends: {
+      paid_total: paidTotal,
+      pending_total: pendingTotal,
+      rows: payoutRes.rows.map((r) => ({
+        id: r.id, entitlement: Number(r.entitlement), status: r.status,
+        reference: r.payout_reference, paid_at: r.paid_at, created_at: r.created_at,
+      })),
+    },
+    escrow_returned: escrowReturned,
+    realized,
+    waterfall_config: waterfallConfig,
+  };
+}
+
+function exportInvestorStatementCsv({ userId, role }, projectId) {
+  return getInvestorStatement({ userId, role }, projectId).then((s) => {
+    const L = [];
+    L.push('Investor Statement');
+    L.push(`Project,${esc(s.project.name)},${s.project.status},${s.project.currency_code}`);
+    L.push('');
+    L.push('InvestmentId,Amount,Participation%,Status,RefundRef,CreatedAt');
+    for (const i of s.my_investments) {
+      L.push(`${i.investment_id},${i.amount},${i.participation_pct},${i.status},${i.refund_reference || ''},${i.created_at}`);
+    }
+    L.push('');
+    L.push(`TotalInvested,${s.my_investments.filter((i) => i.status === 'CONFIRMED').reduce((a, i) => a + i.amount, 0)}`);
+    L.push(`TotalRefunded,${s.my_investments.filter((i) => i.status === 'REFUNDED').reduce((a, i) => a + i.amount, 0)}`);
+    L.push('');
+    L.push('PayoutId,Entitlement,Status,Reference,PaidAt,CreatedAt');
+    for (const d of s.dividends.rows) {
+      L.push(`${d.id},${d.entitlement},${d.status},${d.reference},${d.paid_at || ''},${d.created_at}`);
+    }
+    L.push('');
+    L.push(`DividendsPaid,${s.dividends.paid_total}`);
+    L.push(`DividendsPending,${s.dividends.pending_total}`);
+    L.push(`EscrowReturned,${s.escrow_returned}`);
+    L.push(`RealizedNet,${s.realized}`);
+    return L.join('\n');
+  });
+}
+
 async function createDrawdownPlan(userId, projectId, { total_amount, tranches = [] } = {}) {
   await getOwnerOnly(projectId, userId);
   const p = await getProject(projectId);
@@ -2901,4 +3105,7 @@ module.exports = {
   exportLiquidationCsv,
   getPlatformPfeBook,
   exportPlatformPfeBookCsv,
+  forceCloseFunding,
+  getInvestorStatement,
+  exportInvestorStatementCsv,
 };
