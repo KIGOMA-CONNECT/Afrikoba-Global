@@ -4341,6 +4341,156 @@ function renderRevenueRegisterPdf(v, stream) {
 }
 
 // ============================================================================
+// PHASE 38 — MILESTONE EVIDENCE & VERIFICATION REGISTER
+// ============================================================================
+
+async function getMilestoneEvidenceRegister(projectId, { userId, role }) {
+  const p = await getProject(projectId);
+  const isOwner = p.owner_user_id === userId;
+  if (!isOwner && !isExpert(role)) {
+    throw new ValidityError('Huna ruhusa ya rejesta ya ushahidi wa milestones.', 403);
+  }
+  const r = await pool.query(
+    `SELECT m.id, m.phase, m.name, m.status, m.budget, m.proof_documents, m.proof_notes,
+            m.proof_submitted_by, m.proof_submitted_at, m.ai_verification,
+            m.expert_reviewer_id, m.expert_reviewed_at, m.expert_comment, m.disbursed_at,
+            su.full_name AS submitter_name, su.phone_number AS submitter_phone,
+            er.name AS reviewer_name
+     FROM project_milestones m
+     LEFT JOIN users su ON su.id = m.proof_submitted_by
+     LEFT JOIN users er ON er.id = m.expert_reviewer_id
+     WHERE m.project_id = $1
+     ORDER BY m.id`, [projectId]
+  );
+  const entries = r.rows.map((x) => {
+    let docs = [];
+    try { docs = Array.isArray(x.proof_documents) ? x.proof_documents : []; } catch (e) { docs = []; }
+    let ai = null;
+    try {
+      if (x.ai_verification && typeof x.ai_verification === 'object') {
+        ai = {
+          model: x.ai_verification.model || null,
+          score: x.ai_verification.score != null ? Number(x.ai_verification.score) : null,
+          consistent: x.ai_verification.consistent,
+        };
+      } else if (x.ai_verification) {
+        ai = JSON.parse(x.ai_verification);
+      }
+    } catch (e) { /* ignore malformed */ }
+    return {
+      id: x.id, phase: x.phase, name: x.name, status: x.status, budget: round2(Number(x.budget || 0)),
+      proof_documents: docs,
+      proof_notes: x.proof_notes,
+      submits_ok: !!x.proof_submitted_at,
+      submitted_by: x.proof_submitted_by
+        ? { id: x.proof_submitted_by, name: x.submitter_name, phone_number: x.submitter_phone }
+        : null,
+      submitted_at: x.proof_submitted_at,
+      ai_verification: ai,
+      ai_status: ai ? (ai.score >= 80 && ai.consistent ? 'VERIFIED' : 'CONCERN') : 'NOT_VERIFIED',
+      reviewed_by: x.expert_reviewer_id ? { id: x.expert_reviewer_id, name: x.reviewer_name } : null,
+      reviewed_at: x.expert_reviewed_at,
+      expert_comment: x.expert_comment,
+      disbursed_at: x.disbursed_at,
+    };
+  });
+  const verified = entries.filter((x) => x.status === 'COMPLETED' && x.ai_status === 'VERIFIED').length;
+  return {
+    success: true,
+    project: { id: p.id, name: p.name, status: p.status },
+    generated_at: new Date().toISOString(),
+    summary: {
+      milestones: entries.length,
+      with_proofs: entries.filter((x) => x.submits_ok).length,
+      ai_verified: verified,
+      expert_reviewed: entries.filter((x) => x.reviewed_at).length,
+    },
+    entries,
+  };
+}
+
+async function exportMilestoneEvidenceRegisterCsv(projectId, { userId, role }) {
+  const r = await getMilestoneEvidenceRegister(projectId, { userId, role });
+  const esc = (v) => { const s = v === null || v === undefined ? '' : String(v); return `"${s.replace(/"/g, '""')}"`; };
+  const L = [];
+  L.push(`Project,${esc(`${r.project.name} (${r.project.id})`)}`);
+  L.push(`Status,${r.project.status}`);
+  L.push(`Generated at,${esc(r.generated_at)}`);
+  L.push(`Milestones,${r.summary.milestones}`);
+  L.push(`With proofs,${r.summary.with_proofs}`);
+  L.push(`AI verified,${r.summary.ai_verified}`);
+  L.push(`Expert reviewed,${r.summary.expert_reviewed}`);
+  L.push('');
+  L.push('id,phase,name,status,budget,proof_documents,proof_notes,submitted_by,submitted_at,ai_status,ai_score,ai_consistent,reviewed_by,reviewed_at,expert_comment,disbursed_at');
+  for (const x of r.entries) {
+    const docs = x.proof_documents.map((d) => `${d.title || ''}:${d.type || ''}`).join(' | ');
+    L.push([x.id, esc(x.phase || ''), esc(x.name), esc(x.status), x.budget, esc(docs), esc(x.proof_notes || ''),
+            esc(x.submitted_by ? x.submitted_by.name : ''), esc(x.submitted_at || ''), esc(x.ai_status),
+            x.ai_verification && x.ai_verification.score != null ? x.ai_verification.score : '',
+            x.ai_verification ? x.ai_verification.consistent : '',
+            esc(x.reviewed_by ? x.reviewed_by.name : ''), esc(x.reviewed_at || ''), esc(x.expert_comment || ''),
+            esc(x.disbursed_at || '')].join(','));
+  }
+  return L.join('\n');
+}
+
+async function prepareMilestoneEvidenceRegisterPdf(projectId, { userId, role }) {
+  const r = await getMilestoneEvidenceRegister(projectId, { userId, role });
+  const p = await getProject(projectId);
+  return { ...r, currency: p.currency_code || 'TZS' };
+}
+
+function renderMilestoneEvidenceRegisterPdf(v, stream) {
+  const doc = new PDFDocument({ size: 'A4', margin: 40 });
+  doc.pipe(stream);
+  const G = '#0B5D1E';
+  const m = (n) => `${formatMoney(n)} ${v.currency}`;
+  const ensure = () => { if (doc.y > 760) doc.addPage(); };
+
+  doc.fontSize(17).fillColor(G).text('AFRIKOBA GLOBAL', { align: 'center' });
+  doc.fontSize(11).fillColor('#333').text('REJESTA YA USHAHIDI & UTHIBITISHO WA MILESTONES', { align: 'center' });
+  doc.fontSize(8).fillColor('#888').text(`${v.project.name}  (${v.project.id})  ·  ${v.project.status}  ·  Imetolewa: ${new Date(v.generated_at).toISOString()}`, { align: 'center' });
+  doc.moveDown(0.4);
+  vline(doc, doc.y + 4);
+
+  doc.fontSize(10).fillColor(G).text('Muhtasari / Summary');
+  vline(doc, doc.y + 2);
+  voucherField(doc, 'Milestones', String(v.summary.milestones));
+  voucherField(doc, 'Zilizo na ushahidi / With proofs', String(v.summary.with_proofs));
+  voucherField(doc, 'AI imethibitisha / AI verified', String(v.summary.ai_verified));
+  voucherField(doc, 'Mtaalam amekagua / Expert reviewed', String(v.summary.expert_reviewed));
+  doc.moveDown(0.5);
+
+  for (const x of v.entries) {
+    ensure();
+    doc.fontSize(9).fillColor('#111').text(`#${x.id}  ${x.name}  (${x.phase || '—'})  ·  ${x.status}  ·  ${m(x.budget)}`);
+    if (x.proof_documents.length) {
+      doc.fontSize(7).fillColor('#444').text(`   Ushahidi / Proofs: ${x.proof_documents.map((d) => `${d.title || d.type} [${d.type}]`).join(', ')}`);
+    }
+    if (x.proof_notes) doc.fontSize(7).fillColor('#444').text(`   Notes: ${x.proof_notes}`);
+    if (x.ai_verification) {
+      doc.fontSize(7).fillColor(x.ai_status === 'VERIFIED' ? '#0B5D1E' : '#aa0000').text(`   AI: ${x.ai_status}  ·  model ${x.ai_verification.model}  ·  score ${x.ai_verification.score}  ·  consistent ${x.ai_verification.consistent}`);
+    }
+    if (x.reviewed_by) {
+      doc.fontSize(7).fillColor('#555').text(`   Mtaalam / Expert: ${x.reviewed_by.name}  ·  ${x.reviewed_at ? new Date(x.reviewed_at).toISOString() : '—'}  ·  comment: ${x.expert_comment || '—'}`);
+    }
+    doc.fontSize(7).fillColor('#777').text(`   Submits: ${x.submitted_by ? x.submitted_by.name : '—'} @ ${x.submitted_at ? new Date(x.submitted_at).toISOString() : '—'}   ·   Disbursed @ ${x.disbursed_at ? new Date(x.disbursed_at).toISOString() : '—'}`);
+    doc.moveDown(0.3);
+  }
+
+  ensure();
+  doc.moveDown(0.5);
+  vline(doc, doc.y + 4);
+  doc.moveDown(0.7);
+  doc.fontSize(8).fillColor('#888').text('Mkaguzi Mkuu (Reviewer)', { align: 'center' });
+  doc.moveDown(1.2);
+  doc.moveTo(210, doc.y).lineTo(420, doc.y).stroke('#aaa');
+  doc.fontSize(8).fillColor('#888').text('Mkaguzi Mkuu (Reviewer)', { align: 'center' });
+  doc.end();
+  return doc;
+}
+
+// ============================================================================
 // PHASE 37 — PLATFORM WATERFALL DISTRIBUTION SUMMARY (EXPERT-ONLY)
 // ============================================================================
 
@@ -6335,6 +6485,10 @@ module.exports = {
   getWaterfallSummary,
   exportWaterfallSummaryCsv,
   renderWaterfallSummaryPdf,
+  getMilestoneEvidenceRegister,
+  exportMilestoneEvidenceRegisterCsv,
+  prepareMilestoneEvidenceRegisterPdf,
+  renderMilestoneEvidenceRegisterPdf,
   exportPlatformProjectRegisterCsv,
   preparePlatformProjectRegisterPdf,
   renderPlatformProjectRegisterPdf,

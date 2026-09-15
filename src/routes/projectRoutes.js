@@ -982,6 +982,31 @@ router.get('/projects/:id/settlement-register/pdf', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// Phase 38: milestone evidence & verification register (owner/expert) + export + pdf
+router.get('/projects/:id/milestone-evidence', async (req, res, next) => {
+  try {
+    return res.json(await projectFinance.getMilestoneEvidenceRegister(parseInt(req.params.id, 10), { userId: req.user.id, role: req.user.role }));
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/:id/milestone-evidence/export', async (req, res, next) => {
+  try {
+    const csv = await projectFinance.exportMilestoneEvidenceRegisterCsv(parseInt(req.params.id, 10), { userId: req.user.id, role: req.user.role });
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename=milestone-evidence.csv');
+    return res.send(csv);
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/:id/milestone-evidence/pdf', async (req, res, next) => {
+  try {
+    const data = await projectFinance.prepareMilestoneEvidenceRegisterPdf(parseInt(req.params.id, 10), { userId: req.user.id, role: req.user.role });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'inline; filename=milestone-evidence.pdf');
+    projectFinance.renderMilestoneEvidenceRegisterPdf(data, res);
+  } catch (e) { next(e); }
+});
+
 // Phase 37: platform waterfall distribution summary (expert-only) + export + pdf
 router.get('/projects/ops/waterfall-summary', async (req, res, next) => {
   try {
