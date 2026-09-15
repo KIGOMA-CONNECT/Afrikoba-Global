@@ -310,6 +310,24 @@ export default function Projects() {
       .catch(() => ok(t('projects.error')));
   };
 
+  const downloadDocumentPdf = (path, filename) => {
+    const token = localStorage.getItem('afrikoba_token');
+    fetch(path, { headers: { Authorization: `Bearer ${token}` } })
+      .then((r) => {
+        if (!r.ok) throw new Error();
+        return r.blob();
+      })
+      .then((blob) => {
+        const u = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = u;
+        a.download = filename;
+        a.click();
+        URL.revokeObjectURL(u);
+      })
+      .catch(() => ok(t('projects.error')));
+  };
+
   const downloadReportCsv = (id, path, filename) => {
     const token = localStorage.getItem('afrikoba_token');
     fetch(`/api/projects/${id}/${path}/export`, { headers: { Authorization: `Bearer ${token}` } })
@@ -724,6 +742,7 @@ export default function Projects() {
                 <button className="btn" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => releaseReserve('OWNER_RESIDUAL')}>{t('projects.residual_payout')}</button>
                 <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => viewCloseOut(settlement.project.id)}>{t('projects.close_out')}</button>
                 <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => viewLiquidation(settlement.project.id)}>{t('projects.liquidation')}</button>
+                <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadDocumentPdf(`/api/projects/${settlement.project.id}/settlement/pdf`, `settlement-${settlement.project.id}.pdf`)}>{t('projects.settlement_pdf')}</button>
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px,1fr))', gap: 12 }}>
                 <div className="card"><div className="roles-tag">{t('projects.invested_total')}</div><b>{fmt(settlement.settlement.invested_total)}</b></div>
@@ -933,6 +952,7 @@ export default function Projects() {
                 {receipt.state.completed && <span className="badge success">✓ {t('projects.complete')}</span>}
                 {receipt.state.liquidated && <span className="badge success">✓ {t('projects.already_liquidated')}</span>}
                 <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadReceipt(receipt.project.id)}>{t('projects.receipt_csv')}</button>
+                <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadDocumentPdf(`/api/projects/${receipt.project.id}/receipt/pdf`, `receipt-${receipt.project.id}.pdf`)}>{t('projects.receipt_pdf')}</button>
               </div>
               <div className="roles-tag" style={{ marginBottom: 8 }}>{t('projects.liq_reference')}: {receipt.receipt_reference}</div>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px,1fr))', gap: 12 }}>

@@ -355,6 +355,16 @@ router.get('/projects/:id/settlement', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// Phase 19: audit-grade settlement report PDF (owner/investor/expert)
+router.get('/projects/:id/settlement/pdf', async (req, res, next) => {
+  try {
+    const data = await projectFinance.prepareSettlementPdf(parseInt(req.params.id, 10), { userId: req.user.id, role: req.user.role });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="settlement-${data.document_reference}.pdf"`);
+    projectFinance.renderSettlementReportPdf(data, res);
+  } catch (e) { next(e); }
+});
+
 router.get('/projects/mine/performance', async (req, res, next) => {
   try {
     const performance = await projectFinance.getMyPerformance(req.user.id);
@@ -443,6 +453,16 @@ router.get('/projects/:id/receipt/export', async (req, res, next) => {
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename=project-${req.params.id}-receipt.csv`);
     return res.send(csv);
+  } catch (e) { next(e); }
+});
+
+// Phase 19: audit-grade personal investment receipt PDF (owner/investor)
+router.get('/projects/:id/receipt/pdf', async (req, res, next) => {
+  try {
+    const receipt = await projectFinance.getPersonalReceipt(parseInt(req.params.id, 10), { userId: req.user.id });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename=${receipt.receipt_reference}.pdf`);
+    projectFinance.renderPersonalReceiptPdf(receipt, res);
   } catch (e) { next(e); }
 });
 

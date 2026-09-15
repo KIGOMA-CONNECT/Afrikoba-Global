@@ -3051,6 +3051,160 @@ async function exportLiquidationCsv(projectId, { userId, role }) {
 }
 
 // ============================================================================
+// PHASE 19 — INVESTOR CLOSE-OUT DOCUMENTS (PDF: SETTLEMENT + RECEIPT)
+// ============================================================================
+
+async function prepareSettlementPdf(projectId, { userId, role }) {
+  const report = await getSettlementReport(projectId, { userId, role });
+  if (!report.completed || !report.settlement) {
+    throw new ValidityError('Mradi huu bado hauna ripoti ya ukomo (settlement).', 409);
+  }
+  const p = await getProject(projectId);
+  const s = report.settlement;
+  const summary = s.summary || {};
+  let returned = Array.isArray(summary.returned_to_investors)
+    ? summary.returned_to_investors
+    : (Array.isArray(s.returned_to_investors) ? s.returned_to_investors : []);
+  let investorRows = returned;
+  if (investorRows.length && !('full_name' in investorRows[0])) {
+    const names = await pool.query(
+      'SELECT id, full_name FROM users WHERE id = ANY($1::int[])',
+      [investorRows.map((x) => Number(x.investor_user_id))]
+    );
+    const nm = new Map(names.rows.map((row) => [Number(row.id), row.full_name]));
+    investorRows = investorRows.map((x) => ({ ...x, full_name: nm.get(Number(x.investor_user_id)) || 'Investor' }));
+  }
+  return {
+    document_reference: summary.reference || `SETTLE-${projectId}`,
+    generated_at: new Date().toISOString(),
+    currency: p.currency_code || 'TZS',
+    project: { id: p.id, name: p.name, status: p.status, completed_at: p.completed_at },
+    funds: {
+      invested_total: Number(s.invested_total || 0),
+      escrow_balance: Number(s.escrow_balance || 0),
+      returned_to_investors_total: investorRows.reduce((a, x) => round2(a + Number(x.amount || 0)), 0),
+      owner_received: Number(s.owner_received || 0),
+      reserve_released: Number(s.reserve_released || 0),
+      revenue_total: Number(s.revenue_total || 0),
+      dividend_allocated: Number(s.dividend_allocated || 0),
+      dividend_pending: Number(s.dividend_pending || 0),
+      milestone_total: Number(s.milestone_total || 0),
+      milestone_completed: Number(s.milestone_completed || 0),
+    },
+    investor_rows: investorRows,
+  };
+}
+
+function renderSettlementReportPdf(v, stream) {
+  const doc = new PDFDocument({ size: 'A4', margin: 40 });
+  doc.pipe(stream);
+  const G = '#0B5D1E';
+  const m = (n) => `${formatMoney(n)} ${v.currency}`;
+
+  doc.fontSize(17).fillColor(G).text('AFRIKOBA GLOBAL', { align: 'center' });
+  doc.fontSize(11).fillColor('#333').text('RIPOTI YA UKOMO WA MRADI (Settlement Report)', { align: 'center' });
+  doc.fontSize(8).fillColor('#888').text(`Ref: ${v.document_reference}  ·  Imetolewa: ${new Date(v.generated_at).toISOString()}`, { align: 'center' });
+  doc.moveDown(0.5);
+  vline(doc, doc.y + 4);
+
+  doc.fontSize(10).fillColor(G).text('Mradi / Project');
+  voucherField(doc, 'Jina', `${v.project.name} (${v.project.status})`);
+  voucherField(doc, 'Ilikamilishwa / Completed at', v.project.completed_at ? new Date(v.project.completed_at).toISOString() : '—');
+  doc.moveDown(0.4);
+
+  doc.fontSize(10).fillColor(G).text('Ukomo wa Fedha / Settlement Funds');
+  vline(doc, doc.y + 2);
+  [
+    ['Fedha zilizowekezwa / Invested total', v.funds.invested_total],
+    ['Fedha zilizobaki escrow / Escrow balance', v.funds.escrow_balance],
+    ['Kurudishiwa wawekezaji / Returned to investors', v.funds.returned_to_investors_total],
+    ['Mwenye mradi alipokea / Owner received', v.funds.owner_received],
+    ['Hifadhi iliyotolewa / Reserve released', v.funds.reserve_released],
+    ['Mapato / Revenue total', v.funds.revenue_total],
+    ['Michango ya dividendi / Dividend allocated', v.funds.dividend_allocated],
+    ['Dividendi zilizosubiri / Dividend pending', v.funds.dividend_pending],
+  ].forEach(([label, val]) => voucherField(doc, label, m(val)));
+  doc.moveDown(0.4);
+
+  if (v.investor_rows.length) {
+    doc.fontSize(10).fillColor(G).text('Wawekezaji / Investors');
+    vline(doc, doc.y + 2);
+    doc.fontSize(9).fillColor('#333').text(`Jumla: ${v.investor_rows.length}  ·  Milestone: ${v.funds.milestone_completed}/${v.funds.milestone_total}`);
+    v.investor_rows.forEach((row) => {
+      doc.fontSize(9).fillColor('#111').text(`${row.full_name || 'Investor'}  (#${row.investor_user_id})  —  ${m(row.amount)}`);
+    });
+    doc.moveDown(0.6);
+  }
+  vline(doc, doc.y + 4);
+  doc.moveDown(0.8);
+  ['Mwenye Mradi (Owner)', 'Mkaguzi Mkuu (Reviewer)', 'Muenye Sajenti (Auditor)'].forEach((label) => {
+    doc.fontSize(8).fillColor('#888').text(label, { align: 'center', width: 180, lineBreak: false });
+  });
+  doc.moveDown(1.6);
+  ['Mwenye Mradi (Owner)', 'Mkaguzi Mkuu (Reviewer)', 'Muenye Sajenti (Auditor)'].forEach((label) => {
+    doc.moveTo(50, doc.y).lineTo(190, doc.y).stroke('#aaa');
+    doc.fontSize(8).fillColor('#888').text(label, { align: 'center', width: 180, lineBreak: false });
+  });
+  doc.end();
+  return doc;
+}
+
+function renderPersonalReceiptPdf(r, stream) {
+  const doc = new PDFDocument({ size: 'A4', margin: 40 });
+  doc.pipe(stream);
+  const G = '#0B5D1E';
+  const cur = r.project.currency_code || 'TZS';
+  const m = (n) => `${formatMoney(n)} ${cur}`;
+
+  doc.fontSize(17).fillColor(G).text('AFRIKOBA GLOBAL', { align: 'center' });
+  doc.fontSize(11).fillColor('#333').text('RISITI YA UWEKEZAJI (Investment Receipt)', { align: 'center' });
+  doc.fontSize(8).fillColor('#888').text(`Ref: ${r.receipt_reference}  ·  Imetolewa: ${new Date(r.generated_at).toISOString()}`, { align: 'center' });
+  doc.moveDown(0.5);
+  vline(doc, doc.y + 4);
+
+  doc.fontSize(10).fillColor(G).text('Mradi / Project');
+  voucherField(doc, 'Jina', `${r.project.name} (${r.project.status})`);
+  voucherField(doc, 'Imekamilika / Completed', r.state.completed ? 'Ndiyo / Yes' : 'La / No');
+  voucherField(doc, 'Imeondolewa / Liquidated', r.state.liquidated ? 'Ndiyo / Yes' : 'La / No');
+  voucherField(doc, 'Settlement ref', r.state.settlement_reference || '—');
+  voucherField(doc, 'Liquidation ref', r.state.liquidation_reference || '—');
+  voucherField(doc, 'Nafasi / Role', r.position.role);
+  doc.moveDown(0.4);
+
+  doc.fontSize(10).fillColor(G).text('Fedha / Position');
+  vline(doc, doc.y + 2);
+  if (r.position.role === 'OWNER') {
+    voucherField(doc, 'Malipo kwa mwenye mradi / Disbursed to owner', m(r.position.from_disbursements));
+    voucherField(doc, 'Hifadhi iliyotolewa / Reserve released', m(r.position.from_reserve));
+    voucherField(doc, 'Baki la mwisho / Residual released', m(r.position.from_residual));
+    voucherField(doc, 'Jumla alizopokea / Total received', m(r.position.received_total));
+  } else {
+    voucherField(doc, 'Kilichowekezwa / Invested', m(r.position.invested));
+    voucherField(doc, 'Asilimia / Participation %', `${r.position.participation_pct}%`);
+    voucherField(doc, 'Escrow ilirudishwa / Escrow returned', m(r.position.escrow_return));
+    voucherField(doc, 'Dividendi zilizolipwa / Dividends paid', m(r.position.dividends_paid));
+    voucherField(doc, 'Dividendi zinazosubiri / Dividends pending', m(r.position.dividends_pending));
+    voucherField(doc, 'Kurudishwa / Refunded', m(r.position.refunded));
+    voucherField(doc, 'Jumla / Received', m(r.position.received));
+    voucherField(doc, 'ROI', `${r.position.roi_percent}%`);
+    voucherField(doc, 'Hali / Status', r.position.investment_status);
+  }
+  doc.moveDown(0.6);
+  vline(doc, doc.y + 4);
+  doc.moveDown(0.8);
+  ['Mwenye Mradi (Owner)', 'Wawekezaji (Investor)', 'Mtoa Fedha (Executor)'].forEach((label) => {
+    doc.fontSize(8).fillColor('#888').text(label, { align: 'center', width: 180, lineBreak: false });
+  });
+  doc.moveDown(1.6);
+  ['Mwenye Mradi (Owner)', 'Wawekezaji (Investor)', 'Mtoa Fedha (Executor)'].forEach((label) => {
+    doc.moveTo(50, doc.y).lineTo(190, doc.y).stroke('#aaa');
+    doc.fontSize(8).fillColor('#888').text(label, { align: 'center', width: 180, lineBreak: false });
+  });
+  doc.end();
+  return doc;
+}
+
+// ============================================================================
 // PHASE 18 — DISBURSEMENT PAYMENT VOUCHER (AUDIT-GRADE PDF)
 // ============================================================================
 
@@ -3289,4 +3443,7 @@ module.exports = {
   exportInvestorStatementCsv,
   getDisbursementVoucher,
   renderDisbursementVoucherPdf,
+  prepareSettlementPdf,
+  renderSettlementReportPdf,
+  renderPersonalReceiptPdf,
 };
