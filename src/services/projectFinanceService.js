@@ -4341,6 +4341,195 @@ function renderRevenueRegisterPdf(v, stream) {
 }
 
 // ============================================================================
+// PHASE 33 — PLATFORM ESCROW TRUST CERTIFICATE (EXPERT-ONLY)
+// ============================================================================
+
+async function getEscrowCertificate({ role }) {
+  if (!isExpert(role)) {
+    throw new ValidityError('Huna ruhusa ya shahada ya hazina ya escrow (expert only).', 403);
+  }
+
+  const projectsQ = await pool.query(`
+    SELECT
+      p.id, p.name, p.status, p.created_at,
+      COALESCE(ci.confirmed,0)::numeric AS confirmed,
+      COALESCE(ci.refunded,0)::numeric AS refunded,
+      COALESCE(d.disbursed,0)::numeric AS disbursed,
+      COALESCE(dp.dividends_paid,0)::numeric AS dividends_paid,
+      COALESCE(rv.revenue,0)::numeric AS revenue,
+      COALESCE(rz.reserve,0)::numeric AS reserve_released,
+      COALESCE(rz.residual,0)::numeric AS residual_released,
+      COALESCE(st.escrow_returned,0)::numeric AS escrow_returned
+    FROM projects p
+    LEFT JOIN (
+      SELECT project_id,
+        SUM(amount) FILTER (WHERE status='CONFIRMED') AS confirmed,
+        SUM(amount) FILTER (WHERE status='REFUNDED') AS refunded
+      FROM project_investments GROUP BY project_id
+    ) ci ON ci.project_id = p.id
+    LEFT JOIN (
+      SELECT project_id, SUM(amount) AS disbursed
+      FROM project_disbursements WHERE status='RELEASED' GROUP BY project_id
+    ) d ON d.project_id = p.id
+    LEFT JOIN (
+      SELECT project_id, SUM(entitlement) AS dividends_paid
+      FROM project_investor_payouts WHERE status='PAID' GROUP BY project_id
+    ) dp ON dp.project_id = p.id
+    LEFT JOIN (
+      SELECT project_id, SUM(amount) AS revenue
+      FROM waterfall_allocation_records GROUP BY project_id
+    ) rv ON rv.project_id = p.id
+    LEFT JOIN (
+      SELECT project_id,
+        SUM(amount) FILTER (WHERE reserve_type='DISTRIBUTION_RESERVE') AS reserve,
+        SUM(amount) FILTER (WHERE reserve_type='OWNER_RESIDUAL') AS residual
+      FROM project_reserve_releases GROUP BY project_id
+    ) rz ON rz.project_id = p.id
+    LEFT JOIN (
+      SELECT project_id,
+        SUM((summary->>'returned_to_investors_total')::numeric) AS escrow_returned
+      FROM project_settlements GROUP BY project_id
+    ) st ON st.project_id = p.id
+    ORDER BY p.id
+  `);
+
+  const walletQ = await pool.query(`
+    SELECT (t.meta->>'project_id')::int AS project_id,
+      SUM(CASE WHEN t.type IN ('PROJECT_INVEST','PROJECT_REVENUE') THEN t.wallet_amount ELSE -t.wallet_amount END) AS wallet_closing
+    FROM transactions t
+    WHERE t.meta ? 'project_id' AND t.status='SUCCESS'
+    GROUP BY 1
+  `);
+  const walletMap = {};
+  for (const x of walletQ.rows) {
+    walletMap[x.project_id] = Number(x.wallet_closing || 0);
+  }
+
+  const entries = projectsQ.rows.map((p) => {
+    const c = round2(Number(p.confirmed || 0));
+    const r = round2(Number(p.revenue || 0));
+    const d = round2(Number(p.disbursed || 0));
+    const er = round2(Number(p.escrow_returned || 0));
+    const dp = round2(Number(p.dividends_paid || 0));
+    const rr = round2(Number(p.reserve_released || 0));
+    const rs = round2(Number(p.residual_released || 0));
+    const rf = round2(Number(p.refunded || 0));
+    const escrow_held = round2(c + r - d - er - dp - rr - rs - rf);
+    const wallet = round2(walletMap[p.id] || 0);
+    const reconciliation_diff = round2(escrow_held - (wallet - dp));
+    return {
+      id: p.id, name: p.name, status: p.status, created_at: p.created_at,
+      confirmed: c, revenue: r, disbursed: d, escrow_returned: er,
+      dividends_paid: dp, reserve_released: rr, residual_released: rs,
+      refunded: rf, escrow_held, wallet_closing: wallet,
+      reconciliation_diff, reconciliation_ok: Math.abs(reconciliation_diff) <= 1,
+    };
+  });
+
+  const tot = (k) => round2(entries.reduce((s, x) => s + Number(x[k] || 0), 0));
+  const tConfirmed = tot('confirmed');
+  const tRevenue = tot('revenue');
+  const tDisbursed = tot('disbursed');
+  const tEscrowReturned = tot('escrow_returned');
+  const tDividendsPaid = tot('dividends_paid');
+  const tReserve = tot('reserve_released');
+  const tResidual = tot('residual_released');
+  const tRefunded = tot('refunded');
+  const tEscrowHeld = tot('escrow_held');
+  const tWallet = tot('wallet_closing');
+  const tDiff = round2(tEscrowHeld - (tWallet - tDividendsPaid));
+  const allOk = entries.every((x) => x.reconciliation_ok);
+
+  return {
+    success: true,
+    generated_at: new Date().toISOString(),
+    totals: {
+      projects: entries.length,
+      confirmed: tConfirmed, revenue: tRevenue, disbursed: tDisbursed,
+      escrow_returned: tEscrowReturned, dividends_paid: tDividendsPaid,
+      reserve_released: tReserve, residual_released: tResidual,
+      refunded: tRefunded, escrow_held: tEscrowHeld,
+      wallet_closing: tWallet, reconciliation_diff: tDiff,
+      reconciliation_ok: allOk,
+    },
+    entries,
+  };
+}
+
+async function exportEscrowCertificateCsv({ role }) {
+  const r = await getEscrowCertificate({ role });
+  const esc = (v) => { const s = v === null || v === undefined ? '' : String(v); return `"${s.replace(/"/g, '""')}"`; };
+  const L = [];
+  L.push('AFRIKOBA GLOBAL - ESCROW TRUST CERTIFICATE');
+  L.push(`Generated at,${esc(r.generated_at)}`);
+  L.push(`Projects,${r.totals.projects}`);
+  L.push(`Total confirmed,${r.totals.confirmed}`);
+  L.push(`Total revenue,${r.totals.revenue}`);
+  L.push(`Total escrow held,${r.totals.escrow_held}`);
+  L.push(`Reconciliation ok,${r.totals.reconciliation_ok}`);
+  L.push('');
+  L.push('id,name,status,confirmed,revenue,disbursed,escrow_returned,dividends_paid,reserve_released,residual_released,refunded,escrow_held,wallet_closing,reconciliation_diff,reconciliation_ok,created_at');
+  for (const x of r.entries) {
+    L.push([x.id, esc(x.name), esc(x.status), x.confirmed, x.revenue, x.disbursed, x.escrow_returned, x.dividends_paid, x.reserve_released, x.residual_released, x.refunded, x.escrow_held, x.wallet_closing, x.reconciliation_diff, x.reconciliation_ok, esc(x.created_at)].join(','));
+  }
+  return L.join('\n');
+}
+
+function renderEscrowCertificatePdf(v, stream) {
+  const doc = new PDFDocument({ size: 'A4', landscape: true, margin: 36 });
+  doc.pipe(stream);
+  const G = '#0B5D1E';
+  const m = (n) => `${formatMoney(n)} TZS`;
+
+  doc.fontSize(16).fillColor(G).text('AFRIKOBA GLOBAL', { align: 'center' });
+  doc.fontSize(12).fillColor('#333').text('SHIHADA YA HAZINA YA ESCROW / ESCROW TRUST CERTIFICATE', { align: 'center' });
+  doc.fontSize(8).fillColor('#888').text(`Imetolewa / Generated: ${new Date(v.generated_at).toISOString()}`, { align: 'center' });
+  doc.moveDown(0.3);
+  vline(doc, doc.y + 4);
+
+  doc.fontSize(10).fillColor(G).text('Muhtasari wa Jumla / Platform Totals');
+  vline(doc, doc.y + 2);
+  voucherField(doc, 'Miradi / Projects', String(v.totals.projects));
+  voucherField(doc, 'Imethibitishwa / Confirmed', m(v.totals.confirmed));
+  voucherField(doc, 'Mapato / Revenue', m(v.totals.revenue));
+  voucherField(doc, 'Imelipwa / Disbursed', m(v.totals.disbursed));
+  voucherField(doc, 'Imerudishwa / Escrow Returned', m(v.totals.escrow_returned));
+  voucherField(doc, 'Gawio / Dividends Paid', m(v.totals.dividends_paid));
+  voucherField(doc, 'Hifadhi / Reserve Released', m(v.totals.reserve_released));
+  voucherField(doc, 'Ya Mwenye / Residual Released', m(v.totals.residual_released));
+  voucherField(doc, 'Imerejeshwa / Refunded', m(v.totals.refunded));
+  doc.moveDown(0.2);
+  voucherField(doc, 'Hazina Imebaki / Escrow Held', m(v.totals.escrow_held));
+  voucherField(doc, 'Ukaguzi / Reconciliation', v.totals.reconciliation_ok ? 'SAWAHI / PASS' : 'ATIBA / FLAG');
+  doc.moveDown(0.5);
+
+  const tbl = v.entries.map((x) => [String(x.id), x.name, x.status, m(x.confirmed), m(x.revenue), m(x.escrow_held), m(x.disbursed), m(x.escrow_returned), m(x.dividends_paid), x.reconciliation_ok ? 'OK' : 'FLAG', String(x.created_at || '').slice(0, 10)]);
+  const hdr = ['#', 'Jina / Name', 'Hali', 'Uthib.', 'Mapato', 'Hazina', 'Imelipwa', 'Imerudi', 'Gawio', 'Ukaguzi', 'Tarehe'];
+  const widths = [30, 120, 75, 80, 80, 80, 80, 80, 80, 40, 80];
+  let y = doc.y;
+  const drawRow = (cells, isHeader, bold) => {
+    let x = 40;
+    doc.fontSize(7).fillColor(isHeader ? '#0B5D1E' : '#111');
+    cells.forEach((c, i) => {
+      doc.text(String(c || ''), x, y, { width: widths[i], align: i >= 2 ? 'right' : 'left', lineBreak: false });
+      x += widths[i];
+    });
+    y += isHeader ? 12 : 14;
+  };
+  drawRow(hdr, true);
+  for (const row of tbl) { if (y > 520) { doc.addPage(); y = 36; drawRow(hdr, true); } drawRow(row, false); }
+  doc.moveDown(0.5);
+  vline(doc, y + 4);
+  doc.moveDown(0.8);
+  doc.fontSize(8).fillColor('#888').text('Imekaguliwa na / Reviewed by', { align: 'center' });
+  doc.moveDown(1.2);
+  doc.moveTo(210, doc.y).lineTo(420, doc.y).stroke('#aaa');
+  doc.fontSize(8).fillColor('#888').text('Mkaguzi Mkuu (Reviewer)', { align: 'center' });
+  doc.end();
+  return doc;
+}
+
+// ============================================================================
 // PHASE 32 — DIVIDEND PAYMENT ADVICE (PER INVESTOR PER PROJECT)
 // ============================================================================
 
@@ -5652,6 +5841,9 @@ module.exports = {
   exportDividendAdviceCsv,
   prepareDividendAdvicePdf,
   renderDividendAdvicePdf,
+  getEscrowCertificate,
+  exportEscrowCertificateCsv,
+  renderEscrowCertificatePdf,
   exportPlatformProjectRegisterCsv,
   preparePlatformProjectRegisterPdf,
   renderPlatformProjectRegisterPdf,

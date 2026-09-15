@@ -982,6 +982,31 @@ router.get('/projects/:id/settlement-register/pdf', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// Phase 33: platform escrow trust certificate (expert-only) + export + pdf
+router.get('/projects/ops/escrow-certificate', async (req, res, next) => {
+  try {
+    return res.json(await projectFinance.getEscrowCertificate({ role: req.user.role }));
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/ops/escrow-certificate/export', async (req, res, next) => {
+  try {
+    const csv = await projectFinance.exportEscrowCertificateCsv({ role: req.user.role });
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename=escrow-trust-certificate.csv');
+    return res.send(csv);
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/ops/escrow-certificate/pdf', async (req, res, next) => {
+  try {
+    const data = await projectFinance.getEscrowCertificate({ role: req.user.role });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'inline; filename=escrow-trust-certificate.pdf');
+    projectFinance.renderEscrowCertificatePdf(data, res);
+  } catch (e) { next(e); }
+});
+
 // Phase 32: dividend payment advice (owner/expert/investor self) + export + pdf
 router.get('/projects/:id/investor/:investorUserId/dividend-advice', async (req, res, next) => {
   try {

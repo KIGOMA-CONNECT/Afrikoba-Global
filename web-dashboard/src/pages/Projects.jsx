@@ -1317,6 +1317,8 @@ export default function Projects() {
           {['ADMIN', 'MODERATOR', 'EXPERT'].includes(role) && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadDocumentPdf('/api/projects/ops/investor-registry/pdf', 'platform-investor-registry.pdf')}>{t('projects.investor_registry_pdf')}</button>}
           {['ADMIN', 'MODERATOR', 'EXPERT'].includes(role) && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadFinanceCsv('/api/projects/ops/project-register/export', 'platform-project-register.csv')}>{t('projects.project_register_csv')}</button>}
           {['ADMIN', 'MODERATOR', 'EXPERT'].includes(role) && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadDocumentPdf('/api/projects/ops/project-register/pdf', 'platform-project-register.pdf')}>{t('projects.project_register_pdf')}</button>}
+          {['ADMIN', 'MODERATOR', 'EXPERT'].includes(role) && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadFinanceCsv('/api/projects/ops/escrow-certificate/export', 'escrow-trust-certificate.csv')}>{t('projects.escrow_certificate_csv')}</button>}
+          {['ADMIN', 'MODERATOR', 'EXPERT'].includes(role) && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadDocumentPdf('/api/projects/ops/escrow-certificate/pdf', 'escrow-trust-certificate.pdf')}>{t('projects.escrow_certificate_pdf')}</button>}
         </div>
         {opsBook ? (
           <>
