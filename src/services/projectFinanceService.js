@@ -3949,6 +3949,238 @@ async function exportEscrowProjectionCsv(projectId, { userId, role }) {
 }
 
 // ============================================================================
+// PHASE 24 — MILESTONE OPERATIONAL REGISTER + REVENUE PROCESSING REGISTER
+// ============================================================================
+
+async function getMilestoneRegister(projectId, { userId, role }) {
+  const p = await getProject(projectId);
+  const isOwner = p.owner_user_id === userId;
+  if (!isOwner && !isExpert(role)) {
+    throw new ValidityError('Huna ruhusa ya rejesta ya milestones za mradi huu.', 403);
+  }
+  const ms = await pool.query(
+    `SELECT * FROM project_milestones WHERE project_id = $1 ORDER BY id`, [projectId]
+  );
+  const dd = await pool.query(
+    `SELECT * FROM project_drawdowns WHERE project_id = $1 ORDER BY milestone_id, sequence`, [projectId]
+  );
+  const tranchesByMs = {};
+  for (const t of dd.rows) {
+    (tranchesByMs[t.milestone_id] = tranchesByMs[t.milestone_id] || []).push({
+      id: t.id, sequence: t.sequence, amount: Number(t.amount), status: t.status,
+      disbursement_reference: t.disbursement_reference,
+    });
+  }
+  const milestones = ms.rows.map((m) => ({
+    id: m.id, name: m.name, phase: m.phase, status: m.status, budget: round2(Number(m.budget || 0)),
+    proof_submitted_by: m.proof_submitted_by,
+    proof_submitted_at: m.proof_submitted_at,
+    proof_notes: m.proof_notes,
+    proof_documents: typeof m.proof_documents === 'string' ? JSON.parse(m.proof_documents || '[]') : (m.proof_documents || []),
+    expert_reviewer_id: m.expert_reviewer_id,
+    expert_reviewed_at: m.expert_reviewed_at,
+    expert_comment: m.expert_comment,
+    ai_verification: typeof m.ai_verification === 'string' ? JSON.parse(m.ai_verification || 'null') : m.ai_verification,
+    tranches: tranchesByMs[m.id] || [],
+  }));
+  return {
+    success: true,
+    project: { id: p.id, name: p.name, status: p.status },
+    generated_at: new Date().toISOString(),
+    summary: {
+      total: milestones.length,
+      completed: milestones.filter((m) => m.status === 'COMPLETED').length,
+      budget_total: round2(milestones.reduce((s, m) => s + m.budget, 0)),
+      tranche_released: round2(milestones.reduce((s, m) => s + m.tranches.filter((t) => t.status === 'RELEASED').reduce((a, t) => a + t.amount, 0), 0)),
+    },
+    milestones,
+  };
+}
+
+async function exportMilestoneRegisterCsv(projectId, { userId, role }) {
+  const r = await getMilestoneRegister(projectId, { userId, role });
+  const esc = (v) => {
+    const s = v === null || v === undefined ? '' : String(v);
+    return `"${s.replace(/"/g, '""')}"`;
+  };
+  const L = [];
+  L.push(`Project,${esc(r.project.name)} (${r.project.id})`);
+  L.push(`Status,${r.project.status}`);
+  L.push(`Generated at,${esc(r.generated_at)}`);
+  L.push(`Milestones,total ${r.summary.total} / completed ${r.summary.completed}`);
+  L.push(`Budget total,${r.summary.budget_total}`);
+  L.push(`Tranches released,${r.summary.tranche_released}`);
+  L.push('');
+  L.push('id,name,phase,status,budget,proof_submitted_by,proof_submitted_at,proof_notes,expert_reviewer_id,expert_reviewed_at,expert_comment,tranches');
+  for (const m of r.milestones) {
+    const tx = m.tranches.map((t) => `seq${t.sequence}:${t.status}:${t.disbursement_reference || ''}`).join(' | ');
+    L.push([m.id, esc(m.name), esc(m.phase || ''), esc(m.status), m.budget,
+            m.proof_submitted_by || '', esc(m.proof_submitted_at || ''), esc(m.proof_notes || ''),
+            m.expert_reviewer_id || '', esc(m.expert_reviewed_at || ''), esc(m.expert_comment || ''),
+            esc(tx)].join(','));
+  }
+  return L.join('\n');
+}
+
+async function prepareMilestoneRegisterPdf(projectId, { userId, role }) {
+  const r = await getMilestoneRegister(projectId, { userId, role });
+  const p = await getProject(projectId);
+  return { ...r, currency: p.currency_code || 'TZS' };
+}
+
+function renderMilestoneRegisterPdf(v, stream) {
+  const doc = new PDFDocument({ size: 'A4', margin: 40 });
+  doc.pipe(stream);
+  const G = '#0B5D1E';
+  const m = (n) => `${formatMoney(n)} ${v.currency}`;
+  const ensure = () => { if (doc.y > 760) doc.addPage(); };
+
+  doc.fontSize(17).fillColor(G).text('AFRIKOBA GLOBAL', { align: 'center' });
+  doc.fontSize(11).fillColor('#333').text('REJESTA YA HATUA NA USHAHIDI (Milestone & Proof Register)', { align: 'center' });
+  doc.fontSize(8).fillColor('#888').text(`${v.project.name}  (${v.project.id})  ·  ${v.project.status}  ·  Imetolewa: ${new Date(v.generated_at).toISOString()}`, { align: 'center' });
+  doc.moveDown(0.5);
+  vline(doc, doc.y + 4);
+
+  doc.fontSize(10).fillColor(G).text('Muhtasari / Summary');
+  vline(doc, doc.y + 2);
+  voucherField(doc, 'Hatua / Milestones', `${v.summary.completed}/${v.summary.total} zimekamilika`);
+  voucherField(doc, 'Bajeti / Budget total', m(v.summary.budget_total));
+  voucherField(doc, 'Malipo yaliyotolewa / Tranches released', m(v.summary.tranche_released));
+  doc.moveDown(0.3);
+
+  doc.fontSize(10).fillColor(G).text(`Hatua / Milestones (${v.milestones.length})`);
+  vline(doc, doc.y + 2);
+  for (const x of v.milestones) {
+    ensure();
+    doc.fontSize(8.5).fillColor('#111').text(`#${x.id}  ${x.name}  ·  ${x.status}  ·  budget ${m(x.budget)}${x.phase ? '  ·  ' + x.phase : ''}`);
+    if (x.proof_submitted_at) {
+      doc.fontSize(7).fillColor('#555').text(`   Ushahidi: submitted ${new Date(x.proof_submitted_at).toISOString()}  ·  docs ${x.proof_documents.length}`);
+      if (x.proof_notes) doc.fontSize(7).fillColor('#555').text(`   Note: ${x.proof_notes}`);
+    }
+    if (x.expert_reviewed_at) {
+      doc.fontSize(7).fillColor('#0B5D1E').text(`   Ukaguzi: reviewer #${x.expert_reviewer_id}  ·  ${new Date(x.expert_reviewed_at).toISOString()}${x.expert_comment ? '  ·  ' + x.expert_comment : ''}`);
+    }
+    if (x.tranches.length) {
+      doc.fontSize(7).fillColor('#444').text(`   Malipo: ${x.tranches.map((t) => `seq${t.sequence} ${m(t.amount)} ${t.status}${t.disbursement_reference ? ' (' + t.disbursement_reference + ')' : ''}`).join(' · ')}`);
+    }
+  }
+
+  ensure();
+  doc.moveDown(0.5);
+  vline(doc, doc.y + 4);
+  doc.moveDown(0.8);
+  doc.fontSize(8).fillColor('#888').text('Mkaguzi Mkuu (Reviewer)', { align: 'center', width: 200, lineBreak: false });
+  doc.moveDown(1.6);
+  doc.moveTo(120, doc.y).lineTo(320, doc.y).stroke('#aaa');
+  doc.fontSize(8).fillColor('#888').text('Mkaguzi Mkuu (Reviewer)', { align: 'center', width: 200, lineBreak: false });
+  doc.end();
+  return doc;
+}
+
+async function getRevenueRegister(projectId, { userId, role }) {
+  const p = await getProject(projectId);
+  const isOwner = p.owner_user_id === userId;
+  if (!isOwner && !isExpert(role)) {
+    throw new ValidityError('Huna ruhusa ya rejesta ya mapato ya mradi huu.', 403);
+  }
+  const rev = await pool.query(
+    `SELECT * FROM project_revenue WHERE project_id = $1 ORDER BY id`, [projectId]
+  );
+  const alloc = await pool.query(
+    `SELECT revenue_reference, allocation_step, COALESCE(SUM(amount),0)::numeric AS total, COUNT(*)::int AS runs
+     FROM waterfall_allocation_records WHERE project_id = $1
+     GROUP BY revenue_reference, allocation_step ORDER BY revenue_reference, MIN(id)`, [projectId]
+  );
+  const allocByRef = {};
+  for (const a of alloc.rows) (allocByRef[a.revenue_reference] = allocByRef[a.revenue_reference] || []).push({ step: a.allocation_step, total: round2(Number(a.total || 0)), runs: a.runs });
+  const revenue = rev.rows.map((r) => ({
+    id: r.id, revenue_type: r.revenue_type, amount: round2(Number(r.amount || 0)),
+    reconciled: !!r.reconciled, reference: r.unique_reference, created_at: r.created_at,
+    allocations: allocByRef[r.unique_reference] || [],
+  }));
+  const revenue_total = round2(revenue.reduce((s, x) => s + x.amount, 0));
+  const allocated_total = round2(revenue.reduce((s, x) => s + x.allocations.reduce((a, y) => a + y.total, 0), 0));
+  return {
+    success: true,
+    project: { id: p.id, name: p.name, status: p.status },
+    generated_at: new Date().toISOString(),
+    summary: { batches: revenue.length, revenue_total, allocated_total, allocation_parity: allocated_total === revenue_total },
+    revenue,
+  };
+}
+
+async function exportRevenueRegisterCsv(projectId, { userId, role }) {
+  const r = await getRevenueRegister(projectId, { userId, role });
+  const esc = (v) => {
+    const s = v === null || v === undefined ? '' : String(v);
+    return `"${s.replace(/"/g, '""')}"`;
+  };
+  const L = [];
+  L.push(`Project,${esc(r.project.name)} (${r.project.id})`);
+  L.push(`Status,${r.project.status}`);
+  L.push(`Generated at,${esc(r.generated_at)}`);
+  L.push(`Batches,${r.summary.batches}`);
+  L.push(`Revenue total,${r.summary.revenue_total}`);
+  L.push(`Allocated total,${r.summary.allocated_total}`);
+  L.push(`Allocation parity,${r.summary.allocation_parity}`);
+  L.push('');
+  L.push('id,revenue_type,amount,reconciled,reference,created_at,allocations');
+  for (const x of r.revenue) {
+    const al = x.allocations.map((a) => `${a.step}:${a.total}`).join(' | ');
+    L.push([x.id, esc(x.revenue_type), x.amount, x.reconciled, esc(x.reference), esc(x.created_at), esc(al)].join(','));
+  }
+  return L.join('\n');
+}
+
+async function prepareRevenueRegisterPdf(projectId, { userId, role }) {
+  const r = await getRevenueRegister(projectId, { userId, role });
+  const p = await getProject(projectId);
+  return { ...r, currency: p.currency_code || 'TZS' };
+}
+
+function renderRevenueRegisterPdf(v, stream) {
+  const doc = new PDFDocument({ size: 'A4', margin: 40 });
+  doc.pipe(stream);
+  const G = '#0B5D1E';
+  const m = (n) => `${formatMoney(n)} ${v.currency}`;
+  const ensure = () => { if (doc.y > 760) doc.addPage(); };
+
+  doc.fontSize(17).fillColor(G).text('AFRIKOBA GLOBAL', { align: 'center' });
+  doc.fontSize(11).fillColor('#333').text('REJESTA YA UCHAKATAJI WA MAPATO (Revenue Processing Register)', { align: 'center' });
+  doc.fontSize(8).fillColor('#888').text(`${v.project.name}  (${v.project.id})  ·  ${v.project.status}  ·  Imetolewa: ${new Date(v.generated_at).toISOString()}`, { align: 'center' });
+  doc.moveDown(0.5);
+  vline(doc, doc.y + 4);
+
+  doc.fontSize(10).fillColor(G).text('Muhtasari / Summary');
+  vline(doc, doc.y + 2);
+  voucherField(doc, 'Mapato yaliyochakatwa / Revenue processed', m(v.summary.revenue_total));
+  voucherField(doc, 'Yaliyogawiwa / Allocated total', m(v.summary.allocated_total));
+  voucherField(doc, 'Ulinganifu wa mgawanyo / Allocation parity', v.summary.allocation_parity ? 'OK' : 'MISMATCH');
+  doc.moveDown(0.3);
+
+  doc.fontSize(10).fillColor(G).text(`Mapato / Revenue Batches (${v.revenue.length})`);
+  vline(doc, doc.y + 2);
+  for (const x of v.revenue) {
+    ensure();
+    doc.fontSize(8.5).fillColor('#111').text(`#${x.id}  ·  ${x.revenue_type}  ·  ${m(x.amount)}  ·  ${x.reconciled ? 'RECONCILED' : 'OPEN'}  ·  ref ${x.reference || '—'}  ·  ${new Date(x.created_at).toISOString()}`);
+    if (x.allocations.length) {
+      doc.fontSize(7).fillColor('#555').text(`   Mgawanyo: ${x.allocations.map((a) => `${a.step} ${m(a.total)}`).join(' · ')}`);
+    }
+  }
+
+  ensure();
+  doc.moveDown(0.5);
+  vline(doc, doc.y + 4);
+  doc.moveDown(0.8);
+  doc.fontSize(8).fillColor('#888').text('Mkaguzi Mkuu (Reviewer)', { align: 'center', width: 200, lineBreak: false });
+  doc.moveDown(1.6);
+  doc.moveTo(120, doc.y).lineTo(320, doc.y).stroke('#aaa');
+  doc.fontSize(8).fillColor('#888').text('Mkaguzi Mkuu (Reviewer)', { align: 'center', width: 200, lineBreak: false });
+  doc.end();
+  return doc;
+}
+
+// ============================================================================
 // PHASE 23 — DRAWDOWN SCHEDULE DOCUMENT + PLATFORM DIVIDEND LEDGER
 // ============================================================================
 
@@ -4244,4 +4476,12 @@ module.exports = {
   exportPlatformDividendLedgerCsv,
   preparePlatformDividendLedgerPdf,
   renderPlatformDividendLedgerPdf,
+  getMilestoneRegister,
+  exportMilestoneRegisterCsv,
+  prepareMilestoneRegisterPdf,
+  renderMilestoneRegisterPdf,
+  getRevenueRegister,
+  exportRevenueRegisterCsv,
+  prepareRevenueRegisterPdf,
+  renderRevenueRegisterPdf,
 };

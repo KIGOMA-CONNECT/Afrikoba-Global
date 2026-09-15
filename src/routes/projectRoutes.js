@@ -772,6 +772,56 @@ router.get('/projects/:id/drawdown-schedule/pdf', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// Phase 24: milestone operational register (JSON / CSV / PDF) - owner/expert
+router.get('/projects/:id/milestone-register', async (req, res, next) => {
+  try {
+    return res.json(await projectFinance.getMilestoneRegister(parseInt(req.params.id, 10), { userId: req.user.id, role: req.user.role }));
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/:id/milestone-register/export', async (req, res, next) => {
+  try {
+    const csv = await projectFinance.exportMilestoneRegisterCsv(parseInt(req.params.id, 10), { userId: req.user.id, role: req.user.role });
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename=milestone-register.csv');
+    return res.send(csv);
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/:id/milestone-register/pdf', async (req, res, next) => {
+  try {
+    const data = await projectFinance.prepareMilestoneRegisterPdf(parseInt(req.params.id, 10), { userId: req.user.id, role: req.user.role });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'inline; filename=milestone-register.pdf');
+    projectFinance.renderMilestoneRegisterPdf(data, res);
+  } catch (e) { next(e); }
+});
+
+// Phase 24: revenue processing register (JSON / CSV / PDF) - owner/expert
+router.get('/projects/:id/revenue-register', async (req, res, next) => {
+  try {
+    return res.json(await projectFinance.getRevenueRegister(parseInt(req.params.id, 10), { userId: req.user.id, role: req.user.role }));
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/:id/revenue-register/export', async (req, res, next) => {
+  try {
+    const csv = await projectFinance.exportRevenueRegisterCsv(parseInt(req.params.id, 10), { userId: req.user.id, role: req.user.role });
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename=revenue-register.csv');
+    return res.send(csv);
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/:id/revenue-register/pdf', async (req, res, next) => {
+  try {
+    const data = await projectFinance.prepareRevenueRegisterPdf(parseInt(req.params.id, 10), { userId: req.user.id, role: req.user.role });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'inline; filename=revenue-register.pdf');
+    projectFinance.renderRevenueRegisterPdf(data, res);
+  } catch (e) { next(e); }
+});
+
 // Phase 17: admin force-close stuck funding + per-investor dividend statement
 router.post('/projects/:id/funding/force-close', async (req, res, next) => {
   try {
