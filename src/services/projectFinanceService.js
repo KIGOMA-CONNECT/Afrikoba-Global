@@ -4341,6 +4341,111 @@ function renderRevenueRegisterPdf(v, stream) {
 }
 
 // ============================================================================
+// PHASE 36 — PLATFORM INVESTOR REFUND REGISTER (EXPERT-ONLY)
+// ============================================================================
+
+async function getRefundRegister({ role }) {
+  if (!isExpert(role)) {
+    throw new ValidityError('Huna ruhusa ya rejesta ya marejesho ya wawekezaji (expert only).', 403);
+  }
+  const r = await pool.query(
+    `SELECT i.id, i.project_id, i.investor_user_id, i.amount, i.unique_reference, i.refund_reference,
+            i.refunded_at, i.participation_pct,
+            p.name AS project_name, p.status AS project_status,
+            u.full_name AS investor_name, u.phone_number AS investor_phone
+     FROM project_investments i
+     JOIN projects p ON p.id = i.project_id
+     JOIN users u ON u.id = i.investor_user_id
+     WHERE i.status = 'REFUNDED'
+     ORDER BY i.refunded_at, i.id`
+  );
+  const entries = r.rows.map((x) => ({
+    id: x.id,
+    project: { id: x.project_id, name: x.project_name, status: x.project_status },
+    investor: { id: x.investor_user_id, name: x.investor_name, phone_number: x.investor_phone },
+    amount: round2(Number(x.amount || 0)),
+    investment_reference: x.unique_reference,
+    refund_reference: x.refund_reference,
+    participation_pct: Number(x.participation_pct || 0),
+    refunded_at: x.refunded_at,
+  }));
+  const total = round2(entries.reduce((s, x) => s + x.amount, 0));
+  return {
+    success: true,
+    generated_at: new Date().toISOString(),
+    summary: { refunds: entries.length, total_refunded: total },
+    entries,
+  };
+}
+
+async function exportRefundRegisterCsv({ role }) {
+  const r = await getRefundRegister({ role });
+  const esc = (v) => { const s = v === null || v === undefined ? '' : String(v); return `"${s.replace(/"/g, '""')}"`; };
+  const L = [];
+  L.push('AFRIKOBA GLOBAL - INVESTOR REFUND REGISTER');
+  L.push(`Generated at,${esc(r.generated_at)}`);
+  L.push(`Refunds,${r.summary.refunds}`);
+  L.push(`Total refunded,${r.summary.total_refunded}`);
+  L.push('');
+  L.push('id,project_id,project_name,project_status,investor_name,investor_phone,amount,investment_reference,refund_reference,participation_pct,refunded_at');
+  for (const x of r.entries) {
+    L.push([x.id, x.project.id, esc(x.project.name), esc(x.project.status), esc(x.investor.name),
+            esc(x.investor.phone_number), x.amount, esc(x.investment_reference), esc(x.refund_reference || ''),
+            x.participation_pct, esc(x.refunded_at)].join(','));
+  }
+  return L.join('\n');
+}
+
+function renderRefundRegisterPdf(v, stream) {
+  const doc = new PDFDocument({ size: 'A4', landscape: true, margin: 36 });
+  doc.pipe(stream);
+  const G = '#0B5D1E';
+  const m = (n) => `${formatMoney(n)} TZS`;
+
+  doc.fontSize(16).fillColor(G).text('AFRIKOBA GLOBAL', { align: 'center' });
+  doc.fontSize(12).fillColor('#333').text('REJESTA YA MARESHO YA WAWEKEZAJI / INVESTOR REFUND REGISTER', { align: 'center' });
+  doc.fontSize(8).fillColor('#888').text(`Imetolewa / Generated: ${new Date(v.generated_at).toISOString()}`, { align: 'center' });
+  doc.moveDown(0.3);
+  vline(doc, doc.y + 4);
+
+  doc.fontSize(10).fillColor(G).text('Muhtasari / Summary');
+  vline(doc, doc.y + 2);
+  voucherField(doc, 'Marejesho / Refunds', String(v.summary.refunds));
+  voucherField(doc, 'Jumla / Total refunded', m(v.summary.total_refunded));
+  doc.moveDown(0.4);
+
+  const tbl = v.entries.map((x) => [
+    String(x.id), String(x.project.id), x.project.name, x.project.status,
+    `${x.investor.name} (${x.investor.phone_number})`, m(x.amount), x.investment_reference,
+    x.refund_reference || '—', String(x.refunded_at || '').slice(0, 19).replace('T', ' '),
+  ]);
+  const hdr = ['#', 'Proj', 'Mradi / Project', 'Hali', 'Mwekezaji / Investor', 'Kiasi', 'Uwekezaji Ref', 'Marejesho Ref', 'Tarehe'];
+  const widths = [26, 38, 120, 70, 160, 85, 100, 110, 120];
+  let y = doc.y;
+  const drawRow = (cells, isHeader) => {
+    let x = 40;
+    doc.fontSize(7).fillColor(isHeader ? '#0B5D1E' : '#111');
+    cells.forEach((c, i) => {
+      doc.text(String(c || ''), x, y, { width: widths[i], lineBreak: false });
+      x += widths[i];
+    });
+    y += isHeader ? 12 : 14;
+  };
+  drawRow(hdr, true);
+  for (const row of tbl) { if (y > 520) { doc.addPage(); y = 36; drawRow(hdr, true); } drawRow(row, false); }
+
+  doc.moveDown(0.4);
+  vline(doc, y + 4);
+  doc.moveDown(0.7);
+  doc.fontSize(8).fillColor('#888').text('Imekaguliwa na / Reviewed by', { align: 'center' });
+  doc.moveDown(1.2);
+  doc.moveTo(210, doc.y).lineTo(420, doc.y).stroke('#aaa');
+  doc.fontSize(8).fillColor('#888').text('Mkaguzi Mkuu (Reviewer)', { align: 'center' });
+  doc.end();
+  return doc;
+}
+
+// ============================================================================
 // PHASE 35 — DRAWDOWN WORKFLOW & RELEASE REGISTER
 // ============================================================================
 
@@ -6066,6 +6171,9 @@ module.exports = {
   exportDrawdownWorkflowCsv,
   prepareDrawdownWorkflowPdf,
   renderDrawdownWorkflowPdf,
+  getRefundRegister,
+  exportRefundRegisterCsv,
+  renderRefundRegisterPdf,
   exportPlatformProjectRegisterCsv,
   preparePlatformProjectRegisterPdf,
   renderPlatformProjectRegisterPdf,

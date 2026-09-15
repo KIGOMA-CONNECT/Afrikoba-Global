@@ -982,6 +982,31 @@ router.get('/projects/:id/settlement-register/pdf', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// Phase 36: platform investor refund register (expert-only) + export + pdf
+router.get('/projects/ops/refund-register', async (req, res, next) => {
+  try {
+    return res.json(await projectFinance.getRefundRegister({ role: req.user.role }));
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/ops/refund-register/export', async (req, res, next) => {
+  try {
+    const csv = await projectFinance.exportRefundRegisterCsv({ role: req.user.role });
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename=refund-register.csv');
+    return res.send(csv);
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/ops/refund-register/pdf', async (req, res, next) => {
+  try {
+    const data = await projectFinance.getRefundRegister({ role: req.user.role });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'inline; filename=refund-register.pdf');
+    projectFinance.renderRefundRegisterPdf(data, res);
+  } catch (e) { next(e); }
+});
+
 // Phase 35: drawdown workflow & release register (owner/expert) + export + pdf
 router.get('/projects/:id/drawdown-workflow', async (req, res, next) => {
   try {
