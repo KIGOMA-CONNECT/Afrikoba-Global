@@ -4355,7 +4355,7 @@ async function getMilestoneEvidenceRegister(projectId, { userId, role }) {
             m.proof_submitted_by, m.proof_submitted_at, m.ai_verification,
             m.expert_reviewer_id, m.expert_reviewed_at, m.expert_comment, m.disbursed_at,
             su.full_name AS submitter_name, su.phone_number AS submitter_phone,
-            er.name AS reviewer_name
+            er.full_name AS reviewer_name
      FROM project_milestones m
      LEFT JOIN users su ON su.id = m.proof_submitted_by
      LEFT JOIN users er ON er.id = m.expert_reviewer_id
