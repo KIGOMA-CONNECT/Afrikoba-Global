@@ -1299,8 +1299,25 @@ router.get('/projects/:id/evidence-pack/pdf', async (req, res, next) => {
   try {
     const data = await projectFinance.prepareEvidencePackPdf(parseInt(req.params.id, 10), { userId: req.user.id, role: req.user.role });
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `inline; filename=evidence-pack-${data.project.id}.pdf`);
+    res.setHeader('Content-Disposition', 'inline; filename=evidence-pack.pdf');
     projectFinance.renderEvidencePackPdf(data, res);
+  } catch (e) { next(e); }
+});
+
+// Phase 52: per-project stakeholder archive bundle (ZIP) + manifest
+router.get('/projects/:id/archive/manifest', async (req, res, next) => {
+  try {
+    const r = await projectFinance.buildProjectArchive({ userId: req.user.id, role: req.user.role, projectId: parseInt(req.params.id, 10) });
+    return res.json({ success: true, filename: r.filename, manifest: r.manifest });
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/:id/archive', async (req, res, next) => {
+  try {
+    const r = await projectFinance.buildProjectArchive({ userId: req.user.id, role: req.user.role, projectId: parseInt(req.params.id, 10) });
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename=${r.filename}`);
+    return res.send(r.zip);
   } catch (e) { next(e); }
 });
 

@@ -23,6 +23,7 @@
  */
 
 const crypto = require('crypto');
+const { PassThrough } = require('stream');
 const PDFDocument = require('pdfkit');
 const pool = require('../config/db');
 const { generateReference, formatMoney } = require('../utils/helpers');
@@ -6336,6 +6337,159 @@ function renderInvestorPlatformSummaryPdf(v, stream) {
 }
 
 // ============================================================================
+// PHASE 52 — PER-PROJECT STAKEHOLDER ARCHIVE BUNDLE (DEPENDENCY-FREE ZIP)
+// ============================================================================
+
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let i = 0; i < 256; i++) {
+    let c = i;
+    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+    t[i] = c >>> 0;
+  }
+  return t;
+})();
+
+function crc32(buf) {
+  let c = 0xFFFFFFFF;
+  for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+
+function buildZip(entries) {
+  const now = new Date();
+  const year = now.getFullYear() >= 1980 ? now.getFullYear() : 1980;
+  const time = ((now.getHours() << 11) | (now.getMinutes() << 5) | (now.getSeconds() >> 1)) & 0xffff;
+  const date = (((year - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate()) & 0xffff;
+  const local = [];
+  const central = [];
+  let offset = 0;
+  for (const { name, data } of entries) {
+    const nameBuf = Buffer.from(name, 'utf8');
+    const crc = crc32(data);
+    const size = data.length;
+    const lh = Buffer.alloc(30);
+    lh.writeUInt32LE(0x04034b50, 0);
+    lh.writeUInt16LE(20, 4);
+    lh.writeUInt16LE(0x0800, 6);
+    lh.writeUInt16LE(0, 8);
+    lh.writeUInt16LE(time, 10);
+    lh.writeUInt16LE(date, 12);
+    lh.writeUInt32LE(crc, 14);
+    lh.writeUInt32LE(size, 18);
+    lh.writeUInt32LE(size, 22);
+    lh.writeUInt16LE(nameBuf.length, 26);
+    lh.writeUInt16LE(0, 28);
+    const lhBuf = Buffer.concat([lh, nameBuf, data]);
+    const ch = Buffer.alloc(46);
+    ch.writeUInt32LE(0x02014b50, 0);
+    ch.writeUInt16LE(20, 4);
+    ch.writeUInt16LE(20, 6);
+    ch.writeUInt16LE(0x0800, 8);
+    ch.writeUInt16LE(0, 10);
+    ch.writeUInt16LE(time, 12);
+    ch.writeUInt16LE(date, 14);
+    ch.writeUInt32LE(crc, 16);
+    ch.writeUInt32LE(size, 20);
+    ch.writeUInt32LE(size, 24);
+    ch.writeUInt16LE(nameBuf.length, 28);
+    ch.writeUInt16LE(0, 30);
+    ch.writeUInt16LE(0, 32);
+    ch.writeUInt16LE(0, 34);
+    ch.writeUInt16LE(0, 36);
+    ch.writeUInt32LE(0, 38);
+    ch.writeUInt32LE(offset, 42);
+    const chBuf = Buffer.concat([ch, nameBuf]);
+    central.push(chBuf);
+    local.push(lhBuf);
+    offset += lhBuf.length;
+  }
+  let csize = 0;
+  for (const c of central) csize += c.length;
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0);
+  eocd.writeUInt16LE(0, 4);
+  eocd.writeUInt16LE(0, 6);
+  eocd.writeUInt16LE(entries.length, 8);
+  eocd.writeUInt16LE(entries.length, 10);
+  eocd.writeUInt32LE(csize, 12);
+  eocd.writeUInt32LE(offset, 16);
+  eocd.writeUInt16LE(0, 20);
+  return Buffer.concat([...local, ...central, eocd]);
+}
+
+function pdfToBuffer(prepareFn, renderFn, args) {
+  return new Promise(async (resolve, reject) => {
+    try {
+      const data = await prepareFn(...args);
+      const chunks = [];
+      const s = new PassThrough();
+      s.on('data', (c) => chunks.push(c));
+      s.on('end', () => resolve(Buffer.concat(chunks)));
+      s.on('error', reject);
+      try { renderFn(data, s); } catch (e) { reject(e); }
+    } catch (e) { reject(e); }
+  });
+}
+
+async function buildProjectArchive({ userId, role, projectId }) {
+  const project = await getProject(projectId);
+  if (!project) throw new ValidityError('Mradi haukupatikana.', 404);
+  const opts = { userId, role };
+  const isOwner = Number(project.owner_user_id) === Number(userId);
+  const invRes = await pool.query(
+    `SELECT status FROM project_investments WHERE project_id = $1 AND investor_user_id = $2 AND status IN ('CONFIRMED','REFUNDED')`,
+    [projectId, userId]
+  );
+  const hasDiv = await pool.query(
+    `SELECT 1 FROM project_investor_payouts WHERE project_id = $1 AND investor_user_id = $2 LIMIT 1`,
+    [projectId, userId]
+  );
+  const archive = [];
+  const addDoc = async (name, fn) => {
+    try {
+      const data = await fn();
+      archive.push({ name, data });
+    } catch (e) {
+      const msg = e && e.message ? e.message : 'unavailable';
+      archive.push({ name: `${name}.SKIPPED.txt`, data: Buffer.from(`Not included in this archive: ${msg}\n`, 'utf8') });
+    }
+  };
+  await addDoc(`project-${projectId}-statement.csv`, () => exportProjectStatementCsv(projectId, opts));
+  await addDoc(`project-${projectId}-waterfall-ledger.csv`, () => exportWaterfallLedgerCsv(projectId, opts));
+  await addDoc(`project-${projectId}-milestones.csv`, () => exportMilestoneRegisterCsv(projectId, opts));
+  await addDoc(`project-${projectId}-drawdown-plan.csv`, () => exportDrawdownScheduleCsv(projectId, opts));
+  if (isOwner || isExpert(role)) {
+    await addDoc(`project-${projectId}-evidence-pack.pdf`, () => pdfToBuffer(prepareEvidencePackPdf, renderEvidencePackPdf, [projectId, opts]));
+    await addDoc(`project-${projectId}-settlement-report.pdf`, () => pdfToBuffer(prepareSettlementPdf, renderSettlementReportPdf, [projectId, opts]));
+    await addDoc(`project-${projectId}-close-out-report.pdf`, () => pdfToBuffer(prepareCloseOutPdf, renderCloseOutReportPdf, [projectId, opts]));
+  }
+  if (invRes.rows.length > 0) {
+    await addDoc(`project-${projectId}-personal-receipt-${userId}.csv`, () => exportPersonalReceiptCsv(projectId, { userId }));
+    if (hasDiv.rows.length > 0) {
+      await addDoc(`project-${projectId}-dividend-advice-${userId}.pdf`, () => pdfToBuffer(prepareDividendAdvicePdf, renderDividendAdvicePdf, [projectId, userId, opts]));
+    }
+  }
+  const manifest = Buffer.from([
+    'AFRIKOBA GLOBAL - PER-PROJECT STAKEHOLDER ARCHIVE',
+    `Project: ${project.name} (id ${projectId})`,
+    `Stakeholder: user ${userId}, role ${role}`,
+    `Generated: ${new Date().toISOString()}`,
+    `Files: ${archive.length}`,
+    ...archive.map((x) => ` - ${x.name}  (${x.data.length} bytes)`),
+  ].join('\n'), 'utf8');
+  archive.unshift({ name: 'MANIFEST.txt', data: manifest });
+  const zip = buildZip(archive);
+  return {
+    success: true,
+    project: { id: project.id, name: project.name, status: project.status },
+    filename: `afrikoba-project-${projectId}-archive.zip`,
+    manifest: archive.map((x) => ({ name: x.name, size: x.data.length })),
+    zip,
+  };
+}
+
+// ============================================================================
 // PHASE 37 — PLATFORM WATERFALL DISTRIBUTION SUMMARY (EXPERT-ONLY)
 // ============================================================================
 
@@ -8345,6 +8499,7 @@ module.exports = {
   exportInvestorPlatformSummaryCsv,
   prepareInvestorPlatformSummaryPdf,
   renderInvestorPlatformSummaryPdf,
+  buildProjectArchive,
   getTaxRegister,
   exportTaxRegisterCsv,
   renderTaxRegisterPdf,
