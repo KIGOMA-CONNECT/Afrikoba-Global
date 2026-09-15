@@ -4519,6 +4519,7 @@ function renderPfeMasterCertificatePdf(v, stream) {
   voucherField(doc, 'Revenue', m(v.totals.revenue));
   voucherField(doc, 'To owner', m(v.totals.owner_total));
   voucherField(doc, 'Statutory (tax+debt+opex)', m(v.totals.statutory_total));
+  voucherField(doc, 'Fees (consultation)', m(v.totals.fees));
   doc.moveDown(0.4);
 
   doc.fontSize(10).fillColor(G).text('Rejesta za mtandao / Platform register index');
