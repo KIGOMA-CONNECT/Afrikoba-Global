@@ -1689,10 +1689,12 @@ async function getPlatformPfeBook({ userId, role }) {
       residual_released: Number(x.residual_released || 0),
       escrow_returned: Number(x.escrow_returned || 0),
     };
+    // Investor-capital escrow invariant. Reserve / residual / dividends come
+    // from the REVENUE profit pools (waterfall allocations), never from the
+    // investor escrow, so they are intentionally NOT part of this check.
     const variance = round2(
       Number(x.invested || 0) - Number(x.refunded || 0)
-      - (breakdown.escrow_held + breakdown.disbursed + breakdown.reserve_released
-         + breakdown.residual_released + breakdown.escrow_returned)
+      - (breakdown.escrow_held + breakdown.disbursed + breakdown.escrow_returned)
     );
     const flagged = Math.abs(variance) > 1;
     if (flagged) flags.push({ project_id: x.id, name: x.name, variance });
@@ -1711,8 +1713,7 @@ async function getPlatformPfeBook({ userId, role }) {
 
   const totals = totalRes.rows[0];
   const invested = Number(totals.invested_confirmed || 0);
-  const out = Number(totals.disbursed || 0) + Number(totals.reserve_released || 0)
-    + Number(totals.residual_released || 0) + Number(totals.escrow_returned || 0);
+  const out = Number(totals.disbursed || 0) + Number(totals.escrow_returned || 0);
   const platformVariance = round2(invested - Number(totals.refunded || 0)
     - (Number(totals.escrow_held || 0) + out));
 
