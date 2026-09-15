@@ -1484,9 +1484,13 @@ async function getMyPerformance(userId) {
             i.participation_pct, i.status AS investment_status,
             i.refund_reference, i.refunded_at, i.created_at AS invested_at,
             COALESCE(pp.total_pending, 0)::numeric AS pending_total,
-            COALESCE(pa.total_paid, 0)::numeric AS paid_total
+            COALESCE(pa.total_paid, 0)::numeric AS paid_total,
+            (s.id IS NOT NULL) AS completed, (l.id IS NOT NULL) AS liquidated,
+            s.summary AS settlement_summary
      FROM project_investments i
      JOIN projects p ON p.id = i.project_id
+     LEFT JOIN project_settlements s ON s.project_id = i.project_id
+     LEFT JOIN project_liquidations l ON l.project_id = i.project_id
      LEFT JOIN (SELECT project_id, SUM(entitlement)::numeric AS total_pending
                 FROM project_investor_payouts
                 WHERE investor_user_id = $1 AND status = 'PENDING' GROUP BY project_id) pp
@@ -1499,33 +1503,97 @@ async function getMyPerformance(userId) {
      ORDER BY i.id DESC`,
     [userId]
   );
+
+  const returnedFor = (summary, investorUserId) => {
+    if (!summary || !Array.isArray(summary.returned_to_investors)) return 0;
+    const row = summary.returned_to_investors.find((x) => Number(x.investor_user_id) === Number(investorUserId));
+    return row ? Number(row.amount || 0) : 0;
+  };
+
   const rows = r.rows.map((x) => {
     const invested = Number(x.invested || 0);
     const paid = Number(x.paid_total || 0);
     const refunded = x.refunded_at ? invested : 0;
-    const received = round2(paid + refunded);
+    const escrowReturn = returnedFor(x.settlement_summary, x.investor_user_id);
+    const received = round2(paid + refunded + escrowReturn);
     const roi = invested > 0 ? round2(((received - invested) / invested) * 100) : 0;
     const percent_funded = (x.capital_required && Number(x.capital_required) > 0)
       ? round2((Number(x.amount_raised) / Number(x.capital_required)) * 100) : 0;
     return {
       ...x,
       invested: round2(invested),
+      escrow_return: round2(escrowReturn),
       received: round2(received),
       pending_total: round2(Number(x.pending_total || 0)),
       paid_total: round2(paid),
       refunded_amount: round2(refunded),
+      completed: !!x.completed,
+      liquidated: !!x.liquidated,
       roi_percent: roi,
       percent_funded,
+      settlement_summary: undefined,
     };
   });
   const totals = rows.reduce((acc, x) => {
     acc.invested = round2(acc.invested + x.invested);
     acc.received = round2(acc.received + x.received);
+    acc.escrow_return = round2(acc.escrow_return + x.escrow_return);
     acc.pending = round2(acc.pending + Number(x.pending_total || 0));
     return acc;
-  }, { invested: 0, received: 0, pending: 0 });
+  }, { invested: 0, received: 0, escrow_return: 0, pending: 0 });
   totals.roi_percent = totals.invested > 0 ? round2(((totals.received - totals.invested) / totals.invested) * 100) : 0;
   return { totals, investments: rows };
+}
+
+async function exportMyPerformanceCsv(userId) {
+  const perf = await getMyPerformance(userId);
+  const esc = (v) => { const s = v === null || v === undefined ? '' : String(v); return `"${s.replace(/"/g, '""')}"`; };
+  const L = ['Investment,Project,Status,Invested,Participation %,Escrow returned,Dividends paid,Refunded,Received,ROI %,Completed,Liquidated'];
+  for (const i of perf.investments) {
+    L.push([
+      i.investment_id, esc(i.name), i.investment_status, i.invested,
+      i.participation_pct, i.escrow_return, i.paid_total, i.refunded_amount,
+      i.received, `${i.roi_percent}%`, i.completed ? 'yes' : 'no', i.liquidated ? 'yes' : 'no',
+    ].join(','));
+  }
+  L.push('');
+  L.push(`Totals,Invested=${perf.totals.invested},Received=${perf.totals.received},Pending=${perf.totals.pending},ROI=${perf.totals.roi_percent}%`);
+  return L.join('\n');
+}
+
+// ============================================================================
+// PHASE 12 — PROJECT LEDGER: AUTHORIZED TRANSACTION-LEVEL AUDIT TRAIL
+// Exposes the append-only getAuditTrail provenance (approvals, disbursements,
+// revenue, waterfall allocations, ledger postings) to stakeholders only:
+// project owner / experts / participating (confirmed or refunded) investors.
+// ============================================================================
+
+async function getProjectLedger(projectId, { userId, role }) {
+  const p = await getProject(projectId);
+  const isOwner = p.owner_user_id === userId;
+  const invRes = await pool.query(
+    `SELECT 1 FROM project_investments WHERE project_id = $1 AND investor_user_id = $2 AND status IN ('CONFIRMED','REFUNDED') LIMIT 1`,
+    [projectId, userId]
+  );
+  const isInvestor = invRes.rows.length > 0;
+  if (!isOwner && !isInvestor && !isExpert(role)) {
+    throw new ValidityError('Huna ruhusa ya ledger ya mradi huu.', 403);
+  }
+
+  const trail = await getAuditTrail(projectId);
+  const postings = Array.isArray(trail.ledger_postings) ? trail.ledger_postings : [];
+  return {
+    success: true,
+    project: { id: p.id, name: p.name, status: p.status, owner_user_id: p.owner_user_id },
+    approvals: trail.approvals || [],
+    disbursements: trail.disbursements || [],
+    revenue: trail.revenue || [],
+    waterfall_allocations: trail.waterfall_allocations || [],
+    ledger_postings: postings.map((e) => ({
+      id: e.id, account_code: e.account_code, debit: e.debit, credit: e.credit,
+      reference: e.reference_id || e.reference, description: e.description, posted_at: e.posted_at,
+    })),
+  };
 }
 
 // ============================================================================
@@ -2285,4 +2353,5 @@ module.exports = {
   liquidateProject,
   getPersonalReceipt,
   exportPersonalReceiptCsv,
+  getProjectLedger,
 };

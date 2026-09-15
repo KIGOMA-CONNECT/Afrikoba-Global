@@ -362,6 +362,15 @@ router.get('/projects/mine/performance', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+router.get('/projects/mine/performance/export', async (req, res, next) => {
+  try {
+    const csv = await projectFinance.exportMyPerformanceCsv(req.user.id);
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename=my-project-portfolio.csv');
+    return res.send(csv);
+  } catch (e) { next(e); }
+});
+
 // Phase 7/8: close-out - fund release to owner (reserve + residual) + report
 router.post('/projects/:id/close-out/reserve', async (req, res, next) => {
   try {
@@ -434,6 +443,14 @@ router.get('/projects/:id/receipt/export', async (req, res, next) => {
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename=project-${req.params.id}-receipt.csv`);
     return res.send(csv);
+  } catch (e) { next(e); }
+});
+
+// Phase 12: authorized transaction-level project ledger (provenance / audit)
+router.get('/projects/:id/ledger', async (req, res, next) => {
+  try {
+    const ledger = await projectFinance.getProjectLedger(parseInt(req.params.id, 10), { userId: req.user.id, role: req.user.role });
+    return res.json(ledger);
   } catch (e) { next(e); }
 });
 

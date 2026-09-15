@@ -22,6 +22,7 @@ export default function Projects() {
   const [statement, setStatement] = useState(null);
   const [liquidation, setLiquidation] = useState(null);
   const [receipt, setReceipt] = useState(null);
+  const [ledger, setLedger] = useState(null);
   const [msg, setMsg] = useState({ type: '', text: '' });
   const [role, setRole] = useState('');
   const [expandedForm, setExpandedForm] = useState(false);
@@ -303,6 +304,35 @@ export default function Projects() {
       .catch(() => ok(t('projects.error')));
   };
 
+  const downloadPortfolio = () => {
+    const token = localStorage.getItem('afrikoba_token');
+    fetch('/api/projects/mine/performance/export', { headers: { Authorization: `Bearer ${token}` } })
+      .then((r) => {
+        if (!r.ok) throw new Error();
+        return r.blob();
+      })
+      .then((blob) => {
+        const u = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = u;
+        a.download = 'my-project-portfolio.csv';
+        a.click();
+        URL.revokeObjectURL(u);
+      })
+      .catch(() => ok(t('projects.error')));
+  };
+
+  const viewLedger = async (id) => {
+    try {
+      const r = await api.get(`/projects/${id}/ledger`);
+      setLedger(r.data);
+      setStatement(null);
+      setCloseOut(null);
+      setLiquidation(null);
+      setReceipt(null);
+    } catch (err) { error(err); }
+  };
+
   const tabs = [
     { id: 'marketplace', label: t('projects.marketplace_tab') },
     { id: 'myprojects', label: t('projects.myprojects_tab') },
@@ -476,6 +506,9 @@ export default function Projects() {
                           )}
                           {['COMPLETED', 'LIQUIDATED'].includes(p.status) && (
                             <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => viewReceipt(p.id)}>{t('projects.receipt')}</button>
+                          )}
+                          {['PUBLISHED', 'FUNDING', 'APPROVED', 'ACTIVE', 'COMPLETED', 'LIQUIDATED'].includes(p.status) && (
+                            <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => viewLedger(p.id)}>{t('projects.ledger')}</button>
                           )}
                           {['PUBLISHED', 'FUNDING', 'ACTIVE', 'APPROVED'].includes(p.status) && (
                             <>
@@ -771,6 +804,47 @@ export default function Projects() {
               )}
             </div>
           )}
+
+          {ledger && (
+            <div className="card" style={{ marginTop: 12 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+                <h4 style={{ margin: 0 }}>{t('projects.ledger')}: {ledger.project.name}</h4>
+                <span className="badge info">{ledger.project.status}</span>
+              </div>
+              <div style={{ marginTop: 14, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px,1fr))', gap: 12 }}>
+                <div className="card"><div className="roles-tag">{t('projects.total_invested')}</div><b>{ledger.revenue.length + ledger.disbursements.length + ledger.waterfall_allocations.length + ledger.ledger_postings.length}</b></div>
+              </div>
+              {[
+                { label: t('projects.ledger_revenue'), rows: ledger.revenue, cols: ['unique_reference', 'revenue_type', 'amount', 'created_at'] },
+                { label: t('projects.ledger_disbursements'), rows: ledger.disbursements, cols: ['unique_reference', 'amount', 'status', 'created_at'] },
+                { label: t('projects.ledger_waterfall'), rows: ledger.waterfall_allocations, cols: ['allocation_step', 'amount', 'revenue_reference', 'created_at'] },
+                { label: t('projects.ledger_postings'), rows: ledger.ledger_postings, cols: ['account_code', 'debit', 'credit', 'description', 'posted_at'] },
+              ].map((sec) => (
+                <div key={sec.label} style={{ marginTop: 14 }}>
+                  <h5 style={{ margin: '0 0 6px' }}>{sec.label} ({sec.rows.length})</h5>
+                  {sec.rows.length === 0 ? <p className="roles-tag">{t('projects.error')}</p> : (
+                    <div style={{ overflowX: 'auto', maxHeight: 260, overflowY: 'auto' }}>
+                      <table className="table">
+                        <thead>
+                          <tr>{sec.cols.map((c) => <th key={c}>{c}</th>)}</tr>
+                        </thead>
+                        <tbody>
+                          {sec.rows.map((row, idx) => (
+                            <tr key={idx}>
+                              {sec.cols.map((c) => {
+                                const v = row[c];
+                                return <td key={c}>{v === null || v === undefined ? '—' : c === 'amount' || c === 'debit' || c === 'credit' ? fmt(v) : String(v)}</td>;
+                              })}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -778,11 +852,15 @@ export default function Projects() {
         <div className="card">
           <h3 style={{ margin: '0 0 14px' }}>{t('projects.myinvest_tab')}</h3>
           {performance && (
-            <div style={{ marginBottom: 16, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px,1fr))', gap: 12 }}>
-              <div className="card"><div className="roles-tag">{t('projects.total_invested')}</div><b>{fmt(performance.totals.invested)}</b></div>
-              <div className="card"><div className="roles-tag">{t('projects.received')}</div><b>{fmt(performance.totals.received)}</b></div>
-              <div className="card"><div className="roles-tag">{t('projects.pending_payout')}</div><b>{fmt(performance.totals.pending)}</b></div>
-              <div className="card"><div className="roles-tag">ROI</div><b style={{ color: performance.totals.roi_percent >= 0 ? '#15803d' : '#dc2626' }}>{performance.totals.roi_percent}%</b></div>
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px,1fr))', gap: 12 }}>
+                <div className="card"><div className="roles-tag">{t('projects.total_invested')}</div><b>{fmt(performance.totals.invested)}</b></div>
+                <div className="card"><div className="roles-tag">{t('projects.received')}</div><b>{fmt(performance.totals.received)}</b></div>
+                <div className="card"><div className="roles-tag">{t('projects.escrow_return')}</div><b>{fmt(performance.totals.escrow_return)}</b></div>
+                <div className="card"><div className="roles-tag">{t('projects.pending_payout')}</div><b>{fmt(performance.totals.pending)}</b></div>
+                <div className="card"><div className="roles-tag">ROI</div><b style={{ color: performance.totals.roi_percent >= 0 ? '#15803d' : '#dc2626' }}>{performance.totals.roi_percent}%</b></div>
+              </div>
+              <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12, marginTop: 8 }} onClick={downloadPortfolio}>{t('projects.portfolio_csv')}</button>
             </div>
           )}
           {performance && performance.investments.length > 0 && (
@@ -792,6 +870,7 @@ export default function Projects() {
                   <tr>
                     <th>{t('projects.name')}</th>
                     <th>{t('projects.invested_amount')}</th>
+                    <th>{t('projects.escrow_return')}</th>
                     <th>{t('projects.received')}</th>
                     <th>{t('projects.pending_payout')}</th>
                     <th>ROI</th>
@@ -803,10 +882,11 @@ export default function Projects() {
                     <tr key={i.investment_id}>
                       <td>{i.name}</td>
                       <td>{fmt(i.invested)}</td>
+                      <td>{fmt(i.escrow_return)}</td>
                       <td>{fmt(i.received)}</td>
                       <td>{fmt(i.pending_total)}</td>
                       <td style={{ color: i.roi_percent >= 0 ? '#15803d' : '#dc2626', fontWeight: 600 }}>{i.roi_percent}%</td>
-                      <td><span className="badge info">{i.project_status}</span></td>
+                      <td><span className="badge info">{i.project_status}</span>{i.completed ? <span className="badge info">✓</span> : null}{i.liquidated ? <span className="badge success">LIQ</span> : null}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -844,6 +924,9 @@ export default function Projects() {
                           )}
                           {['COMPLETED', 'LIQUIDATED'].includes(i.project_status) && (
                             <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => viewReceipt(i.project_id)}>{t('projects.receipt')}</button>
+                          )}
+                          {['PUBLISHED', 'FUNDING', 'APPROVED', 'ACTIVE', 'COMPLETED', 'LIQUIDATED'].includes(i.project_status) && (
+                            <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => viewLedger(i.project_id)}>{t('projects.ledger')}</button>
                           )}
                           {i.project_status === 'EXPIRED' && i.status === 'CONFIRMED' && (
                             <button className="btn btn-success" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => refundInvestment(i.id, i.project_id, i.project_name)}>{t('projects.refund')}</button>
