@@ -1100,6 +1100,7 @@ async function payProjectDividends({ projectId, actorUserId, actorRole }) {
       eventType: 'PROJECT_DIVIDEND_PAID', action: 'CREATE', entityType: 'PROJECT',
       userId: actorUserId, entityId: projectId, referenceId: txnRef,
       afterData: { reference: txnRef, paid: paid.map((x) => ({ investor_user_id: x.investor_user_id, amount: x.amount })) },
+      client,
     });
 
     // Transactional notifications: fired only after COMMIT succeeded.
@@ -1402,6 +1403,7 @@ async function completeProject({ projectId, actorUserId, actorRole }) {
       eventType: 'PROJECT_COMPLETED', action: 'COMPLETE', entityType: 'PROJECT',
       userId: actorUserId, entityId: projectId, referenceId: settleRef,
       afterData: { returned_to_investors: returnedToInvestors, owner_received: ownerShare, escrow },
+      client,
     });
 
     await client.query('COMMIT');
@@ -1632,6 +1634,10 @@ async function releaseCloseOutFund({ projectId, actorUserId, actorRole, fundType
       eventType: meta.eventType, action: 'RELEASE', entityType: 'PROJECT',
       userId: actorUserId, entityId: projectId, referenceId: ref,
       afterData: { fund: fundType, amount, accrued, released_before: released, released_to: p.owner_user_id },
+      // Run inside the same transaction: creditWallet holds a FOR UPDATE lock
+      // on the owner's wallet row, so an audit FK-check from another connection
+      // (users(id)) would block/abort on the conflicting FOR KEY SHARE.
+      client,
     });
 
     await client.query('COMMIT');
