@@ -1803,6 +1803,28 @@ async function getReleasedCloseOutTotal(projectId, reserveType, client = pool) {
  * the project owner. Idempotent: once fully released, further calls return a
  * no-op (already_released) instead of moving money again.
  */
+/**
+ * Best-effort lifecycle notification to every confirmed investor of a project
+ * (used for close-out fund releases and liquidation). Never throws: money
+ * movement must not roll back because a notification write failed.
+ */
+async function notifyProjectInvestors(projectId, { title, body }) {
+  try {
+    const r = await pool.query(
+      `SELECT DISTINCT investor_user_id FROM project_investments
+       WHERE project_id = $1 AND status = 'CONFIRMED'`,
+      [projectId]
+    );
+    for (const row of r.rows) {
+      await createNotification(row.investor_user_id, {
+        title, body, type: 'PROJECT', entityType: 'PROJECT', entityId: projectId,
+      });
+    }
+  } catch (e) {
+    // best-effort; notifications are not financial operations.
+  }
+}
+
 async function releaseCloseOutFund({ projectId, actorUserId, actorRole, fundType }) {
   const meta = CLOSE_OUT_FUNDS[fundType];
   const p = await getProject(projectId);
@@ -1866,6 +1888,10 @@ async function releaseCloseOutFund({ projectId, actorUserId, actorRole, fundType
       title: meta.title,
       body: meta.body(p.name, amount),
       type: 'PROJECT', entityType: 'PROJECT', entityId: projectId,
+    });
+    await notifyProjectInvestors(projectId, {
+      title: meta.title,
+      body: `Fedha za ${meta.fundLabel} za mradi "${p.name}" zimetolewa. Kiasi: TZS ${Number(amount).toLocaleString('en-US')}.`,
     });
     await enqueueOutbox({
       eventType: meta.eventType,
@@ -2149,6 +2175,10 @@ async function liquidateProject(projectId, { userId, role }) {
       title: 'Mradi umefilisiwa',
       body: `Mradi "${p.name}" umefilisiwa (zimefungwa). Rejea: ${ref}`,
       type: 'PROJECT', entityType: 'PROJECT', entityId: projectId,
+    });
+    await notifyProjectInvestors(projectId, {
+      title: 'Mradi umefilisiwa',
+      body: `Mradi "${p.name}" umefilisiwa na malipo yote yamekamilika. Rejea ya ufilisi: ${ref}`,
     });
     await enqueueOutbox({
       eventType: 'PROJECT_LIQUIDATED',
@@ -2456,6 +2486,90 @@ async function exportPersonalReceiptCsv(projectId, { userId }) {
   return L.join('\n');
 }
 
+async function exportCloseOutReportCsv(projectId, { userId, role }) {
+  const r = await getCloseOutReport(projectId, { userId, role });
+  const esc = (v) => {
+    const s = v === null || v === undefined ? '' : String(v);
+    return `"${s.replace(/"/g, '""')}"`;
+  };
+  const L = [];
+  const p = r.project;
+  L.push('Project')
+  L.push(`Name,${esc(p.name)}`)
+  L.push(`Status,${esc(p.status)}`)
+  L.push(`Completed at,${esc(p.completed_at || '')}`)
+  L.push(`Capital required,${p.capital_required}`)
+  L.push(`Amount raised,${p.amount_raised}`)
+  L.push('')
+  L.push('Funds out,Amount')
+  L.push(`Escrow returned to investors,${r.funds_out.escrow_returned_to_investors}`)
+  L.push(`Disbursed to owner,${r.funds_out.disbursed_to_owner}`)
+  L.push(`Reserve released to owner,${r.funds_out.reserve_released_to_owner}`)
+  L.push(`Residual released to owner,${r.funds_out.residual_released_to_owner}`)
+  L.push(`Close-out paid to owner,${r.funds_out.close_out_paid_to_owner}`)
+  L.push(`Dividends paid to investors,${r.funds_out.dividends_paid_to_investors}`)
+  L.push(`Dividends pending,${r.funds_out.dividends_pending}`)
+  L.push('')
+  L.push('Owner position,Amount')
+  L.push(`Total received,${r.owner_position.total_received}`)
+  L.push(`From disbursements,${r.owner_position.from_disbursements}`)
+  L.push(`From reserve,${r.owner_position.from_reserve}`)
+  L.push(`From residual,${r.owner_position.from_residual}`)
+  L.push('')
+  L.push('Investor,invested,escrow_return,dividends_paid,dividends_pending,refunded,received,roi_pct,status')
+  for (const x of r.investors) {
+    L.push(`${esc(x.full_name || x.investor_user_id)},${x.invested},${x.escrow_return},${x.dividends_paid},${x.dividends_pending},${x.refunded},${x.received},${x.roi_percent},${esc(x.investment_status)}`);
+  }
+  L.push('')
+  L.push('Milestone,Status')
+  for (const m of r.milestones) L.push(`${esc(m.name)} (${esc(m.phase)}),${esc(m.status)}`);
+  return L.join('\n');
+}
+
+async function exportLiquidationCsv(projectId, { userId, role }) {
+  const r = await getLiquidationReport(projectId, { userId, role });
+  const esc = (v) => {
+    const s = v === null || v === undefined ? '' : String(v);
+    return `"${s.replace(/"/g, '""')}"`;
+  };
+  const pr = r.project;
+  const f = r.snapshot.funds;
+  const L = [];
+  L.push(`Project: ${esc(pr.name)}`);
+  L.push(`Status,${esc(pr.status)}`);
+  L.push(`Liquidated,${r.liquidated ? 'yes' : 'no'}`);
+  if (r.liquidation) {
+    L.push(`Liquidation ref,${esc(r.liquidation.reference)}`);
+    L.push(`Liquidation status,${esc(r.liquidation.status)}`);
+  }
+  L.push(`Ready,${r.ready ? 'yes' : 'no'}`);
+  L.push(`Missing steps,${esc((r.missing || []).join(' | '))}`);
+  L.push('');
+  L.push('Funds,Amount');
+  L.push(`Invested confirmed,${f.invested_confirmed}`);
+  L.push(`Revenue total,${f.revenue_total}`);
+  L.push(`Escrow returned to investors,${f.escrow_returned_to_investors}`);
+  L.push(`Escrow held,${f.escrow_held}`);
+  L.push(`Disbursed to owner,${f.disbursed_to_owner}`);
+  L.push(`Reserve released to owner,${f.reserve_released_to_owner}`);
+  L.push(`Residual released to owner,${f.residual_released_to_owner}`);
+  L.push(`Dividends paid to investors,${f.dividends_paid_to_investors}`);
+  L.push(`Dividends pending,${f.dividends_pending}`);
+  L.push('');
+  L.push('Investor,invested,escrow_return,dividends_paid,dividends_pending,refunded,received,roi_pct');
+  for (const x of r.snapshot.investors) {
+    L.push(`${esc(x.full_name || x.investor_user_id)},${x.invested},${x.escrow_return},${x.dividends_paid},${x.dividends_pending},${x.refunded},${x.received},${x.roi_percent}`);
+  }
+  L.push('');
+  L.push('Summary,Amount');
+  L.push(`Investor received total,${r.snapshot.investor_received_total}`);
+  L.push(`Investor invested total,${r.snapshot.investor_invested_total}`);
+  L.push(`Investor net,${r.snapshot.investor_net}`);
+  L.push(`Investor net %,${r.snapshot.investor_net_pct}`);
+  L.push(`Owner received total,${r.snapshot.owner_received_total}`);
+  return L.join('\n');
+}
+
 module.exports = {
   ACCOUNTS,
   WATERFALL_STEPS,
@@ -2510,4 +2624,6 @@ module.exports = {
   createDrawdownPlan,
   listDrawdowns,
   requestTranche,
+  exportCloseOutReportCsv,
+  exportLiquidationCsv,
 };

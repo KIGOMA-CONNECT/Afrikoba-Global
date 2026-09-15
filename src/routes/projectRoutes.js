@@ -454,6 +454,25 @@ router.get('/projects/:id/ledger', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// Phase 14: close-out report + liquidation snapshot CSV exports
+router.get('/projects/:id/close-out/export', async (req, res, next) => {
+  try {
+    const csv = await projectFinance.exportCloseOutReportCsv(parseInt(req.params.id, 10), { userId: req.user.id, role: req.user.role });
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename=project-${req.params.id}-closeout.csv`);
+    return res.send(csv);
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/:id/liquidation/export', async (req, res, next) => {
+  try {
+    const csv = await projectFinance.exportLiquidationCsv(parseInt(req.params.id, 10), { userId: req.user.id, role: req.user.role });
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename=project-${req.params.id}-liquidation.csv`);
+    return res.send(csv);
+  } catch (e) { next(e); }
+});
+
 // Phase 13: scheduled drawdown plan (tranche cash management)
 router.post('/projects/:id/drawdowns', async (req, res, next) => {
   try {

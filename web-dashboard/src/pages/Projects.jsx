@@ -307,6 +307,24 @@ export default function Projects() {
       .catch(() => ok(t('projects.error')));
   };
 
+  const downloadReportCsv = (id, path, filename) => {
+    const token = localStorage.getItem('afrikoba_token');
+    fetch(`/api/projects/${id}/${path}/export`, { headers: { Authorization: `Bearer ${token}` } })
+      .then((r) => {
+        if (!r.ok) throw new Error();
+        return r.blob();
+      })
+      .then((blob) => {
+        const u = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = u;
+        a.download = filename;
+        a.click();
+        URL.revokeObjectURL(u);
+      })
+      .catch(() => ok(t('projects.error')));
+  };
+
   const downloadPortfolio = () => {
     const token = localStorage.getItem('afrikoba_token');
     fetch('/api/projects/mine/performance/export', { headers: { Authorization: `Bearer ${token}` } })
@@ -694,6 +712,12 @@ export default function Projects() {
                 <span className="badge info">{statement.project.status}</span>
                 {statement.completed && <span className="badge info">✓ {t('projects.complete')}</span>}
                 <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadStatement(statement.project.id)}>{t('projects.statement_csv')}</button>
+                {(statement.project.status === 'COMPLETED' || statement.project.status === 'LIQUIDATED') && (
+                  <>
+                    <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadReportCsv(statement.project.id, 'close-out', `project-${statement.project.id}-closeout.csv`)}>{t('projects.closeout_csv')}</button>
+                    <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadReportCsv(statement.project.id, 'liquidation', `project-${statement.project.id}-liquidation.csv`)}>{t('projects.liquidation_csv')}</button>
+                  </>
+                )}
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px,1fr))', gap: 12 }}>
                 <div className="card"><div className="roles-tag">{t('projects.invested_total')}</div><b>{fmt(statement.funds.invested_confirmed)}</b></div>

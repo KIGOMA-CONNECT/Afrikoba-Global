@@ -22,6 +22,7 @@ const pool = require('../config/db');
 const { generateReference } = require('../utils/helpers');
 const fin = require('./financialEngine');
 const { logAudit } = require('./auditService');
+const { createNotification } = require('./notificationService');
 
 const PROJECT_ACCOUNT = 'PROJECT_INVESTMENT_ACCOUNT';
 const projectFinance = require('./projectFinanceService');
@@ -572,6 +573,11 @@ async function refundInvestment(projectId, investmentId, userId) {
   } finally {
     client.release();
   }
+  createNotification(userId, {
+    title: 'Uwekezaji umerudishwa',
+    body: `Uwekezaji wako TZS ${Number(amt).toLocaleString('en-US')} katika "${p.name}" umerudishwa. Rejea: ${refundRef}`,
+    type: 'PROJECT', entityType: 'PROJECT', entityId: projectId,
+  }).catch(() => {});
   return { success: true, refund_reference: refundRef, amount: amt };
 }
 
