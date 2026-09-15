@@ -1821,7 +1821,7 @@ async function forceCloseFunding(userId, role, projectId, { action } = {}) {
          WHERE project_id = $1`, [projectId]
       );
       await client.query(
-        `INSERT INTO audit_logs (event_type, action, entity_type, entity_id, user_id, reference_id, after_data)
+        `INSERT INTO audit_log (event_type, action, entity_type, entity_id, user_id, reference_id, after_data)
          VALUES ('FORCE_CLOSE','ACTIVATE','PROJECT',$1,$2,NULL,$3)`,
         [projectId, userId, JSON.stringify({ funded_pct: Math.round(pct) })]
       );
@@ -1883,7 +1883,7 @@ async function forceCloseFunding(userId, role, projectId, { action } = {}) {
     await client.query("UPDATE projects SET status = 'CANCELLED', amount_raised = 0, updated_at = NOW() WHERE id = $1", [projectId]);
     await client.query("UPDATE controlled_project_accounts SET remaining_balance = 0, status = 'CLOSED', updated_at = NOW() WHERE project_id = $1", [projectId]);
     await client.query(
-      `INSERT INTO audit_logs (event_type, action, entity_type, entity_id, user_id, reference_id, after_data)
+      `INSERT INTO audit_log (event_type, action, entity_type, entity_id, user_id, reference_id, after_data)
        VALUES ('FORCE_CLOSE','REFUND_CANCEL','PROJECT',$1,$2,NULL,$3)`,
       [projectId, userId, JSON.stringify({ refunded_count: invRes.rows.length })]
     );
@@ -1899,11 +1899,8 @@ async function forceCloseFunding(userId, role, projectId, { action } = {}) {
 }
 
 async function getInvestorStatement({ userId, role }, projectId) {
-  const pRes = await pool.query(
-    'SELECT id, name, status, capital_required, currency_code, owner_user_id FROM projects WHERE id = $1', [projectId]
-  );
-  if (pRes.rows.length === 0) throw new ValidityError('Mradi haupatikani.', 404);
-  const p = pRes.rows[0];
+  const p = await getProject(projectId);
+  const currencyCode = p.currency_code || 'TZS';
 
   const invRes = await pool.query(
     `SELECT * FROM project_investments WHERE project_id = $1 AND investor_user_id = $2 AND status IN ('CONFIRMED','REFUNDED')`,
@@ -1945,7 +1942,7 @@ async function getInvestorStatement({ userId, role }, projectId) {
 
   return {
     success: true,
-    project: { id: p.id, name: p.name, status: p.status, currency_code: p.currency_code, capital_required: Number(p.capital_required) },
+    project: { id: p.id, name: p.name, status: p.status, currency_code: currencyCode, capital_required: Number(p.capital_required) },
     my_investments: invRes.rows.map((r) => ({
       investment_id: r.id, amount: Number(r.amount), participation_pct: Number(r.participation_pct),
       status: r.status, refund_reference: r.refund_reference, created_at: r.created_at,
