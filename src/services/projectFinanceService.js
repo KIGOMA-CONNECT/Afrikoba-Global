@@ -4192,12 +4192,10 @@ async function getWaterfallGovernance(projectId, { userId, role }) {
   }
   const rules = await pool.query(
     `SELECT r.*, p1.full_name AS proposed_by_name, p1.phone_number AS proposed_by_phone,
-            p2.full_name AS approved_by_name, p2.phone_number AS approved_by_phone,
-            us.full_name AS supersedes_name
+            p2.full_name AS approved_by_name, p2.phone_number AS approved_by_phone
      FROM waterfall_allocation_rules r
      LEFT JOIN users p1 ON p1.id = r.proposed_by
      LEFT JOIN users p2 ON p2.id = r.approved_by
-     LEFT JOIN waterfall_allocation_rules us ON us.id = r.supersedes_rule_id
      WHERE r.project_id = $1 ORDER BY r.version`, [projectId]
   );
   const usage = await pool.query(
@@ -4227,7 +4225,6 @@ async function getWaterfallGovernance(projectId, { userId, role }) {
       approved_at: r.approved_at,
       effective_at: r.effective_at,
       supersedes_rule_id: r.supersedes_rule_id,
-      supersedes_name: r.supersedes_name,
       change_reason: r.change_reason,
       usage: usageById[r.id] || { revenue_runs: 0, revenue_batches: 0 },
       diff_vs_previous: diffs,
