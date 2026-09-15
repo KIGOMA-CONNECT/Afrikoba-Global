@@ -1339,6 +1339,8 @@ export default function Projects() {
           {['ADMIN', 'MODERATOR', 'EXPERT'].includes(role) && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadDocumentPdf('/api/projects/ops/kyc-register/pdf', 'kyc-register.pdf')}>{t('projects.kyc_register_pdf')}</button>}
           {['ADMIN', 'MODERATOR', 'EXPERT'].includes(role) && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadFinanceCsv('/api/projects/ops/owner-distributions/export', 'owner-distributions.csv')}>{t('projects.owner_distributions_csv')}</button>}
           {['ADMIN', 'MODERATOR', 'EXPERT'].includes(role) && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadDocumentPdf('/api/projects/ops/owner-distributions/pdf', 'owner-distributions.pdf')}>{t('projects.owner_distributions_pdf')}</button>}
+          {['ADMIN', 'MODERATOR', 'EXPERT'].includes(role) && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadFinanceCsv('/api/projects/ops/revenue-allocation-matrix/export', 'revenue-allocation-matrix.csv')}>{t('projects.revenue_matrix_csv')}</button>}
+          {['ADMIN', 'MODERATOR', 'EXPERT'].includes(role) && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadDocumentPdf('/api/projects/ops/revenue-allocation-matrix/pdf', 'revenue-allocation-matrix.pdf')}>{t('projects.revenue_matrix_pdf')}</button>}
         </div>
         {opsBook ? (
           <>

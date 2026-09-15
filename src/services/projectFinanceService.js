@@ -4341,6 +4341,145 @@ function renderRevenueRegisterPdf(v, stream) {
 }
 
 // ============================================================================
+// PHASE 44 — PLATFORM REVENUE & ALLOCATION MATRIX (EXPERT-ONLY)
+// ============================================================================
+
+async function getRevenueAllocationMatrix({ role }) {
+  if (!isExpert(role)) {
+    throw new ValidityError('Huna ruhusa ya matrix ya mapato na ugawaji (expert only).', 403);
+  }
+  const r = await pool.query(
+    `WITH alloc AS (
+       SELECT w.project_id, w.revenue_reference, MIN(w.created_at) AS d, SUM(w.amount) AS allocated,
+              COUNT(*) AS steps, string_agg(w.allocation_step || ':' || w.percentage || ':' || w.amount, '|' ORDER BY w.id) AS detail
+       FROM waterfall_allocation_records w
+       GROUP BY w.project_id, w.revenue_reference
+     ),
+     tx AS (
+       SELECT (t.meta->>'project_id')::int AS project_id, t.wallet_amount AS amount, t.created_at
+       FROM transactions t WHERE t.type = 'PROJECT_REVENUE' AND t.status = 'SUCCESS'
+     ),
+     a1 AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY project_id ORDER BY d) rn FROM alloc),
+     t1 AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY project_id ORDER BY created_at) rn FROM tx)
+     SELECT a1.project_id, p.name AS project_name, p.status AS project_status,
+            a1.revenue_reference, a1.d, a1.allocated, a1.steps, a1.detail,
+            t1.amount AS txn_amount, t1.created_at AS txn_date
+     FROM a1
+     JOIN t1 ON t1.project_id = a1.project_id AND t1.rn = a1.rn
+     JOIN projects p ON p.id = a1.project_id
+     ORDER BY a1.d`
+  );
+  const byStep = {};
+  const byProj = {};
+  const entries = r.rows.map((x) => {
+    const revenue = round2(Number(x.txn_amount || 0));
+    const allocated = round2(Number(x.allocated || 0));
+    const steps = (x.detail || '').split('|').filter(Boolean).map((s) => {
+      const [step, pct, amt] = s.split(':');
+      const a = round2(Number(amt || 0));
+      byStep[step] = (byStep[step] || 0) + a;
+      return { step, pct: Number(pct || 0), amount: a };
+    });
+    const rec = {
+      batch: x.revenue_reference,
+      project: { id: x.project_id, name: x.project_name, status: x.project_status },
+      revenue,
+      allocated,
+      coverage_pct: revenue > 0 ? round2((allocated / revenue) * 100) : 0,
+      allocation_ok: Math.abs(allocated - revenue) <= 1,
+      allocated_at: x.d,
+      steps_count: steps.length,
+      steps,
+    };
+    if (!byProj[x.project_id]) byProj[x.project_id] = { id: x.project_id, name: x.project_name, batches: 0, revenue: 0, allocated: 0, ok: true };
+    byProj[x.project_id].batches += 1;
+    byProj[x.project_id].revenue += revenue;
+    byProj[x.project_id].allocated += allocated;
+    if (!rec.allocation_ok) byProj[x.project_id].ok = false;
+    return rec;
+  });
+  const revenueTotal = round2(entries.reduce((s, x) => s + x.revenue, 0));
+  const allocatedTotal = round2(entries.reduce((s, x) => s + x.allocated, 0));
+  return {
+    success: true,
+    generated_at: new Date().toISOString(),
+    summary: {
+      batches: entries.length,
+      revenue_total: revenueTotal,
+      allocated_total: allocatedTotal,
+      allocation_ok: Math.abs(allocatedTotal - revenueTotal) <= 1,
+      by_step: byStep,
+      per_project: Object.values(byProj),
+    },
+    entries,
+  };
+}
+
+async function exportRevenueAllocationMatrixCsv({ role }) {
+  const r = await getRevenueAllocationMatrix({ role });
+  const esc = (v) => { const s = v === null || v === undefined ? '' : String(v); return `"${s.replace(/"/g, '""')}"`; };
+  const L = [];
+  L.push('AFRIKOBA GLOBAL - REVENUE & ALLOCATION MATRIX');
+  L.push(`Generated at,${esc(r.generated_at)}`);
+  L.push(`Batches,${r.summary.batches}`);
+  L.push(`Revenue total,${r.summary.revenue_total}`);
+  L.push(`Allocated total,${r.summary.allocated_total}`);
+  L.push(`Allocation ok,${r.summary.allocation_ok}`);
+  L.push('');
+  L.push('batch,project_id,project_name,revenue,allocated,coverage_pct,allocation_ok,allocated_at,step,rate_pct,amount');
+  for (const x of r.entries) {
+    for (const s of x.steps) {
+      L.push([esc(x.batch), x.project.id, esc(x.project.name), x.revenue, x.allocated, x.coverage_pct, x.allocation_ok, esc(x.allocated_at), s.step, s.pct, s.amount].join(','));
+    }
+  }
+  return L.join('\n');
+}
+
+function renderRevenueAllocationMatrixPdf(v, stream) {
+  const doc = new PDFDocument({ size: 'A4', landscape: true, margin: 36 });
+  doc.pipe(stream);
+  const G = '#0B5D1E';
+  const m = (n) => `${formatMoney(n)} TZS`;
+
+  doc.fontSize(16).fillColor(G).text('AFRIKOBA GLOBAL', { align: 'center' });
+  doc.fontSize(12).fillColor('#333').text('MATRIX YA MAPATO NA UGAWAJI / REVENUE & ALLOCATION MATRIX', { align: 'center' });
+  doc.fontSize(8).fillColor('#888').text(`Imetolewa / Generated: ${new Date(v.generated_at).toISOString()}`, { align: 'center' });
+  doc.moveDown(0.3);
+  vline(doc, doc.y + 4);
+
+  doc.fontSize(10).fillColor(G).text('Muhtasari / Summary');
+  vline(doc, doc.y + 2);
+  voucherField(doc, 'Mapato / Batches', String(v.summary.batches));
+  voucherField(doc, 'Jumla mapato / Revenue total', m(v.summary.revenue_total));
+  voucherField(doc, 'Jumla ugawaji / Allocated total', m(v.summary.allocated_total));
+  voucherField(doc, 'Ugawaji kamili / Coverage', `${round2((v.summary.allocated_total / (v.summary.revenue_total || 1)) * 100)}%`);
+  voucherField(doc, 'Sawa / Allocation ok', v.summary.allocation_ok ? 'NDIYO (YES)' : 'HAPANA (NO)');
+  doc.moveDown(0.3);
+
+  for (const x of v.entries) {
+    const yn = x.allocation_ok ? 'OK' : 'MISMATCH';
+    doc.fontSize(9).fillColor('#111').text(`${x.batch}  ·  ${x.project.name} (${x.project.id})  ·  Revenue ${m(x.revenue)} = Allocated ${m(x.allocated)}  ·  ${x.coverage_pct}%  ·  ${yn}`);
+    for (const s of x.steps) {
+      ensureCell(doc, x);
+      doc.fontSize(7).fillColor('#444').text(`     ${s.step}  ${s.pct}%  →  ${m(s.amount)}`);
+    }
+    doc.moveDown(0.25);
+  }
+
+  doc.moveDown(0.4);
+  vline(doc, doc.y + 4);
+  doc.moveDown(0.7);
+  doc.fontSize(8).fillColor('#888').text('Imekaguliwa na / Reviewed by', { align: 'center' });
+  doc.moveDown(1.2);
+  doc.moveTo(210, doc.y).lineTo(420, doc.y).stroke('#aaa');
+  doc.fontSize(8).fillColor('#888').text('Mkaguzi Mkuu (Reviewer)', { align: 'center' });
+  doc.end();
+  return doc;
+}
+
+function ensureCell(doc, x) { if (doc.y > 700) doc.addPage(); }
+
+// ============================================================================
 // PHASE 43 — PLATFORM OWNER DISTRIBUTION REGISTER (EXPERT-ONLY)
 // ============================================================================
 
@@ -7202,6 +7341,9 @@ module.exports = {
   getOwnerDistributionRegister,
   exportOwnerDistributionRegisterCsv,
   renderOwnerDistributionRegisterPdf,
+  getRevenueAllocationMatrix,
+  exportRevenueAllocationMatrixCsv,
+  renderRevenueAllocationMatrixPdf,
   exportPlatformProjectRegisterCsv,
   preparePlatformProjectRegisterPdf,
   renderPlatformProjectRegisterPdf,

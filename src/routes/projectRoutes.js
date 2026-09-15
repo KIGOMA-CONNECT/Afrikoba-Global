@@ -982,6 +982,31 @@ router.get('/projects/:id/settlement-register/pdf', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// Phase 44: platform revenue & allocation matrix (expert-only) + export + pdf
+router.get('/projects/ops/revenue-allocation-matrix', async (req, res, next) => {
+  try {
+    return res.json(await projectFinance.getRevenueAllocationMatrix({ role: req.user.role }));
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/ops/revenue-allocation-matrix/export', async (req, res, next) => {
+  try {
+    const csv = await projectFinance.exportRevenueAllocationMatrixCsv({ role: req.user.role });
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename=revenue-allocation-matrix.csv');
+    return res.send(csv);
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/ops/revenue-allocation-matrix/pdf', async (req, res, next) => {
+  try {
+    const data = await projectFinance.getRevenueAllocationMatrix({ role: req.user.role });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'inline; filename=revenue-allocation-matrix.pdf');
+    projectFinance.renderRevenueAllocationMatrixPdf(data, res);
+  } catch (e) { next(e); }
+});
+
 // Phase 43: platform owner distribution register (expert-only) + export + pdf
 router.get('/projects/ops/owner-distributions', async (req, res, next) => {
   try {
