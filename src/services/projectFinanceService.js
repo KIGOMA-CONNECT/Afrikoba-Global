@@ -5788,6 +5788,202 @@ function renderMilestoneEvidenceRegisterPdf(v, stream) {
 }
 
 // ============================================================================
+// PHASE 49 — PER-PROJECT DIGITAL EVIDENCE PACK (BUNDLED PDF)
+// ============================================================================
+
+async function getEvidencePack(projectId, { userId, role }) {
+  const p = await getProject(projectId);
+  const isOwner = p.owner_user_id === userId;
+  if (!isOwner && !isExpert(role)) {
+    throw new ValidityError('Huna ruhusa ya kifurushi cha ushahidi wa mradi huu (owner/expert).', 403);
+  }
+  const owner = await pool.query('SELECT full_name, phone_number FROM users WHERE id = $1', [p.owner_user_id]);
+  const stmt = await getProjectStatement(projectId, { userId, role });
+  const [mil, ev, wf, pay, dd, wfFlow, wallet] = await Promise.all([
+    getMilestoneRegister(projectId, { userId, role }),
+    getMilestoneEvidenceRegister(projectId, { userId, role }),
+    getWaterfallLedger(projectId, { userId, role }),
+    getPayoutRegister(projectId, { userId, role }),
+    getDrawdownSchedule(projectId, { userId, role }),
+    getDrawdownWorkflow(projectId, { userId, role }),
+    getWalletJournal(projectId, { userId, role }),
+  ]);
+  const evDocs = ev.entries.reduce((s, x) => s + (Array.isArray(x.proof_documents) ? x.proof_documents.length : 0), 0);
+  const sections = [
+    { key: 'milestones', title: 'Milestone Register', rows: mil.milestones.length, total: round2(mil.summary.budget_total) },
+    { key: 'evidence', title: 'Evidence & Verification', rows: ev.entries.length, total: round2(ev.summary.ai_verified) },
+    { key: 'waterfall', title: 'Waterfall Execution Ledger', rows: wf.records.length, total: round2(wf.summary.reduce((s, x) => s + x.total, 0)) },
+    { key: 'payouts', title: 'Dividend Payout Register', rows: pay.payouts.length, total: round2(pay.totals.paid) },
+    { key: 'drawdowns', title: 'Drawdown Schedule', rows: dd.tranches.length, total: round2(dd.progress.released_total) },
+    { key: 'workflow', title: 'Drawdown Workflow Register', rows: wfFlow.entries.length, total: round2(wfFlow.summary.released_total) },
+    { key: 'wallet', title: 'Escrow / Wallet Journal', rows: wallet.entries.length, total: round2(wallet.summary.closing_balance) },
+  ];
+  return {
+    success: true,
+    reference: `EV-PACK-${projectId}-${Date.now()}`,
+    project: {
+      id: p.id, name: p.name, status: p.status, currency: p.currency_code || 'TZS',
+      owner: owner.rows[0] ? { name: owner.rows[0].full_name, phone_number: owner.rows[0].phone_number } : null,
+    },
+    generated_at: new Date().toISOString(),
+    funds: {
+      invested_confirmed: round2(Number(stmt.funds.invested_confirmed || 0)),
+      escrow_held: round2(Number(stmt.funds.escrow_held || 0)),
+      disbursed_to_owner: round2(Number(stmt.funds.disbursed_to_owner || 0)),
+      dividends_paid_to_investors: round2(Number(stmt.funds.dividends_paid_to_investors || 0)),
+      escrow_returned_to_investors: round2(Number(stmt.funds.escrow_returned_to_investors || 0)),
+      reserve_released_to_owner: round2(Number(stmt.funds.reserve_released_to_owner || 0)),
+      residual_released_to_owner: round2(Number(stmt.funds.residual_released_to_owner || 0)),
+      revenue_total: round2(Number(stmt.funds.revenue_total || 0)),
+    },
+    summary: {
+      sections: sections.length,
+      milestones: mil.summary.total,
+      evidence_docs: evDocs,
+      ai_verified: ev.summary.ai_verified,
+      waterfall_runs: wf.records.length,
+      payouts: pay.payouts.length,
+      drawdown_tranches: dd.tranches.length,
+      workflow_entries: wfFlow.entries.length,
+      wallet_entries: wallet.entries.length,
+    },
+    sections,
+    milestone_register: mil,
+    evidence_register: ev,
+    waterfall_ledger: wf,
+    payout_register: pay,
+    drawdown_schedule: dd,
+    drawdown_workflow: wfFlow,
+    wallet_journal: wallet,
+  };
+}
+
+async function prepareEvidencePackPdf(projectId, { userId, role }) {
+  return getEvidencePack(projectId, { userId, role });
+}
+
+function renderEvidencePackPdf(v, stream) {
+  const doc = new PDFDocument({ size: 'A4', margin: 40 });
+  doc.pipe(stream);
+  const G = '#0B5D1E';
+  const m = (n) => `${formatMoney(n)} ${v.project.currency}`;
+  const ensure = () => { if (doc.y > 760) doc.addPage(); };
+
+  doc.fontSize(22).fillColor(G).text('AFRIKOBA GLOBAL', { align: 'center' });
+  doc.fontSize(13).fillColor('#333').text('KIFURUSHI CHA USHAHIDI / DIGITAL EVIDENCE PACK', { align: 'center' });
+  doc.fontSize(9).fillColor('#888').text(`Mradi / Project: ${v.project.name}  (${v.project.id})  ·  ${v.project.status}`, { align: 'center' });
+  doc.fontSize(8).fillColor('#888').text(`Ref: ${v.reference}  ·  Imetolewa: ${new Date(v.generated_at).toISOString()}`, { align: 'center' });
+  doc.moveDown(0.6);
+  vline(doc, doc.y + 4);
+
+  doc.fontSize(10).fillColor(G).text('Taarifa za Fedha / Financial Position');
+  vline(doc, doc.y + 2);
+  voucherField(doc, 'Fedha zilizowekezwa / Invested (confirmed)', m(v.funds.invested_confirmed));
+  voucherField(doc, 'Escrow held', m(v.funds.escrow_held));
+  voucherField(doc, 'Kutolewa kwa mwenye mradi / Disbursed to owner', m(v.funds.disbursed_to_owner));
+  voucherField(doc, 'Dividends paid to investors', m(v.funds.dividends_paid_to_investors));
+  voucherField(doc, 'Escrow returned to investors', m(v.funds.escrow_returned_to_investors));
+  voucherField(doc, 'Reserve released to owner', m(v.funds.reserve_released_to_owner));
+  voucherField(doc, 'Residual released to owner', m(v.funds.residual_released_to_owner));
+  voucherField(doc, 'Mapato yaliyochakatwa / Revenue processed', m(v.funds.revenue_total));
+  doc.moveDown(0.4);
+
+  doc.fontSize(10).fillColor(G).text('Sehemu / Sections');
+  vline(doc, doc.y + 2);
+  v.sections.forEach((s) => voucherField(doc, `${s.key}: ${s.title}`, `${s.rows} record(s) · ${m(s.total)}`));
+  doc.moveDown(0.4);
+
+  doc.addPage();
+  doc.fontSize(12).fillColor(G).text('SEHEMU / SECTION 1 — RAJESTA YA MILESTONES');
+  doc.fontSize(8).fillColor('#888').text(`Milestones ${v.milestone_register.summary.completed}/${v.milestone_register.summary.total} zimekamilika · Bajeti ${m(v.milestone_register.summary.budget_total)} · Imetolewa ${m(v.milestone_register.summary.tranche_released)}`);
+  vline(doc, doc.y + 2);
+  for (const x of v.milestone_register.milestones) {
+    ensure();
+    const rel = x.tranches.filter((tt) => tt.status === 'RELEASED').reduce((s, tt) => s + tt.amount, 0);
+    doc.fontSize(8.5).fillColor('#111').text(`MS-${x.id}  ${x.name}  ·  ${x.status}  ·  ${m(x.budget)}  ·  released ${rel ? m(rel) : '—'}`);
+    if (x.proof_submitted_at) doc.fontSize(7).fillColor('#555').text(`   Ushahidi: ${new Date(x.proof_submitted_at).toISOString()}  ·  docs ${x.proof_documents.length}${x.expert_reviewed_at ? '  ·  ukaguzi ' + new Date(x.expert_reviewed_at).toISOString() : ''}`);
+  }
+
+  doc.addPage();
+  doc.fontSize(12).fillColor(G).text('SEHEMU / SECTION 2 — USHAHIDI & UTHIBITISHO');
+  doc.fontSize(8).fillColor('#888').text(`Milestones yenye ushahidi ${v.evidence_register.summary.with_proofs} · AI verified ${v.evidence_register.summary.ai_verified} · Mtaalam wamekagua ${v.evidence_register.summary.expert_reviewed}`);
+  vline(doc, doc.y + 2);
+  for (const x of v.evidence_register.entries) {
+    ensure();
+    doc.fontSize(8.5).fillColor('#111').text(`EV-${x.id}  ${x.name}  ·  ${x.status}  ·  AI ${x.ai_status}${x.ai_verification && x.ai_verification.score != null ? ` (${x.ai_verification.score})` : ''}`);
+    if (x.proof_documents.length) doc.fontSize(7).fillColor('#555').text(`   Docs: ${x.proof_documents.map((d) => `${d.title || d.type} [${d.type}]`).join(' · ')}`);
+    if (x.reviewed_by) doc.fontSize(7).fillColor('#0B5D1E').text(`   Review: ${x.reviewed_by.name}  ·  ${x.expert_comment || '—'}`);
+  }
+
+  doc.addPage();
+  doc.fontSize(12).fillColor(G).text('SEHEMU / SECTION 3 — WATERFALL EXECUTION LEDGER');
+  doc.fontSize(8).fillColor('#888').text(`Rekodi jumla ${v.waterfall_ledger.records.length} · Jumla ${m(v.waterfall_ledger.summary.reduce((s, x) => s + x.total, 0))}`);
+  vline(doc, doc.y + 2);
+  v.waterfall_ledger.summary.forEach((s2) => voucherField(doc, s2.step, `${s2.runs}×  ${m(s2.total)}`));
+  doc.moveDown(0.4);
+  for (const x of v.waterfall_ledger.records) {
+    ensure();
+    doc.fontSize(8).fillColor('#111').text(`#${x.id}  ·  ${x.step}  ·  ${x.percentage}%  ·  ${m(x.amount)}`);
+    doc.fontSize(7).fillColor('#555').text(`   ref ${x.revenue_reference || '—'}  ·  ${x.source_account_code} → ${x.destination_account_code}  ·  ${x.reconciliation_status}`);
+  }
+
+  doc.addPage();
+  doc.fontSize(12).fillColor(G).text('SEHEMU / SECTION 4 — DIVIDEND PAYOUT REGISTER');
+  doc.fontSize(8).fillColor('#888').text(`Malipo ${v.payout_register.payouts.length} · Paid ${m(v.payout_register.totals.paid)} · Pending ${m(v.payout_register.totals.pending)}`);
+  vline(doc, doc.y + 2);
+  for (const x of v.payout_register.payouts) {
+    ensure();
+    doc.fontSize(8).fillColor('#111').text(`#${x.id}  ${x.full_name}  ·  ${m(x.entitlement)}  ·  ${x.status}`);
+    doc.fontSize(7).fillColor('#555').text(`   ref ${x.payout_reference || '—'}`);
+  }
+
+  doc.addPage();
+  doc.fontSize(12).fillColor(G).text('SEHEMU / SECTION 5 — DRAWDOWN SCHEDULE');
+  doc.fontSize(8).fillColor('#888').text(`Tranches ${v.drawdown_schedule.tranches.length} · Plan ${v.drawdown_schedule.plan ? m(Number(v.drawdown_schedule.plan.total_amount || 0)) : '—'}`);
+  vline(doc, doc.y + 2);
+  voucherField(doc, 'Imetolewa / Released', m(v.drawdown_schedule.progress.released_total));
+  voucherField(doc, 'Inasubiri / Outstanding', m(v.drawdown_schedule.progress.pending_total));
+  doc.moveDown(0.4);
+  for (const x of v.drawdown_schedule.tranches) {
+    ensure();
+    doc.fontSize(8).fillColor('#111').text(`#${x.sequence}  ${x.milestone_name}  ·  ${m(x.amount)}  ·  ${x.status}${x.disbursement_reference ? '  ·  ' + x.disbursement_reference : ''}`);
+  }
+
+  doc.addPage();
+  doc.fontSize(12).fillColor(G).text('SEHEMU / SECTION 6 — DRAWDOWN WORKFLOW');
+  doc.fontSize(8).fillColor('#888').text(`Tranches ${v.drawdown_workflow.entries.length} · Released ${m(v.drawdown_workflow.summary.released_total)} · Scheduled ${m(v.drawdown_workflow.summary.scheduled_total)}`);
+  vline(doc, doc.y + 2);
+  for (const x of v.drawdown_workflow.entries) {
+    ensure();
+    doc.fontSize(8).fillColor('#111').text(`#${x.sequence}  ${x.milestone_name}  ·  ${m(x.amount)}  ·  ${x.status}`);
+    doc.fontSize(7).fillColor('#555').text(`   ref ${x.disbursement_reference || '—'}  ·  requested ${x.requested_by ? x.requested_by.name : '—'}`);
+  }
+
+  doc.addPage();
+  doc.fontSize(12).fillColor(G).text('SEHEMU / SECTION 7 — ESCROW / WALLET JOURNAL');
+  doc.fontSize(8).fillColor('#888').text(`Entries ${v.wallet_journal.entries.length} · Inflow ${m(v.wallet_journal.summary.inflow)} · Outflow ${m(v.wallet_journal.summary.outflow)}`);
+  vline(doc, doc.y + 2);
+  voucherField(doc, 'Closing balance', m(v.wallet_journal.summary.closing_balance));
+  doc.moveDown(0.4);
+  for (const x of v.wallet_journal.entries) {
+    ensure();
+    doc.fontSize(8).fillColor('#111').text(`#${x.id}  ${x.reference}  ·  ${x.type}  ·  ${x.direction} ${m(x.amount)}  ·  ${x.status}`);
+    doc.fontSize(7).fillColor('#555').text(`   balance ${m(x.running_balance)}  ·  ${x.actor ? x.actor.name : '—'}  ·  ${new Date(x.created_at).toISOString()}`);
+  }
+
+  ensure();
+  doc.moveDown(0.6);
+  vline(doc, doc.y + 4);
+  doc.moveDown(0.8);
+  doc.fontSize(8).fillColor('#888').text('Mkaguzi Mkuu / Reviewer', { align: 'center', width: 200, lineBreak: false });
+  doc.moveDown(1.6);
+  doc.moveTo(120, doc.y).lineTo(320, doc.y).stroke('#aaa');
+  doc.fontSize(8).fillColor('#888').text('Mkaguzi Mkuu / Reviewer', { align: 'center', width: 200, lineBreak: false });
+  doc.end();
+  return doc;
+}
+
+// ============================================================================
 // PHASE 37 — PLATFORM WATERFALL DISTRIBUTION SUMMARY (EXPERT-ONLY)
 // ============================================================================
 
@@ -7786,6 +7982,9 @@ module.exports = {
   exportMilestoneEvidenceRegisterCsv,
   prepareMilestoneEvidenceRegisterPdf,
   renderMilestoneEvidenceRegisterPdf,
+  getEvidencePack,
+  prepareEvidencePackPdf,
+  renderEvidencePackPdf,
   getTaxRegister,
   exportTaxRegisterCsv,
   renderTaxRegisterPdf,

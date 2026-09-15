@@ -1232,6 +1232,22 @@ router.get('/projects/:id/milestone-evidence/pdf', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// Phase 49: per-project digital evidence pack (owner/expert, bundled PDF)
+router.get('/projects/:id/evidence-pack', async (req, res, next) => {
+  try {
+    return res.json(await projectFinance.getEvidencePack(parseInt(req.params.id, 10), { userId: req.user.id, role: req.user.role }));
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/:id/evidence-pack/pdf', async (req, res, next) => {
+  try {
+    const data = await projectFinance.prepareEvidencePackPdf(parseInt(req.params.id, 10), { userId: req.user.id, role: req.user.role });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename=evidence-pack-${data.project.id}.pdf`);
+    projectFinance.renderEvidencePackPdf(data, res);
+  } catch (e) { next(e); }
+});
+
 // Phase 37: platform waterfall distribution summary (expert-only) + export + pdf
 router.get('/projects/ops/waterfall-summary', async (req, res, next) => {
   try {
