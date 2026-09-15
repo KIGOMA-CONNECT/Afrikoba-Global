@@ -4326,6 +4326,141 @@ function renderWaterfallGovernancePdf(v, stream) {
 }
 
 // ============================================================================
+// PHASE 26 — RESERVE RELEASES REGISTER (SETTLEMENT-FUSED)
+// ============================================================================
+
+async function getReserveReleasesRegister(projectId, { userId, role }) {
+  const p = await getProject(projectId);
+  const isOwner = p.owner_user_id === userId;
+  if (!isOwner && !isExpert(role)) {
+    throw new ValidityError('Huna ruhusa ya rejesta ya utoaji wa akiba.', 403);
+  }
+  const rel = await pool.query(
+    `SELECT r.*, u.full_name AS released_to_name, u.phone_number AS released_to_phone,
+            c.full_name AS created_by_name, c.phone_number AS created_by_phone,
+            s.revenue_total AS s_revenue_total, s.dividend_allocated AS s_dividend_allocated,
+            s.owner_received AS s_owner_received, s.reserve_released AS s_reserve_released,
+            s.summary->>'reference' AS settlement_reference
+     FROM project_reserve_releases r
+     LEFT JOIN users u ON u.id = r.released_to
+     LEFT JOIN users c ON c.id = r.created_by
+     LEFT JOIN project_settlements s ON s.id = r.settlement_id
+     WHERE r.project_id = $1 ORDER BY r.id`, [projectId]
+  );
+  const byType = {};
+  let total = 0;
+  for (const x of rel.rows) {
+    const amt = Number(x.amount || 0);
+    total += amt;
+    byType[x.reserve_type] = (byType[x.reserve_type] || 0) + amt;
+  }
+  const releases = rel.rows.map((x) => ({
+    id: x.id,
+    reserve_type: x.reserve_type,
+    amount: round2(Number(x.amount || 0)),
+    released_to: x.released_to ? { id: x.released_to, name: x.released_to_name, phone_number: x.released_to_phone } : null,
+    reference: x.reference,
+    status: x.status,
+    created_by: x.created_by ? { id: x.created_by, name: x.created_by_name } : null,
+    created_at: x.created_at,
+    settlement: x.settlement_id ? {
+      id: x.settlement_id,
+      reference: x.settlement_reference,
+      revenue_total: round2(Number(x.s_revenue_total || 0)),
+      dividend_allocated: round2(Number(x.s_dividend_allocated || 0)),
+      owner_received: round2(Number(x.s_owner_received || 0)),
+      reserve_released: round2(Number(x.s_reserve_released || 0)),
+    } : null,
+  }));
+  return {
+    success: true,
+    project: { id: p.id, name: p.name, status: p.status },
+    generated_at: new Date().toISOString(),
+    summary: { releases: releases.length, total_released: round2(total), by_type: byType },
+    releases,
+  };
+}
+
+async function exportReserveReleasesCsv(projectId, { userId, role }) {
+  const r = await getReserveReleasesRegister(projectId, { userId, role });
+  const esc = (v) => {
+    const s = v === null || v === undefined ? '' : String(v);
+    return `"${s.replace(/"/g, '""')}"`;
+  };
+  const L = [];
+  L.push(`Project,${esc(r.project.name)} (${r.project.id})`);
+  L.push(`Status,${r.project.status}`);
+  L.push(`Generated at,${esc(r.generated_at)}`);
+  L.push(`Releases,${r.summary.releases}`);
+  L.push(`Total released,${r.summary.total_released}`);
+  for (const [k, v] of Object.entries(r.summary.by_type)) L.push(`Released ${k},${v}`);
+  L.push('');
+  L.push('id,reserve_type,amount,released_to,released_to_phone,reference,status,created_by,created_at,settlement_id,settlement_reference,settlement_revenue_total');
+  for (const x of r.releases) {
+    L.push([
+      x.id, esc(x.reserve_type), x.amount,
+      x.released_to ? esc(x.released_to.name) : '',
+      x.released_to ? esc(x.released_to.phone_number) : '',
+      esc(x.reference), esc(x.status),
+      x.created_by ? x.created_by.id : '',
+      esc(x.created_at || ''), x.settlement ? x.settlement.id : '',
+      x.settlement ? esc(x.settlement.reference || '') : '',
+      x.settlement ? x.settlement.revenue_total : '',
+    ].join(','));
+  }
+  return L.join('\n');
+}
+
+async function prepareReserveReleasesPdf(projectId, { userId, role }) {
+  const r = await getReserveReleasesRegister(projectId, { userId, role });
+  const p = await getProject(projectId);
+  return { ...r, currency: p.currency_code || 'TZS' };
+}
+
+function renderReserveReleasesPdf(v, stream) {
+  const doc = new PDFDocument({ size: 'A4', margin: 40 });
+  doc.pipe(stream);
+  const G = '#0B5D1E';
+  const m = (n) => `${formatMoney(n)} ${v.currency}`;
+  const ensure = () => { if (doc.y > 760) doc.addPage(); };
+
+  doc.fontSize(17).fillColor(G).text('AFRIKOBA GLOBAL', { align: 'center' });
+  doc.fontSize(11).fillColor('#333').text('REJESTA YA UTOAJI WA AKIBA (Reserve Releases Register)', { align: 'center' });
+  doc.fontSize(8).fillColor('#888').text(`${v.project.name}  (${v.project.id})  ·  ${v.project.status}  ·  Imetolewa: ${new Date(v.generated_at).toISOString()}`, { align: 'center' });
+  doc.moveDown(0.5);
+  vline(doc, doc.y + 4);
+
+  doc.fontSize(10).fillColor(G).text('Muhtasari / Summary');
+  vline(doc, doc.y + 2);
+  voucherField(doc, 'Utoaji / Releases', String(v.summary.releases));
+  voucherField(doc, 'Jumla iliyotolewa / Total released', m(v.summary.total_released));
+  for (const [k, val] of Object.entries(v.summary.by_type)) voucherField(doc, k, m(val));
+  doc.moveDown(0.3);
+
+  doc.fontSize(10).fillColor(G).text(`Utoaji / Releases (${v.releases.length})`);
+  vline(doc, doc.y + 2);
+  for (const x of v.releases) {
+    ensure();
+    doc.fontSize(8.5).fillColor('#111').text(`#${x.id}  ·  ${x.reserve_type}  ·  ${m(x.amount)}  ·  ${x.reference}  ·  ${x.status}  ·  ${new Date(x.created_at).toISOString()}`);
+    doc.fontSize(7.5).fillColor('#555').text(`   Imetolewa kwa: ${x.released_to ? x.released_to.name + ' (' + x.released_to.phone_number + ')' : '—'}  ·  kiliandikwa na #${x.created_by ? x.created_by.id : '—'}`);
+    if (x.settlement) {
+      doc.fontSize(7).fillColor('#0B5D1E').text(`   Settlement #${x.settlement.id}${x.settlement.reference ? '  ·  ' + x.settlement.reference : ''}  ·  revenue ${m(x.settlement.revenue_total)}  ·  dividends ${m(x.settlement.dividend_allocated)}  ·  owner ${m(x.settlement.owner_received)}`);
+    }
+  }
+
+  ensure();
+  doc.moveDown(0.5);
+  vline(doc, doc.y + 4);
+  doc.moveDown(0.8);
+  doc.fontSize(8).fillColor('#888').text('Mkaguzi Mkuu (Reviewer)', { align: 'center', width: 200, lineBreak: false });
+  doc.moveDown(1.6);
+  doc.moveTo(120, doc.y).lineTo(320, doc.y).stroke('#aaa');
+  doc.fontSize(8).fillColor('#888').text('Mkaguzi Mkuu (Reviewer)', { align: 'center', width: 200, lineBreak: false });
+  doc.end();
+  return doc;
+}
+
+// ============================================================================
 // PHASE 23 — DRAWDOWN SCHEDULE DOCUMENT + PLATFORM DIVIDEND LEDGER
 // ============================================================================
 
@@ -4633,4 +4768,8 @@ module.exports = {
   exportWaterfallGovernanceCsv,
   prepareWaterfallGovernancePdf,
   renderWaterfallGovernancePdf,
+  getReserveReleasesRegister,
+  exportReserveReleasesCsv,
+  prepareReserveReleasesPdf,
+  renderReserveReleasesPdf,
 };

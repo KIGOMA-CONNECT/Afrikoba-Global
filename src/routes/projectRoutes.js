@@ -847,6 +847,31 @@ router.get('/projects/:id/waterfall-governance/pdf', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// Phase 26: reserve releases register (JSON / CSV / PDF) - owner/expert
+router.get('/projects/:id/reserve-releases', async (req, res, next) => {
+  try {
+    return res.json(await projectFinance.getReserveReleasesRegister(parseInt(req.params.id, 10), { userId: req.user.id, role: req.user.role }));
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/:id/reserve-releases/export', async (req, res, next) => {
+  try {
+    const csv = await projectFinance.exportReserveReleasesCsv(parseInt(req.params.id, 10), { userId: req.user.id, role: req.user.role });
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename=reserve-releases.csv');
+    return res.send(csv);
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/:id/reserve-releases/pdf', async (req, res, next) => {
+  try {
+    const data = await projectFinance.prepareReserveReleasesPdf(parseInt(req.params.id, 10), { userId: req.user.id, role: req.user.role });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'inline; filename=reserve-releases.pdf');
+    projectFinance.renderReserveReleasesPdf(data, res);
+  } catch (e) { next(e); }
+});
+
 // Phase 17: admin force-close stuck funding + per-investor dividend statement
 router.post('/projects/:id/funding/force-close', async (req, res, next) => {
   try {
