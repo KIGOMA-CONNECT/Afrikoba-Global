@@ -4368,7 +4368,7 @@ async function getPfeMasterCertificate({ userId, role }) {
   const near = (a, b) => Math.abs(round2(a) - round2(b)) <= 1;
 
   const steps = {};
-  S.by_step.forEach((x) => { steps[x.step] = round2(x.total); });
+  Object.entries(S.by_step).forEach(([k, val]) => { steps[k] = round2(val); });
   const stepsSum = round2(Object.values(steps).reduce((s, x) => s + x, 0));
 
   const checks = [
