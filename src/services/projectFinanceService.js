@@ -1672,7 +1672,7 @@ async function getPlatformPfeBook({ userId, role }) {
     LEFT JOIN (SELECT project_id, SUM(entitlement) FILTER (WHERE status='PAID') AS paid
                FROM project_investor_payouts GROUP BY project_id) pay ON pay.project_id = p.id
     LEFT JOIN (SELECT project_id, returned_to_investors AS escrow_returned FROM project_settlements
-               UNION ALL SELECT projects.project_id, 0 FROM projects WHERE NOT EXISTS (SELECT 1 FROM project_settlements s2 WHERE s2.project_id = projects.id)) s ON s.project_id = p.id
+               UNION ALL SELECT projects.id AS project_id, 0 FROM projects WHERE NOT EXISTS (SELECT 1 FROM project_settlements s2 WHERE s2.project_id = projects.id)) s ON s.project_id = p.id
     LEFT JOIN (SELECT project_id, COUNT(*) FILTER (WHERE status='LIQUIDATED') AS liquidated,
                       MAX(CASE WHEN status='LIQUIDATED' THEN reference END) AS liq_ref
                FROM project_liquidations GROUP BY project_id) liq ON liq.project_id = p.id
