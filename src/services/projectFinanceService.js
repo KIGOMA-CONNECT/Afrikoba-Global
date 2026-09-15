@@ -1967,6 +1967,7 @@ async function getInvestorStatement({ userId, role }, projectId) {
 
 function exportInvestorStatementCsv({ userId, role }, projectId) {
   return getInvestorStatement({ userId, role }, projectId).then((s) => {
+    const esc = (v) => { const str = v === null || v === undefined ? '' : String(v); return `"${str.replace(/"/g, '""')}"`; };
     const L = [];
     L.push('Investor Statement');
     L.push(`Project,${esc(s.project.name)},${s.project.status},${s.project.currency_code}`);
