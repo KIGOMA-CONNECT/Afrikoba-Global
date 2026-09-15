@@ -1207,6 +1207,7 @@ export default function Projects() {
                 <div className="card"><div className="roles-tag">ROI</div><b style={{ color: performance.totals.roi_percent >= 0 ? '#15803d' : '#dc2626' }}>{performance.totals.roi_percent}%</b></div>
               </div>
               <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12, marginTop: 8 }} onClick={downloadPortfolio}>{t('projects.portfolio_csv')}</button>
+              <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12, marginTop: 8 }} onClick={() => downloadDocumentPdf('/api/projects/mine/performance/pdf', 'my-project-portfolio.pdf')}>{t('projects.portfolio_pdf')}</button>
             </div>
           )}
           {performance && performance.investments.length > 0 && (
@@ -1300,6 +1301,8 @@ export default function Projects() {
           {opsBook && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadDocumentPdf('/api/projects/ops/pfe-book/pdf', 'platform-pfe-book.pdf')}>{t('projects.ops_pdf')}</button>}
           {['ADMIN', 'MODERATOR', 'EXPERT'].includes(role) && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadFinanceCsv('/api/projects/ops/dividend-ledger/export', 'platform-dividend-ledger.csv')}>{t('projects.dividend_ledger_csv')}</button>}
           {['ADMIN', 'MODERATOR', 'EXPERT'].includes(role) && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadDocumentPdf('/api/projects/ops/dividend-ledger/pdf', 'platform-dividend-ledger.pdf')}>{t('projects.dividend_ledger_pdf')}</button>}
+          {['ADMIN', 'MODERATOR', 'EXPERT'].includes(role) && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadFinanceCsv('/api/projects/ops/investor-registry/export', 'platform-investor-registry.csv')}>{t('projects.investor_registry_csv')}</button>}
+          {['ADMIN', 'MODERATOR', 'EXPERT'].includes(role) && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadDocumentPdf('/api/projects/ops/investor-registry/pdf', 'platform-investor-registry.pdf')}>{t('projects.investor_registry_pdf')}</button>}
         </div>
         {opsBook ? (
           <>

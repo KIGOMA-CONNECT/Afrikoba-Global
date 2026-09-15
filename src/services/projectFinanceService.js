@@ -1566,6 +1566,159 @@ async function exportMyPerformanceCsv(userId) {
 }
 
 // ============================================================================
+// PHASE 27 — INVESTOR PORTFOLIO PERFORMANCE STATEMENT (PDF) + PLATFORM REGISTRY
+// ============================================================================
+
+async function getInvestorProfile(userId) {
+  const r = await pool.query(
+    `SELECT id, full_name, phone_number, email FROM users WHERE id = $1`, [userId]
+  );
+  return r.rows[0] || null;
+}
+
+async function prepareMyPerformancePdf(userId) {
+  const perf = await getMyPerformance(userId);
+  const investor = await getInvestorProfile(userId);
+  const p = await pool.query('SELECT currency_code FROM projects LIMIT 1').catch(() => ({}));
+  return { investor, totals: perf.totals, investments: perf.investments, currency: 'TZS', generated_at: new Date().toISOString() };
+}
+
+function renderMyPerformancePdf(v, stream) {
+  const doc = new PDFDocument({ size: 'A4', margin: 40 });
+  doc.pipe(stream);
+  const G = '#0B5D1E';
+  const m = (n) => `${formatMoney(n)} ${v.currency}`;
+  const ensure = () => { if (doc.y > 760) doc.addPage(); };
+
+  doc.fontSize(17).fillColor(G).text('AFRIKOBA GLOBAL', { align: 'center' });
+  doc.fontSize(11).fillColor('#333').text('TAARIFA YA MWEKEZAJI / INVESTOR PERFORMANCE STATEMENT', { align: 'center' });
+  doc.fontSize(8).fillColor('#888').text(`${v.investor ? v.investor.full_name + '  ·  ' + (v.investor.phone_number || '') : ''}  ·  Imetolewa: ${new Date(v.generated_at).toISOString()}`, { align: 'center' });
+  doc.moveDown(0.5);
+  vline(doc, doc.y + 4);
+
+  doc.fontSize(10).fillColor(G).text('Muhtasari / Summary');
+  vline(doc, doc.y + 2);
+  voucherField(doc, 'Jumla ya uwekezaji / Invested', m(v.totals.invested));
+  voucherField(doc, 'Iliyopokelewa / Received', m(v.totals.received));
+  voucherField(doc, 'Inasubiri / Pending', m(v.totals.pending));
+  voucherField(doc, 'ROI', `${v.totals.roi_percent}%`);
+  doc.moveDown(0.3);
+
+  doc.fontSize(10).fillColor(G).text(`Uwekezaji / Investments (${v.investments.length})`);
+  vline(doc, doc.y + 2);
+  for (const x of v.investments) {
+    ensure();
+    doc.fontSize(8.5).fillColor('#111').text(`${x.name}  ·  ${x.investment_status}${x.completed ? ' · completed' : ''}${x.liquidated ? ' · liquidated' : ''}`);
+    doc.fontSize(7.5).fillColor('#555').text(`   Invested ${m(x.invested)}  ·  participation ${x.participation_pct}%  ·  escrow returned ${m(x.escrow_return)}  ·  paid ${m(x.paid_total)}  ·  refunded ${m(x.refunded_amount)}`);
+    doc.fontSize(7.5).fillColor('#0B5D1E').text(`   Received ${m(x.received)}  ·  ROI ${x.roi_percent}%${x.pending_total > 0 ? `  ·  pending ${m(x.pending_total)}` : ''}`);
+  }
+
+  ensure();
+  doc.moveDown(0.5);
+  vline(doc, doc.y + 4);
+  doc.moveDown(0.8);
+  doc.fontSize(8).fillColor('#888').text('Sahihi ya Mwekezaji / Investor Signature', { align: 'center', width: 200, lineBreak: false });
+  doc.moveDown(1.6);
+  doc.moveTo(230, doc.y).lineTo(380, doc.y).stroke('#aaa');
+  doc.fontSize(8).fillColor('#888').text('Sahihi ya Mwekezaji / Investor Signature', { align: 'center', width: 200, lineBreak: false });
+  doc.end();
+  return doc;
+}
+
+async function getPlatformInvestorRegistry({ userId, role }) {
+  if (!isExpert(role)) throw new ValidityError('Huna ruhusa ya rejesta ya wawekezaji.', 403);
+  const r = await pool.query(
+    `SELECT u.id AS user_id, u.full_name, u.phone_number,
+            COUNT(DISTINCT i.project_id)::int AS projects,
+            COALESCE(SUM(i.amount),0)::numeric AS invested_total,
+            COALESCE(SUM(CASE WHEN pi.status='PAID' THEN pi.entitlement ELSE 0 END),0)::numeric AS dividends_paid,
+            COALESCE(SUM(CASE WHEN pi.status='PENDING' THEN pi.entitlement ELSE 0 END),0)::numeric AS dividends_pending
+     FROM users u
+     LEFT JOIN project_investments i ON i.investor_user_id = u.id
+     LEFT JOIN project_investor_payouts pi ON pi.investor_user_id = u.id
+     WHERE EXISTS (SELECT 1 FROM project_investments x WHERE x.investor_user_id = u.id)
+     GROUP BY u.id, u.full_name, u.phone_number
+     ORDER BY invested_total DESC`
+  );
+  let total_invested = 0, total_paid = 0, total_pending = 0;
+  const investors = r.rows.map((x) => {
+    total_invested += Number(x.invested_total || 0);
+    total_paid += Number(x.dividends_paid || 0);
+    total_pending += Number(x.dividends_pending || 0);
+    return {
+      user_id: x.user_id, full_name: x.full_name, phone_number: x.phone_number,
+      projects: x.projects, invested_total: round2(Number(x.invested_total || 0)),
+      dividends_paid: round2(Number(x.dividends_paid || 0)),
+      dividends_pending: round2(Number(x.dividends_pending || 0)),
+    };
+  });
+  return {
+    success: true,
+    generated_at: new Date().toISOString(),
+    summary: { investors: investors.length, total_invested: round2(total_invested), dividends_paid: round2(total_paid), dividends_pending: round2(total_pending) },
+    investors,
+  };
+}
+
+async function exportPlatformInvestorRegistryCsv({ userId, role }) {
+  const r = await getPlatformInvestorRegistry({ userId, role });
+  const esc = (v) => { const s = v === null || v === undefined ? '' : String(v); return `"${s.replace(/"/g, '""')}"`; };
+  const L = [`Generated at,${esc(r.generated_at)}`, `Investors,${r.summary.investors}`, `Total invested,${r.summary.total_invested}`, `Dividends paid,${r.summary.dividends_paid}`, `Dividends pending,${r.summary.dividends_pending}`];
+  L.push('');
+  L.push('user_id,full_name,phone_number,projects,invested_total,dividends_paid,dividends_pending');
+  for (const x of r.investors) {
+    L.push([x.user_id, esc(x.full_name), esc(x.phone_number), x.projects, x.invested_total, x.dividends_paid, x.dividends_pending].join(','));
+  }
+  return L.join('\n');
+}
+
+async function preparePlatformInvestorRegistryPdf({ userId, role }) {
+  const r = await getPlatformInvestorRegistry({ userId, role });
+  return { ...r, currency: 'TZS', generated_at: new Date().toISOString() };
+}
+
+function renderPlatformInvestorRegistryPdf(v, stream) {
+  const doc = new PDFDocument({ size: 'A4', margin: 40 });
+  doc.pipe(stream);
+  const G = '#0B5D1E';
+  const m = (n) => `${formatMoney(n)} ${v.currency}`;
+  const ensure = () => { if (doc.y > 760) doc.addPage(); };
+
+  doc.fontSize(17).fillColor(G).text('AFRIKOBA GLOBAL', { align: 'center' });
+  doc.fontSize(11).fillColor('#333').text('REJESTA YA WAWEKEZAJI / PLATFORM INVESTOR REGISTRY', { align: 'center' });
+  doc.fontSize(8).fillColor('#888').text(`Imetolewa: ${new Date(v.generated_at).toISOString()}`, { align: 'center' });
+  doc.moveDown(0.5);
+  vline(doc, doc.y + 4);
+
+  doc.fontSize(10).fillColor(G).text('Muhtasari / Summary');
+  vline(doc, doc.y + 2);
+  voucherField(doc, 'Wawekezaji / Investors', String(v.summary.investors));
+  voucherField(doc, 'Jumla imewekezwa / Total invested', m(v.summary.total_invested));
+  voucherField(doc, 'Dividends paid', m(v.summary.dividends_paid));
+  voucherField(doc, 'Dividends pending', m(v.summary.dividends_pending));
+  doc.moveDown(0.3);
+
+  doc.fontSize(10).fillColor(G).text(`Wawekezaji / Investors (${v.investors.length})`);
+  vline(doc, doc.y + 2);
+  for (const x of v.investors) {
+    ensure();
+    doc.fontSize(8.5).fillColor('#111').text(`${x.full_name}  ·  ${x.phone_number}  ·  ${x.projects} projects`);
+    doc.fontSize(7.5).fillColor('#555').text(`   Invested ${m(x.invested_total)}  ·  paid ${m(x.dividends_paid)}  ·  pending ${m(x.dividends_pending)}`);
+  }
+
+  ensure();
+  doc.moveDown(0.5);
+  vline(doc, doc.y + 4);
+  doc.moveDown(0.8);
+  doc.fontSize(8).fillColor('#888').text('Mkaguzi Mkuu (Reviewer)', { align: 'center', width: 200, lineBreak: false });
+  doc.moveDown(1.6);
+  doc.moveTo(120, doc.y).lineTo(320, doc.y).stroke('#aaa');
+  doc.fontSize(8).fillColor('#888').text('Mkaguzi Mkuu (Reviewer)', { align: 'center', width: 200, lineBreak: false });
+  doc.end();
+  return doc;
+}
+
+// ============================================================================
 // PHASE 12 — PROJECT LEDGER: AUTHORIZED TRANSACTION-LEVEL AUDIT TRAIL
 // Exposes the append-only getAuditTrail provenance (approvals, disbursements,
 // revenue, waterfall allocations, ledger postings) to stakeholders only:
@@ -4769,6 +4922,12 @@ module.exports = {
   prepareWaterfallGovernancePdf,
   renderWaterfallGovernancePdf,
   getReserveReleasesRegister,
+  prepareMyPerformancePdf,
+  renderMyPerformancePdf,
+  getPlatformInvestorRegistry,
+  exportPlatformInvestorRegistryCsv,
+  preparePlatformInvestorRegistryPdf,
+  renderPlatformInvestorRegistryPdf,
   exportReserveReleasesCsv,
   prepareReserveReleasesPdf,
   renderReserveReleasesPdf,

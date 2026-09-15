@@ -401,6 +401,41 @@ router.get('/projects/mine/performance/export', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// Phase 27: investor self-service performance statement (PDF)
+router.get('/projects/mine/performance/pdf', async (req, res, next) => {
+  try {
+    const data = await projectFinance.prepareMyPerformancePdf(req.user.id);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'inline; filename=my-project-portfolio.pdf');
+    projectFinance.renderMyPerformancePdf(data, res);
+  } catch (e) { next(e); }
+});
+
+// Phase 27: platform investor registry (JSON / CSV / PDF) - expert only
+router.get('/projects/ops/investor-registry', async (req, res, next) => {
+  try {
+    return res.json(await projectFinance.getPlatformInvestorRegistry({ userId: req.user.id, role: req.user.role }));
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/ops/investor-registry/export', async (req, res, next) => {
+  try {
+    const csv = await projectFinance.exportPlatformInvestorRegistryCsv({ userId: req.user.id, role: req.user.role });
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename=platform-investor-registry.csv');
+    return res.send(csv);
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/ops/investor-registry/pdf', async (req, res, next) => {
+  try {
+    const data = await projectFinance.preparePlatformInvestorRegistryPdf({ userId: req.user.id, role: req.user.role });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'inline; filename=platform-investor-registry.pdf');
+    projectFinance.renderPlatformInvestorRegistryPdf(data, res);
+  } catch (e) { next(e); }
+});
+
 // Phase 7/8: close-out - fund release to owner (reserve + residual) + report
 router.post('/projects/:id/close-out/reserve', async (req, res, next) => {
   try {
