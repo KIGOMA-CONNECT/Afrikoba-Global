@@ -941,6 +941,8 @@ export default function Projects() {
                           <>
                             <DocBtn label={t('projects.dividend_advice_csv')} chip="CSV" onClick={() => downloadFinanceCsv(`/api/projects/${statement.project.id}/investor/${auth.user.id}/dividend-advice/export`, `dividend-advice-${statement.project.id}-${auth.user.id}.csv`)} />
                             <DocBtn label={t('projects.dividend_advice_pdf')} chip="PDF" onClick={() => downloadDocumentPdf(`/api/projects/${statement.project.id}/investor/${auth.user.id}/dividend-advice/pdf`, `dividend-advice-${statement.project.id}-${auth.user.id}.pdf`)} />
+                            <DocBtn label={t('projects.my_platform_summary_csv')} chip="CSV" onClick={() => downloadFinanceCsv('/api/investors/platform-summary/export', 'my-platform-summary.csv')} />
+                            <DocBtn label={t('projects.my_platform_summary_pdf')} chip="PDF" onClick={() => downloadDocumentPdf('/api/investors/platform-summary/pdf', 'my-platform-summary.pdf')} />
                           </>
                         )}
                       </>

@@ -411,6 +411,37 @@ router.get('/projects/mine/performance/pdf', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// Phase 51: investor platform summary certificate (self; expert may pass :id)
+router.get('/investors/platform-summary', async (req, res, next) => {
+  try {
+    return res.json(await projectFinance.getInvestorPlatformSummary({ userId: req.user.id, role: req.user.role }));
+  } catch (e) { next(e); }
+});
+
+router.get('/investors/platform-summary/export', async (req, res, next) => {
+  try {
+    const csv = await projectFinance.exportInvestorPlatformSummaryCsv({ userId: req.user.id, role: req.user.role });
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename=investor-platform-summary.csv');
+    return res.send(csv);
+  } catch (e) { next(e); }
+});
+
+router.get('/investors/platform-summary/pdf', async (req, res, next) => {
+  try {
+    const data = await projectFinance.prepareInvestorPlatformSummaryPdf({ userId: req.user.id, role: req.user.role });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'inline; filename=investor-platform-summary.pdf');
+    projectFinance.renderInvestorPlatformSummaryPdf(data, res);
+  } catch (e) { next(e); }
+});
+
+router.get('/investors/:id/platform-summary', async (req, res, next) => {
+  try {
+    return res.json(await projectFinance.getInvestorPlatformSummary({ userId: req.user.id, role: req.user.role, targetUserId: req.params.id }));
+  } catch (e) { next(e); }
+});
+
 // Phase 27: platform investor registry (JSON / CSV / PDF) - expert only
 router.get('/projects/ops/investor-registry', async (req, res, next) => {
   try {

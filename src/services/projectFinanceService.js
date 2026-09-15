@@ -6195,6 +6195,147 @@ function renderScheduleMonitorPdf(v, stream) {
 }
 
 // ============================================================================
+// PHASE 51 — INVESTOR PLATFORM SUMMARY CERTIFICATE (SELF + EXPERT VIEW)
+// ============================================================================
+
+async function getInvestorPlatformSummary({ userId, role, targetUserId }) {
+  let target = targetUserId ? Number(targetUserId) : Number(userId);
+  const investor = await getInvestorProfile(target);
+  if (!investor) throw new ValidityError('Mwekezaji hapatikani.', 404);
+  const hasInv = await pool.query(
+    `SELECT 1 FROM project_investments WHERE investor_user_id = $1 AND status IN ('CONFIRMED','REFUNDED') LIMIT 1`,
+    [target]
+  );
+  if (!isExpert(role) && Number(target) !== Number(userId)) {
+    throw new ValidityError('Huna ruhusa ya muhtasari wa mwekezaji mwingine.', 403);
+  }
+  if (!isExpert(role) && hasInv.rows.length === 0) {
+    throw new ValidityError('Huna uwekezaji bado.', 404);
+  }
+  const perf = await getMyPerformance(target);
+  const dividends = round2(perf.investments.reduce((s, x) => s + Number(x.paid_total || 0), 0));
+  const refunded = round2(perf.investments.reduce((s, x) => s + Number(x.refunded_amount || 0), 0));
+  const rois = perf.investments.filter((x) => x.investment_status === 'CONFIRMED');
+  const best = rois.length ? rois.reduce((a, b) => (Number(b.roi_percent) > Number(a.roi_percent) ? b : a)) : null;
+  const worst = rois.length ? rois.reduce((a, b) => (Number(b.roi_percent) < Number(a.roi_percent) ? b : a)) : null;
+  return {
+    success: true,
+    reference: `INV-SUMMARY-${target}-${Date.now()}`,
+    investor: { id: investor.id, full_name: investor.full_name, phone_number: investor.phone_number, email: investor.email || null },
+    generated_at: new Date().toISOString(),
+    totals: {
+      investments: perf.investments.length,
+      active: perf.investments.filter((x) => x.investment_status === 'CONFIRMED').length,
+      completed: perf.investments.filter((x) => x.completed).length,
+      liquidated: perf.investments.filter((x) => x.liquidated).length,
+      refunded_count: perf.investments.filter((x) => x.refunded_amount > 0).length,
+      invested: perf.totals.invested,
+      received: perf.totals.received,
+      escrow_return: perf.totals.escrow_return,
+      dividends_paid: dividends,
+      refunded: refunded,
+      pending: perf.totals.pending,
+      net_position: round2(perf.totals.received - perf.totals.invested),
+      roi_percent: perf.totals.roi_percent,
+      best_roi: best ? { project_name: best.name, roi_percent: round2(Number(best.roi_percent || 0)) } : null,
+      worst_roi: worst ? { project_name: worst.name, roi_percent: round2(Number(worst.roi_percent || 0)) } : null,
+    },
+    investments: perf.investments.map((x) => ({
+      investment_id: x.investment_id, project_id: x.project_id, project_name: x.name,
+      project_status: x.project_status, investment_status: x.investment_status,
+      invested: round2(Number(x.invested || 0)), participation_pct: Number(x.participation_pct || 0),
+      escrow_return: round2(Number(x.escrow_return || 0)), paid_total: round2(Number(x.paid_total || 0)),
+      refunded_amount: round2(Number(x.refunded_amount || 0)), received: round2(Number(x.received || 0)),
+      pending_total: round2(Number(x.pending_total || 0)), roi_percent: round2(Number(x.roi_percent || 0)),
+      completely_settled: x.complete_settled !== undefined ? !!x.complete_settled : (x.completed || x.liquidated),
+    })),
+  };
+}
+
+async function exportInvestorPlatformSummaryCsv({ userId, role, targetUserId }) {
+  const r = await getInvestorPlatformSummary({ userId, role, targetUserId });
+  const esc = (v) => { const s = v === null || v === undefined ? '' : String(v); return `"${s.replace(/"/g, '""')}"`; };
+  const L = [];
+  L.push(`Reference,${esc(r.reference)}`);
+  L.push(`Investor,${esc(r.investor.full_name)}`);
+  L.push(`Phone,${esc(r.investor.phone_number)}`);
+  L.push(`Generated at,${esc(r.generated_at)}`);
+  L.push(`Investments,${r.totals.investments}`);
+  L.push(`Invested,${r.totals.invested}`);
+  L.push(`Received,${r.totals.received}`);
+  L.push(`Escrow returned,${r.totals.escrow_return}`);
+  L.push(`Dividends paid,${r.totals.dividends_paid}`);
+  L.push(`Refunded,${r.totals.refunded}`);
+  L.push(`Pending,${r.totals.pending}`);
+  L.push(`Net position,${r.totals.net_position}`);
+  L.push(`ROI %,${r.totals.roi_percent}`);
+  L.push('');
+  L.push('investment_id,project,invested,participation_pct,escrow_return,dividends_paid,refunded,received,pending,roi_percent,investment_status,settled');
+  for (const x of r.investments) {
+    L.push([x.investment_id, esc(x.project_name), x.invested, x.participation_pct, x.escrow_return,
+            x.paid_total, x.refunded_amount, x.received, x.pending_total, x.roi_percent,
+            esc(x.investment_status), x.completely_settled ? 'yes' : 'no'].join(','));
+  }
+  return L.join('\n');
+}
+
+async function prepareInvestorPlatformSummaryPdf({ userId, role, targetUserId }) {
+  return getInvestorPlatformSummary({ userId, role, targetUserId });
+}
+
+function renderInvestorPlatformSummaryPdf(v, stream) {
+  const doc = new PDFDocument({ size: 'A4', margin: 40 });
+  doc.pipe(stream);
+  const G = '#0B5D1E';
+  const m = (n) => `${formatMoney(n)} TZS`;
+  const ensure = () => { if (doc.y > 760) doc.addPage(); };
+
+  doc.fontSize(17).fillColor(G).text('AFRIKOBA GLOBAL', { align: 'center' });
+  doc.fontSize(12).fillColor('#333').text('CHETI CHA MUHTASARI WA MWEKEZAJI / INVESTOR PLATFORM SUMMARY', { align: 'center' });
+  doc.fontSize(9).fillColor('#333').text(`${v.investor.full_name}  ·  +${v.investor.phone_number || ''}`, { align: 'center' });
+  doc.fontSize(8).fillColor('#888').text(`Ref: ${v.reference}  ·  Imetolewa: ${new Date(v.generated_at).toISOString()}`, { align: 'center' });
+  doc.moveDown(0.5);
+  vline(doc, doc.y + 4);
+
+  doc.fontSize(10).fillColor(G).text('Muhtasari / Summary');
+  vline(doc, doc.y + 2);
+  voucherField(doc, 'Uwekezaji / Investments', String(v.totals.investments));
+  voucherField(doc, 'Inayoendelea / Active', String(v.totals.active));
+  voucherField(doc, 'Zilizokamilika / Completed', String(v.totals.completed));
+  voucherField(doc, 'Zilizofutwa / Refunded count', String(v.totals.refunded_count));
+  voucherField(doc, 'Jumla ya uwekezaji / Invested', m(v.totals.invested));
+  voucherField(doc, 'Iliyopokelewa / Received', m(v.totals.received));
+  voucherField(doc, 'Escrow returned', m(v.totals.escrow_return));
+  voucherField(doc, 'Dividends paid', m(v.totals.dividends_paid));
+  voucherField(doc, 'Refunded', m(v.totals.refunded));
+  voucherField(doc, 'Inasubiri / Pending', m(v.totals.pending));
+  voucherField(doc, 'Net position', m(v.totals.net_position > 0 ? v.totals.net_position : v.totals.net_position));
+  voucherField(doc, 'ROI', `${v.totals.roi_percent}%`);
+  if (v.totals.best_roi) voucherField(doc, 'Bora / Best ROI', `${v.totals.best_roi.project_name}  ${v.totals.best_roi.roi_percent}%`);
+  if (v.totals.worst_roi) voucherField(doc, 'Mbovu / Worst ROI', `${v.totals.worst_roi.project_name}  ${v.totals.worst_roi.roi_percent}%`);
+  doc.moveDown(0.3);
+
+  doc.fontSize(10).fillColor(G).text(`Uwekezaji / Investments (${v.investments.length})`);
+  vline(doc, doc.y + 2);
+  for (const x of v.investments) {
+    ensure();
+    doc.fontSize(8).fillColor('#111').text(`#${x.investment_id}  ${x.project_name}  ·  ${x.project_status}  ·  ${x.investment_status}  ·  invested ${m(x.invested)}  ·  ROI ${x.roi_percent}%`);
+    doc.fontSize(7).fillColor('#555').text(`   escrow ${m(x.escrow_return)}  ·  div ${m(x.paid_total)}  ·  refund ${m(x.refunded_amount)}  ·  received ${m(x.received)}  ·  pending ${m(x.pending_total)}  ·  settled ${x.completely_settled ? 'yes' : 'no'}`);
+  }
+
+  ensure();
+  doc.moveDown(0.5);
+  vline(doc, doc.y + 4);
+  doc.moveDown(0.8);
+  doc.fontSize(8).fillColor('#888').text('Mkaguzi Mkuu (Reviewer)', { align: 'center', width: 200, lineBreak: false });
+  doc.moveDown(1.6);
+  doc.moveTo(120, doc.y).lineTo(320, doc.y).stroke('#aaa');
+  doc.fontSize(8).fillColor('#888').text('Mkaguzi Mkuu (Reviewer)', { align: 'center', width: 200, lineBreak: false });
+  doc.end();
+  return doc;
+}
+
+// ============================================================================
 // PHASE 37 — PLATFORM WATERFALL DISTRIBUTION SUMMARY (EXPERT-ONLY)
 // ============================================================================
 
@@ -8200,6 +8341,10 @@ module.exports = {
   exportScheduleMonitorCsv,
   prepareScheduleMonitorPdf,
   renderScheduleMonitorPdf,
+  getInvestorPlatformSummary,
+  exportInvestorPlatformSummaryCsv,
+  prepareInvestorPlatformSummaryPdf,
+  renderInvestorPlatformSummaryPdf,
   getTaxRegister,
   exportTaxRegisterCsv,
   renderTaxRegisterPdf,
