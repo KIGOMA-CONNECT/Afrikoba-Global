@@ -982,6 +982,31 @@ router.get('/projects/:id/settlement-register/pdf', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// Phase 31: project escrow & wallet journal (JSON / CSV / PDF) - owner/expert
+router.get('/projects/:id/wallet-journal', async (req, res, next) => {
+  try {
+    return res.json(await projectFinance.getWalletJournal(parseInt(req.params.id, 10), { userId: req.user.id, role: req.user.role }));
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/:id/wallet-journal/export', async (req, res, next) => {
+  try {
+    const csv = await projectFinance.exportWalletJournalCsv(parseInt(req.params.id, 10), { userId: req.user.id, role: req.user.role });
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename=wallet-journal.csv');
+    return res.send(csv);
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/:id/wallet-journal/pdf', async (req, res, next) => {
+  try {
+    const data = await projectFinance.prepareWalletJournalPdf(parseInt(req.params.id, 10), { userId: req.user.id, role: req.user.role });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'inline; filename=wallet-journal.pdf');
+    projectFinance.renderWalletJournalPdf(data, res);
+  } catch (e) { next(e); }
+});
+
 // Phase 17: admin force-close stuck funding + per-investor dividend statement
 router.post('/projects/:id/funding/force-close', async (req, res, next) => {
   try {

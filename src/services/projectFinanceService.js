@@ -4341,6 +4341,128 @@ function renderRevenueRegisterPdf(v, stream) {
 }
 
 // ============================================================================
+// PHASE 31 — PROJECT ESCROW & WALLET JOURNAL
+// ============================================================================
+
+const WALLET_INFLOW = new Set(['PROJECT_INVEST', 'PROJECT_REVENUE']);
+const WALLET_OUTFLOW = new Set(['PROJECT_DISBURSEMENT', 'PROJECT_SETTLEMENT', 'PROJECT_RESERVE_RELEASE', 'PROJECT_RESIDUAL_RELEASE', 'PROJECT_REFUND']);
+
+async function getWalletJournal(projectId, { userId, role }) {
+  const p = await getProject(projectId);
+  const isOwner = p.owner_user_id === userId;
+  if (!isOwner && !isExpert(role)) {
+    throw new ValidityError('Huna ruhusa ya jarida la wallet ya mradi huu.', 403);
+  }
+  const r = await pool.query(
+    `SELECT t.id, t.reference_id, t.type, t.wallet_amount, t.status, t.created_at,
+            u.id AS actor_id, u.full_name AS actor_name, u.phone_number AS actor_phone
+     FROM transactions t
+     LEFT JOIN users u ON u.id = t.user_id
+     WHERE (t.meta->>'project_id')::int = $1
+     ORDER BY t.created_at, t.id`, [projectId]
+  );
+  const byType = {};
+  let inflow = 0, outflow = 0, balance = 0;
+  const entries = r.rows.map((x) => {
+    const amount = Number(x.wallet_amount || 0);
+    const dir = WALLET_INFLOW.has(x.type) ? 'IN' : (WALLET_OUTFLOW.has(x.type) ? 'OUT' : '?');
+    const signed = dir === 'IN' ? amount : -amount;
+    balance += signed;
+    if (dir === 'IN') inflow += amount; else if (dir === 'OUT') outflow += amount;
+    byType[x.type] = (byType[x.type] || 0) + amount;
+    return {
+      id: x.id, reference: x.reference_id, type: x.type,
+      amount: round2(amount), direction: dir,
+      running_balance: round2(balance),
+      status: x.status, actor: x.actor_id ? { id: x.actor_id, name: x.actor_name, phone_number: x.actor_phone } : null,
+      created_at: x.created_at,
+    };
+  });
+  return {
+    success: true,
+    project: { id: p.id, name: p.name, status: p.status },
+    currency: p.currency_code || 'TZS',
+    generated_at: new Date().toISOString(),
+    summary: {
+      entries: entries.length,
+      inflow: round2(inflow),
+      outflow: round2(outflow),
+      net_flow: round2(inflow - outflow),
+      closing_balance: round2(balance),
+      by_type: byType,
+    },
+    entries,
+  };
+}
+
+async function exportWalletJournalCsv(projectId, { userId, role }) {
+  const r = await getWalletJournal(projectId, { userId, role });
+  const esc = (v) => { const s = v === null || v === undefined ? '' : String(v); return `"${s.replace(/"/g, '""')}"`; };
+  const L = [];
+  L.push(`Project,${esc(r.project.name)} (${r.project.id})`);
+  L.push(`Status,${r.project.status}`);
+  L.push(`Generated at,${esc(r.generated_at)}`);
+  L.push(`Inflow,${r.summary.inflow}`);
+  L.push(`Outflow,${r.summary.outflow}`);
+  L.push(`Net flow,${r.summary.net_flow}`);
+  L.push(`Closing balance,${r.summary.closing_balance}`);
+  L.push('');
+  L.push('id,reference,type,amount,direction,running_balance,actor_name,status,created_at');
+  for (const x of r.entries) {
+    L.push([x.id, esc(x.reference), esc(x.type), x.amount, x.direction, x.running_balance, x.actor ? esc(x.actor.name) : '', esc(x.status), esc(x.created_at)].join(','));
+  }
+  return L.join('\n');
+}
+
+async function prepareWalletJournalPdf(projectId, { userId, role }) {
+  const r = await getWalletJournal(projectId, { userId, role });
+  const p = await getProject(projectId);
+  return { ...r, currency: p.currency_code || 'TZS' };
+}
+
+function renderWalletJournalPdf(v, stream) {
+  const doc = new PDFDocument({ size: 'A4', landscape: true, margin: 36 });
+  doc.pipe(stream);
+  const G = '#0B5D1E';
+  const m = (n) => `${formatMoney(n)} ${v.currency}`;
+  const ensure = () => { if (doc.y > 540) doc.addPage(); };
+
+  doc.fontSize(17).fillColor(G).text('AFRIKOBA GLOBAL', { align: 'center' });
+  doc.fontSize(11).fillColor('#333').text('JARIDA LA ESCROW / WALLET JOURNAL', { align: 'center' });
+  doc.fontSize(8).fillColor('#888').text(`${v.project.name}  (${v.project.id})  ·  ${v.project.status}  ·  Imetolewa: ${new Date(v.generated_at).toISOString()}`, { align: 'center' });
+  doc.moveDown(0.5);
+  vline(doc, doc.y + 4);
+
+  doc.fontSize(10).fillColor(G).text('Muhtasari / Summary');
+  vline(doc, doc.y + 2);
+  voucherField(doc, 'Mawimbi / Entries', String(v.summary.entries));
+  voucherField(doc, 'Kuingia / Inflow', m(v.summary.inflow));
+  voucherField(doc, 'Kutoka / Outflow', m(v.summary.outflow));
+  voucherField(doc, 'Net flow', m(v.summary.net_flow));
+  voucherField(doc, 'Closing balance', m(v.summary.closing_balance));
+  doc.moveDown(0.3);
+
+  doc.fontSize(10).fillColor(G).text(`Jarida / Journal (${v.entries.length})`);
+  vline(doc, doc.y + 2);
+  for (const x of v.entries) {
+    ensure();
+    doc.fontSize(8).fillColor('#111').text(`#${x.id}  ${x.reference}  ·  ${x.type}  ·  ${x.direction} ${m(x.amount)}`);
+    doc.fontSize(7).fillColor('#555').text(`   balance ${m(x.running_balance)}  ·  actor ${x.actor ? x.actor.name : '—'}  ·  ${x.status}  ·  ${new Date(x.created_at).toISOString()}`);
+  }
+
+  ensure();
+  doc.moveDown(0.5);
+  vline(doc, doc.y + 4);
+  doc.moveDown(0.6);
+  doc.fontSize(8).fillColor('#888').text('Mkaguzi Mkuu (Reviewer)', { align: 'center' });
+  doc.moveDown(1.2);
+  doc.moveTo(210, doc.y).lineTo(420, doc.y).stroke('#aaa');
+  doc.fontSize(8).fillColor('#888').text('Mkaguzi Mkuu (Reviewer)', { align: 'center', width: 200, lineBreak: false });
+  doc.end();
+  return doc;
+}
+
+// ============================================================================
 // PHASE 30 — SETTLEMENT CLOSE-OUT REGISTER (PER-INVESTOR RETURNS)
 // ============================================================================
 
@@ -5386,6 +5508,10 @@ module.exports = {
   exportSettlementRegisterCsv,
   prepareSettlementRegisterPdf,
   renderSettlementRegisterPdf,
+  getWalletJournal,
+  exportWalletJournalCsv,
+  prepareWalletJournalPdf,
+  renderWalletJournalPdf,
   exportPlatformProjectRegisterCsv,
   preparePlatformProjectRegisterPdf,
   renderPlatformProjectRegisterPdf,
