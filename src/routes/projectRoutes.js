@@ -454,6 +454,28 @@ router.get('/projects/:id/ledger', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// Phase 13: scheduled drawdown plan (tranche cash management)
+router.post('/projects/:id/drawdowns', async (req, res, next) => {
+  try {
+    const result = await projectFinance.createDrawdownPlan(req.user.id, parseInt(req.params.id, 10), req.body);
+    return res.status(201).json({ success: true, ...result });
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/:id/drawdowns', async (req, res, next) => {
+  try {
+    const result = await projectFinance.listDrawdowns(parseInt(req.params.id, 10), { userId: req.user.id, role: req.user.role });
+    return res.json(result);
+  } catch (e) { next(e); }
+});
+
+router.post('/projects/:id/drawdowns/:trancheId/request', async (req, res, next) => {
+  try {
+    const result = await projectFinance.requestTranche(req.user.id, parseInt(req.params.id, 10), parseInt(req.params.trancheId, 10));
+    return res.status(201).json({ success: true, ...result });
+  } catch (e) { next(e); }
+});
+
 // --- Budget & Milestones ---------------------------------------------------
 router.post('/projects/:id/budget', async (req, res, next) => {
   try {

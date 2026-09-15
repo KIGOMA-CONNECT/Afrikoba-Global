@@ -1597,6 +1597,158 @@ async function getProjectLedger(projectId, { userId, role }) {
 }
 
 // ============================================================================
+// PHASE 13 — SCHEDULED DRAWDOWN PLAN (TRANCHE CASH MANAGEMENT)
+// A commitment layer over the governed disbursement chain: the owner defines a
+// plan (total + tranches: amount, milestone, purpose), then requests tranches
+// in sequence. Each request materialises a project_disbursements REQUEST that
+// still travels expert review -> approve -> execute with segregation of duties.
+// No money moves here; release is reconciled against executed disbursements.
+// ============================================================================
+
+async function createDrawdownPlan(userId, projectId, { total_amount, tranches = [] } = {}) {
+  await getOwnerOnly(projectId, userId);
+  const p = await getProject(projectId);
+  if (p.status !== 'ACTIVE') throw new ValidityError('Ratiba ya drawdown inatakiwa kwa mradi wa ACTIVE tu.');
+
+  const total = round2(Number(total_amount));
+  if (!total || total <= 0) throw new ValidityError('Kiasi si sahihi.');
+  if (!Array.isArray(tranches) || tranches.length === 0) throw new ValidityError('Tranche zinahitajika.');
+
+  const escrow = await pool.query('SELECT remaining_balance FROM controlled_project_accounts WHERE project_id = $1', [projectId]);
+  const available = escrow.rows.length > 0 ? Number(escrow.rows[0].remaining_balance) : 0;
+  if (total > available + 0.0001) throw new ValidityError(`Kiasi kinazidi escrow iliyopo (${available}).`);
+
+  let sum = 0;
+  const rows = tranches.map((t, i) => {
+    const amt = round2(Number(t.amount));
+    if (!amt || amt <= 0) throw new ValidityError(`Kiasi cha tranche ${i + 1} si sahihi.`);
+    sum = round2(sum + amt);
+    return { amount: amt, milestone_id: t.milestone_id || null, purpose: t.purpose || null, sequence: i + 1 };
+  });
+  if (sum !== total) throw new ValidityError('Jumla ya tranche hailingani na kiasi cha jumla.');
+
+  const withMilestones = rows.filter((x) => x.milestone_id);
+  if (withMilestones.length) {
+    const m = await pool.query(
+      'SELECT id FROM project_milestones WHERE project_id = $1 AND id = ANY($2::int[])',
+      [projectId, withMilestones.map((x) => x.milestone_id)]
+    );
+    if (m.rows.length !== withMilestones.length) throw new ValidityError('Hatua (milestone) imo wapi? Haiwezi kupatikana.');
+  }
+
+  const existing = await pool.query('SELECT id FROM project_drawdown_plans WHERE project_id = $1', [projectId]);
+  if (existing.rows.length) throw new ValidityError('Ratiba ya drawdown tayari ipo kwa mradi huu.', 409);
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const plan = await client.query(
+      `INSERT INTO project_drawdown_plans (project_id, total_amount, created_by)
+       VALUES ($1,$2,$3) RETURNING *`,
+      [projectId, total, userId]
+    );
+    for (const t of rows) {
+      await client.query(
+        `INSERT INTO project_drawdowns (project_id, plan_id, sequence, amount, milestone_id, purpose, created_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+        [projectId, plan.rows[0].id, t.sequence, t.amount, t.milestone_id, t.purpose, userId]
+      );
+    }
+    await logAudit({ client, eventType: 'DRAWDOWN_PLAN_CREATED', action: 'CREATE', entityType: 'DRAWDOWN_PLAN', userId, entityId: projectId, amount: total, afterData: { tranches: rows.length } });
+    await client.query('COMMIT');
+    return { success: true, plan_id: plan.rows[0].id, total_amount: total, tranches: rows.length };
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+/** Reconcile requested tranches against the governed disbursement state. */
+async function syncDrawdowns(projectId) {
+  await pool.query(
+    `UPDATE project_drawdowns d
+     SET status = 'RELEASED', released_at = COALESCE(d.released_at, pd.executed_at)
+     FROM project_disbursements pd
+     WHERE pd.unique_reference = d.disbursement_reference AND pd.status = 'RELEASED'
+       AND d.status = 'REQUESTED' AND d.project_id = $1`,
+    [projectId]
+  );
+  await pool.query(
+    `UPDATE project_drawdowns d
+     SET status = 'SCHEDULED', disbursement_reference = NULL, requested_by = NULL, requested_at = NULL
+     FROM project_disbursements pd
+     WHERE pd.unique_reference = d.disbursement_reference AND pd.status = 'REJECTED'
+       AND d.status = 'REQUESTED' AND d.project_id = $1`,
+    [projectId]
+  );
+  await pool.query(
+    `UPDATE project_drawdown_plans sp SET status = 'COMPLETED'
+     FROM (SELECT plan_id
+           FROM project_drawdowns
+           WHERE project_id = $1
+           GROUP BY plan_id
+           HAVING COUNT(*) FILTER (WHERE status NOT IN ('RELEASED','SKIPPED')) = 0) done
+     WHERE sp.id = done.plan_id AND sp.status = 'ACTIVE'`,
+    [projectId]
+  );
+}
+
+async function listDrawdowns(projectId, { userId, role }) {
+  const p = await getProject(projectId);
+  if (p.owner_user_id !== userId && !isExpert(role)) {
+    throw new ValidityError('Huna ruhusa ya ratiba ya drawdown ya mradi huu.', 403);
+  }
+  await syncDrawdowns(projectId);
+  const planRes = await pool.query('SELECT * FROM project_drawdown_plans WHERE project_id = $1', [projectId]);
+  const plan = planRes.rows[0] || null;
+  const tranches = plan
+    ? (await pool.query('SELECT * FROM project_drawdowns WHERE plan_id = $1 AND project_id = $2 ORDER BY sequence', [plan.id, projectId])).rows
+    : [];
+  const released = tranches.filter((t) => t.status === 'RELEASED').reduce((s, t) => s + Number(t.amount), 0);
+  return {
+    success: true,
+    project: { id: p.id, name: p.name, status: p.status },
+    plan,
+    tranches: tranches.map((t) => ({ ...t, amount: Number(t.amount) })),
+    progress: {
+      released_total: round2(released),
+      pending_total: round2((plan ? Number(plan.total_amount) : 0) - released),
+    },
+  };
+}
+
+async function requestTranche(userId, projectId, trancheId) {
+  await getOwnerOnly(projectId, userId);
+  const p = await getProject(projectId);
+  if (p.status !== 'ACTIVE') throw new ValidityError('Drawdown inaweza kuombwa tu kwa mradi wa ACTIVE.');
+
+  const t = await pool.query('SELECT * FROM project_drawdowns WHERE id = $1 AND project_id = $2', [trancheId, projectId]);
+  if (t.rows.length === 0) throw new ValidityError('Tranche haipatikani.');
+  const tr = t.rows[0];
+  if (tr.status !== 'SCHEDULED') throw new ValidityError(`Tranche iko '${tr.status}', haiwezi kuombwa.`);
+
+  const prior = await pool.query(
+    `SELECT 1 FROM project_drawdowns
+     WHERE project_id = $1 AND plan_id = $2 AND sequence < $3 AND status NOT IN ('RELEASED','SKIPPED') LIMIT 1`,
+    [projectId, tr.plan_id, tr.sequence]
+  );
+  if (prior.rows.length) throw new ValidityError('Tranche zilizotangulia hazijatolewa bado.');
+
+  if (!tr.milestone_id) throw new ValidityError('Tranche hii haina milestone; ongeza milestone_id kabla ya kuomba.');
+
+  const ref = `TRN-${projectId}-${tr.id}-${Date.now()}`;
+  const req = await requestDisbursement(userId, projectId, { milestone_id: tr.milestone_id, amount: Number(tr.amount), unique_reference: ref });
+  await pool.query(
+    `UPDATE project_drawdowns SET status = 'REQUESTED', disbursement_reference = $1, requested_by = $2, requested_at = NOW() WHERE id = $3`,
+    [ref, userId, trancheId]
+  );
+  await logAudit({ eventType: 'DRAWDOWN_REQUESTED', action: 'REQUEST', entityType: 'DRAWDOWN', userId, entityId: trancheId, referenceId: ref, amount: Number(tr.amount) });
+  return { success: true, tranche_id: trancheId, status: 'REQUESTED', disbursement_request: req };
+}
+
+// ============================================================================
 // PHASE 7/8 — CLOSE-OUT: FUND RELEASE + CLOSE-OUT REPORT
 // After a project reaches COMPLETED (Phase 6), the accrued waterfall payout
 // funds are released to the project owner via double-entry (DR <project
@@ -2355,4 +2507,7 @@ module.exports = {
   exportPersonalReceiptCsv,
   exportMyPerformanceCsv,
   getProjectLedger,
+  createDrawdownPlan,
+  listDrawdowns,
+  requestTranche,
 };

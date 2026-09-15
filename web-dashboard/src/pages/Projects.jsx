@@ -23,6 +23,9 @@ export default function Projects() {
   const [liquidation, setLiquidation] = useState(null);
   const [receipt, setReceipt] = useState(null);
   const [ledger, setLedger] = useState(null);
+  const [drawdowns, setDrawdowns] = useState(null);
+  const [ddMilestones, setDdMilestones] = useState([]);
+  const [ddForm, setDdForm] = useState({ total_amount: '', tranches: 2, milestone_id: '' });
   const [msg, setMsg] = useState({ type: '', text: '' });
   const [role, setRole] = useState('');
   const [expandedForm, setExpandedForm] = useState(false);
@@ -333,6 +336,47 @@ export default function Projects() {
     } catch (err) { error(err); }
   };
 
+  const viewDrawdowns = async (id) => {
+    try {
+      const f = await api.get(`/projects/${id}/financials`);
+      setDdMilestones((f.data.financials && f.data.financials.milestones) || []);
+      const r = await api.get(`/projects/${id}/drawdowns`);
+      setDrawdowns(r.data);
+      setStatement(null);
+      setCloseOut(null);
+      setLiquidation(null);
+      setReceipt(null);
+      setLedger(null);
+    } catch (err) { error(err); }
+  };
+
+  const createPlan = async (id) => {
+    const total = Number(ddForm.total_amount);
+    if (!total || total <= 0) { ok(t('projects.error')); return; }
+    const n = Math.max(1, parseInt(ddForm.tranches, 10) || 1);
+    const milestone_id = ddForm.milestone_id ? Number(ddForm.milestone_id) : null;
+    const base = Math.floor(total / n);
+    const tranches = Array.from({ length: n }, (_, i) => ({
+      amount: i === n - 1 ? total - base * (n - 1) : base,
+      milestone_id,
+      purpose: `Tranche ${i + 1}`,
+    }));
+    try {
+      const r = await api.post(`/projects/${id}/drawdowns`, { total_amount: total, tranches });
+      ok(`${t('projects.drawdown_ok')} (${r.data.plan_id})`);
+      setDrawdowns(null);
+      viewDrawdowns(id);
+    } catch (err) { error(err); }
+  };
+
+  const requestDraw = async (id, trancheId) => {
+    try {
+      const r = await api.post(`/projects/${id}/drawdowns/${trancheId}/request`);
+      ok(`${t('projects.drawdown_requested')} ${r.data.disbursement_request.unique_reference}`);
+      viewDrawdowns(id);
+    } catch (err) { error(err); }
+  };
+
   const tabs = [
     { id: 'marketplace', label: t('projects.marketplace_tab') },
     { id: 'myprojects', label: t('projects.myprojects_tab') },
@@ -517,6 +561,9 @@ export default function Projects() {
                               <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => distribute(p.id)}>{t('projects.distribute')}</button>
                               <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => showFinancials(p.id)}>{t('projects.financials')}</button>
                             </>
+                          )}
+                          {p.status === 'ACTIVE' && (
+                            <button className="btn btn-success" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => viewDrawdowns(p.id)}>{t('projects.drawdown_plan')}</button>
                           )}
                           {p.status === 'ACTIVE' && (
                             <button className="btn" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => completeProject(p.id, p.name)}>{t('projects.complete')}</button>
@@ -843,6 +890,70 @@ export default function Projects() {
                   )}
                 </div>
               ))}
+            </div>
+          )}
+
+          {drawdowns && (
+            <div className="card" style={{ marginTop: 12 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+                <h4 style={{ margin: 0 }}>{t('projects.drawdown_plan')}: {drawdowns.project.name}</h4>
+                <span className="badge info">{drawdowns.project.status}</span>
+              </div>
+              {!drawdowns.plan ? (
+                <div style={{ marginTop: 12, maxWidth: 420 }}>
+                  <label className="roles-tag" style={{ display: 'block' }}>{t('projects.drawdown_total')}</label>
+                  <input type="number" value={ddForm.total_amount} onChange={(e) => setDdForm({ ...ddForm, total_amount: e.target.value })} />
+                  <label className="roles-tag" style={{ display: 'block', marginTop: 8 }}>{t('projects.drawdown_tranches')}</label>
+                  <input type="number" min="1" value={ddForm.tranches} onChange={(e) => setDdForm({ ...ddForm, tranches: e.target.value })} />
+                  <label className="roles-tag" style={{ display: 'block', marginTop: 8 }}>{t('projects.milestone')}</label>
+                  <select value={ddForm.milestone_id} onChange={(e) => setDdForm({ ...ddForm, milestone_id: e.target.value })}>
+                    <option value="">—</option>
+                    {ddMilestones.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+                  </select>
+                  <div style={{ marginTop: 10 }}>
+                    <button className="btn" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => createPlan(drawdowns.project.id)}>{t('projects.drawdown_create')}</button>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <div style={{ marginTop: 12, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px,1fr))', gap: 12 }}>
+                    <div className="card"><div className="roles-tag">{t('projects.invested_total')}</div><b>{fmt(drawdowns.plan.total_amount)}</b></div>
+                    <div className="card"><div className="roles-tag">{t('projects.drawdown_released')}</div><b>{fmt(drawdowns.progress.released_total)}</b></div>
+                    <div className="card"><div className="roles-tag">{t('projects.drawdown_pending')}</div><b>{fmt(drawdowns.progress.pending_total)}</b></div>
+                  </div>
+                  <div style={{ overflowX: 'auto', marginTop: 12 }}>
+                    <table className="table">
+                      <thead>
+                        <tr>
+                          <th>#</th>
+                          <th>{t('projects.amount')}</th>
+                          <th>{t('projects.milestone')}</th>
+                          <th>{t('projects.purpose')}</th>
+                          <th>{t('projects.drawdown_status')}</th>
+                          <th>{t('projects.actions')}</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {drawdowns.tranches.map((tr) => (
+                          <tr key={tr.id}>
+                            <td>{tr.sequence}</td>
+                            <td>{fmt(tr.amount)}</td>
+                            <td>{tr.milestone_id || '—'}</td>
+                            <td>{tr.purpose || '—'}</td>
+                            <td><span className="badge warning">{tr.status}</span></td>
+                            <td>
+                              {tr.status === 'SCHEDULED' && (
+                                <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => requestDraw(drawdowns.project.id, tr.id)}>{t('projects.drawdown_request')}</button>
+                              )}
+                              {tr.disbursement_reference ? <span className="roles-tag" style={{ margin: 0 }}>{tr.disbursement_reference}</span> : null}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              )}
             </div>
           )}
         </div>
