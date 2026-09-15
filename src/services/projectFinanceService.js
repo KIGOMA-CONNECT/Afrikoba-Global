@@ -4341,6 +4341,206 @@ function renderRevenueRegisterPdf(v, stream) {
 }
 
 // ============================================================================
+// PHASE 47 — PFE SUITE MASTER INDEX & RECONCILIATION CERTIFICATE (EXPERT-ONLY)
+// ============================================================================
+
+async function getPfeMasterCertificate({ userId, role }) {
+  if (!isExpert(role)) {
+    throw new ValidityError('Huna ruhusa ya cheti cha mwisho cha fedha (expert only).', 403);
+  }
+  const ctx = { userId, role };
+  const [pfe, esc, wf, tax, debt, opex, settle, owner, kyc, matrix] = await Promise.all([
+    getPlatformPfeBook(ctx),
+    getEscrowCertificate(ctx),
+    getWaterfallSummary(ctx),
+    getTaxRegister(ctx),
+    getDebtServiceRegister(ctx),
+    getOperatingExpensesRegister(ctx),
+    getSettlementCloseOutRegister(ctx),
+    getOwnerDistributionRegister(ctx),
+    getKycComplianceRegister(ctx),
+    getRevenueAllocationMatrix(ctx),
+  ]);
+
+  const T = pfe.totals;
+  const E = esc.totals;
+  const S = wf.summary;
+  const near = (a, b) => Math.abs(round2(a) - round2(b)) <= 1;
+
+  const steps = {};
+  S.by_step.forEach((x) => { steps[x.step] = round2(x.total); });
+  const stepsSum = round2(Object.values(steps).reduce((s, x) => s + x, 0));
+
+  const checks = [
+    {
+      key: 'escrow_wallet',
+      sw: 'Escrow imeshikiliwa + gawio = salio la wallet',
+      en: 'Escrow held + dividends = wallet closing',
+      ok: near(E.escrow_held + E.dividends_paid, E.wallet_closing),
+      detail: `${formatMoney(round2(E.escrow_held + E.dividends_paid))} == ${formatMoney(E.wallet_closing)}`,
+    },
+    {
+      key: 'platform_variance',
+      sw: 'Tofauti ya uadilifu wa mtandao ni sifuri',
+      en: 'Platform integrity variance is zero',
+      ok: near(pfe.platform_variance, 0) && pfe.flags.length === 0,
+      detail: `variance ${formatMoney(pfe.platform_variance)} · flags ${pfe.flags.length}`,
+    },
+    {
+      key: 'revenue_allocated',
+      sw: 'Mapato = yaliyogawiwa (waterfall)',
+      en: 'Revenue = allocated (waterfall)',
+      ok: near(S.revenue_total, S.allocated_total),
+      detail: `${formatMoney(S.revenue_total)} == ${formatMoney(S.allocated_total)}`,
+    },
+    {
+      key: 'steps_sum',
+      sw: 'Jumla ya hatua = mapato',
+      en: 'Waterfall steps sum = revenue',
+      ok: near(stepsSum, S.revenue_total),
+      detail: `${formatMoney(stepsSum)} == ${formatMoney(S.revenue_total)}`,
+    },
+    {
+      key: 'statutory',
+      sw: 'Kodi + deni + uendeshaji = mapato ya serikali',
+      en: 'Tax + debt + opex/payroll reconcile',
+      ok: near(tax.summary.total_withheld, steps.TAX)
+        && near(debt.summary.total_paid, steps.DEBT_SERVICE)
+        && near(opex.summary.total_expenses, steps.OPEX + steps.PAYROLL),
+      detail: `TAX ${formatMoney(tax.summary.total_withheld)} · DEBT ${formatMoney(debt.summary.total_paid)} · OPEX+PAYROLL ${formatMoney(opex.summary.total_expenses)}`,
+    },
+    {
+      key: 'investor_money',
+      sw: 'Marejesho na gawio vinaendana',
+      en: 'Returns & dividends reconcile across registers',
+      ok: near(E.escrow_returned, settle.summary.total_returned)
+        && near(kyc.summary.dividends_paid, E.dividends_paid),
+      detail: `Returned ${formatMoney(E.escrow_returned)} == ${formatMoney(settle.summary.total_returned)} · Div ${formatMoney(kyc.summary.dividends_paid)} == ${formatMoney(E.dividends_paid)}`,
+    },
+    {
+      key: 'owner_money',
+      sw: 'Malipo kwa mmiliki yanaendana',
+      en: 'Owner distributions reconcile',
+      ok: near(owner.summary.reserve_total, E.reserve_released)
+        && near(owner.summary.residual_total, E.residual_released)
+        && near(owner.summary.disbursements_total, E.disbursed),
+      detail: `Reserve ${formatMoney(owner.summary.reserve_total)} · Residual ${formatMoney(owner.summary.residual_total)} · Disbursed ${formatMoney(owner.summary.disbursements_total)}`,
+    },
+  ];
+  const allOk = checks.every((c) => c.ok);
+
+  const platformRegisters = [
+    ['Platform Ops Book', 'ops-book'], ['PFE Book (Integrity)', 'pfe-book'], ['Dividend Ledger', 'dividend-ledger'],
+    ['Investor Registry', 'investor-registry'], ['Investor KYC & Compliance', 'kyc-register'],
+    ['Project Register', 'project-register'], ['Escrow Trust Certificate', 'escrow-certificate'],
+    ['Fees Register', 'fees-register'], ['Refund Register', 'refund-register'],
+    ['Waterfall Distribution Summary', 'waterfall-summary'], ['Revenue & Allocation Matrix', 'revenue-allocation-matrix'],
+    ['Tax Withholding', 'tax-register'], ['Debt Service', 'debt-service-register'],
+    ['Operating Expenses', 'operating-expenses'], ['Owner Distributions', 'owner-distributions'],
+    ['Settlement & Close-out', 'settlement-closeout'], ['Finance Control Audit', 'finance-audit'],
+  ];
+
+  return {
+    success: true,
+    generated_at: new Date().toISOString(),
+    certificate: {
+      reference: `PFE-CERT-${Date.now()}`,
+      status: allOk ? 'RECONCILED' : 'EXCEPTIONS_FOUND',
+      checks,
+      platform_registers_count: platformRegisters.length,
+      per_project_document_types: 22,
+    },
+    totals: {
+      invested: round2(T.invested), refunded: round2(T.refunded), escrow_held: round2(E.escrow_held),
+      wallet_closing: round2(E.wallet_closing), escrow_returned: round2(E.escrow_returned),
+      dividends_paid: round2(E.dividends_paid), revenue: round2(S.revenue_total),
+      owner_total: round2(owner.summary.total_to_owner),
+      statutory_total: round2(tax.summary.total_withheld + debt.summary.total_paid + opex.summary.total_expenses),
+      fees: round2(esc.fees_total || 0),
+    },
+    platform_registers: platformRegisters.map(([name, slug]) => ({ name, slug })),
+  };
+}
+
+async function exportPfeMasterCertificateCsv(payload) {
+  const r = await getPfeMasterCertificate(payload);
+  const esc = (v) => { const s = v === null || v === undefined ? '' : String(v); return `"${s.replace(/"/g, '""')}"`; };
+  const L = [];
+  L.push('AFRIKOBA GLOBAL - PFE SUITE MASTER INDEX & RECONCILIATION CERTIFICATE');
+  L.push(`Reference,${esc(r.certificate.reference)}`);
+  L.push(`Generated at,${esc(r.generated_at)}`);
+  L.push(`Status,${r.certificate.status}`);
+  L.push(`Platform registers,${r.certificate.platform_registers_count}`);
+  L.push(`Per-project document types,${r.certificate.per_project_document_types}`);
+  L.push('');
+  L.push('key,check,ok,detail');
+  for (const c of r.certificate.checks) L.push([c.key, esc(c.en), c.ok, esc(c.detail)].join(','));
+  L.push('');
+  L.push('metric,value');
+  for (const [k, val] of Object.entries(r.totals)) L.push([k, val].join(','));
+  L.push('');
+  L.push('register,slug');
+  for (const x of r.platform_registers) L.push([esc(x.name), x.slug].join(','));
+  return L.join('\n');
+}
+
+function renderPfeMasterCertificatePdf(v, stream) {
+  const doc = new PDFDocument({ size: 'A4', margin: 40 });
+  doc.pipe(stream);
+  const G = '#0B5D1E';
+  const R = '#8a0000';
+  const m = (n) => `${formatMoney(n)} TZS`;
+  const rec = v.certificate.status === 'RECONCILED';
+
+  doc.fontSize(18).fillColor(G).text('AFRIKOBA GLOBAL', { align: 'center' });
+  doc.fontSize(12).fillColor('#333').text('CHETI CHA FEDHA: FURUSHA NA UPATANIFU / PFE MASTER INDEX & RECONCILIATION CERTIFICATE', { align: 'center' });
+  doc.fontSize(8).fillColor('#888').text(`${v.certificate.reference}  ·  ${new Date(v.generated_at).toISOString()}`, { align: 'center' });
+  doc.moveDown(0.3);
+  vline(doc, doc.y + 4);
+
+  doc.fontSize(11).fillColor(rec ? G : R).text(rec ? '● IMETHIBITISHWA — RECONCILED' : '● MITIHANI INAHITAJI MUANGA’S / EXCEPTIONS FOUND', { align: 'center' });
+  doc.moveDown(0.4);
+
+  doc.fontSize(10).fillColor(G).text('Upatanifu / Reconciliation checks');
+  vline(doc, doc.y + 2);
+  for (const c of v.certificate.checks) {
+    doc.fontSize(8).fillColor(c.ok ? '#0B5D1E' : R).text(`  ${c.ok ? 'PASS' : 'FAIL'}  ·  ${c.en}  ·  ${c.detail}`);
+  }
+  doc.moveDown(0.4);
+
+  doc.fontSize(10).fillColor(G).text('Jumla / Platform totals');
+  vline(doc, doc.y + 2);
+  voucherField(doc, 'Invested', m(v.totals.invested));
+  voucherField(doc, 'Escrow held', m(v.totals.escrow_held));
+  voucherField(doc, 'Wallet closing', m(v.totals.wallet_closing));
+  voucherField(doc, 'Escrow returned', m(v.totals.escrow_returned));
+  voucherField(doc, 'Dividends paid', m(v.totals.dividends_paid));
+  voucherField(doc, 'Revenue', m(v.totals.revenue));
+  voucherField(doc, 'To owner', m(v.totals.owner_total));
+  voucherField(doc, 'Statutory (tax+debt+opex)', m(v.totals.statutory_total));
+  doc.moveDown(0.4);
+
+  doc.fontSize(10).fillColor(G).text('Rejesta za mtandao / Platform register index');
+  vline(doc, doc.y + 2);
+  v.platform_registers.forEach((x, i) => {
+    if (doc.y > 700) doc.addPage();
+    doc.fontSize(7).fillColor('#444').text(`  ${String(i + 1).padStart(2, '0')}. ${x.name}  —  /projects/ops/${x.slug}`);
+  });
+
+  doc.moveDown(0.5);
+  doc.fontSize(9).fillColor(G).text(`Jumla: rejesta za mtandao ${v.certificate.platform_registers_count} · hati za kijukwaa ${v.certificate.per_project_document_types}`, { align: 'center' });
+  doc.moveDown(0.6);
+  vline(doc, doc.y + 4);
+  doc.moveDown(0.7);
+  doc.fontSize(8).fillColor('#888').text('Mkaguzi Mkuu (Reviewer)', { align: 'center' });
+  doc.moveDown(1.2);
+  doc.moveTo(210, doc.y).lineTo(420, doc.y).stroke('#aaa');
+  doc.fontSize(8).fillColor('#888').text('Mkaguzi Mkuu (Reviewer)', { align: 'center' });
+  doc.end();
+  return doc;
+}
+
+// ============================================================================
 // PHASE 46 — PLATFORM FINANCE CONTROL AUDIT REGISTER (EXPERT-ONLY)
 // ============================================================================
 
@@ -7608,6 +7808,9 @@ module.exports = {
   getFinanceControlAuditRegister,
   exportFinanceControlAuditRegisterCsv,
   renderFinanceControlAuditRegisterPdf,
+  getPfeMasterCertificate,
+  exportPfeMasterCertificateCsv,
+  renderPfeMasterCertificatePdf,
   exportPlatformProjectRegisterCsv,
   preparePlatformProjectRegisterPdf,
   renderPlatformProjectRegisterPdf,
