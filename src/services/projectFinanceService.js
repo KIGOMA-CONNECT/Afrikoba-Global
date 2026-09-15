@@ -1479,7 +1479,7 @@ async function getSettlementReport(projectId, { userId, role }) {
  */
 async function getMyPerformance(userId) {
   const r = await pool.query(
-    `SELECT i.id AS investment_id, i.project_id, p.name, p.status AS project_status,
+    `SELECT i.id AS investment_id, i.investor_user_id, i.project_id, p.name, p.status AS project_status,
             p.capital_required, p.amount_raised, i.amount AS invested,
             i.participation_pct, i.status AS investment_status,
             i.refund_reference, i.refunded_at, i.created_at AS invested_at,
@@ -2353,5 +2353,6 @@ module.exports = {
   liquidateProject,
   getPersonalReceipt,
   exportPersonalReceiptCsv,
+  exportMyPerformanceCsv,
   getProjectLedger,
 };
