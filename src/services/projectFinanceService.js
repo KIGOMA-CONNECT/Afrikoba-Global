@@ -3137,11 +3137,11 @@ function renderSettlementReportPdf(v, stream) {
   }
   vline(doc, doc.y + 4);
   doc.moveDown(0.8);
-  ['Mwenye Mradi (Owner)', 'Mkaguzi Mkuu (Reviewer)', 'Muenye Sajenti (Auditor)'].forEach((label) => {
+  ['Mwenye Mradi (Owner)', 'Mkaguzi Mkuu (Reviewer)', 'Msajili (Registrar)'].forEach((label) => {
     doc.fontSize(8).fillColor('#888').text(label, { align: 'center', width: 180, lineBreak: false });
   });
   doc.moveDown(1.6);
-  ['Mwenye Mradi (Owner)', 'Mkaguzi Mkuu (Reviewer)', 'Muenye Sajenti (Auditor)'].forEach((label) => {
+  ['Mwenye Mradi (Owner)', 'Mkaguzi Mkuu (Reviewer)', 'Msajili (Registrar)'].forEach((label) => {
     doc.moveTo(50, doc.y).lineTo(190, doc.y).stroke('#aaa');
     doc.fontSize(8).fillColor('#888').text(label, { align: 'center', width: 180, lineBreak: false });
   });
