@@ -559,6 +559,12 @@ async function refundInvestment(projectId, investmentId, userId) {
       `UPDATE projects SET amount_raised = GREATEST(amount_raised - $1, 0) WHERE id = $2`,
       [amt, projectId]
     );
+    await client.query(
+      `UPDATE controlled_project_accounts
+         SET remaining_balance = GREATEST(remaining_balance - $1, 0), updated_at = NOW()
+       WHERE project_id = $2`,
+      [amt, projectId]
+    );
     await fin.creditWallet({ client, userId, amount: amt, reference: refundRef, fromAccount: PROJECT_ACCOUNT, description: 'Project investment refund' });
     await client.query(
       `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)

@@ -1610,9 +1610,9 @@ async function getProjectLedger(projectId, { userId, role }) {
 // Ops/compliance seat across ALL projects: aggregates every append-only PF
 // domain (investments, escrow, disbursements, reserve/residual releases,
 // dividends, settlements, revenue, liquidations) plus an escrow-integrity
-// check. The invariant: invested - refunded ≈ escrow_held + disbursed +
-// reserve_released + residual_released + escrow_returned. Any drift over TZS 1
-// is surfaced as a flag. Read-only; owner/investor data stays scoped out.
+// check. The invariant: invested ≈ escrow_held + disbursed + escrow_returned
+// (refunds already decrement the escrow row, so they cancel out). Any drift
+// over TZS 1 is surfaced as a flag. Read-only; owner/investor data stays scoped out.
 // ============================================================================
 
 async function getPlatformPfeBook({ userId, role }) {
@@ -1628,8 +1628,8 @@ async function getPlatformPfeBook({ userId, role }) {
       (SELECT COALESCE(SUM(amount),0) FROM project_disbursements WHERE status='RELEASED') AS disbursed,
       (SELECT COALESCE(SUM(amount),0) FROM project_reserve_releases WHERE status='RELEASED' AND reserve_type='DISTRIBUTION_RESERVE') AS reserve_released,
       (SELECT COALESCE(SUM(amount),0) FROM project_reserve_releases WHERE status='RELEASED' AND reserve_type='OWNER_RESIDUAL') AS residual_released,
-      (SELECT COALESCE(SUM(amount),0) FROM project_investor_payouts WHERE status='PAID') AS dividends_paid,
-      (SELECT COALESCE(SUM(amount),0) FROM project_investor_payouts WHERE status='PENDING') AS dividends_pending,
+      (SELECT COALESCE(SUM(entitlement),0) FROM project_investor_payouts WHERE status='PAID') AS dividends_paid,
+      (SELECT COALESCE(SUM(entitlement),0) FROM project_investor_payouts WHERE status='PENDING') AS dividends_pending,
       (SELECT COALESCE(SUM(returned_to_investors),0) FROM project_settlements) AS escrow_returned,
       (SELECT COALESCE(SUM(amount),0) FROM project_revenue) AS revenue_total,
       (SELECT COALESCE(SUM(investor_net),0) FROM project_liquidations) AS liquidation_investor_net
@@ -1669,7 +1669,7 @@ async function getPlatformPfeBook({ userId, role }) {
                       SUM(amount) FILTER (WHERE reserve_type='DISTRIBUTION_RESERVE') AS reserve,
                       SUM(amount) FILTER (WHERE reserve_type='OWNER_RESIDUAL') AS resid
                FROM project_reserve_releases WHERE status='RELEASED' GROUP BY project_id) prr ON prr.project_id = p.id
-    LEFT JOIN (SELECT project_id, SUM(amount) FILTER (WHERE status='PAID') AS paid
+    LEFT JOIN (SELECT project_id, SUM(entitlement) FILTER (WHERE status='PAID') AS paid
                FROM project_investor_payouts GROUP BY project_id) pay ON pay.project_id = p.id
     LEFT JOIN (SELECT project_id, returned_to_investors AS escrow_returned FROM project_settlements
                UNION ALL SELECT project_id, 0 FROM projects WHERE NOT EXISTS (SELECT 1 FROM project_settlements s2 WHERE s2.project_id = projects.id)) s ON s.project_id = p.id
@@ -1692,8 +1692,10 @@ async function getPlatformPfeBook({ userId, role }) {
     // Investor-capital escrow invariant. Reserve / residual / dividends come
     // from the REVENUE profit pools (waterfall allocations), never from the
     // investor escrow, so they are intentionally NOT part of this check.
+    // Refunds already decremented the escrow row, so the refunded amount is
+    // reflected in escrow_held and cancels out of the reconciliation.
     const variance = round2(
-      Number(x.invested || 0) - Number(x.refunded || 0)
+      Number(x.invested || 0)
       - (breakdown.escrow_held + breakdown.disbursed + breakdown.escrow_returned)
     );
     const flagged = Math.abs(variance) > 1;
@@ -1714,7 +1716,7 @@ async function getPlatformPfeBook({ userId, role }) {
   const totals = totalRes.rows[0];
   const invested = Number(totals.invested_confirmed || 0);
   const out = Number(totals.disbursed || 0) + Number(totals.escrow_returned || 0);
-  const platformVariance = round2(invested - Number(totals.refunded || 0)
+  const platformVariance = round2(invested
     - (Number(totals.escrow_held || 0) + out));
 
   return {
