@@ -22,8 +22,10 @@
  *   - Financial events are append-only (no hard deletes).
  */
 
+const crypto = require('crypto');
+const PDFDocument = require('pdfkit');
 const pool = require('../config/db');
-const { generateReference } = require('../utils/helpers');
+const { generateReference, formatMoney } = require('../utils/helpers');
 const fin = require('./financialEngine');
 const { logAudit } = require('./auditService');
 const { createNotification } = require('./notificationService');
@@ -3048,6 +3050,181 @@ async function exportLiquidationCsv(projectId, { userId, role }) {
   return L.join('\n');
 }
 
+// ============================================================================
+// PHASE 18 — DISBURSEMENT PAYMENT VOUCHER (AUDIT-GRADE PDF)
+// ============================================================================
+
+function voucherCanonical(d) {
+  return [
+    d.id,
+    d.unique_reference,
+    d.amount,
+    d.status,
+    d.executed_by || '',
+    d.executed_at ? new Date(d.executed_at).toISOString() : '',
+    d.milestone_id || '',
+  ].join('|');
+}
+
+/**
+ * Owner or expert requests the payment voucher for a RELEASED disbursement.
+ * Only executed money movements have a voucher - proof of the governed chain:
+ * request -> review -> authorize -> release. Includes a deterministic document
+ * hash so a voucher can be externally verified against its reference.
+ */
+async function getDisbursementVoucher(projectId, { userId, role }, reference) {
+  const p = await getProject(projectId);
+  if (p.owner_user_id !== userId && !isExpert(role)) {
+    throw new ValidityError('Huna ruhusa ya vocha ya malipo ya mradi huu.', 403);
+  }
+
+  const r = await pool.query(
+    `SELECT d.*, m.name AS milestone_name,
+            req.full_name AS requested_by_name,
+            rev.full_name AS reviewed_by_name,
+            aut.full_name AS authorized_by_name,
+            exe.full_name AS executed_by_name
+     FROM project_disbursements d
+     LEFT JOIN project_milestones m ON m.id = d.milestone_id
+     LEFT JOIN users req ON req.id = d.requested_by
+     LEFT JOIN users rev ON rev.id = d.reviewed_by
+     LEFT JOIN users aut ON aut.id = d.authorized_by
+     LEFT JOIN users exe ON exe.id = d.executed_by
+     WHERE d.project_id = $1 AND d.unique_reference = $2`,
+    [projectId, reference]
+  );
+  if (r.rows.length === 0) throw new ValidityError('Vocha haipatikani.', 404);
+  const d = r.rows[0];
+  if (d.status !== 'RELEASED') {
+    throw new ValidityError(`Vocha hutolewa tu kwa malipo ambayo yamekwisha tolewa (sasa: ${d.status}).`, 409);
+  }
+
+  const esc = await pool.query(
+    'SELECT remaining_balance, disbursed_total FROM controlled_project_accounts WHERE project_id = $1',
+    [projectId]
+  );
+  const escrow = esc.rows[0] || { remaining_balance: 0, disbursed_total: 0 };
+  const proj = await pool.query(
+    `SELECT COALESCE(SUM(CASE WHEN status = 'RELEASED' THEN amount ELSE 0 END), 0) AS released_total,
+            COUNT(*) FILTER (WHERE status = 'RELEASED') AS released_count
+     FROM project_disbursements WHERE project_id = $1`,
+    [projectId]
+  );
+  const milestoneSpent = await pool.query(
+    `SELECT COALESCE(SUM(CASE WHEN status = 'RELEASED' THEN amount ELSE 0 END), 0) AS spent
+     FROM project_disbursements WHERE project_id = $1 AND milestone_id = $2`,
+    [projectId, d.milestone_id]
+  );
+  const txn = await pool.query(
+    `SELECT wallet_amount FROM transactions
+     WHERE reference_id = $1 AND status = 'SUCCESS' ORDER BY id LIMIT 1`,
+    [d.unique_reference]
+  );
+
+  const voucher = {
+    project: p,
+    currency: p.currency_code || 'TZS',
+    voucher_number: `DV-${String(d.id).padStart(6, '0')}`,
+    reference: d.unique_reference,
+    amount: Number(d.amount),
+    status: d.status,
+    milestone_id: d.milestone_id,
+    milestone_name: d.milestone_name,
+    reason: d.reason,
+    expert_comment: d.expert_comment,
+    requested_by: d.requested_by_name,
+    reviewed_by: d.reviewed_by_name,
+    authorized_by: d.authorized_by_name,
+    executed_by: d.executed_by_name,
+    requested_at: d.created_at,
+    reviewed_at: d.reviewed_at,
+    authorized_at: d.approved_at,
+    executed_at: d.executed_at,
+    txn_amount: txn.rows.length > 0 ? Number(txn.rows[0].wallet_amount) : null,
+    escrow_remaining: Number(escrow.remaining_balance),
+    escrow_disbursed_total: Number(escrow.disbursed_total),
+    released_total: Number(proj.rows[0].released_total),
+    released_count: Number(proj.rows[0].released_count),
+    milestone_spent: Number(milestoneSpent.rows[0].spent),
+    document_hash: crypto.createHash('sha256').update(voucherCanonical(d)).digest('hex').slice(0, 16).toUpperCase(),
+  };
+  return voucher;
+}
+
+function voucherField(doc, label, value, fontSize = 9) {
+  doc.fontSize(fontSize).fillColor('#555').text(label, { continued: true });
+  doc.fillColor('#111').text(`  ${value}`);
+}
+
+function vline(doc, y, maxX = 552) {
+  doc.moveTo(40, y).lineTo(maxX, y).stroke('#bbb');
+}
+
+function renderDisbursementVoucherPdf(v, stream) {
+  const doc = new PDFDocument({ size: 'A4', margin: 40 });
+  doc.pipe(stream);
+
+  const G = '#0B5D1E';
+
+  doc.fontSize(17).fillColor(G).text('AFRIKOBA GLOBAL', { align: 'center' });
+  doc.fontSize(11).fillColor('#333').text('VOCHA YA MALIPO (Disbursement Voucher)', { align: 'center' });
+  doc.fontSize(8).fillColor('#888').text(`Inaweza kuthibitishwa kwa namba ya vocha kwenye mfumo.`, { align: 'center', italic: true });
+  doc.moveDown(0.5);
+  vline(doc, doc.y + 4);
+
+  doc.fontSize(10).fillColor(G).text('Vocha Namba / Voucher No.', { continued: true });
+  doc.fillColor('#111').text(`  #${v.voucher_number}   ·   Ref: ${v.reference}  ·   Hash: ${v.document_hash}`, { width: 500 });
+  doc.moveDown(0.3);
+
+  doc.fontSize(20).fillColor('#111').text(`${formatMoney(v.amount)} ${v.currency}`, { align: 'center' });
+  doc.fontSize(9).fillColor('#666').text('Kiasi kilichotolewa / Amount disbursed', { align: 'center' });
+  doc.moveDown(0.5);
+
+  doc.fontSize(10).fillColor(G).text('Maelezo ya Mradi / Project Details');
+  vline(doc, doc.y + 2);
+  voucherField(doc, 'Mradi', `${v.project.name} (${v.project.status})`);
+  voucherField(doc, 'Hatua / Milestone', `${v.milestone_id ? `#${v.milestone_id} ` : ''}${v.milestone_name || '—'}`);
+  voucherField(doc, 'Sababu / Purpose', v.reason || '—');
+  if (v.expert_comment) voucherField(doc, 'Maoni ya Mkaguzi', v.expert_comment);
+  doc.moveDown(0.4);
+
+  doc.fontSize(10).fillColor(G).text('Msururu wa Idhini / Approval Chain (Segregation of Duties)');
+  vline(doc, doc.y + 2);
+  const chain = [
+    ['Aliyeomba / Requested by', v.requested_by, v.requested_at],
+    ['Mkaguzi / Reviewed by', v.reviewed_by, v.reviewed_at],
+    ['Muidhinishaji / Authorized by', v.authorized_by, v.authorized_at],
+    ['Mtoa Fedha / Executed by', v.executed_by, v.executed_at],
+  ];
+  const t = (dt) => (dt ? new Date(dt).toLocaleString('en-GB', { timeZone: 'UTC' }) : '—');
+  chain.forEach(([label, who, when]) => voucherField(doc, label, `${who || '—'}   (${t(when)})`));
+  doc.moveDown(0.4);
+
+  doc.fontSize(10).fillColor(G).text('Hali ya Escrow / Escrow Position');
+  vline(doc, doc.y + 2);
+  voucherField(doc, 'Jumla ya fedha zilizotolewa / Disbursed total', `${formatMoney(v.escrow_disbursed_total)} ${v.currency}`);
+  voucherField(doc, 'Fedha zilizobaki kwenye escrow / Escrow remaining', `${formatMoney(v.escrow_remaining)} ${v.currency}`);
+  voucherField(doc, 'Malipo yote juu ya mradi / All project releases', `${v.released_count} tranche(s) = ${formatMoney(v.released_total)} ${v.currency}`);
+  voucherField(doc, 'Fedha za hatua hii / This milestone', `${formatMoney(v.milestone_spent)} ${v.currency}`);
+  voucherField(doc, 'Rekodi ya mfumo / Ledger post', v.txn_amount != null ? `${formatMoney(v.txn_amount)} ${v.currency}` : '—');
+  doc.moveDown(0.6);
+
+  vline(doc, doc.y + 4);
+  doc.moveDown(0.6);
+  const sig = ['Mwenye Mradi (Owner)', 'Mkaguzi (Reviewer)', 'Muidhinishaji (Authorizer)', 'Mtoa Fedha (Executor)'];
+  sig.forEach((label) => {
+    doc.fontSize(9).fillColor('#333').text(label, { align: 'center', width: 130, lineBreak: false });
+  });
+  doc.moveDown(2);
+  sig.forEach((label) => {
+    doc.moveTo(60, doc.y).lineTo(160, doc.y).stroke('#aaa');
+    doc.fontSize(8).fillColor('#888').text(label, { align: 'center', width: 130, lineBreak: false });
+  });
+
+  doc.end();
+  return doc;
+}
+
 module.exports = {
   ACCOUNTS,
   WATERFALL_STEPS,
@@ -3110,4 +3287,6 @@ module.exports = {
   forceCloseFunding,
   getInvestorStatement,
   exportInvestorStatementCsv,
+  getDisbursementVoucher,
+  renderDisbursementVoucherPdf,
 };

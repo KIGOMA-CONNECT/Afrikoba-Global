@@ -469,6 +469,21 @@ export default function Projects() {
       .catch(() => ok(t('projects.error')));
   };
 
+  const downloadVoucher = (id, ref) => {
+    const token = localStorage.getItem('afrikoba_token');
+    fetch(`/api/projects/${id}/disbursements/voucher/${encodeURIComponent(ref)}`, { headers: { Authorization: `Bearer ${token}` } })
+      .then((res) => (res.ok ? res.blob() : Promise.reject()))
+      .then((blob) => {
+        const u = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = u;
+        a.download = `voucher-${ref}.pdf`;
+        a.click();
+        URL.revokeObjectURL(u);
+      })
+      .catch(() => ok(t('projects.error')));
+  };
+
   const tabs = [
     { id: 'marketplace', label: t('projects.marketplace_tab') },
     { id: 'myprojects', label: t('projects.myprojects_tab') },
@@ -1052,6 +1067,9 @@ export default function Projects() {
                               {tr.status === 'SCHEDULED' && (
                                 <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => requestDraw(drawdowns.project.id, tr.id)}>{t('projects.drawdown_request')}</button>
                               )}
+                              {tr.status === 'RELEASED' && tr.disbursement_reference ? (
+                                <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadVoucher(drawdowns.project.id, tr.disbursement_reference)}>{t('projects.voucher_pdf')}</button>
+                              ) : null}
                               {tr.disbursement_reference ? <span className="roles-tag" style={{ margin: 0 }}>{tr.disbursement_reference}</span> : null}
                             </td>
                           </tr>

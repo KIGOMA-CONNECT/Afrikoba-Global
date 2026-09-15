@@ -503,6 +503,16 @@ router.post('/projects/:id/drawdowns/:trancheId/request', async (req, res, next)
   } catch (e) { next(e); }
 });
 
+// Phase 18: audit-grade disbursement payment voucher (PDF), owner or expert only
+router.get('/projects/:id/disbursements/voucher/:reference', async (req, res, next) => {
+  try {
+    const voucher = await projectFinance.getDisbursementVoucher(parseInt(req.params.id, 10), { userId: req.user.id, role: req.user.role }, decodeURIComponent(req.params.reference));
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="voucher-${voucher.voucher_number}.pdf"`);
+    projectFinance.renderDisbursementVoucherPdf(voucher, res);
+  } catch (e) { next(e); }
+});
+
 // --- Budget & Milestones ---------------------------------------------------
 router.post('/projects/:id/budget', async (req, res, next) => {
   try {
