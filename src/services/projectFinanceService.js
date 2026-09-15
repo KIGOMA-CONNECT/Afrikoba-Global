@@ -4341,6 +4341,157 @@ function renderRevenueRegisterPdf(v, stream) {
 }
 
 // ============================================================================
+// PHASE 43 — PLATFORM OWNER DISTRIBUTION REGISTER (EXPERT-ONLY)
+// ============================================================================
+
+async function getOwnerDistributionRegister({ role }) {
+  if (!isExpert(role)) {
+    throw new ValidityError('Huna ruhusa ya rejesta ya malipo kwa mmiliki (expert only).', 403);
+  }
+  const r = await pool.query(
+    `SELECT t.id, t.type, t.user_id, t.wallet_amount, t.status, (t.meta->>'project_id') AS project_id,
+            t.created_at,
+            u.full_name AS recipient_name, p.name AS project_name, p.status AS project_status
+     FROM transactions t
+     JOIN users u ON u.id = t.user_id
+     LEFT JOIN projects p ON p.id = (t.meta->>'project_id')::int
+     WHERE t.type IN ('PROJECT_DISBURSEMENT', 'PROJECT_RESERVE_RELEASE', 'PROJECT_RESIDUAL_RELEASE')
+       AND t.status = 'SUCCESS'
+     ORDER BY t.id`
+  );
+  const byProj = {};
+  const byType = { DISBURSEMENT: 0, RESERVE: 0, RESIDUAL: 0 };
+  const entries = r.rows.map((x) => {
+    const cat = x.type === 'PROJECT_DISBURSEMENT' ? 'DISBURSEMENT' : x.type === 'PROJECT_RESERVE_RELEASE' ? 'RESERVE' : 'RESIDUAL';
+    const amount = round2(Number(x.wallet_amount || 0));
+    byType[cat] += amount;
+    const pid = x.project_id ? Number(x.project_id) : null;
+    if (pid !== null) {
+      if (!byProj[pid]) byProj[pid] = { id: pid, name: x.project_name || `#${pid}`, status: x.project_status, DISBURSEMENT: 0, RESERVE: 0, RESIDUAL: 0, total: 0 };
+      byProj[pid][cat] += amount;
+      byProj[pid].total += amount;
+    }
+    return {
+      id: x.id, type: x.type, category: cat,
+      project: pid !== null ? { id: pid, name: x.project_name || `#${pid}`, status: x.project_status } : null,
+      recipient: { id: x.user_id, name: x.recipient_name },
+      amount,
+      status: x.status,
+      created_at: x.created_at,
+    };
+  });
+  const total = round2(Object.values(byType).reduce((s, x) => s + x, 0));
+  return {
+    success: true,
+    generated_at: new Date().toISOString(),
+    summary: {
+      distributions: entries.length,
+      total_to_owner: total,
+      disbursements_total: round2(byType.DISBURSEMENT),
+      reserve_total: round2(byType.RESERVE),
+      residual_total: round2(byType.RESIDUAL),
+      projects: Object.keys(byProj).length,
+      per_project: Object.entries(byProj)
+        .map(([k, v]) => ({ ...v, id: Number(k) }))
+        .sort((a, b) => b.total - a.total),
+    },
+    entries,
+  };
+}
+
+async function exportOwnerDistributionRegisterCsv({ role }) {
+  const r = await getOwnerDistributionRegister({ role });
+  const esc = (v) => { const s = v === null || v === undefined ? '' : String(v); return `"${s.replace(/"/g, '""')}"`; };
+  const L = [];
+  L.push('AFRIKOBA GLOBAL - OWNER DISTRIBUTION REGISTER');
+  L.push(`Generated at,${esc(r.generated_at)}`);
+  L.push(`Distributions,${r.summary.distributions}`);
+  L.push(`Total to owner,${r.summary.total_to_owner}`);
+  L.push(`Disbursements,${r.summary.disbursements_total}`);
+  L.push(`Reserve releases,${r.summary.reserve_total}`);
+  L.push(`Residual releases,${r.summary.residual_total}`);
+  L.push(`Projects,${r.summary.projects}`);
+  L.push('');
+  L.push('id,type,category,project_id,project_name,recipient_id,recipient_name,amount,status,created_at');
+  for (const x of r.entries) {
+    L.push([x.id, x.type, x.category, x.project ? x.project.id : '', esc(x.project ? x.project.name : ''),
+            x.recipient.id, esc(x.recipient.name), x.amount, x.status, esc(x.created_at)].join(','));
+  }
+  return L.join('\n');
+}
+
+function renderOwnerDistributionRegisterPdf(v, stream) {
+  const doc = new PDFDocument({ size: 'A4', landscape: true, margin: 36 });
+  doc.pipe(stream);
+  const G = '#0B5D1E';
+  const m = (n) => `${formatMoney(n)} TZS`;
+
+  doc.fontSize(16).fillColor(G).text('AFRIKOBA GLOBAL', { align: 'center' });
+  doc.fontSize(12).fillColor('#333').text('REJESTA YA MALIPO KWA MMILIKI / OWNER DISTRIBUTION REGISTER', { align: 'center' });
+  doc.fontSize(8).fillColor('#888').text(`Imetolewa / Generated: ${new Date(v.generated_at).toISOString()}`, { align: 'center' });
+  doc.moveDown(0.3);
+  vline(doc, doc.y + 4);
+
+  doc.fontSize(10).fillColor(G).text('Muhtasari / Summary');
+  vline(doc, doc.y + 2);
+  voucherField(doc, 'Malipo / Distributions', String(v.summary.distributions));
+  voucherField(doc, 'Jumla kwa mmiliki / Total to owner', m(v.summary.total_to_owner));
+  voucherField(doc, 'Disbursements', m(v.summary.disbursements_total));
+  voucherField(doc, 'Reserve releases', m(v.summary.reserve_total));
+  voucherField(doc, 'Residual releases', m(v.summary.residual_total));
+  voucherField(doc, 'Miradi / Projects', String(v.summary.projects));
+  doc.moveDown(0.4);
+
+  const tbl = v.entries.map((x) => [
+    String(x.id), x.type.replace('PROJECT_', ''), String(x.project ? x.project.id : ''),
+    x.project ? x.project.name : '—', m(x.amount), x.recipient.name,
+    String(x.created_at || '').slice(0, 19).replace('T', ' '),
+  ]);
+  const hdr = ['#', 'Aina', 'Proj', 'Mradi', 'Kiasi', 'Mpokeaji', 'Tarehe'];
+  const widths = [30, 95, 38, 170, 100, 150, 140];
+  let y = doc.y;
+  const drawRow = (cells, isHeader) => {
+    let x = 40;
+    doc.fontSize(7).fillColor(isHeader ? '#0B5D1E' : '#111');
+    cells.forEach((c, i) => {
+      doc.text(String(c || ''), x, y, { width: widths[i], lineBreak: false });
+      x += widths[i];
+    });
+    y += isHeader ? 12 : 14;
+  };
+  drawRow(hdr, true);
+  for (const row of tbl) { if (y > 520) { doc.addPage(); y = 36; drawRow(hdr, true); } drawRow(row, false); }
+
+  doc.moveDown(0.4);
+  doc.fontSize(9).fillColor(G).text('Kwa mradi / Per project', { continued: false });
+  vline(doc, doc.y + 2);
+  y = doc.y;
+  const phdr = ['Proj', 'Mradi', 'Hali', 'Disbursements', 'Reserve', 'Residual', 'Jumla'];
+  const pwidths = [38, 180, 80, 110, 90, 90, 110];
+  const pdraw = (cells, isHeader) => {
+    let x = 40;
+    doc.fontSize(6.5).fillColor(isHeader ? '#0B5D1E' : '#111');
+    cells.forEach((c, i) => { doc.text(String(c || ''), x, y, { width: pwidths[i], lineBreak: false }); x += pwidths[i]; });
+    y += isHeader ? 11 : 13;
+  };
+  pdraw(phdr, true);
+  for (const p of v.summary.per_project) {
+    if (y > 520) { doc.addPage(); y = 36; pdraw(phdr, true); }
+    pdraw([String(p.id), p.name, p.status || '—', m(p.DISBURSEMENT), m(p.RESERVE), m(p.RESIDUAL), m(p.total)], false);
+  }
+
+  doc.moveDown(0.4);
+  vline(doc, y + 4);
+  doc.moveDown(0.7);
+  doc.fontSize(8).fillColor('#888').text('Imekaguliwa na / Reviewed by', { align: 'center' });
+  doc.moveDown(1.2);
+  doc.moveTo(210, doc.y).lineTo(420, doc.y).stroke('#aaa');
+  doc.fontSize(8).fillColor('#888').text('Mkaguzi Mkuu (Reviewer)', { align: 'center' });
+  doc.end();
+  return doc;
+}
+
+// ============================================================================
 // PHASE 42 — PLATFORM INVESTOR KYC & COMPLIANCE REGISTER (EXPERT-ONLY)
 // ============================================================================
 
@@ -7048,6 +7199,9 @@ module.exports = {
   getKycComplianceRegister,
   exportKycComplianceRegisterCsv,
   renderKycComplianceRegisterPdf,
+  getOwnerDistributionRegister,
+  exportOwnerDistributionRegisterCsv,
+  renderOwnerDistributionRegisterPdf,
   exportPlatformProjectRegisterCsv,
   preparePlatformProjectRegisterPdf,
   renderPlatformProjectRegisterPdf,

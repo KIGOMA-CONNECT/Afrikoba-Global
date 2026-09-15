@@ -982,6 +982,31 @@ router.get('/projects/:id/settlement-register/pdf', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// Phase 43: platform owner distribution register (expert-only) + export + pdf
+router.get('/projects/ops/owner-distributions', async (req, res, next) => {
+  try {
+    return res.json(await projectFinance.getOwnerDistributionRegister({ role: req.user.role }));
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/ops/owner-distributions/export', async (req, res, next) => {
+  try {
+    const csv = await projectFinance.exportOwnerDistributionRegisterCsv({ role: req.user.role });
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename=owner-distributions.csv');
+    return res.send(csv);
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/ops/owner-distributions/pdf', async (req, res, next) => {
+  try {
+    const data = await projectFinance.getOwnerDistributionRegister({ role: req.user.role });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'inline; filename=owner-distributions.pdf');
+    projectFinance.renderOwnerDistributionRegisterPdf(data, res);
+  } catch (e) { next(e); }
+});
+
 // Phase 42: platform investor KYC & compliance register (expert-only) + export + pdf
 router.get('/projects/ops/kyc-register', async (req, res, next) => {
   try {
