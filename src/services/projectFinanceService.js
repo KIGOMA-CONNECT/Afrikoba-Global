@@ -4349,7 +4349,7 @@ async function getPfeMasterCertificate({ userId, role }) {
     throw new ValidityError('Huna ruhusa ya cheti cha mwisho cha fedha (expert only).', 403);
   }
   const ctx = { userId, role };
-  const [pfe, esc, wf, tax, debt, opex, settle, owner, kyc, matrix] = await Promise.all([
+  const [pfe, esc, wf, tax, debt, opex, settle, owner, kyc, matrix, fees] = await Promise.all([
     getPlatformPfeBook(ctx),
     getEscrowCertificate(ctx),
     getWaterfallSummary(ctx),
@@ -4360,6 +4360,7 @@ async function getPfeMasterCertificate({ userId, role }) {
     getOwnerDistributionRegister(ctx),
     getKycComplianceRegister(ctx),
     getRevenueAllocationMatrix(ctx),
+    getFeesRegister(ctx),
   ]);
 
   const T = pfe.totals;
@@ -4456,7 +4457,7 @@ async function getPfeMasterCertificate({ userId, role }) {
       dividends_paid: round2(E.dividends_paid), revenue: round2(S.revenue_total),
       owner_total: round2(owner.summary.total_to_owner),
       statutory_total: round2(tax.summary.total_withheld + debt.summary.total_paid + opex.summary.total_expenses),
-      fees: round2(esc.fees_total || 0),
+      fees: round2(fees.summary.total_paid || 0),
     },
     platform_registers: platformRegisters.map(([name, slug]) => ({ name, slug })),
   };
