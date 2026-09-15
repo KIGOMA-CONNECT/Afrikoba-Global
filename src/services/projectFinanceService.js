@@ -3756,6 +3756,198 @@ function renderWaterfallLedgerPdf(v, stream) {
   return doc;
 }
 
+// ============================================================================
+// PHASE 22 — DIVIDEND PAYOUT REGISTER + ESCROW/DRAWDOWN PROJECTION
+// ============================================================================
+
+async function getPayoutRegister(projectId, { userId, role }) {
+  const p = await getProject(projectId);
+  const isOwner = p.owner_user_id === userId;
+  if (!isOwner && !isExpert(role)) {
+    throw new ValidityError('Huna ruhusa ya rejesta ya dividend za mradi huu.', 403);
+  }
+  const pay = await pool.query(
+    `SELECT pa.*, u.full_name, u.phone_number
+     FROM project_investor_payouts pa
+     JOIN users u ON u.id = pa.investor_user_id
+     WHERE pa.project_id = $1 ORDER BY pa.id`, [projectId]
+  );
+  const paidTotal = round2(pay.rows.filter((x) => x.status === 'PAID').reduce((s, x) => s + Number(x.entitlement), 0));
+  const pendingTotal = round2(pay.rows.filter((x) => x.status === 'PENDING').reduce((s, x) => s + Number(x.entitlement), 0));
+  const byInvestorRes = await pool.query(
+    `SELECT pa.investor_user_id, u.full_name, u.phone_number,
+            COALESCE(SUM(pa.entitlement) FILTER (WHERE pa.status='PAID'),0)::numeric AS paid,
+            COALESCE(SUM(pa.entitlement) FILTER (WHERE pa.status='PENDING'),0)::numeric AS pending
+     FROM project_investor_payouts pa JOIN users u ON u.id = pa.investor_user_id
+     WHERE pa.project_id = $1 GROUP BY pa.investor_user_id, u.full_name, u.phone_number
+     ORDER BY u.full_name`, [projectId]
+  );
+  return {
+    success: true,
+    project: { id: p.id, name: p.name, status: p.status },
+    generated_at: new Date().toISOString(),
+    totals: { paid: paidTotal, pending: pendingTotal, count: pay.rows.length },
+    per_investor: byInvestorRes.rows.map((x) => ({ investor_user_id: x.investor_user_id, full_name: x.full_name, phone_number: x.phone_number, paid: round2(Number(x.paid || 0)), pending: round2(Number(x.pending || 0)) })),
+    payouts: pay.rows.map((x) => ({
+      id: x.id,
+      investor_user_id: x.investor_user_id,
+      full_name: x.full_name,
+      phone_number: x.phone_number,
+      entitlement: round2(Number(x.entitlement || 0)),
+      status: x.status,
+      payout_reference: x.payout_reference,
+      payout_setting_reference: x.payout_setting_reference,
+      paid_at: x.paid_at,
+      allocation_id: x.allocation_id,
+      created_at: x.created_at,
+    })),
+  };
+}
+
+async function exportPayoutRegisterCsv(projectId, { userId, role }) {
+  const r = await getPayoutRegister(projectId, { userId, role });
+  const esc = (v) => {
+    const s = v === null || v === undefined ? '' : String(v);
+    return `"${s.replace(/"/g, '""')}"`;
+  };
+  const L = [];
+  L.push(`Project,${esc(r.project.name)} (${r.project.id})`);
+  L.push(`Status,${r.project.status}`);
+  L.push(`Generated at,${esc(r.generated_at)}`);
+  L.push(`Dividends paid total,${r.totals.paid}`);
+  L.push(`Dividends pending total,${r.totals.pending}`);
+  L.push('');
+  L.push('id,investor,phone,entitlement,status,payout_reference,paid_at,created_at');
+  for (const x of r.payouts) {
+    L.push([x.id, esc(x.full_name), esc(x.phone_number), x.entitlement, esc(x.status),
+            esc(x.payout_reference || ''), esc(x.paid_at || ''), esc(x.created_at)].join(','));
+  }
+  return L.join('\n');
+}
+
+async function preparePayoutRegisterPdf(projectId, { userId, role }) {
+  const r = await getPayoutRegister(projectId, { userId, role });
+  return { ...r, currency: 'TZS' };
+}
+
+function renderPayoutRegisterPdf(v, stream) {
+  const doc = new PDFDocument({ size: 'A4', margin: 40 });
+  doc.pipe(stream);
+  const G = '#0B5D1E';
+  const m = (n) => `${formatMoney(n)} ${v.currency}`;
+  const ensure = () => { if (doc.y > 760) doc.addPage(); };
+
+  doc.fontSize(17).fillColor(G).text('AFRIKOBA GLOBAL', { align: 'center' });
+  doc.fontSize(11).fillColor('#333').text('REJESTA YA DIVIDEND ZA WAWEKEZAJI (Dividend Payout Register)', { align: 'center' });
+  doc.fontSize(8).fillColor('#888').text(`${v.project.name}  (${v.project.id})  ·  ${v.project.status}  ·  Imetolewa: ${new Date(v.generated_at).toISOString()}`, { align: 'center' });
+  doc.moveDown(0.5);
+  vline(doc, doc.y + 4);
+
+  doc.fontSize(10).fillColor(G).text('Jumla / Totals');
+  vline(doc, doc.y + 2);
+  voucherField(doc, 'Dividendi zilizolipwa / Dividends paid', m(v.totals.paid));
+  voucherField(doc, 'Dividendi zinazosubiri / Dividends pending', m(v.totals.pending));
+  doc.moveDown(0.3);
+
+  doc.fontSize(10).fillColor(G).text('Kwa Mwekezaji / Per Investor');
+  vline(doc, doc.y + 2);
+  v.per_investor.forEach((x) => voucherField(doc, x.full_name, `paid ${m(x.paid)}  ·  pending ${m(x.pending)}`));
+  doc.moveDown(0.3);
+
+  doc.fontSize(10).fillColor(G).text(`Malipo / Payouts (${v.payouts.length})`);
+  vline(doc, doc.y + 2);
+  for (const x of v.payouts) {
+    ensure();
+    doc.fontSize(8).fillColor('#111').text(`#${x.id}  ·  ${x.full_name}  ·  ${m(x.entitlement)}  ·  ${x.status}${x.paid_at ? '  ·  ' + new Date(x.paid_at).toISOString() : ''}`);
+    doc.fontSize(7).fillColor('#555').text(`   ref ${x.payout_reference || '—'}  ·  allocation ${x.allocation_id || '—'}`);
+  }
+
+  ensure();
+  doc.moveDown(0.5);
+  vline(doc, doc.y + 4);
+  doc.moveDown(0.8);
+  doc.fontSize(8).fillColor('#888').text('Mkaguzi Mkuu (Reviewer)', { align: 'center', width: 200, lineBreak: false });
+  doc.moveDown(1.6);
+  doc.moveTo(120, doc.y).lineTo(320, doc.y).stroke('#aaa');
+  doc.fontSize(8).fillColor('#888').text('Mkaguzi Mkuu (Reviewer)', { align: 'center', width: 200, lineBreak: false });
+  doc.end();
+  return doc;
+}
+
+async function getEscrowProjection(projectId, { userId, role }) {
+  const p = await getProject(projectId);
+  const isOwner = p.owner_user_id === userId;
+  if (!isOwner && !isExpert(role)) {
+    throw new ValidityError('Huna ruhusa ya makisio ya escrow ya mradi huu.', 403);
+  }
+  await syncDrawdowns(projectId);
+  const escrowRes = await pool.query(
+    `SELECT COALESCE(remaining_balance,0)::numeric AS balance FROM controlled_project_accounts WHERE project_id = $1`, [projectId]
+  );
+  const escrow = round2(Number(escrowRes.rows[0]?.balance || 0));
+  const planRes = await pool.query('SELECT * FROM project_drawdown_plans WHERE project_id = $1', [projectId]);
+  const plan = planRes.rows[0] || null;
+  const trs = plan
+    ? (await pool.query('SELECT status, amount FROM project_drawdowns WHERE plan_id = $1 AND project_id = $2', [plan.id, projectId])).rows
+    : [];
+  let released = 0, committed = 0, scheduled = 0;
+  for (const t of trs) {
+    const amt = Number(t.amount || 0);
+    if (t.status === 'RELEASED') released += amt;
+    else if (['REQUESTED', 'REVIEWED', 'AUTHORIZED'].includes(t.status)) committed += amt;
+    else if (t.status === 'SCHEDULED') scheduled += amt;
+  }
+  released = round2(released); committed = round2(committed); scheduled = round2(scheduled);
+  const outstanding = round2(committed + scheduled);
+  const projected_remaining = round2(escrow - outstanding);
+  const shortfall = Math.max(0, round2(outstanding - escrow));
+  const mode = !plan ? 'NO_PLAN'
+    : (shortfall > 0 ? 'SHORTFALL'
+      : (committed > 0 ? 'COMMITTED'
+        : (scheduled > 0 ? 'FUNDED' : 'FUNDED')));
+  const st = await getProjectStatement(projectId, { userId, role });
+  return {
+    success: true,
+    project: { id: p.id, name: p.name, status: p.status },
+    generated_at: new Date().toISOString(),
+    currency: p.currency_code || 'TZS',
+    escrow_held: escrow,
+    invested_confirmed: round2(st.funds.invested_confirmed),
+    plan: plan ? { id: plan.id, total_amount: round2(Number(plan.total_amount)), status: plan.status } : null,
+    tranche_state: { released, committed, scheduled },
+    outstanding_total: outstanding,
+    projected_remaining: projected_remaining,
+    shortfall: shortfall,
+    mode,
+    dividends_pending: round2(st.funds.dividends_pending),
+    escrow_returned_to_investors: round2(st.funds.escrow_returned_to_investors),
+  };
+}
+
+async function exportEscrowProjectionCsv(projectId, { userId, role }) {
+  const r = await getEscrowProjection(projectId, { userId, role });
+  const esc = (v) => {
+    const s = v === null || v === undefined ? '' : String(v);
+    return `"${s.replace(/"/g, '""')}"`;
+  };
+  const L = [];
+  L.push(`Project,${esc(r.project.name)} (${r.project.id})`);
+  L.push(`Status,${r.project.status}`);
+  L.push(`Generated at,${esc(r.generated_at)}`);
+  L.push(`Escrow held,${r.escrow_held}`);
+  L.push(`Invested confirmed,${r.invested_confirmed}`);
+  L.push(`Plan total,${r.plan ? r.plan.total_amount : ''}`);
+  L.push(`Released,${r.tranche_state.released}`);
+  L.push(`Committed (req/reviewed/authorized),${r.tranche_state.committed}`);
+  L.push(`Scheduled,${r.tranche_state.scheduled}`);
+  L.push(`Outstanding total,${r.outstanding_total}`);
+  L.push(`Projected remaining escrow,${r.projected_remaining}`);
+  L.push(`Shortfall,${r.shortfall}`);
+  L.push(`Mode,${r.mode}`);
+  L.push(`Dividends pending (revenue pool, not escrow),${r.dividends_pending}`);
+  return L.join('\n');
+}
+
 module.exports = {
   ACCOUNTS,
   WATERFALL_STEPS,
@@ -3833,4 +4025,10 @@ module.exports = {
   renderWaterfallLedgerPdf,
   prepareOpsBookPdf,
   renderOpsBookPdf,
+  getPayoutRegister,
+  exportPayoutRegisterCsv,
+  preparePayoutRegisterPdf,
+  renderPayoutRegisterPdf,
+  getEscrowProjection,
+  exportEscrowProjectionCsv,
 };

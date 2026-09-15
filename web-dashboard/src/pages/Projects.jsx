@@ -503,6 +503,21 @@ export default function Projects() {
       .catch(() => ok(t('projects.error')));
   };
 
+  const downloadFinanceCsv = (path, filename) => {
+    const token = localStorage.getItem('afrikoba_token');
+    fetch(path, { headers: { Authorization: `Bearer ${token}` } })
+      .then((res) => (res.ok ? res.blob() : Promise.reject()))
+      .then((blob) => {
+        const u = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = u;
+        a.download = filename;
+        a.click();
+        URL.revokeObjectURL(u);
+      })
+      .catch(() => ok(t('projects.error')));
+  };
+
   const forceClose = async (id, action) => {
     const label = action === 'ACTIVATE' ? t('projects.force_close_activate') : t('projects.force_close_refund');
     if (!window.confirm(t('projects.force_close_confirm') + label + '?')) return;
@@ -881,6 +896,11 @@ export default function Projects() {
                       <>
                         <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadWaterfallCsv(statement.project.id)}>{t('projects.waterfall_csv')}</button>
                         <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadDocumentPdf(`/api/projects/${statement.project.id}/waterfall-ledger/pdf`, `project-${statement.project.id}-waterfall-ledger.pdf`)}>{t('projects.waterfall_pdf')}</button>
+                        <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadFinanceCsv(`/api/projects/${statement.project.id}/payout-register/export`, `project-${statement.project.id}-payout-register.csv`)}>{t('projects.payout_register_csv')}</button>
+                        <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadDocumentPdf(`/api/projects/${statement.project.id}/payout-register/pdf`, `project-${statement.project.id}-payout-register.pdf`)}>{t('projects.payout_register_pdf')}</button>
+                        {statement.project.status === 'ACTIVE' && (
+                          <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadFinanceCsv(`/api/projects/${statement.project.id}/escrow-projection/export`, `project-${statement.project.id}-escrow-projection.csv`)}>{t('projects.escrow_projection_csv')}</button>
+                        )}
                       </>
                     )}
                   </>

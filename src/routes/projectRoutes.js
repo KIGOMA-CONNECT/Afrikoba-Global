@@ -677,6 +677,49 @@ router.get('/projects/:id/waterfall-ledger/pdf', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// Phase 22: dividend payout register (JSON / CSV / PDF) - owner/expert
+router.get('/projects/:id/payout-register', async (req, res, next) => {
+  try {
+    const reg = await projectFinance.getPayoutRegister(parseInt(req.params.id, 10), { userId: req.user.id, role: req.user.role });
+    return res.json(reg);
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/:id/payout-register/export', async (req, res, next) => {
+  try {
+    const csv = await projectFinance.exportPayoutRegisterCsv(parseInt(req.params.id, 10), { userId: req.user.id, role: req.user.role });
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename=payout-register.csv');
+    return res.send(csv);
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/:id/payout-register/pdf', async (req, res, next) => {
+  try {
+    const data = await projectFinance.preparePayoutRegisterPdf(parseInt(req.params.id, 10), { userId: req.user.id, role: req.user.role });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'inline; filename=payout-register.pdf');
+    projectFinance.renderPayoutRegisterPdf(data, res);
+  } catch (e) { next(e); }
+});
+
+// Phase 22: escrow & drawdown cash-flow projection (JSON / CSV) - owner/expert
+router.get('/projects/:id/escrow-projection', async (req, res, next) => {
+  try {
+    const proj = await projectFinance.getEscrowProjection(parseInt(req.params.id, 10), { userId: req.user.id, role: req.user.role });
+    return res.json(proj);
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/:id/escrow-projection/export', async (req, res, next) => {
+  try {
+    const csv = await projectFinance.exportEscrowProjectionCsv(parseInt(req.params.id, 10), { userId: req.user.id, role: req.user.role });
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename=escrow-projection.csv');
+    return res.send(csv);
+  } catch (e) { next(e); }
+});
+
 // Phase 17: admin force-close stuck funding + per-investor dividend statement
 router.post('/projects/:id/funding/force-close', async (req, res, next) => {
   try {
