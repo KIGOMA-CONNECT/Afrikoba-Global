@@ -6441,6 +6441,9 @@ async function buildProjectArchive({ userId, role, projectId }) {
     `SELECT status FROM project_investments WHERE project_id = $1 AND investor_user_id = $2 AND status IN ('CONFIRMED','REFUNDED')`,
     [projectId, userId]
   );
+  if (!isOwner && !isExpert(role) && invRes.rows.length === 0) {
+    throw new ValidityError('Huna ruhusa ya kifurushi cha mradi huu.', 403);
+  }
   const hasDiv = await pool.query(
     `SELECT 1 FROM project_investor_payouts WHERE project_id = $1 AND investor_user_id = $2 LIMIT 1`,
     [projectId, userId]
@@ -6449,7 +6452,7 @@ async function buildProjectArchive({ userId, role, projectId }) {
   const addDoc = async (name, fn) => {
     try {
       const data = await fn();
-      archive.push({ name, data });
+      archive.push({ name, data: Buffer.isBuffer(data) ? data : Buffer.from(String(data), 'utf8') });
     } catch (e) {
       const msg = e && e.message ? e.message : 'unavailable';
       archive.push({ name: `${name}.SKIPPED.txt`, data: Buffer.from(`Not included in this archive: ${msg}\n`, 'utf8') });
