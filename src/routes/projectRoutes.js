@@ -720,6 +720,58 @@ router.get('/projects/:id/escrow-projection/export', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// Phase 23: platform-wide dividend ledger (JSON / CSV / PDF) - expert
+router.get('/projects/ops/dividend-ledger', async (req, res, next) => {
+  try {
+    const ledger = await projectFinance.getPlatformDividendLedger({ userId: req.user.id, role: req.user.role });
+    return res.json(ledger);
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/ops/dividend-ledger/export', async (req, res, next) => {
+  try {
+    const csv = await projectFinance.exportPlatformDividendLedgerCsv({ userId: req.user.id, role: req.user.role });
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename=platform-dividend-ledger.csv');
+    return res.send(csv);
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/ops/dividend-ledger/pdf', async (req, res, next) => {
+  try {
+    const data = await projectFinance.preparePlatformDividendLedgerPdf({ userId: req.user.id, role: req.user.role });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'inline; filename=platform-dividend-ledger.pdf');
+    projectFinance.renderPlatformDividendLedgerPdf(data, res);
+  } catch (e) { next(e); }
+});
+
+// Phase 23: per-project drawdown schedule document (JSON / CSV / PDF) - owner/expert
+router.get('/projects/:id/drawdown-schedule', async (req, res, next) => {
+  try {
+    const doc = await projectFinance.getDrawdownSchedule(parseInt(req.params.id, 10), { userId: req.user.id, role: req.user.role });
+    return res.json(doc);
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/:id/drawdown-schedule/export', async (req, res, next) => {
+  try {
+    const csv = await projectFinance.exportDrawdownScheduleCsv(parseInt(req.params.id, 10), { userId: req.user.id, role: req.user.role });
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename=drawdown-schedule.csv');
+    return res.send(csv);
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/:id/drawdown-schedule/pdf', async (req, res, next) => {
+  try {
+    const data = await projectFinance.prepareDrawdownPlanPdf(parseInt(req.params.id, 10), { userId: req.user.id, role: req.user.role });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'inline; filename=drawdown-schedule.pdf');
+    projectFinance.renderDrawdownPlanPdf(data, res);
+  } catch (e) { next(e); }
+});
+
 // Phase 17: admin force-close stuck funding + per-investor dividend statement
 router.post('/projects/:id/funding/force-close', async (req, res, next) => {
   try {

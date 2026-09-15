@@ -3948,6 +3948,211 @@ async function exportEscrowProjectionCsv(projectId, { userId, role }) {
   return L.join('\n');
 }
 
+// ============================================================================
+// PHASE 23 — DRAWDOWN SCHEDULE DOCUMENT + PLATFORM DIVIDEND LEDGER
+// ============================================================================
+
+async function getDrawdownSchedule(projectId, { userId, role }) {
+  const ld = await listDrawdowns(projectId, { userId, role });
+  const milestoneRes = await pool.query(
+    `SELECT id, name FROM project_milestones WHERE project_id = $1`, [projectId]
+  );
+  const msName = {};
+  for (const ms of milestoneRes.rows) msName[ms.id] = ms.name;
+  return {
+    success: true,
+    project: ld.project,
+    plan: ld.plan,
+    generated_at: new Date().toISOString(),
+    progress: ld.progress,
+    tranches: ld.tranches.map((t) => ({
+      id: t.id, sequence: t.sequence, amount: Number(t.amount),
+      milestone_id: t.milestone_id, milestone_name: msName[t.milestone_id] || '—',
+      status: t.status, disbursement_reference: t.disbursement_reference,
+      requested_at: t.requested_at,
+    })),
+  };
+}
+
+async function exportDrawdownScheduleCsv(projectId, { userId, role }) {
+  const r = await getDrawdownSchedule(projectId, { userId, role });
+  const esc = (v) => {
+    const s = v === null || v === undefined ? '' : String(v);
+    return `"${s.replace(/"/g, '""')}"`;
+  };
+  const L = [];
+  L.push(`Project,${esc(r.project.name)} (${r.project.id})`);
+  L.push(`Status,${r.project.status}`);
+  L.push(`Plan total,${r.plan ? r.plan.total_amount : ''}`);
+  L.push(`Released,${r.progress.released_total}`);
+  L.push(`Outstanding,${r.progress.pending_total}`);
+  L.push(`Generated at,${esc(r.generated_at)}`);
+  L.push('');
+  L.push('sequence,amount,milestone,status,disbursement_reference,requested_at');
+  for (const t of r.tranches) {
+    L.push([t.sequence, t.amount, esc(t.milestone_name), esc(t.status),
+            esc(t.disbursement_reference || ''), esc(t.requested_at || '')].join(','));
+  }
+  return L.join('\n');
+}
+
+async function prepareDrawdownPlanPdf(projectId, { userId, role }) {
+  const r = await getDrawdownSchedule(projectId, { userId, role });
+  const p = await getProject(projectId);
+  return { ...r, currency: p.currency_code || 'TZS' };
+}
+
+function renderDrawdownPlanPdf(v, stream) {
+  const doc = new PDFDocument({ size: 'A4', margin: 40 });
+  doc.pipe(stream);
+  const G = '#0B5D1E';
+  const m = (n) => `${formatMoney(n)} ${v.currency}`;
+  const ensure = () => { if (doc.y > 760) doc.addPage(); };
+
+  doc.fontSize(17).fillColor(G).text('AFRIKOBA GLOBAL', { align: 'center' });
+  doc.fontSize(11).fillColor('#333').text('RATIBA YA DRAWDOWN / MALIPO (Drawdown Schedule)', { align: 'center' });
+  doc.fontSize(8).fillColor('#888').text(`${v.project.name}  (${v.project.id})  ·  ${v.project.status}  ·  Imetolewa: ${new Date(v.generated_at).toISOString()}`, { align: 'center' });
+  doc.moveDown(0.5);
+  vline(doc, doc.y + 4);
+
+  doc.fontSize(10).fillColor(G).text('Plan');
+  vline(doc, doc.y + 2);
+  voucherField(doc, 'Jumla ya plan / Plan total', v.plan ? m(Number(v.plan.total_amount || 0)) : '—');
+  voucherField(doc, 'Imetolewa / Released', m(v.progress.released_total));
+  voucherField(doc, 'Inasubiri / Outstanding', m(v.progress.pending_total));
+  doc.moveDown(0.3);
+
+  doc.fontSize(10).fillColor(G).text(`Tranches / Schedules (${v.tranches.length})`);
+  vline(doc, doc.y + 2);
+  for (const t of v.tranches) {
+    ensure();
+    doc.fontSize(8).fillColor('#111').text(`#${t.sequence}  ·  ${m(t.amount)}  ·  ${t.status}  ·  ${t.milestone_name}`);
+    doc.fontSize(7).fillColor('#555').text(`   ref ${t.disbursement_reference || '—'}  ·  requested ${t.requested_at ? new Date(t.requested_at).toISOString() : '—'}`);
+  }
+
+  ensure();
+  doc.moveDown(0.5);
+  vline(doc, doc.y + 4);
+  doc.moveDown(0.8);
+  doc.fontSize(8).fillColor('#888').text('Mkaguzi Mkuu (Reviewer)', { align: 'center', width: 200, lineBreak: false });
+  doc.moveDown(1.6);
+  doc.moveTo(120, doc.y).lineTo(320, doc.y).stroke('#aaa');
+  doc.fontSize(8).fillColor('#888').text('Mkaguzi Mkuu (Reviewer)', { align: 'center', width: 200, lineBreak: false });
+  doc.end();
+  return doc;
+}
+
+async function getPlatformDividendLedger({ userId, role }) {
+  if (!isExpert(role)) {
+    throw new ValidityError('Huna mamlaka ya daftari la jumla la dividend.', 403);
+  }
+  const pay = await pool.query(
+    `SELECT pa.id, pa.investor_user_id, u.full_name, u.phone_number,
+            pa.project_id, p.name AS project_name,
+            pa.entitlement, pa.status, pa.payout_reference, pa.paid_at, pa.created_at
+     FROM project_investor_payouts pa
+     JOIN users u ON u.id = pa.investor_user_id
+     JOIN projects p ON p.id = pa.project_id
+     ORDER BY pa.id`
+  );
+  const totals = await pool.query(
+    `SELECT COALESCE(SUM(entitlement) FILTER (WHERE status='PAID'),0)::numeric AS paid,
+            COALESCE(SUM(entitlement) FILTER (WHERE status='PENDING'),0)::numeric AS pending,
+            COUNT(*)::int AS count
+     FROM project_investor_payouts`
+  );
+  const byInv = await pool.query(
+    `SELECT pa.investor_user_id, u.full_name, u.phone_number,
+            COALESCE(SUM(pa.entitlement) FILTER (WHERE pa.status='PAID'),0)::numeric AS paid,
+            COALESCE(SUM(pa.entitlement) FILTER (WHERE pa.status='PENDING'),0)::numeric AS pending
+     FROM project_investor_payouts pa JOIN users u ON u.id = pa.investor_user_id
+     GROUP BY pa.investor_user_id, u.full_name, u.phone_number
+     ORDER BY u.full_name`
+  );
+  return {
+    success: true,
+    generated_at: new Date().toISOString(),
+    totals: { paid: round2(Number(totals.rows[0].paid || 0)), pending: round2(Number(totals.rows[0].pending || 0)), count: Number(totals.rows[0].count) },
+    per_investor: byInv.rows.map((x) => ({ investor_user_id: x.investor_user_id, full_name: x.full_name, phone_number: x.phone_number, paid: round2(Number(x.paid || 0)), pending: round2(Number(x.pending || 0)) })),
+    payouts: pay.rows.map((x) => ({
+      id: x.id, investor_user_id: x.investor_user_id, full_name: x.full_name, phone_number: x.phone_number,
+      project_id: x.project_id, project_name: x.project_name,
+      entitlement: round2(Number(x.entitlement || 0)), status: x.status,
+      payout_reference: x.payout_reference, paid_at: x.paid_at, created_at: x.created_at,
+    })),
+  };
+}
+
+async function exportPlatformDividendLedgerCsv({ userId, role }) {
+  const r = await getPlatformDividendLedger({ userId, role });
+  const esc = (v) => {
+    const s = v === null || v === undefined ? '' : String(v);
+    return `"${s.replace(/"/g, '""')}"`;
+  };
+  const L = [];
+  L.push(`Generated at,${esc(r.generated_at)}`);
+  L.push(`Dividends paid (platform),${r.totals.paid}`);
+  L.push(`Dividends pending (platform),${r.totals.pending}`);
+  L.push(`Payout records,${r.totals.count}`);
+  L.push('');
+  L.push('investor,phone,invested side:project,project_id,entitlement,status,payout_reference,paid_at');
+  for (const x of r.payouts) {
+    L.push([esc(x.full_name), esc(x.phone_number), esc(x.project_name), x.project_id, x.entitlement,
+            esc(x.status), esc(x.payout_reference || ''), esc(x.paid_at || '')].join(','));
+  }
+  return L.join('\n');
+}
+
+async function preparePlatformDividendLedgerPdf({ userId, role }) {
+  const r = await getPlatformDividendLedger({ userId, role });
+  return { ...r, currency: 'TZS' };
+}
+
+function renderPlatformDividendLedgerPdf(v, stream) {
+  const doc = new PDFDocument({ size: 'A4', margin: 40 });
+  doc.pipe(stream);
+  const G = '#0B5D1E';
+  const m = (n) => `${formatMoney(n)} ${v.currency}`;
+  const ensure = () => { if (doc.y > 760) doc.addPage(); };
+
+  doc.fontSize(17).fillColor(G).text('AFRIKOBA GLOBAL', { align: 'center' });
+  doc.fontSize(11).fillColor('#333').text('DAFTARI LA JUMLA LA DIVIDEND (Platform Dividend Ledger)', { align: 'center' });
+  doc.fontSize(8).fillColor('#888').text(`Imetolewa: ${new Date(v.generated_at).toISOString()}  ·  Sarafu: ${v.currency}`, { align: 'center' });
+  doc.moveDown(0.5);
+  vline(doc, doc.y + 4);
+
+  doc.fontSize(10).fillColor(G).text('Jumla / Totals');
+  vline(doc, doc.y + 2);
+  voucherField(doc, 'Dividendi zilizolipwa (mfumo mzima) / Dividends paid', m(v.totals.paid));
+  voucherField(doc, 'Dividendi zinazosubiri / Dividends pending', m(v.totals.pending));
+  voucherField(doc, 'Rekodi za malipo / Payout records', String(v.totals.count));
+  doc.moveDown(0.3);
+
+  doc.fontSize(10).fillColor(G).text('Kwa Mwekezaji / Per Investor (Platform)');
+  vline(doc, doc.y + 2);
+  v.per_investor.forEach((x) => voucherField(doc, x.full_name, `paid ${m(x.paid)}  ·  pending ${m(x.pending)}`));
+  doc.moveDown(0.3);
+
+  doc.fontSize(10).fillColor(G).text(`Malipo / Payouts (${v.payouts.length})`);
+  vline(doc, doc.y + 2);
+  for (const x of v.payouts) {
+    ensure();
+    doc.fontSize(8).fillColor('#111').text(`#${x.id}  ·  ${x.full_name}  ·  ${x.project_name}  ·  ${m(x.entitlement)}  ·  ${x.status}${x.paid_at ? '  ·  ' + new Date(x.paid_at).toISOString() : ''}`);
+    doc.fontSize(7).fillColor('#555').text(`   ref ${x.payout_reference || '—'}`);
+  }
+
+  ensure();
+  doc.moveDown(0.5);
+  vline(doc, doc.y + 4);
+  doc.moveDown(0.8);
+  doc.fontSize(8).fillColor('#888').text('Mkaguzi Mkuu (Reviewer)', { align: 'center', width: 200, lineBreak: false });
+  doc.moveDown(1.6);
+  doc.moveTo(120, doc.y).lineTo(320, doc.y).stroke('#aaa');
+  doc.fontSize(8).fillColor('#888').text('Mkaguzi Mkuu (Reviewer)', { align: 'center', width: 200, lineBreak: false });
+  doc.end();
+  return doc;
+}
+
 module.exports = {
   ACCOUNTS,
   WATERFALL_STEPS,
@@ -4031,4 +4236,12 @@ module.exports = {
   renderPayoutRegisterPdf,
   getEscrowProjection,
   exportEscrowProjectionCsv,
+  getDrawdownSchedule,
+  exportDrawdownScheduleCsv,
+  prepareDrawdownPlanPdf,
+  renderDrawdownPlanPdf,
+  getPlatformDividendLedger,
+  exportPlatformDividendLedgerCsv,
+  preparePlatformDividendLedgerPdf,
+  renderPlatformDividendLedgerPdf,
 };
