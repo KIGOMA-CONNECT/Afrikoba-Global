@@ -4341,6 +4341,157 @@ function renderRevenueRegisterPdf(v, stream) {
 }
 
 // ============================================================================
+// PHASE 29 — PLATFORM PROJECT REGISTER
+// ============================================================================
+
+async function getPlatformProjectRegister({ userId, role }) {
+  if (!isExpert(role)) throw new ValidityError('Huna ruhusa ya rejesta ya miradi.', 403);
+  const projects = await pool.query(
+    `SELECT p.id, p.name, p.status, p.owner_user_id, p.currency_code, p.capital_required, p.amount_raised,
+            u.full_name AS owner_name, u.phone_number AS owner_phone,
+            (s.id IS NOT NULL) AS settled, (l.id IS NOT NULL) AS liquidated
+     FROM projects p
+     LEFT JOIN users u ON u.id = p.owner_user_id
+     LEFT JOIN project_settlements s ON s.project_id = p.id
+     LEFT JOIN project_liquidations l ON l.project_id = p.id
+     ORDER BY p.id`
+  );
+  const inv = await pool.query(
+    `SELECT project_id, COUNT(*)::int AS investors, SUM(amount)::numeric AS confirmed
+     FROM project_investments WHERE status = 'CONFIRMED' GROUP BY project_id`
+  );
+  const invById = Object.fromEntries(inv.rows.map((r) => [r.project_id, r]));
+  const ms = await pool.query(
+    `SELECT project_id, COUNT(*)::int AS total,
+            COUNT(*) FILTER (WHERE status = 'COMPLETED')::int AS completed
+     FROM project_milestones GROUP BY project_id`
+  );
+  const msById = Object.fromEntries(ms.rows.map((r) => [r.project_id, r]));
+  const dd = await pool.query(
+    `SELECT project_id, COUNT(*)::int AS released, COALESCE(SUM(amount),0)::numeric AS released_total
+     FROM project_drawdowns WHERE status = 'RELEASED' GROUP BY project_id`
+  );
+  const ddById = Object.fromEntries(dd.rows.map((r) => [r.project_id, r]));
+  const po = await pool.query(
+    `SELECT project_id, COALESCE(SUM(entitlement),0)::numeric AS paid_total
+     FROM project_investor_payouts WHERE status = 'PAID' GROUP BY project_id`
+  );
+  const poById = Object.fromEntries(po.rows.map((r) => [r.project_id, r]));
+  const rev = await pool.query(
+    `SELECT project_id, COALESCE(SUM(amount),0)::numeric AS revenue_total
+     FROM project_revenue GROUP BY project_id`
+  );
+  const revById = Object.fromEntries(rev.rows.map((r) => [r.project_id, r]));
+
+  const rows = projects.rows.map((p) => {
+    const capital = Number(p.capital_required || 0);
+    const raised = Number(p.amount_raised || 0);
+    return {
+      id: p.id, name: p.name, status: p.status,
+      owner_user_id: p.owner_user_id, owner_name: p.owner_name, owner_phone: p.owner_phone,
+      currency: p.currency_code || 'TZS',
+      capital_required: round2(capital),
+      amount_raised: round2(raised),
+      percent_funded: capital > 0 ? round2((raised / capital) * 100) : 0,
+      investors: invById[p.id] ? invById[p.id].investors : 0,
+      milestones_total: msById[p.id] ? msById[p.id].total : 0,
+      milestones_completed: msById[p.id] ? msById[p.id].completed : 0,
+      drawdowns_released: ddById[p.id] ? ddById[p.id].released : 0,
+      drawdowns_released_total: round2(ddById[p.id] ? Number(ddById[p.id].released_total || 0) : 0),
+      dividends_paid: round2(poById[p.id] ? Number(poById[p.id].paid_total || 0) : 0),
+      revenue_total: round2(revById[p.id] ? Number(revById[p.id].revenue_total || 0) : 0),
+      settled: !!p.settled, liquidated: !!p.liquidated,
+    };
+  });
+
+  const summary = {
+    projects: rows.length,
+    active: rows.filter((r) => r.status === 'ACTIVE').length,
+    funded: rows.filter((r) => r.status === 'FUNDED').length,
+    completed: rows.filter((r) => r.status === 'COMPLETED').length,
+    liquidated: rows.filter((r) => r.status === 'LIQUIDATED').length,
+    capital_required_total: round2(rows.reduce((s, r) => s + r.capital_required, 0)),
+    raised_total: round2(rows.reduce((s, r) => s + r.amount_raised, 0)),
+    dividends_paid_total: round2(rows.reduce((s, r) => s + r.dividends_paid, 0)),
+    revenue_total: round2(rows.reduce((s, r) => s + r.revenue_total, 0)),
+  };
+  return { success: true, generated_at: new Date().toISOString(), summary, projects: rows };
+}
+
+async function exportPlatformProjectRegisterCsv({ userId, role }) {
+  const r = await getPlatformProjectRegister({ userId, role });
+  const esc = (v) => { const s = v === null || v === undefined ? '' : String(v); return `"${s.replace(/"/g, '""')}"`; };
+  const L = [];
+  L.push(`Generated at,${esc(r.generated_at)}`);
+  L.push(`Projects,${r.summary.projects} (active ${r.summary.active} / funded ${r.summary.funded} / completed ${r.summary.completed} / liquidated ${r.summary.liquidated})`);
+  L.push(`Capital required total,${r.summary.capital_required_total}`);
+  L.push(`Raised total,${r.summary.raised_total}`);
+  L.push(`Revenue total,${r.summary.revenue_total}`);
+  L.push(`Dividends paid total,${r.summary.dividends_paid_total}`);
+  L.push('');
+  L.push('id,name,status,owner_name,owner_phone,capital_required,amount_raised,percent_funded,investors,milestones_total,milestones_completed,drawdowns_released,drawdowns_released_total,dividends_paid,revenue_total,settled,liquidated');
+  for (const x of r.projects) {
+    L.push([
+      x.id, esc(x.name), esc(x.status), esc(x.owner_name || ''), esc(x.owner_phone || ''),
+      x.capital_required, x.amount_raised, `${x.percent_funded}%`,
+      x.investors, x.milestones_total, x.milestones_completed,
+      x.drawdowns_released, x.drawdowns_released_total,
+      x.dividends_paid, x.revenue_total,
+      x.settled ? 'yes' : 'no', x.liquidated ? 'yes' : 'no',
+    ].join(','));
+  }
+  return L.join('\n');
+}
+
+async function preparePlatformProjectRegisterPdf({ userId, role }) {
+  const r = await getPlatformProjectRegister({ userId, role });
+  return { ...r, currency: 'TZS', generated_at: new Date().toISOString() };
+}
+
+function renderPlatformProjectRegisterPdf(v, stream) {
+  const doc = new PDFDocument({ size: 'A4', landscape: true, margin: 36 });
+  doc.pipe(stream);
+  const G = '#0B5D1E';
+  const m = (n) => `${formatMoney(n)} ${v.currency}`;
+  const ensure = () => { if (doc.y > 540) doc.addPage(); };
+
+  doc.fontSize(17).fillColor(G).text('AFRIKOBA GLOBAL', { align: 'center' });
+  doc.fontSize(11).fillColor('#333').text('REJESTA YA MIRADI / PLATFORM PROJECT REGISTER', { align: 'center' });
+  doc.fontSize(8).fillColor('#888').text(`Imetolewa: ${new Date(v.generated_at).toISOString()}`, { align: 'center' });
+  doc.moveDown(0.5);
+  vline(doc, doc.y + 4);
+
+  doc.fontSize(10).fillColor(G).text('Muhtasari / Summary');
+  vline(doc, doc.y + 2);
+  voucherField(doc, 'Miradi / Projects', `${v.summary.projects}  (active ${v.summary.active} · funded ${v.summary.funded} · completed ${v.summary.completed} · liquidated ${v.summary.liquidated})`);
+  voucherField(doc, 'Capital required', m(v.summary.capital_required_total));
+  voucherField(doc, 'Raised', m(v.summary.raised_total));
+  voucherField(doc, 'Revenue', m(v.summary.revenue_total));
+  voucherField(doc, 'Dividends paid', m(v.summary.dividends_paid_total));
+  doc.moveDown(0.3);
+
+  doc.fontSize(10).fillColor(G).text(`Miradi / Projects (${v.projects.length})`);
+  vline(doc, doc.y + 2);
+  for (const x of v.projects) {
+    ensure();
+    doc.fontSize(8.5).fillColor('#111').text(`#${x.id}  ${x.name}  ·  ${x.status}${x.liquidated ? ' · LIQUIDATED' : ''}${x.settled ? ' · SETTLED' : ''}  ·  owner ${x.owner_name || ''}`);
+    doc.fontSize(7.5).fillColor('#555').text(`   Capital ${m(x.capital_required)}  ·  raised ${m(x.amount_raised)} (${x.percent_funded}%)  ·  investors ${x.investors}`);
+    doc.fontSize(7.5).fillColor('#555').text(`   Milestones ${x.milestones_completed}/${x.milestones_total}  ·  drawdowns ${x.drawdowns_released} (${m(x.drawdowns_released_total)})  ·  revenue ${m(x.revenue_total)}  ·  dividends paid ${m(x.dividends_paid)}`);
+  }
+
+  ensure();
+  doc.moveDown(0.5);
+  vline(doc, doc.y + 4);
+  doc.moveDown(0.6);
+  doc.fontSize(8).fillColor('#888').text('Mkaguzi Mkuu (Reviewer)', { align: 'center' });
+  doc.moveDown(1.2);
+  doc.moveTo(210, doc.y).lineTo(420, doc.y).stroke('#aaa');
+  doc.fontSize(8).fillColor('#888').text('Mkaguzi Mkuu (Reviewer)', { align: 'center', width: 200, lineBreak: false });
+  doc.end();
+  return doc;
+}
+
+// ============================================================================
 // PHASE 28 — FUNDING INTAKE REGISTER (PROJECT INVESTMENTS)
 // ============================================================================
 
@@ -5051,6 +5202,10 @@ module.exports = {
   prepareMyPerformancePdf,
   renderMyPerformancePdf,
   getPlatformInvestorRegistry,
+  getPlatformProjectRegister,
+  exportPlatformProjectRegisterCsv,
+  preparePlatformProjectRegisterPdf,
+  renderPlatformProjectRegisterPdf,
   getFundingIntakeRegister,
   exportFundingIntakeCsv,
   prepareFundingIntakePdf,
