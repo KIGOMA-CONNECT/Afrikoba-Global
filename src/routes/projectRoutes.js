@@ -1007,6 +1007,31 @@ router.get('/projects/ops/pfe-certificate/pdf', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// Phase 50: platform schedule & due-date monitoring register (expert-only) + export + pdf
+router.get('/projects/ops/schedule-monitor', async (req, res, next) => {
+  try {
+    return res.json(await projectFinance.getScheduleMonitor({ role: req.user.role }));
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/ops/schedule-monitor/export', async (req, res, next) => {
+  try {
+    const csv = await projectFinance.exportScheduleMonitorCsv({ role: req.user.role });
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename=schedule-monitor.csv');
+    return res.send(csv);
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/ops/schedule-monitor/pdf', async (req, res, next) => {
+  try {
+    const data = await projectFinance.prepareScheduleMonitorPdf({ role: req.user.role });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'inline; filename=schedule-monitor.pdf');
+    projectFinance.renderScheduleMonitorPdf(data, res);
+  } catch (e) { next(e); }
+});
+
 // Phase 46: platform finance control audit register (expert-only) + export + pdf
 router.get('/projects/ops/finance-audit', async (req, res, next) => {
   try {

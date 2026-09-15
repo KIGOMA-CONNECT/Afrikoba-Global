@@ -5984,6 +5984,218 @@ function renderEvidencePackPdf(v, stream) {
 }
 
 // ============================================================================
+// PHASE 50 — PLATFORM SCHEDULE & DUE-DATE MONITORING REGISTER (EXPERT-ONLY)
+// ============================================================================
+
+const DAY_MS = 86400000;
+
+async function getScheduleMonitor({ role }) {
+  if (!isExpert(role)) {
+    throw new ValidityError('Huna ruhusa ya rejesta ya ratiba/kufuatilia (expert only).', 403);
+  }
+  const now = Date.now();
+  const daysSince = (ts) => Math.floor((now - new Date(ts).getTime()) / DAY_MS);
+
+  const activeRes = await pool.query(
+    `SELECT p.id, p.name, p.status, p.created_at, p.currency_code,
+            COALESCE((SELECT remaining_balance FROM controlled_project_accounts WHERE project_id = p.id), 0)::numeric AS escrow,
+            COALESCE((SELECT SUM(amount) FROM project_disbursements WHERE project_id = p.id AND status = 'RELEASED'), 0)::numeric AS disbursed
+     FROM projects p
+     WHERE p.status IN ('PUBLISHED','FUNDING','APPROVED','ACTIVE')
+     ORDER BY p.id`
+  );
+  const msRes = await pool.query(
+    `SELECT m.id, m.project_id, m.name, m.phase, m.status, m.budget, p.name AS project_name, p.created_at AS project_created
+     FROM project_milestones m JOIN projects p ON p.id = m.project_id
+     WHERE m.status <> 'COMPLETED' ORDER BY m.project_id, m.id`
+  );
+  const deadlineRes = await pool.query(
+    `SELECT id, name, status, funding_deadline FROM projects
+     WHERE funding_deadline IS NOT NULL ORDER BY funding_deadline`
+  );
+  const payoutRes = await pool.query(
+    `SELECT pa.project_id, p.name AS project_name, pa.investor_user_id, u.full_name, pa.entitlement, pa.status, pa.created_at
+     FROM project_investor_payouts pa JOIN projects p ON p.id = pa.project_id JOIN users u ON u.id = pa.investor_user_id
+     WHERE pa.status = 'PENDING' ORDER BY pa.created_at`
+  );
+  const ddRes = await pool.query(
+    `SELECT d.project_id, p.name AS project_name, d.sequence, d.amount, d.status, d.requested_at, d.released_at
+     FROM project_drawdowns d JOIN projects p ON p.id = d.project_id
+     WHERE d.status IN ('REQUESTED','SCHEDULED') ORDER BY d.project_id, d.sequence`
+  );
+  const relRes = await pool.query(
+    `SELECT rr.project_id, p.name AS project_name, rr.reserve_type, rr.amount, rr.status, rr.reference, rr.created_at
+     FROM project_reserve_releases rr JOIN projects p ON p.id = rr.project_id
+     WHERE rr.status <> 'RELEASED' ORDER BY rr.project_id, rr.reserve_type`
+  );
+  const items = [];
+  activeRes.rows.forEach((p) => {
+    const pending = msRes.rows.filter((m) => m.project_id === p.id).length;
+    items.push({
+      kind: 'ACTIVE_PROJECT', project_id: p.id, project_name: p.name, status: p.status,
+      milestones_pending: pending,
+      escrow_held: round2(Number(p.escrow || 0)),
+      disbursed_to_owner: round2(Number(p.disbursed || 0)),
+      days_since_created: daysSince(p.created_at),
+      currency: p.currency_code || 'TZS',
+    });
+  });
+  msRes.rows.forEach((m) => {
+    const target = m.status === 'NOT_STARTED' ? 'delivery not started' : (m.status === 'IN_PROGRESS' ? 'awaiting evidence & expert review' : m.status);
+    items.push({
+      kind: 'MILESTONE_DUE', project_id: m.project_id, project_name: m.project_name,
+      milestone_id: m.id, milestone_name: m.name, phase: m.phase, status: m.status,
+      budget: round2(Number(m.budget || 0)), target,
+      days_since_project_created: daysSince(m.project_created),
+      overdue: daysSince(m.project_created) > 30,
+    });
+  });
+  deadlineRes.rows.forEach((p) => {
+    if (!p.funding_deadline) return;
+    const dl = new Date(p.funding_deadline).getTime();
+    const days_left = Math.ceil((dl - now) / DAY_MS);
+    items.push({
+      kind: 'FUNDING_DEADLINE', project_id: p.id, project_name: p.name, status: p.status,
+      deadline: p.funding_deadline, days_left, overdue: days_left < 0, upcoming: days_left >= 0 && days_left <= 7,
+    });
+  });
+  payoutRes.rows.forEach((x) => {
+    items.push({
+      kind: 'DIVIDEND_PENDING', project_id: x.project_id, project_name: x.project_name,
+      investor: x.full_name, amount: round2(Number(x.entitlement || 0)), status: x.status, created_at: x.created_at,
+    });
+  });
+  ddRes.rows.forEach((x) => {
+    items.push({
+      kind: 'DRAWDOWN_PENDING', project_id: x.project_id, project_name: x.project_name,
+      sequence: x.sequence, amount: round2(Number(x.amount || 0)), status: x.status,
+      requested_at: x.requested_at, released_at: x.released_at,
+    });
+  });
+  relRes.rows.forEach((x) => {
+    items.push({
+      kind: 'RELEASE_OUTSTANDING', project_id: x.project_id, project_name: x.project_name,
+      reserve_type: x.reserve_type, amount: round2(Number(x.amount || 0)),
+      status: x.status, reference: x.reference, created_at: x.created_at,
+    });
+  });
+
+  const summary = {
+    active_projects: activeRes.rows.length,
+    milestones_due: msRes.rows.length,
+    funding_deadlines: deadlineRes.rows.length,
+    dividends_pending: payoutRes.rows.length,
+    drawdowns_pending: ddRes.rows.length,
+    releases_outstanding: relRes.rows.length,
+    overdue: items.filter((x) => x.overdue).length,
+    upcoming_deadlines: items.filter((x) => x.upcoming).length,
+    total_items: items.length,
+  };
+
+  return {
+    success: true,
+    reference: `SCHED-${Date.now()}`,
+    generated_at: new Date().toISOString(),
+    summary,
+    items,
+  };
+}
+
+async function exportScheduleMonitorCsv({ role }) {
+  const r = await getScheduleMonitor({ role });
+  const esc = (v) => { const s = v === null || v === undefined ? '' : String(v); return `"${s.replace(/"/g, '""')}"`; };
+  const L = [];
+  L.push(`Reference,${esc(r.reference)}`);
+  L.push(`Generated at,${esc(r.generated_at)}`);
+  L.push(`Active projects,${r.summary.active_projects}`);
+  L.push(`Milestones due,${r.summary.milestones_due}`);
+  L.push(`Funding deadlines,${r.summary.funding_deadlines}`);
+  L.push(`Dividends pending,${r.summary.dividends_pending}`);
+  L.push(`Drawdowns pending,${r.summary.drawdowns_pending}`);
+  L.push(`Releases outstanding,${r.summary.releases_outstanding}`);
+  L.push(`Overdue,${r.summary.overdue}`);
+  L.push(`Upcoming deadlines,${r.summary.upcoming_deadlines}`);
+  L.push('');
+  L.push('kind,project_id,project_name,status,milestone_id,milestone_name,phase,budget/total,days_left,due_status');
+  for (const x of r.items) {
+    const detail = x.kind === 'ACTIVE_PROJECT'
+      ? `${x.milestones_pending} ms pending · escrow ${x.escrow_held} · disbursed ${x.disbursed_to_owner}`
+      : (x.kind === 'MILESTONE_DUE'
+        ? `${x.target} · budget ${x.budget}`
+        : (x.kind === 'FUNDING_DEADLINE'
+          ? `${x.deadline} · days left ${x.days_left}`
+          : (x.kind === 'DIVIDEND_PENDING'
+            ? `${x.investor} · ${x.amount}`
+            : (x.kind === 'DRAWDOWN_PENDING'
+              ? `seq${x.sequence} · ${x.amount} · req ${x.requested_at || ''}`
+              : `${x.reserve_type} · ${x.amount} · ref ${x.reference || ''}`))));
+    const status = x.overdue ? 'OVERDUE' : (x.upcoming ? 'UPCOMING' : (x.status || ''));
+    L.push([esc(x.kind), x.project_id, esc(x.project_name), esc(status),
+            x.milestone_id || '', esc(x.milestone_name || ''), esc(x.phase || ''),
+            x.amount || x.budget || x.disbursed_to_owner || esc(x.days_left), esc(detail)].join(','));
+  }
+  return L.join('\n');
+}
+
+async function prepareScheduleMonitorPdf({ role }) {
+  return getScheduleMonitor({ role });
+}
+
+function renderScheduleMonitorPdf(v, stream) {
+  const doc = new PDFDocument({ size: 'A4', margin: 40 });
+  doc.pipe(stream);
+  const G = '#0B5D1E';
+  const m = (n) => `${formatMoney(n)} TZS`;
+  const ensure = () => { if (doc.y > 760) doc.addPage(); };
+
+  doc.fontSize(17).fillColor(G).text('AFRIKOBA GLOBAL', { align: 'center' });
+  doc.fontSize(11).fillColor('#333').text('REJESTA YA RATIBA & KUFUATILIA / SCHEDULE & DUE-DATE MONITOR', { align: 'center' });
+  doc.fontSize(8).fillColor('#888').text(`Ref: ${v.reference}  ·  Imetolewa: ${new Date(v.generated_at).toISOString()}`, { align: 'center' });
+  doc.moveDown(0.5);
+  vline(doc, doc.y + 4);
+
+  doc.fontSize(10).fillColor(G).text('Muhtasari / Summary');
+  vline(doc, doc.y + 2);
+  voucherField(doc, 'Miradi inayoendelea / Active projects', String(v.summary.active_projects));
+  voucherField(doc, 'Milestones zinazosubiri / Milestones due', String(v.summary.milestones_due));
+  voucherField(doc, 'Muda wa funding / Funding deadlines', String(v.summary.funding_deadlines));
+  voucherField(doc, 'Dividends zinazosubiri / Dividends pending', String(v.summary.dividends_pending));
+  voucherField(doc, 'Drawdowns zinazosubiri / Drawdowns pending', String(v.summary.drawdowns_pending));
+  voucherField(doc, 'Reserve zisizotolewa / Releases outstanding', String(v.summary.releases_outstanding));
+  voucherField(doc, 'Zilizochelewa / Overdue', String(v.summary.overdue));
+  voucherField(doc, 'Deadlines zinazokaribia / Upcoming', String(v.summary.upcoming_deadlines));
+  doc.moveDown(0.3);
+
+  doc.fontSize(10).fillColor(G).text(`Vitu / Items (${v.items.length})`);
+  vline(doc, doc.y + 2);
+  const groups = {};
+  for (const x of v.items) {
+    ensure();
+    groups[x.kind] = (groups[x.kind] || 0) + 1;
+    const tag = x.overdue ? 'OVERDUE' : (x.upcoming ? 'UPCOMING' : '');
+    let line = `[${x.kind}]  ${x.project_name}  (${x.project_id})  ·  ${x.status || ''}${tag ? '  ·  ' + tag : ''}`;
+    if (x.kind === 'MILESTONE_DUE') line += `\n   ${x.milestone_name}  ·  ${x.phase || '—'}  ·  ${x.status}  ·  ${m(x.budget)}  ·  ${x.target}`;
+    if (x.kind === 'FUNDING_DEADLINE') line += `\n   deadline ${x.deadline}  ·  days left ${x.days_left}`;
+    if (x.kind === 'ACTIVE_PROJECT') line += `\n   milestones pending ${x.milestones_pending}  ·  escrow ${m(x.escrow_held)}  ·  disbursed ${m(x.disbursed_to_owner)}`;
+    if (x.kind === 'DIVIDEND_PENDING') line += `\n   ${x.investor}  ·  ${m(x.amount)}`;
+    if (x.kind === 'DRAWDOWN_PENDING') line += `\n   seq${x.sequence}  ·  ${m(x.amount)}  ·  req ${x.requested_at || '—'}`;
+    if (x.kind === 'RELEASE_OUTSTANDING') line += `\n   ${x.reserve_type}  ·  ${m(x.amount)}  ·  ref ${x.reference || '—'}`;
+    doc.fontSize(8).fillColor(x.overdue ? '#aa0000' : '#111').text(line);
+  }
+
+  ensure();
+  doc.moveDown(0.5);
+  vline(doc, doc.y + 4);
+  doc.moveDown(0.8);
+  doc.fontSize(8).fillColor('#888').text('Mkaguzi Mkuu (Reviewer)', { align: 'center', width: 200, lineBreak: false });
+  doc.moveDown(1.6);
+  doc.moveTo(120, doc.y).lineTo(320, doc.y).stroke('#aaa');
+  doc.fontSize(8).fillColor('#888').text('Mkaguzi Mkuu (Reviewer)', { align: 'center', width: 200, lineBreak: false });
+  doc.end();
+  return doc;
+}
+
+// ============================================================================
 // PHASE 37 — PLATFORM WATERFALL DISTRIBUTION SUMMARY (EXPERT-ONLY)
 // ============================================================================
 
@@ -7985,6 +8197,10 @@ module.exports = {
   getEvidencePack,
   prepareEvidencePackPdf,
   renderEvidencePackPdf,
+  getScheduleMonitor,
+  exportScheduleMonitorCsv,
+  prepareScheduleMonitorPdf,
+  renderScheduleMonitorPdf,
   getTaxRegister,
   exportTaxRegisterCsv,
   renderTaxRegisterPdf,

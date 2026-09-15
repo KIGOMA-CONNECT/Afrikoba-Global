@@ -1371,6 +1371,8 @@ export default function Projects() {
             {OPS_ROLES.includes(role) && <DocBtn label={t('projects.finance_audit_pdf')} chip="PDF" onClick={() => downloadDocumentPdf('/api/projects/ops/finance-audit/pdf', 'finance-audit.pdf')} />}
             {OPS_ROLES.includes(role) && <DocBtn label={t('projects.pfe_certificate_csv')} chip="CSV" onClick={() => downloadFinanceCsv('/api/projects/ops/pfe-certificate/export', 'pfe-certificate.csv')} />}
             {OPS_ROLES.includes(role) && <DocBtn label={t('projects.pfe_certificate_pdf')} chip="PDF" onClick={() => downloadDocumentPdf('/api/projects/ops/pfe-certificate/pdf', 'pfe-certificate.pdf')} />}
+            {OPS_ROLES.includes(role) && <DocBtn label={t('projects.schedule_monitor_csv')} chip="CSV" onClick={() => downloadFinanceCsv('/api/projects/ops/schedule-monitor/export', 'schedule-monitor.csv')} />}
+            {OPS_ROLES.includes(role) && <DocBtn label={t('projects.schedule_monitor_pdf')} chip="PDF" onClick={() => downloadDocumentPdf('/api/projects/ops/schedule-monitor/pdf', 'schedule-monitor.pdf')} />}
           </div>
         </div>
         {opsBook ? (
