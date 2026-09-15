@@ -641,6 +641,42 @@ router.get('/projects/ops/pfe-book/export', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// Phase 21: audit-grade platform ops book PDF (expert)
+router.get('/projects/ops/pfe-book/pdf', async (req, res, next) => {
+  try {
+    const data = await projectFinance.prepareOpsBookPdf({ userId: req.user.id, role: req.user.role });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'inline; filename=platform-pfe-book.pdf');
+    projectFinance.renderOpsBookPdf(data, res);
+  } catch (e) { next(e); }
+});
+
+// Phase 21: per-project waterfall execution ledger (JSON / CSV / PDF) - owner/expert
+router.get('/projects/:id/waterfall-ledger', async (req, res, next) => {
+  try {
+    const ledger = await projectFinance.getWaterfallLedger(parseInt(req.params.id, 10), { userId: req.user.id, role: req.user.role });
+    return res.json(ledger);
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/:id/waterfall-ledger/export', async (req, res, next) => {
+  try {
+    const csv = await projectFinance.exportWaterfallLedgerCsv(parseInt(req.params.id, 10), { userId: req.user.id, role: req.user.role });
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename=waterfall-ledger.csv');
+    return res.send(csv);
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/:id/waterfall-ledger/pdf', async (req, res, next) => {
+  try {
+    const data = await projectFinance.prepareWaterfallLedgerPdf(parseInt(req.params.id, 10), { userId: req.user.id, role: req.user.role });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'inline; filename=waterfall-ledger.pdf');
+    projectFinance.renderWaterfallLedgerPdf(data, res);
+  } catch (e) { next(e); }
+});
+
 // Phase 17: admin force-close stuck funding + per-investor dividend statement
 router.post('/projects/:id/funding/force-close', async (req, res, next) => {
   try {

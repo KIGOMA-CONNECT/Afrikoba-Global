@@ -3551,6 +3551,211 @@ function renderCloseOutReportPdf(v, stream) {
   return doc;
 }
 
+// ============================================================================
+// PHASE 21 — PLATFORM OPS BOOK PDF + WATERFALL EXECUTION LEDGER
+// ============================================================================
+
+async function prepareOpsBookPdf({ userId, role }) {
+  const r = await getPlatformPfeBook({ userId, role });
+  return {
+    generated_at: r.generated_at,
+    currency: 'TZS',
+    totals: r.totals,
+    platform_variance: r.platform_variance,
+    by_status: r.by_status,
+    waterfall: r.waterfall,
+    projects: r.projects,
+    flags: r.flags,
+    counts: r.counts,
+  };
+}
+
+function renderOpsBookPdf(v, stream) {
+  const doc = new PDFDocument({ size: 'A4', margin: 40 });
+  doc.pipe(stream);
+  const G = '#0B5D1E';
+  const m = (n) => `${formatMoney(n)} ${v.currency}`;
+  const ensure = () => { if (doc.y > 760) doc.addPage(); };
+
+  doc.fontSize(17).fillColor(G).text('AFRIKOBA GLOBAL', { align: 'center' });
+  doc.fontSize(11).fillColor('#333').text('DAFTARI LA UENDESHAJI WA FEDHA ZA MIRADI (Platform PFE Ops Book)', { align: 'center' });
+  doc.fontSize(8).fillColor('#888').text(`Imetolewa: ${new Date(v.generated_at).toISOString()}  ·  Sarafu: ${v.currency}`, { align: 'center' });
+  doc.moveDown(0.5);
+  vline(doc, doc.y + 4);
+
+  doc.fontSize(10).fillColor(G).text('Hali ya Uadilifu wa Mfumo / Platform Integrity');
+  vline(doc, doc.y + 2);
+  voucherField(doc, 'Tofauti ya uadilifu / Platform variance', m(v.platform_variance));
+  voucherField(doc, 'Alama za uadilifu / Integrity flags', String((v.flags || []).length));
+  voucherField(doc, 'Miradi / Projects', `${v.counts.projects}  (wazi ${v.counts.open} · zilizofilisiwa ${v.counts.liquidated})`);
+  if (v.flags.length) {
+    doc.fontSize(8).fillColor('#dc2626').text(`Flags: ${v.flags.map((f) => `${f.name} (${m(f.variance)})`).join(' · ')}`);
+  }
+  doc.moveDown(0.3);
+
+  doc.fontSize(10).fillColor(G).text('Jumla / Platform Totals');
+  vline(doc, doc.y + 2);
+  const t = v.totals;
+  [
+    ['Fedha zilizowekezwa / Invested confirmed', t.invested],
+    ['Kurudishiwa / Refunded', t.refunded],
+    ['Escrow inayoshikiliwa / Escrow held', t.escrow_held],
+    ['Malipo kwa wamiliki / Disbursed to owners', t.disbursed],
+    ['Hifadhi released / Reserve released', t.reserve_released],
+    ['Baki released / Residual released', t.residual_released],
+    ['Escrow iliyorudishwa / Escrow returned', t.escrow_returned],
+    ['Dividendi zilizolipwa / Dividends paid', t.dividends_paid],
+    ['Dividendi zinazosubiri / Dividends pending', t.dividends_pending],
+    ['Mapato / Revenue total', t.revenue_total],
+    ['Mtandao wa ufilisi / Liquidation investor net', t.liquidation_investor_net],
+  ].forEach(([label, val]) => voucherField(doc, label, m(val || 0)));
+  doc.moveDown(0.3);
+
+  if (v.by_status.length) {
+    doc.fontSize(10).fillColor(G).text('Miradi Kwa Hali / Projects By Status');
+    vline(doc, doc.y + 2);
+    v.by_status.forEach((s) => voucherField(doc, s.status, `${s.projects}  ·  ${m(s.invested || 0)}`));
+    doc.moveDown(0.3);
+  }
+
+  if (v.waterfall.length) {
+    doc.fontSize(10).fillColor(G).text('Waterfall Executions');
+    vline(doc, doc.y + 2);
+    v.waterfall.forEach((w) => voucherField(doc, w.step, `${w.runs}×  ${m(w.total)}`));
+    doc.moveDown(0.3);
+  }
+
+  doc.fontSize(10).fillColor(G).text('Miradi / Per-Project Ledger');
+  vline(doc, doc.y + 2);
+  doc.fontSize(8).fillColor('#444').text('#  Jina  ·  Hali  ·  Mwenye  ·  Invest  ·  Escrow  ·  Disb  ·  Div  ·  Var', { continued: false });
+  for (const p of v.projects) {
+    ensure();
+    doc.fontSize(7.5).fillColor(p.integrity_ok ? '#111' : '#dc2626')
+      .text(`${p.project_id}  ${p.name}`.slice(0, 42) + `  ·  ${p.status}  ·  ${p.owner.full_name || p.owner.phone_number}`.slice(0, 30)
+        + `  ·  ${m(p.invested)}  ${m(p.escrow_held)}  ${m(p.disbursed)}  ${m(p.dividends_paid)}  ${m(p.integrity_variance)}`);
+  }
+
+  ensure();
+  doc.moveDown(0.5);
+  vline(doc, doc.y + 4);
+  doc.moveDown(0.8);
+  doc.fontSize(8).fillColor('#888').text('Mkaguzi Mkuu (Reviewer)', { align: 'center', width: 200, lineBreak: false });
+  doc.moveDown(1.6);
+  doc.moveTo(120, doc.y).lineTo(320, doc.y).stroke('#aaa');
+  doc.fontSize(8).fillColor('#888').text('Mkaguzi Mkuu (Reviewer)', { align: 'center', width: 200, lineBreak: false });
+  doc.end();
+  return doc;
+}
+
+async function getWaterfallLedger(projectId, { userId, role }) {
+  const p = await getProject(projectId);
+  const isOwner = p.owner_user_id === userId;
+  if (!isOwner && !isExpert(role)) {
+    throw new ValidityError('Huna ruhusa ya kumbukumbu za utekelezaji wa waterfall wa mradi huu.', 403);
+  }
+  const rec = await pool.query(
+    `SELECT w.* FROM waterfall_allocation_records w
+     WHERE w.project_id = $1 ORDER BY w.id`, [projectId]
+  );
+  const summary = await pool.query(
+    `SELECT allocation_step, COUNT(*)::int AS runs, SUM(amount)::numeric AS total, SUM(percentage) AS avg_pct
+     FROM waterfall_allocation_records WHERE project_id = $1
+     GROUP BY allocation_step ORDER BY MIN(id)`, [projectId]
+  );
+  return {
+    success: true,
+    project: { id: p.id, name: p.name, status: p.status },
+    generated_at: new Date().toISOString(),
+    summary: summary.rows.map((r) => ({ step: r.allocation_step, runs: r.runs, total: round2(Number(r.total || 0)) })),
+    records: rec.rows.map((r) => ({
+      id: r.id,
+      rule_version: r.rule_version,
+      step: r.allocation_step,
+      priority: r.priority,
+      revenue_reference: r.revenue_reference,
+      source_account_code: r.source_account_code,
+      destination_account_code: r.destination_account_code,
+      calculation_basis: r.calculation_basis,
+      percentage: r.percentage,
+      amount: round2(Number(r.amount || 0)),
+      currency: r.currency || 'TZS',
+      ledger_group_id: r.ledger_group_id,
+      reconciliation_status: r.reconciliation_status,
+      created_at: r.created_at,
+    })),
+  };
+}
+
+async function exportWaterfallLedgerCsv(projectId, { userId, role }) {
+  const r = await getWaterfallLedger(projectId, { userId, role });
+  const esc = (v) => {
+    const s = v === null || v === undefined ? '' : String(v);
+    return `"${s.replace(/"/g, '""')}"`;
+  };
+  const L = [];
+  L.push(`Project,${esc(r.project.name)} (${r.project.id})`);
+  L.push(`Status,${r.project.status}`);
+  L.push(`Generated at,${esc(r.generated_at)}`);
+  L.push('');
+  L.push('Step,Total');
+  r.summary.forEach((s) => L.push(`${esc(s.step)},${s.total}`));
+  L.push('');
+  L.push('id,created_at,step,priority,pct,amount,currency,revenue_reference,source_account,destination_account,rule_version,ledger_group_id,status');
+  for (const x of r.records) {
+    L.push([x.id, esc(x.created_at), esc(x.step), x.priority, x.percentage, x.amount, esc(x.currency),
+            esc(x.revenue_reference), esc(x.source_account_code), esc(x.destination_account_code),
+            x.rule_version, x.ledger_group_id, esc(x.reconciliation_status)].join(','));
+  }
+  return L.join('\n');
+}
+
+async function prepareWaterfallLedgerPdf(projectId, { userId, role }) {
+  const r = await getWaterfallLedger(projectId, { userId, role });
+  return { ...r, currency: r.records.length ? (r.records[0].currency || 'TZS') : 'TZS' };
+}
+
+function renderWaterfallLedgerPdf(v, stream) {
+  const doc = new PDFDocument({ size: 'A4', margin: 40 });
+  doc.pipe(stream);
+  const G = '#0B5D1E';
+  const m = (n) => `${formatMoney(n)} ${v.currency}`;
+  const ensure = () => { if (doc.y > 760) doc.addPage(); };
+
+  doc.fontSize(17).fillColor(G).text('AFRIKOBA GLOBAL', { align: 'center' });
+  doc.fontSize(11).fillColor('#333').text('KUMBUKUMBU ZA UTEKELEZAJI WA WATERFALL (Waterfall Execution Ledger)', { align: 'center' });
+  doc.fontSize(8).fillColor('#888').text(`${v.project.name}  (${v.project.id})  ·  ${v.project.status}  ·  Imetolewa: ${new Date(v.generated_at).toISOString()}`, { align: 'center' });
+  doc.moveDown(0.5);
+  vline(doc, doc.y + 4);
+
+  if (v.summary.length) {
+    doc.fontSize(10).fillColor(G).text('Muhtasari / Summary');
+    vline(doc, doc.y + 2);
+    v.summary.forEach((s) => voucherField(doc, s.step, `${s.runs}×  ${m(s.total)}`));
+    doc.moveDown(0.3);
+  }
+
+  doc.fontSize(10).fillColor(G).text(`Rekodi / Records (${v.records.length})`);
+  vline(doc, doc.y + 2);
+  for (const x of v.records) {
+    ensure();
+    doc.fontSize(8).fillColor('#111').text(
+      `#${x.id}  ·  ${x.step}  ·  ${x.priority}  ·  ${x.percentage}%  ·  ${m(x.amount)}`);
+    doc.fontSize(7).fillColor('#555').text(
+      `   ref ${x.revenue_reference || '—'}  ·  ${x.source_account_code} → ${x.destination_account_code}  ·  rule v${x.rule_version || '—'}  ·  leg ${x.ledger_group_id || '—'}  ·  ${x.reconciliation_status}  ·  ${new Date(x.created_at).toISOString()}`, { lineBreak: true });
+  }
+
+  ensure();
+  doc.moveDown(0.5);
+  vline(doc, doc.y + 4);
+  doc.moveDown(0.8);
+  doc.fontSize(8).fillColor('#888').text('Mkaguzi Mkuu (Reviewer)', { align: 'center', width: 200, lineBreak: false });
+  doc.moveDown(1.6);
+  doc.moveTo(120, doc.y).lineTo(320, doc.y).stroke('#aaa');
+  doc.fontSize(8).fillColor('#888').text('Mkaguzi Mkuu (Reviewer)', { align: 'center', width: 200, lineBreak: false });
+  doc.end();
+  return doc;
+}
+
 module.exports = {
   ACCOUNTS,
   WATERFALL_STEPS,
@@ -3622,4 +3827,10 @@ module.exports = {
   renderLiquidationReportPdf,
   prepareCloseOutPdf,
   renderCloseOutReportPdf,
+  getWaterfallLedger,
+  exportWaterfallLedgerCsv,
+  prepareWaterfallLedgerPdf,
+  renderWaterfallLedgerPdf,
+  prepareOpsBookPdf,
+  renderOpsBookPdf,
 };

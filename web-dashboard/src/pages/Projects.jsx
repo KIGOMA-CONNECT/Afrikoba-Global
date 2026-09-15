@@ -488,6 +488,21 @@ export default function Projects() {
       .catch(() => ok(t('projects.error')));
   };
 
+  const downloadWaterfallCsv = (id) => {
+    const token = localStorage.getItem('afrikoba_token');
+    fetch(`/api/projects/${id}/waterfall-ledger/export`, { headers: { Authorization: `Bearer ${token}` } })
+      .then((res) => (res.ok ? res.blob() : Promise.reject()))
+      .then((blob) => {
+        const u = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = u;
+        a.download = `project-${id}-waterfall-ledger.csv`;
+        a.click();
+        URL.revokeObjectURL(u);
+      })
+      .catch(() => ok(t('projects.error')));
+  };
+
   const forceClose = async (id, action) => {
     const label = action === 'ACTIVATE' ? t('projects.force_close_activate') : t('projects.force_close_refund');
     if (!window.confirm(t('projects.force_close_confirm') + label + '?')) return;
@@ -861,6 +876,12 @@ export default function Projects() {
                     <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadReportCsv(statement.project.id, 'liquidation', `project-${statement.project.id}-liquidation.csv`)}>{t('projects.liquidation_csv')}</button>
                     {statement.project.status === 'LIQUIDATED' && (
                       <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadDocumentPdf(`/api/projects/${statement.project.id}/liquidation/pdf`, `project-${statement.project.id}-liquidation.pdf`)}>{t('projects.liquidation_pdf')}</button>
+                    )}
+                    {(['ADMIN', 'MODERATOR', 'EXPERT'].includes(role) || Number((JSON.parse(localStorage.getItem('afrikoba_user') || '{}').id || 0)) === Number(statement.project.owner_user_id)) && (
+                      <>
+                        <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadWaterfallCsv(statement.project.id)}>{t('projects.waterfall_csv')}</button>
+                        <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadDocumentPdf(`/api/projects/${statement.project.id}/waterfall-ledger/pdf`, `project-${statement.project.id}-waterfall-ledger.pdf`)}>{t('projects.waterfall_pdf')}</button>
+                      </>
                     )}
                   </>
                 )}
@@ -1249,6 +1270,7 @@ export default function Projects() {
           <span className="badge info">{t('projects.ops_liquidated')}: {opsBook ? opsBook.counts.liquidated : 0}</span>
           <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={loadOpsBook}>{t('projects.refresh')}</button>
           {opsBook && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={downloadOpsCsv}>{t('projects.ops_csv')}</button>}
+          {opsBook && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadDocumentPdf('/api/projects/ops/pfe-book/pdf', 'platform-pfe-book.pdf')}>{t('projects.ops_pdf')}</button>}
         </div>
         {opsBook ? (
           <>
