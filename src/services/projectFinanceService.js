@@ -1860,7 +1860,7 @@ async function getProjectStatement(projectId, { userId, role }) {
     [projectId]
   );
   const consultation = await pool.query(
-    `SELECT id, amount, status, payment_reference FROM project_consultation_fees WHERE project_id = $1 ORDER BY id DESC LIMIT 1`,
+    `SELECT id, amount, status, unique_reference AS payment_reference FROM project_consultations WHERE project_id = $1 ORDER BY id DESC LIMIT 1`,
     [projectId]
   );
   const investors = await pool.query(
