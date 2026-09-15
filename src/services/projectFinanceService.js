@@ -4341,6 +4341,180 @@ function renderRevenueRegisterPdf(v, stream) {
 }
 
 // ============================================================================
+// PHASE 42 — PLATFORM INVESTOR KYC & COMPLIANCE REGISTER (EXPERT-ONLY)
+// ============================================================================
+
+async function getKycComplianceRegister({ role }) {
+  if (!isExpert(role)) {
+    throw new ValidityError('Huna ruhusa ya rejesta ya uzingatiaji wa wawekezaji (expert only).', 403);
+  }
+  const inv = await pool.query(
+    `SELECT i.investor_user_id, u.phone_number, u.full_name, u.role, u.kyc_level, u.nida_number,
+            u.id_document_url, u.residential_address, u.trust_score, u.is_active, u.created_at AS joined_at
+     FROM project_investments i
+     JOIN users u ON u.id = i.investor_user_id
+     GROUP BY i.investor_user_id, u.phone_number, u.full_name, u.role, u.kyc_level, u.nida_number,
+              u.id_document_url, u.residential_address, u.trust_score, u.is_active, u.created_at
+     ORDER BY i.investor_user_id`
+  );
+  const invs = await pool.query(
+    `SELECT i.*, p.name AS project_name, p.status AS project_status
+     FROM project_investments i
+     JOIN projects p ON p.id = i.project_id
+     ORDER BY i.amount DESC, i.id`
+  );
+  const payouts = await pool.query(
+    `SELECT investor_user_id, COALESCE(SUM(entitlement), 0) AS total
+     FROM project_investor_payouts WHERE status = 'PAID' GROUP BY investor_user_id`
+  );
+  const payByUser = {};
+  payouts.rows.forEach((x) => { payByUser[x.investor_user_id] = round2(Number(x.total)); });
+  const invByUser = {};
+  invs.rows.forEach((x) => {
+    if (!invByUser[x.investor_user_id]) invByUser[x.investor_user_id] = [];
+    invByUser[x.investor_user_id].push({
+      id: x.id,
+      project: { id: x.project_id, name: x.project_name, status: x.project_status },
+      amount: round2(Number(x.amount || 0)),
+      participation_pct: Number(x.participation_pct || 0),
+      status: x.status,
+      agreement_version: x.agreement_version,
+      unique_reference: x.unique_reference,
+      refund_reference: x.refund_reference,
+      refunded_at: x.refunded_at,
+      created_at: x.created_at,
+    });
+  });
+
+  const investors = inv.rows.map((x) => {
+    const list = invByUser[x.investor_user_id] || [];
+    const invested = round2(list.reduce((s, y) => s + y.amount, 0));
+    const active = round2(list.filter((y) => y.status !== 'REFUNDED').reduce((s, y) => s + y.amount, 0));
+    const refunded = round2(list.filter((y) => y.status === 'REFUNDED').reduce((s, y) => s + y.amount, 0));
+    return {
+      id: x.investor_user_id,
+      name: x.full_name,
+      phone_number: x.phone_number,
+      role: x.role,
+      kyc: {
+        level: x.kyc_level,
+        verified: Number(x.kyc_level || 0) >= 2,
+        nida: x.nida_number || null,
+        missing_nida: !x.nida_number,
+        id_document: x.id_document_url || null,
+        missing_document: !x.id_document_url,
+        residential_address: x.residential_address || null,
+      },
+      trust_score: x.trust_score,
+      is_active: x.is_active,
+      joined_at: x.joined_at,
+      exposure: { invested, active, refunded },
+      dividends_received: payByUser[x.investor_user_id] || 0,
+      projects: new Set(list.map((y) => y.project.id)).size,
+      investments: list,
+    };
+  });
+  const totalInvested = round2(investors.reduce((s, x) => s + x.exposure.invested, 0));
+  const totalActive = round2(investors.reduce((s, x) => s + x.exposure.active, 0));
+  const totalRefunded = round2(investors.reduce((s, x) => s + x.exposure.refunded, 0));
+  const totalDividends = round2(investors.reduce((s, x) => s + x.dividends_received, 0));
+  return {
+    success: true,
+    generated_at: new Date().toISOString(),
+    summary: {
+      investors: investors.length,
+      total_invested: totalInvested,
+      active_invested: totalActive,
+      refunded: totalRefunded,
+      dividends_paid: totalDividends,
+      kyc_verified: investors.filter((x) => x.kyc.verified).length,
+      missing_nida: investors.filter((x) => x.kyc.missing_nida).length,
+      missing_documents: investors.filter((x) => x.kyc.missing_document).length,
+    },
+    investors,
+  };
+}
+
+async function exportKycComplianceRegisterCsv({ role }) {
+  const r = await getKycComplianceRegister({ role });
+  const esc = (v) => { const s = v === null || v === undefined ? '' : String(v); return `"${s.replace(/"/g, '""')}"`; };
+  const L = [];
+  L.push('AFRIKOBA GLOBAL - INVESTOR KYC & COMPLIANCE REGISTER');
+  L.push(`Generated at,${esc(r.generated_at)}`);
+  L.push(`Investors,${r.summary.investors}`);
+  L.push(`Total invested,${r.summary.total_invested}`);
+  L.push(`Active invested,${r.summary.active_invested}`);
+  L.push(`Refunded,${r.summary.refunded}`);
+  L.push(`Dividends paid,${r.summary.dividends_paid}`);
+  L.push(`KYC verified,${r.summary.kyc_verified}`);
+  L.push('');
+  L.push('investor_id,name,phone,role,kyc_level,verified,nida,id_document,residential,trust_score,is_active,invested,active,refunded,dividends_received,projects');
+  for (const x of r.investors) {
+    L.push([x.id, esc(x.name), esc(x.phone_number), x.role, x.kyc.level, x.kyc.verified,
+            esc(x.kyc.nida || ''), esc(x.kyc.id_document || ''), esc(x.kyc.residential_address || ''),
+            x.trust_score, x.is_active, x.exposure.invested, x.exposure.active, x.exposure.refunded,
+            x.dividends_received, x.projects].join(','));
+  }
+  L.push('');
+  L.push('investment_id,investor_id,project_id,project_name,amount,participation_pct,status,agreement_version,unique_reference,refund_reference,created_at');
+  for (const x of r.investors) {
+    for (const y of x.investments) {
+      L.push([y.id, x.id, y.project.id, esc(y.project.name), y.amount, y.participation_pct, y.status,
+              y.agreement_version || '', esc(y.unique_reference || ''), esc(y.refund_reference || ''),
+              esc(y.created_at)].join(','));
+    }
+  }
+  return L.join('\n');
+}
+
+function renderKycComplianceRegisterPdf(v, stream) {
+  const doc = new PDFDocument({ size: 'A4', margin: 40 });
+  doc.pipe(stream);
+  const G = '#0B5D1E';
+  const m = (n) => `${formatMoney(n)} TZS`;
+  const ensure = () => { if (doc.y > 760) doc.addPage(); };
+
+  doc.fontSize(17).fillColor(G).text('AFRIKOBA GLOBAL', { align: 'center' });
+  doc.fontSize(11).fillColor('#333').text('REJESTA YA KYC & UZINGATIAJI WA WAWEKEZAJI / INVESTOR KYC & COMPLIANCE REGISTER', { align: 'center' });
+  doc.fontSize(8).fillColor('#888').text(`Imetolewa / Generated: ${new Date(v.generated_at).toISOString()}`, { align: 'center' });
+  doc.moveDown(0.3);
+  vline(doc, doc.y + 4);
+
+  doc.fontSize(10).fillColor(G).text('Muhtasari / Summary');
+  vline(doc, doc.y + 2);
+  voucherField(doc, 'Wawekezaji / Investors', String(v.summary.investors));
+  voucherField(doc, 'Jumla kuwekezwa / Total invested', m(v.summary.total_invested));
+  voucherField(doc, 'Inayofanya kazi / Active', m(v.summary.active_invested));
+  voucherField(doc, 'Imerejeshwa / Refunded', m(v.summary.refunded));
+  voucherField(doc, 'Gawio lililolipwa / Dividends paid', m(v.summary.dividends_paid));
+  voucherField(doc, 'KYC verified', String(v.summary.kyc_verified));
+  doc.moveDown(0.4);
+
+  for (const x of v.investors) {
+    ensure();
+    doc.fontSize(10).fillColor('#111').text(`#${x.id}  ${x.name}  ·  ${x.phone_number}  ·  ${x.role}`);
+    doc.fontSize(7).fillColor('#555').text(`   KYC level ${x.kyc.level} (${x.kyc.verified ? 'VERIFIED' : 'HAJATHIBITISHWA'}) · NIDA: ${x.kyc.nida || 'HAIPO'} · ID document: ${x.kyc.id_document || 'HAIPO'} · Trust ${x.trust_score} · ${x.is_active ? 'Active' : 'Inactive'}`);
+    doc.fontSize(7).fillColor('#444').text(`   Exposure: invested ${m(x.exposure.invested)} · active ${m(x.exposure.active)} · refunded ${m(x.exposure.refunded)} · dividends ${m(x.dividends_received)} · projects ${x.projects}`);
+    for (const y of x.investments) {
+      ensure();
+      doc.fontSize(7).fillColor('#666').text(`     ${y.project.name} (${y.project.id})  ${m(y.amount)}  ${y.participation_pct}%  ${y.status}  ${y.unique_reference || ''}${y.refund_reference ? `  → ${y.refund_reference}` : ''}`);
+    }
+    doc.moveDown(0.3);
+  }
+
+  ensure();
+  doc.moveDown(0.5);
+  vline(doc, doc.y + 4);
+  doc.moveDown(0.7);
+  doc.fontSize(8).fillColor('#888').text('Mkaguzi Mkuu (Reviewer)', { align: 'center' });
+  doc.moveDown(1.2);
+  doc.moveTo(210, doc.y).lineTo(420, doc.y).stroke('#aaa');
+  doc.fontSize(8).fillColor('#888').text('Mkaguzi Mkuu (Reviewer)', { align: 'center' });
+  doc.end();
+  return doc;
+}
+
+// ============================================================================
 // PHASE 41 — PLATFORM OPERATING EXPENSES REGISTER (OPEX + PAYROLL, EXPERT-ONLY)
 // ============================================================================
 
@@ -6871,6 +7045,9 @@ module.exports = {
   getOperatingExpensesRegister,
   exportOperatingExpensesRegisterCsv,
   renderOperatingExpensesRegisterPdf,
+  getKycComplianceRegister,
+  exportKycComplianceRegisterCsv,
+  renderKycComplianceRegisterPdf,
   exportPlatformProjectRegisterCsv,
   preparePlatformProjectRegisterPdf,
   renderPlatformProjectRegisterPdf,
