@@ -220,7 +220,7 @@ async function invest(userId, projectId, { amount, unique_reference, agreement_v
     );
     await client.query(
       `UPDATE projects SET amount_raised = amount_raised + $1,
-         status = CASE WHEN amount_raised >= capital_required THEN 'ACTIVE' ELSE 'FUNDING' END,
+         status = CASE WHEN amount_raised + $1 >= capital_required THEN 'ACTIVE' ELSE 'FUNDING' END,
          updated_at = NOW()
        WHERE id = $2`,
       [amt, projectId]
