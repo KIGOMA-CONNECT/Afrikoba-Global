@@ -4414,7 +4414,7 @@ async function getEscrowCertificate({ role }) {
     const rr = round2(Number(p.reserve_released || 0));
     const rs = round2(Number(p.residual_released || 0));
     const rf = round2(Number(p.refunded || 0));
-    const escrow_held = round2(c + r - d - er - dp - rr - rs - rf);
+    const escrow_held = Math.max(0, round2(c + r - d - er - dp - rr - rs - rf));
     const wallet = round2(walletMap[p.id] || 0);
     const reconciliation_diff = round2(escrow_held - (wallet - dp));
     return {
