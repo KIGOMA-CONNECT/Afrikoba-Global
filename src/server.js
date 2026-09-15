@@ -332,6 +332,7 @@ for (const prefix of versionPrefixes) {
   app.use(`${prefix}/rosca`, walletLimiter, roscaRoutes);
   app.use(`${prefix}/p2p`, financialLimiter, p2pRoutes);
   app.use(`${prefix}/admin`, adminLimiter, adminRoutes);
+  app.use(`${prefix}/ops`, adminLimiter, opsRoutes.audit);
   app.use(`${prefix}/ops`, adminLimiter, opsRoutes);
   app.use(`${prefix}/payments`, webhookLimiter, webhookReplayProtection, verifyWebhookHmac, callbackRoutes);
   app.use(`${prefix}/services`, serviceRoutes);

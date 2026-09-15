@@ -365,6 +365,26 @@ router.get('/projects/:id/settlement/pdf', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// Phase 20: audit-grade liquidation report PDF (owner/expert)
+router.get('/projects/:id/liquidation/pdf', async (req, res, next) => {
+  try {
+    const data = await projectFinance.prepareLiquidationPdf(parseInt(req.params.id, 10), { userId: req.user.id, role: req.user.role });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="liquidation-${data.reference}.pdf"`);
+    projectFinance.renderLiquidationReportPdf(data, res);
+  } catch (e) { next(e); }
+});
+
+// Phase 20: audit-grade close-out report PDF (owner/investor/expert)
+router.get('/projects/:id/close-out/pdf', async (req, res, next) => {
+  try {
+    const data = await projectFinance.prepareCloseOutPdf(parseInt(req.params.id, 10), { userId: req.user.id, role: req.user.role });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="closeout-${data.project.id}.pdf"`);
+    projectFinance.renderCloseOutReportPdf(data, res);
+  } catch (e) { next(e); }
+});
+
 router.get('/projects/mine/performance', async (req, res, next) => {
   try {
     const performance = await projectFinance.getMyPerformance(req.user.id);

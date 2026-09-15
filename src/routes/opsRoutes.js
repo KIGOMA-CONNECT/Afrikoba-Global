@@ -7,11 +7,16 @@
 const express = require('express');
 const pool = require('../config/db');
 const { authRequired, requireRoles } = require('../middleware/auth');
-const { listAudit } = require('../services/auditService');
+const { listAudit, auditRowsToCsv } = require('../services/auditService');
 const { partitionOverview } = require('../services/partitionService');
 
+// Admin-only ops dashboard & infrastructure telemetry.
 const router = express.Router();
 router.use(authRequired, requireRoles('ADMIN'));
+
+// Expert-accessible compliance audit explorer (ADMIN / MODERATOR / EXPERT).
+const audit = express.Router();
+audit.use(authRequired, requireRoles('ADMIN', 'MODERATOR', 'EXPERT'));
 
 // ===== Aggregate ops dashboard =====
 router.get('/dashboard', async (req, res, next) => {
@@ -112,15 +117,37 @@ router.get('/dashboard', async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
-// ===== Recent audit log =====
-router.get('/audit', async (req, res, next) => {
+// ===== Audit log explorer (expert-accessible) =====
+audit.get('/audit', async (req, res, next) => {
   try {
     const logs = await listAudit({
       limit: parseInt(req.query.limit, 10) || 50,
+      offset: parseInt(req.query.offset, 10) || 0,
       action: req.query.action,
       entityType: req.query.entity_type,
+      entityId: req.query.entity_id,
+      userId: req.query.user_id,
+      from: req.query.from,
+      to: req.query.to,
     });
-    res.json({ success: true, logs });
+    res.json({ success: true, logs, count: logs.length });
+  } catch (error) { next(error); }
+});
+
+audit.get('/audit/export', async (req, res, next) => {
+  try {
+    const logs = await listAudit({
+      limit: parseInt(req.query.limit, 10) || 5000,
+      action: req.query.action,
+      entityType: req.query.entity_type,
+      entityId: req.query.entity_id,
+      userId: req.query.user_id,
+      from: req.query.from,
+      to: req.query.to,
+    });
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename=audit-log.csv');
+    return res.send(auditRowsToCsv(logs));
   } catch (error) { next(error); }
 });
 
@@ -174,3 +201,4 @@ router.get('/tracing/:traceId', async (req, res, next) => {
 });
 
 module.exports = router;
+module.exports.audit = audit;

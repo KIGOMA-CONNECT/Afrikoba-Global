@@ -87,25 +87,47 @@ async function logAudit(a, b, c) {
   await writeAudit({ userId: a, action: b, entityType: null, entityId: null, meta: c ? { description: c } : null });
 }
 
-module.exports = { logAction, logAudit, writeAudit, listAudit };
+module.exports = { logAction, logAudit, writeAudit, listAudit, auditRowsToCsv };
 
 /**
- * List audit log entries (read path for the admin ops dashboard).
- * @param {object} opts { limit, action, entityType }
+ * List audit log entries (read path for the ops/compliance explorer).
+ * @param {object} opts { limit, offset, action, entityType, entityId, userId, from, to }
  */
-async function listAudit({ limit = 50, action, entityType } = {}) {
+async function listAudit({ limit = 50, offset = 0, action, entityType, entityId, userId, from, to } = {}) {
   const where = [];
   const params = [];
-  if (action) { params.push(action); where.push(`action = $${params.length}`); }
-  if (entityType) { params.push(entityType); where.push(`entity_type = $${params.length}`); }
+  const push = (v) => { params.push(v); return `$${params.length}`; };
+  if (action) { where.push(`a.action ILIKE ${push(`%${action}%`)}`); }
+  if (entityType) { where.push(`a.entity_type = ${push(entityType)}`); }
+  if (entityId !== undefined && entityId !== null && entityId !== '') { where.push(`a.entity_id::text = ${push(String(entityId))}`); }
+  if (userId !== undefined && userId !== null && userId !== '') { where.push(`a.user_id = ${push(parseInt(userId, 10))}`); }
+  if (from) { where.push(`a.created_at >= ${push(new Date(from).toISOString())}`); }
+  if (to) { where.push(`a.created_at <= ${push(new Date(to).toISOString())}`); }
   params.push(parseInt(limit, 10) || 50);
+  params.push(Math.max(0, parseInt(offset, 10) || 0));
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
   const res = await pool.query(
     `SELECT a.*, u.full_name, u.phone_number
        FROM audit_logs a LEFT JOIN users u ON u.id::text = a.user_id::text
        ${whereSql}
-      ORDER BY a.created_at DESC LIMIT $${params.length}`,
+      ORDER BY a.created_at DESC LIMIT $${params.length - 1} OFFSET $${params.length}`,
     params
   );
   return res.rows;
+}
+
+/** CSV rendering of audit rows for compliance export. */
+function auditRowsToCsv(rows) {
+  const esc = (v) => { const s = v === null || v === undefined ? '' : String(v); return `"${s.replace(/"/g, '""')}"`; };
+  const L = ['created_at,user,phone,action,entity_type,entity_id,reference_id,amount,meta'];
+  for (const r of rows) {
+    const meta = (r.meta && typeof r.meta === 'object') ? JSON.stringify(r.meta) : (r.meta || '');
+    L.push([
+      esc(r.created_at), esc(r.full_name || r.user_id || ''), esc(r.phone_number || ''),
+      esc(r.action), esc(r.entity_type || ''), esc(r.entity_id ?? ''),
+      esc((r.meta && r.meta.referenceId) || ''), esc((r.meta && r.meta.amount) || ''),
+      esc(meta),
+    ].join(','));
+  }
+  return L.join('\n');
 }

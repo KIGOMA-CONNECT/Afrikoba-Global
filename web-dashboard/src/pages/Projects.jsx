@@ -30,6 +30,9 @@ export default function Projects() {
   const [stmt, setStmt] = useState(null);
   const [msg, setMsg] = useState({ type: '', text: '' });
   const [opsBook, setOpsBook] = useState(null);
+  const [auditLogs, setAuditLogs] = useState([]);
+  const [auditAction, setAuditAction] = useState('');
+  const [auditEntityType, setAuditEntityType] = useState('');
   const [role, setRole] = useState('');
   const [expandedForm, setExpandedForm] = useState(false);
 
@@ -455,6 +458,36 @@ export default function Projects() {
       .catch(() => ok(t('projects.error')));
   };
 
+  const loadAuditLogs = async () => {
+    try {
+      const params = new URLSearchParams();
+      params.set('limit', '100');
+      if (auditAction) params.set('action', auditAction);
+      if (auditEntityType) params.set('entity_type', auditEntityType);
+      const r = await api.get(`/ops/audit?${params.toString()}`);
+      setAuditLogs(r.data.logs || []);
+    } catch (err) { error(err); }
+  };
+
+  const downloadAuditCsv = () => {
+    const token = localStorage.getItem('afrikoba_token');
+    const params = new URLSearchParams();
+    params.set('limit', '5000');
+    if (auditAction) params.set('action', auditAction);
+    if (auditEntityType) params.set('entity_type', auditEntityType);
+    fetch(`/api/ops/audit/export?${params.toString()}`, { headers: { Authorization: `Bearer ${token}` } })
+      .then((res) => (res.ok ? res.blob() : Promise.reject()))
+      .then((blob) => {
+        const u = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = u;
+        a.download = 'audit-log.csv';
+        a.click();
+        URL.revokeObjectURL(u);
+      })
+      .catch(() => ok(t('projects.error')));
+  };
+
   const forceClose = async (id, action) => {
     const label = action === 'ACTIVATE' ? t('projects.force_close_activate') : t('projects.force_close_refund');
     if (!window.confirm(t('projects.force_close_confirm') + label + '?')) return;
@@ -824,7 +857,11 @@ export default function Projects() {
                 {(statement.project.status === 'COMPLETED' || statement.project.status === 'LIQUIDATED') && (
                   <>
                     <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadReportCsv(statement.project.id, 'close-out', `project-${statement.project.id}-closeout.csv`)}>{t('projects.closeout_csv')}</button>
+                    <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadDocumentPdf(`/api/projects/${statement.project.id}/close-out/pdf`, `project-${statement.project.id}-closeout.pdf`)}>{t('projects.closeout_pdf')}</button>
                     <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadReportCsv(statement.project.id, 'liquidation', `project-${statement.project.id}-liquidation.csv`)}>{t('projects.liquidation_csv')}</button>
+                    {statement.project.status === 'LIQUIDATED' && (
+                      <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadDocumentPdf(`/api/projects/${statement.project.id}/liquidation/pdf`, `project-${statement.project.id}-liquidation.pdf`)}>{t('projects.liquidation_pdf')}</button>
+                    )}
                   </>
                 )}
               </div>
@@ -1264,6 +1301,57 @@ export default function Projects() {
         ) : (
           <p className="roles-tag">{t('projects.ops_hint')}</p>
         )}
+        <div style={{ marginTop: 24, borderTop: '1px solid #e5e7eb', paddingTop: 16 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 10 }}>
+            <h4 style={{ margin: 0 }}>{t('projects.audit_log')}</h4>
+            <span className="badge info">{auditLogs.length}</span>
+            <input value={auditAction} onChange={(e) => setAuditAction(e.target.value)} placeholder={t('projects.audit_action_ph')} style={{ flex: 1, minWidth: 160, padding: 6, borderRadius: 6, border: '1px solid #d1d5db' }} />
+            <select value={auditEntityType} onChange={(e) => setAuditEntityType(e.target.value)} style={{ padding: 6, borderRadius: 6, border: '1px solid #d1d5db' }}>
+              <option value="">{t('projects.audit_entity_all')}</option>
+              <option value="PROJECT">PROJECT</option>
+              <option value="INVESTMENT">INVESTMENT</option>
+              <option value="DISBURSEMENT">DISBURSEMENT</option>
+              <option value="SETTLEMENT">SETTLEMENT</option>
+              <option value="LIQUIDATION">LIQUIDATION</option>
+              <option value="USER">USER</option>
+            </select>
+            <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={loadAuditLogs}>{t('projects.refresh')}</button>
+            <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={downloadAuditCsv}>{t('projects.audit_csv')}</button>
+          </div>
+          {auditLogs.length > 0 && (
+            <div style={{ overflowX: 'auto' }}>
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>{t('projects.time')}</th>
+                    <th>{t('projects.user')}</th>
+                    <th>{t('projects.action')}</th>
+                    <th>Entity</th>
+                    <th>ID</th>
+                    <th>Ref</th>
+                    <th>{t('projects.amount')}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {auditLogs.map((l) => {
+                    const meta = typeof l.meta === 'string' ? (() => { try { return JSON.parse(l.meta); } catch (e) { return {}; } })() : (l.meta || {});
+                    return (
+                      <tr key={l.id}>
+                        <td style={{ whiteSpace: 'nowrap' }}>{new Date(l.created_at).toLocaleString()}</td>
+                        <td>{l.full_name || `+${l.phone_number || ''}` || `#${l.user_id}`}</td>
+                        <td>{l.action}</td>
+                        <td>{l.entity_type}</td>
+                        <td>{l.entity_id}</td>
+                        <td>{meta.referenceId || '—'}</td>
+                        <td>{meta.amount != null ? fmt(meta.amount) : '—'}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
       </div>
     )}
     {tab === 'review' && (

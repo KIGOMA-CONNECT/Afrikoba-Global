@@ -3379,6 +3379,178 @@ function renderDisbursementVoucherPdf(v, stream) {
   return doc;
 }
 
+// ============================================================================
+// PHASE 20 — LIQUIDATION + CLOSE-OUT DOCUMENTS (PDF)
+// ============================================================================
+
+async function prepareLiquidationPdf(projectId, { userId, role }) {
+  const r = await getLiquidationReport(projectId, { userId, role });
+  if (!r.liquidated) {
+    throw new ValidityError('Mradi huu bado haujafilisiwa; hakuna taarifa ya ufilisi.', 409);
+  }
+  const p = await getProject(projectId);
+  const summary = r.liquidation && r.liquidation.summary ? r.liquidation.summary : {};
+  const funds = summary.funds || r.snapshot.funds || {};
+  const investors = Array.isArray(summary.investors) ? summary.investors : (r.snapshot.investors || []);
+  return {
+    reference: (r.liquidation && r.liquidation.reference) || `LIQD-${projectId}`,
+    generated_at: new Date().toISOString(),
+    currency: p.currency_code || 'TZS',
+    project: { id: p.id, name: p.name, status: p.status, completed_at: p.completed_at },
+    funds,
+    investor_received_total: Number(summary.investor_received_total ?? r.snapshot.investor_received_total ?? 0),
+    investor_net: Number(summary.investor_net ?? r.snapshot.investor_net ?? 0),
+    investor_net_pct: Number(summary.investor_net_pct ?? r.snapshot.investor_net_pct ?? 0),
+    owner_received_total: Number(summary.owner_received_total ?? r.snapshot.owner_received_total ?? 0),
+    investors,
+  };
+}
+
+function renderLiquidationReportPdf(v, stream) {
+  const doc = new PDFDocument({ size: 'A4', margin: 40 });
+  doc.pipe(stream);
+  const G = '#0B5D1E';
+  const m = (n) => `${formatMoney(n)} ${v.currency}`;
+
+  doc.fontSize(17).fillColor(G).text('AFRIKOBA GLOBAL', { align: 'center' });
+  doc.fontSize(11).fillColor('#333').text('RIPOTI YA UFILISI WA MRADI (Liquidation Report)', { align: 'center' });
+  doc.fontSize(8).fillColor('#888').text(`Ref: ${v.reference}  ·  Imetolewa: ${new Date(v.generated_at).toISOString()}`, { align: 'center' });
+  doc.moveDown(0.5);
+  vline(doc, doc.y + 4);
+
+  doc.fontSize(10).fillColor(G).text('Mradi / Project');
+  voucherField(doc, 'Jina', `${v.project.name} (${v.project.status})`);
+  if (v.project.completed_at) voucherField(doc, 'Ilikamilishwa / Completed at', new Date(v.project.completed_at).toISOString());
+  doc.moveDown(0.4);
+
+  doc.fontSize(10).fillColor(G).text('Hali ya Fedha / Fund Position');
+  vline(doc, doc.y + 2);
+  const f = v.funds;
+  [
+    ['Fedha zilizowekezwa / Invested confirmed', f.invested_confirmed],
+    ['Malipo kwa mwenye mradi / Disbursed to owner', f.disbursed_to_owner],
+    ['Dividendi zilizolipwa / Dividends paid', f.dividends_paid_to_investors],
+    ['Escrow iliyorudishwa / Escrow returned', f.escrow_returned_to_investors],
+    ['Hifadhi released / Reserve released', f.reserve_released_to_owner],
+    ['Baki ya mwisho / Residual released', f.residual_released_to_owner],
+    ['Mapato / Revenue total', f.revenue_total],
+  ].forEach(([label, val]) => { if (val !== undefined) voucherField(doc, label, m(val || 0)); });
+  voucherField(doc, 'Wawekezaji walipokea / Investor received', m(v.investor_received_total));
+  voucherField(doc, 'Mwenye mradi alipokea / Owner received', m(v.owner_received_total));
+  voucherField(doc, 'Mtandao wa wawekezaji / Investor net', `${m(v.investor_net)}  (${v.investor_net_pct}%)`);
+  doc.moveDown(0.4);
+
+  if (v.investors.length) {
+    doc.fontSize(10).fillColor(G).text('Wawekezaji / Investors');
+    vline(doc, doc.y + 2);
+    v.investors.forEach((row) => {
+      const name = row.full_name || row.name || 'Investor';
+      doc.fontSize(9).fillColor('#111').text(`${name}  —  invested ${m(row.invested)}  ·  received ${m(row.received)}  ·  ROI ${row.roi_percent || 0}%`);
+    });
+    doc.moveDown(0.6);
+  }
+  vline(doc, doc.y + 4);
+  doc.moveDown(0.8);
+  ['Mwenye Mradi (Owner)', 'Mkaguzi Mkuu (Reviewer)', 'Msajili (Registrar)'].forEach((label) => {
+    doc.fontSize(8).fillColor('#888').text(label, { align: 'center', width: 180, lineBreak: false });
+  });
+  doc.moveDown(1.6);
+  ['Mwenye Mradi (Owner)', 'Mkaguzi Mkuu (Reviewer)', 'Msajili (Registrar)'].forEach((label) => {
+    doc.moveTo(50, doc.y).lineTo(190, doc.y).stroke('#aaa');
+    doc.fontSize(8).fillColor('#888').text(label, { align: 'center', width: 180, lineBreak: false });
+  });
+  doc.end();
+  return doc;
+}
+
+async function prepareCloseOutPdf(projectId, { userId, role }) {
+  const r = await getCloseOutReport(projectId, { userId, role });
+  if (!r.completed) {
+    throw new ValidityError('Mradi huu bado haujakamilika; hakuna ripoti ya kufunga.', 409);
+  }
+  const p = await getProject(projectId);
+  const settlementRef = r.settlement && r.settlement.summary ? (r.settlement.summary.reference || null) : null;
+  return {
+    generated_at: new Date().toISOString(),
+    currency: p.currency_code || 'TZS',
+    project: r.project,
+    settlement_reference: settlementRef,
+    funds_out: r.funds_out,
+    owner_position: r.owner_position,
+    investors: r.investors,
+    waterfall: r.waterfall || [],
+    milestone_total: r.milestone_total,
+    milestone_completed: r.milestone_completed,
+  };
+}
+
+function renderCloseOutReportPdf(v, stream) {
+  const doc = new PDFDocument({ size: 'A4', margin: 40 });
+  doc.pipe(stream);
+  const G = '#0B5D1E';
+  const m = (n) => `${formatMoney(n)} ${v.currency}`;
+
+  doc.fontSize(17).fillColor(G).text('AFRIKOBA GLOBAL', { align: 'center' });
+  doc.fontSize(11).fillColor('#333').text('RIPOTI YA KUFUNGA MRADI (Close-Out Report)', { align: 'center' });
+  doc.fontSize(8).fillColor('#888').text(`Settlement: ${v.settlement_reference || '—'}  ·  Imetolewa: ${new Date(v.generated_at).toISOString()}`, { align: 'center' });
+  doc.moveDown(0.5);
+  vline(doc, doc.y + 4);
+
+  doc.fontSize(10).fillColor(G).text('Mradi / Project');
+  voucherField(doc, 'Jina', `${v.project.name} (${v.project.status})`);
+  voucherField(doc, 'Mtaji uliotakiwa / Capital required', m(v.project.capital_required));
+  voucherField(doc, 'Kilichokusanywa / Amount raised', m(v.project.amount_raised));
+  voucherField(doc, 'Milestones', `${v.milestone_completed}/${v.milestone_total}`);
+  doc.moveDown(0.4);
+
+  doc.fontSize(10).fillColor(G).text('Fedha Zilizotoka / Funds Out');
+  vline(doc, doc.y + 2);
+  const o = v.funds_out;
+  [
+    ['Escrow kurudishiwa wawekezaji / Escrow returned', o.escrow_returned_to_investors],
+    ['Dividendi zilizolipwa / Dividends paid', o.dividends_paid_to_investors],
+    ['Dividendi zinazosubiri / Dividends pending', o.dividends_pending],
+    ['Malipo kwa mwenye mradi / Disbursed to owner', o.disbursed_to_owner],
+    ['Hifadhi released / Reserve released', o.reserve_released_to_owner],
+    ['Baki released / Residual released', o.residual_released_to_owner],
+  ].forEach(([label, val]) => voucherField(doc, label, m(val)));
+  doc.moveDown(0.4);
+
+  doc.fontSize(10).fillColor(G).text('Mwenye Mradi / Owner Position');
+  voucherField(doc, 'Jumla alizopokea / Total received', m(v.owner_position.total_received));
+  doc.moveDown(0.4);
+
+  if (v.investors.length) {
+    doc.fontSize(10).fillColor(G).text('Wawekezaji / Investors');
+    vline(doc, doc.y + 2);
+    v.investors.forEach((row) => {
+      const name = row.full_name || 'Investor';
+      doc.fontSize(9).fillColor('#111').text(`${name}  —  invested ${m(row.invested)}  ·  escrow ${m(row.escrow_return)}  ·  div ${m(row.dividends_paid)}  ·  received ${m(row.received)}  ·  ROI ${row.roi_percent || 0}%`);
+    });
+    doc.moveDown(0.6);
+  }
+
+  if (v.waterfall.length) {
+    doc.fontSize(10).fillColor(G).text('Waterfall Allocations');
+    vline(doc, doc.y + 2);
+    v.waterfall.forEach((w) => voucherField(doc, w.allocation_step, `${w.runs}×  ${m(w.total)}`));
+    doc.moveDown(0.6);
+  }
+
+  vline(doc, doc.y + 4);
+  doc.moveDown(0.8);
+  ['Mwenye Mradi (Owner)', 'Mkaguzi Mkuu (Reviewer)', 'Msajili (Registrar)'].forEach((label) => {
+    doc.fontSize(8).fillColor('#888').text(label, { align: 'center', width: 180, lineBreak: false });
+  });
+  doc.moveDown(1.6);
+  ['Mwenye Mradi (Owner)', 'Mkaguzi Mkuu (Reviewer)', 'Msajili (Registrar)'].forEach((label) => {
+    doc.moveTo(50, doc.y).lineTo(190, doc.y).stroke('#aaa');
+    doc.fontSize(8).fillColor('#888').text(label, { align: 'center', width: 180, lineBreak: false });
+  });
+  doc.end();
+  return doc;
+}
+
 module.exports = {
   ACCOUNTS,
   WATERFALL_STEPS,
@@ -3446,4 +3618,8 @@ module.exports = {
   prepareSettlementPdf,
   renderSettlementReportPdf,
   renderPersonalReceiptPdf,
+  prepareLiquidationPdf,
+  renderLiquidationReportPdf,
+  prepareCloseOutPdf,
+  renderCloseOutReportPdf,
 };
