@@ -1665,6 +1665,94 @@ async function createDrawdownPlan(userId, projectId, { total_amount, tranches = 
   }
 }
 
+/**
+ * Governed plan editing (Phase 15). The owner may adjust the AMOUNT / PURPOSE
+ * of tranches that are still SCHEDULED (released / requested / skipped ones are
+ * immutable). The plan total is recomputed as the sum of ALL tranches, so money
+ * already released stays fixed, and the new lifetime total may never exceed
+ * escrow remaining + released (money is only ever taken out of escrow once).
+ * All changes are audit-logged; money still moves only through the governed
+ * request -> review -> approve -> execute chain.
+ */
+async function updateDrawdownPlan(userId, projectId, { tranches = [], total_amount } = {}) {
+  await getOwnerOnly(projectId, userId);
+  const p = await getProject(projectId);
+  if (p.status !== 'ACTIVE') throw new ValidityError('Ratiba ya drawdown inaweza kuhaririwa kwa mradi wa ACTIVE tu.');
+
+  const planRes = await pool.query('SELECT * FROM project_drawdown_plans WHERE project_id = $1', [projectId]);
+  const plan = planRes.rows[0];
+  if (!plan) throw new ValidityError('Hakuna ratiba ya drawdown.', 404);
+  if (plan.status !== 'ACTIVE') throw new ValidityError(`Ratiba iko '${plan.status}', haiwezi kuhaririwa.`);
+  if (!Array.isArray(tranches) || tranches.length === 0) throw new ValidityError('Tranche zinahitajika kwa sasisho.');
+
+  const all = (await pool.query(
+    'SELECT * FROM project_drawdowns WHERE plan_id = $1 AND project_id = $2 ORDER BY sequence',
+    [plan.id, projectId]
+  )).rows;
+  if (all.length === 0) throw new ValidityError('Ratiba haina tranche.');
+
+  const byId = new Map(all.map((t) => [t.id, t]));
+  const edits = new Map();
+  for (const e of tranches) {
+    const tid = Number(e.id);
+    const cur = byId.get(tid);
+    if (!cur) throw new ValidityError(`Tranche ${tid} haipatikani.`);
+    if (cur.status !== 'SCHEDULED') throw new ValidityError(`Tranche ${tid} iko '${cur.status}', haiwezi kuhaririwa.`);
+    const amt = e.amount === undefined || e.amount === null || e.amount === '' ? round2(Number(cur.amount)) : round2(Number(e.amount));
+    if (!amt || amt <= 0) throw new ValidityError('Kiasi si sahihi.');
+    edits.set(tid, {
+      amount: amt,
+      purpose: e.purpose === undefined ? (cur.purpose || null) : (e.purpose || null),
+    });
+  }
+
+  let total = 0;
+  for (const t of all) {
+    const e = edits.get(t.id);
+    total = round2(total + (e ? e.amount : Number(t.amount)));
+  }
+  if (total_amount !== undefined && total_amount !== null && total_amount !== '') {
+    const want = round2(Number(total_amount));
+    if (want !== total) throw new ValidityError('Jumla iliyotumwa hailingani na hesabu ya tranche.');
+  }
+
+  const escrow = await pool.query('SELECT remaining_balance FROM controlled_project_accounts WHERE project_id = $1', [projectId]);
+  const available = escrow.rows.length > 0 ? Number(escrow.rows[0].remaining_balance) : 0;
+  const releasedTotal = all.filter((t) => t.status === 'RELEASED').reduce((s, t) => s + Number(t.amount), 0);
+  const lifetime = round2(available + releasedTotal);
+  if (total > lifetime + 0.0001) {
+    throw new ValidityError(`Kiasi kinazidi escrow iliyopo (${available}) baada ya malipo yaliyotolewa.`);
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    for (const [tid, e] of edits) {
+      await client.query(
+        `UPDATE project_drawdowns SET amount = $1, purpose = $2
+         WHERE id = $3 AND plan_id = $4 AND project_id = $5`,
+        [e.amount, e.purpose, tid, plan.id, projectId]
+      );
+    }
+    await client.query(
+      'UPDATE project_drawdown_plans SET total_amount = $1 WHERE id = $2',
+      [total, plan.id]
+    );
+    await logAudit({
+      client, eventType: 'DRAWDOWN_PLAN_UPDATED', action: 'UPDATE', entityType: 'DRAWDOWN_PLAN',
+      userId, entityId: projectId, amount: total,
+      afterData: { edited_tranches: [...edits.keys()], total_tranches: all.length },
+    });
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+  return listDrawdowns(projectId, { userId, role: 'OWNER' });
+}
+
 /** Reconcile requested tranches against the governed disbursement state. */
 async function syncDrawdowns(projectId) {
   await pool.query(
@@ -2624,6 +2712,7 @@ module.exports = {
   exportMyPerformanceCsv,
   getProjectLedger,
   createDrawdownPlan,
+  updateDrawdownPlan,
   listDrawdowns,
   requestTranche,
   exportCloseOutReportCsv,

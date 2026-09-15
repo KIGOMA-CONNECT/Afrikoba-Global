@@ -488,6 +488,14 @@ router.get('/projects/:id/drawdowns', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// Phase 15: governed editing of SCHEDULED tranches (amount/purpose) + plan total
+router.patch('/projects/:id/drawdowns', async (req, res, next) => {
+  try {
+    const result = await projectFinance.updateDrawdownPlan(req.user.id, parseInt(req.params.id, 10), req.body);
+    return res.json(result);
+  } catch (e) { next(e); }
+});
+
 router.post('/projects/:id/drawdowns/:trancheId/request', async (req, res, next) => {
   try {
     const result = await projectFinance.requestTranche(req.user.id, parseInt(req.params.id, 10), parseInt(req.params.trancheId, 10));

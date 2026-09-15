@@ -26,6 +26,7 @@ export default function Projects() {
   const [drawdowns, setDrawdowns] = useState(null);
   const [ddMilestones, setDdMilestones] = useState([]);
   const [ddForm, setDdForm] = useState({ total_amount: '', tranches: 2, milestone_id: '' });
+  const [ddEdits, setDdEdits] = useState({});
   const [msg, setMsg] = useState({ type: '', text: '' });
   const [role, setRole] = useState('');
   const [expandedForm, setExpandedForm] = useState(false);
@@ -360,6 +361,9 @@ export default function Projects() {
       setDdMilestones((f.data.financials && f.data.financials.milestones) || []);
       const r = await api.get(`/projects/${id}/drawdowns`);
       setDrawdowns(r.data);
+      const edits = {};
+      (r.data.tranches || []).forEach((tr) => { if (tr.status === 'SCHEDULED') edits[tr.id] = { amount: tr.amount, purpose: tr.purpose || '' }; });
+      setDdEdits(edits);
       setStatement(null);
       setCloseOut(null);
       setLiquidation(null);
@@ -391,6 +395,20 @@ export default function Projects() {
     try {
       const r = await api.post(`/projects/${id}/drawdowns/${trancheId}/request`);
       ok(`${t('projects.drawdown_requested')} ${r.data.disbursement_request.unique_reference}`);
+      viewDrawdowns(id);
+    } catch (err) { error(err); }
+  };
+
+  const savePlan = async (id) => {
+    const tranches = Object.entries(ddEdits).map(([tid, v]) => ({
+      id: Number(tid),
+      amount: Number(v.amount),
+      purpose: v.purpose || null,
+    }));
+    if (tranches.length === 0) { ok(t('projects.error')); return; }
+    try {
+      await api.patch(`/projects/${id}/drawdowns`, { tranches });
+      ok(t('projects.drawdown_updated'));
       viewDrawdowns(id);
     } catch (err) { error(err); }
   };
@@ -961,9 +979,17 @@ export default function Projects() {
                         {drawdowns.tranches.map((tr) => (
                           <tr key={tr.id}>
                             <td>{tr.sequence}</td>
-                            <td>{fmt(tr.amount)}</td>
+                            <td>
+                              {tr.status === 'SCHEDULED'
+                                ? <input type="number" value={ddEdits[tr.id]?.amount ?? tr.amount} onChange={(e) => setDdEdits({ ...ddEdits, [tr.id]: { ...(ddEdits[tr.id] || {}), amount: e.target.value } })} style={{ width: 110 }} />
+                                : fmt(tr.amount)}
+                            </td>
                             <td>{tr.milestone_id || '—'}</td>
-                            <td>{tr.purpose || '—'}</td>
+                            <td>
+                              {tr.status === 'SCHEDULED'
+                                ? <input type="text" value={ddEdits[tr.id]?.purpose ?? (tr.purpose || '')} onChange={(e) => setDdEdits({ ...ddEdits, [tr.id]: { ...(ddEdits[tr.id] || {}), purpose: e.target.value } })} style={{ width: 150 }} />
+                                : (tr.purpose || '—')}
+                            </td>
                             <td><span className="badge warning">{tr.status}</span></td>
                             <td>
                               {tr.status === 'SCHEDULED' && (
@@ -975,6 +1001,11 @@ export default function Projects() {
                         ))}
                       </tbody>
                     </table>
+                  </div>
+                  <div style={{ marginTop: 8 }}>
+                    {drawdowns.plan && drawdowns.plan.status === 'ACTIVE' && (
+                      <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => savePlan(drawdowns.project.id)}>{t('projects.drawdown_update')}</button>
+                    )}
                   </div>
                 </>
               )}
