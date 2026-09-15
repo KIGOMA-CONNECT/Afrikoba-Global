@@ -420,6 +420,23 @@ router.post('/projects/:id/liquidate', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// Phase 11: personal stakeholder receipt (owner / own-investor position) + CSV
+router.get('/projects/:id/receipt', async (req, res, next) => {
+  try {
+    const receipt = await projectFinance.getPersonalReceipt(parseInt(req.params.id, 10), { userId: req.user.id });
+    return res.json(receipt);
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/:id/receipt/export', async (req, res, next) => {
+  try {
+    const csv = await projectFinance.exportPersonalReceiptCsv(parseInt(req.params.id, 10), { userId: req.user.id });
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename=project-${req.params.id}-receipt.csv`);
+    return res.send(csv);
+  } catch (e) { next(e); }
+});
+
 // --- Budget & Milestones ---------------------------------------------------
 router.post('/projects/:id/budget', async (req, res, next) => {
   try {

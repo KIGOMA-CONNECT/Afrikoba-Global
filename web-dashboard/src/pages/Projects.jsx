@@ -21,6 +21,7 @@ export default function Projects() {
   const [closeOut, setCloseOut] = useState(null);
   const [statement, setStatement] = useState(null);
   const [liquidation, setLiquidation] = useState(null);
+  const [receipt, setReceipt] = useState(null);
   const [msg, setMsg] = useState({ type: '', text: '' });
   const [role, setRole] = useState('');
   const [expandedForm, setExpandedForm] = useState(false);
@@ -274,6 +275,34 @@ export default function Projects() {
     } catch (err) { error(err); }
   };
 
+  const viewReceipt = async (id) => {
+    try {
+      const r = await api.get(`/projects/${id}/receipt`);
+      setReceipt(r.data);
+      setStatement(null);
+      setCloseOut(null);
+      setLiquidation(null);
+    } catch (err) { error(err); }
+  };
+
+  const downloadReceipt = (id) => {
+    const token = localStorage.getItem('afrikoba_token');
+    fetch(`/api/projects/${id}/receipt/export`, { headers: { Authorization: `Bearer ${token}` } })
+      .then((r) => {
+        if (!r.ok) throw new Error();
+        return r.blob();
+      })
+      .then((blob) => {
+        const u = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = u;
+        a.download = `project-${id}-receipt.csv`;
+        a.click();
+        URL.revokeObjectURL(u);
+      })
+      .catch(() => ok(t('projects.error')));
+  };
+
   const tabs = [
     { id: 'marketplace', label: t('projects.marketplace_tab') },
     { id: 'myprojects', label: t('projects.myprojects_tab') },
@@ -444,6 +473,9 @@ export default function Projects() {
                           <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => runAiReview(p.id)}>{t('projects.ai_rereun')}</button>
                           {['PUBLISHED', 'FUNDING', 'APPROVED', 'ACTIVE', 'COMPLETED', 'LIQUIDATED'].includes(p.status) && (
                             <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => viewStatement(p.id)}>{t('projects.statement')}</button>
+                          )}
+                          {['COMPLETED', 'LIQUIDATED'].includes(p.status) && (
+                            <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => viewReceipt(p.id)}>{t('projects.receipt')}</button>
                           )}
                           {['PUBLISHED', 'FUNDING', 'ACTIVE', 'APPROVED'].includes(p.status) && (
                             <>
@@ -699,6 +731,46 @@ export default function Projects() {
               )}
             </div>
           )}
+          {receipt && (
+            <div style={{ marginTop: 16 }}>
+              <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 8, flexWrap: 'wrap' }}>
+                <h4 style={{ margin: 0 }}>{t('projects.receipt')}: {receipt.project.name}</h4>
+                <span className="badge info">{receipt.project.status}</span>
+                {receipt.state.completed && <span className="badge success">✓ {t('projects.complete')}</span>}
+                {receipt.state.liquidated && <span className="badge success">✓ {t('projects.already_liquidated')}</span>}
+                <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadReceipt(receipt.project.id)}>{t('projects.receipt_csv')}</button>
+              </div>
+              <div className="roles-tag" style={{ marginBottom: 8 }}>{t('projects.liq_reference')}: {receipt.receipt_reference}</div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px,1fr))', gap: 12 }}>
+                <div className="card"><div className="roles-tag">{t('projects.role')}</div><b>{receipt.position.role}</b></div>
+                {receipt.position.role === 'INVESTOR' && (
+                  <>
+                    <div className="card"><div className="roles-tag">{t('projects.invested_amount')}</div><b>{fmt(receipt.position.invested)}</b></div>
+                    <div className="card"><div className="roles-tag">{t('projects.escrow_return')}</div><b>{fmt(receipt.position.escrow_return)}</b></div>
+                    <div className="card"><div className="roles-tag">{t('projects.dividend_paid_inv')}</div><b>{fmt(receipt.position.dividends_paid)}</b></div>
+                    <div className="card"><div className="roles-tag">{t('projects.dividend_pending')}</div><b>{fmt(receipt.position.dividends_pending)}</b></div>
+                    <div className="card"><div className="roles-tag">{t('projects.refund')}</div><b>{fmt(receipt.position.refunded)}</b></div>
+                    <div className="card"><div className="roles-tag">{t('projects.received')}</div><b>{fmt(receipt.position.received)}</b></div>
+                    <div className="card"><div className="roles-tag">ROI</div><b style={{ color: receipt.position.roi_percent >= 0 ? '#15803d' : '#dc2626' }}>{receipt.position.roi_percent}%</b></div>
+                  </>
+                )}
+                {receipt.position.role === 'OWNER' && (
+                  <>
+                    <div className="card"><div className="roles-tag">{t('projects.disbursed_to_owner')}</div><b>{fmt(receipt.position.from_disbursements)}</b></div>
+                    <div className="card"><div className="roles-tag">{t('projects.reserve_to_owner')}</div><b>{fmt(receipt.position.from_reserve)}</b></div>
+                    <div className="card"><div className="roles-tag">{t('projects.residual_to_owner')}</div><b>{fmt(receipt.position.from_residual)}</b></div>
+                    <div className="card"><div className="roles-tag">{t('projects.owner_received')}</div><b>{fmt(receipt.position.received_total)}</b></div>
+                  </>
+                )}
+              </div>
+              {receipt.state.settlement_reference && (
+                <div className="roles-tag" style={{ marginTop: 8 }}>Settlement: {receipt.state.settlement_reference}</div>
+              )}
+              {receipt.state.liquidated && (
+                <div className="roles-tag" style={{ marginTop: 4 }}>{t('projects.liquidation')}: {receipt.state.liquidation_reference}</div>
+              )}
+            </div>
+          )}
         </div>
       )}
 
@@ -769,6 +841,9 @@ export default function Projects() {
                         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                           {['PUBLISHED', 'FUNDING', 'APPROVED', 'ACTIVE', 'COMPLETED', 'LIQUIDATED'].includes(i.project_status) && (
                             <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => viewStatement(i.project_id)}>{t('projects.statement')}</button>
+                          )}
+                          {['COMPLETED', 'LIQUIDATED'].includes(i.project_status) && (
+                            <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => viewReceipt(i.project_id)}>{t('projects.receipt')}</button>
                           )}
                           {i.project_status === 'EXPIRED' && i.status === 'CONFIRMED' && (
                             <button className="btn btn-success" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => refundInvestment(i.id, i.project_id, i.project_name)}>{t('projects.refund')}</button>

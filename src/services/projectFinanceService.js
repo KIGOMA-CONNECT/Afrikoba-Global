@@ -1778,6 +1778,12 @@ async function getCloseOutReport(projectId, { userId, role }) {
   const closeOutPaid = round2(reserveTotal + residualTotal);
   const ownerReceived = round2(disbursedTotal + closeOutPaid);
 
+  // Privacy: a plain investor only sees their own position, never the
+  // cap table / P&L of other investors. Owner and experts see everyone.
+  const scopedInvestors = (!isOwner && !isExpert(role) && isInvestor)
+    ? investorPositions.filter((x) => x.investor_user_id === userId)
+    : investorPositions;
+
   return {
     project: { id: p.id, name: p.name, status: p.status, completed_at: p.completed_at, capital_required: p.capital_required, amount_raised: p.amount_raised },
     completed: !!settlement,
@@ -1792,7 +1798,7 @@ async function getCloseOutReport(projectId, { userId, role }) {
       dividends_pending: round2(Number(divPending.rows[0].total || 0)),
     },
     owner_position: { total_received: ownerReceived, from_disbursements: round2(disbursedTotal), from_reserve: round2(reserveTotal), from_residual: round2(residualTotal) },
-    investors: investorPositions,
+    investors: scopedInvestors,
     waterfall: waterfall.rows,
     milestones: milestones.rows,
     milestone_total: milestones.rows.length,
@@ -2059,6 +2065,12 @@ async function getProjectStatement(projectId, { userId, role }) {
     reference: r.reference, status: r.status, created_at: r.created_at,
   }));
 
+  // Privacy: a plain investor only sees their own position, never the
+  // cap table / P&L of other investors. Owner and experts see everyone.
+  const scopedInvestors = (!isOwner && !isExpert(role) && isInvestor)
+    ? investorPositions.filter((x) => x.investor_user_id === userId)
+    : investorPositions;
+
   return {
     project: { id: p.id, name: p.name, status: p.status, current_stage: p.current_stage, completed_at: p.completed_at, capital_required: p.capital_required, amount_raised: p.amount_raised },
     completed,
@@ -2075,7 +2087,7 @@ async function getProjectStatement(projectId, { userId, role }) {
       residual_released_to_owner: round2(releaseRows.filter((r) => r.reserve_type === 'OWNER_RESIDUAL').reduce((a, r) => a + r.amount, 0)),
       revenue_total: round2(Number(revenue.rows[0].total || 0)),
     },
-    investors: investorPositions,
+    investors: scopedInvestors,
     releases: releaseRows,
     waterfall: waterfall.rows,
     milestones: milestones.rows,
@@ -2119,6 +2131,107 @@ async function exportProjectStatementCsv(projectId, opts) {
       inv.escrow_return, inv.dividends_paid, inv.refunded, inv.received, `${inv.roi_percent}%`,
       esc(inv.investment_status),
     ].join(','));
+  }
+  return L.join('\n');
+}
+
+// ============================================================================
+// PHASE 11 — PERSONAL STAKEHOLDER RECEIPT
+// A single-user documentary receipt for the owner or a confirmed/refunded
+// investor: their own position in a completed/liquidated project plus the
+// settlement / liquidation references. Also the CSV form for record-keeping.
+// ============================================================================
+
+async function getPersonalReceipt(projectId, { userId }) {
+  const p = await getProject(projectId);
+  const isOwner = p.owner_user_id === userId;
+  const invRes = await pool.query(
+    `SELECT id, amount, participation_pct, status FROM project_investments
+     WHERE project_id = $1 AND investor_user_id = $2 AND status IN ('CONFIRMED','REFUNDED') LIMIT 1`,
+    [projectId, userId]
+  );
+  const investment = invRes.rows[0] || null;
+  if (!isOwner && !investment) {
+    throw new ValidityError('Huna ruhusa ya risiti ya mradi huu.', 403);
+  }
+
+  const st = await getProjectStatement(projectId, { userId, role: isOwner ? 'OWNER' : 'INVESTOR' });
+  const liq = await pool.query('SELECT * FROM project_liquidations WHERE project_id = $1', [projectId]);
+  const liquidation = liq.rows[0] || null;
+  const f = st.funds;
+
+  const position = isOwner
+    ? {
+        role: 'OWNER',
+        received_total: round2(f.disbursed_to_owner + f.reserve_released_to_owner + f.residual_released_to_owner),
+        from_disbursements: round2(f.disbursed_to_owner),
+        from_reserve: round2(f.reserve_released_to_owner),
+        from_residual: round2(f.residual_released_to_owner),
+      }
+    : {
+        role: 'INVESTOR',
+        invested: round2(Number(investment.amount || 0)),
+        participation_pct: Number(investment.participation_pct || 0),
+        escrow_return: st.investors.length > 0 ? st.investors[0].escrow_return : 0,
+        dividends_paid: st.investors.length > 0 ? st.investors[0].dividends_paid : 0,
+        dividends_pending: st.investors.length > 0 ? st.investors[0].dividends_pending : 0,
+        refunded: st.investors.length > 0 ? st.investors[0].refunded : 0,
+        received: st.investors.length > 0 ? st.investors[0].received : 0,
+        roi_percent: st.investors.length > 0 ? st.investors[0].roi_percent : 0,
+        investment_status: investment.status,
+      };
+
+  const receipt_reference = `RC-${projectId}-${userId}-${Date.now()}`;
+  return {
+    success: true,
+    receipt_reference,
+    generated_at: new Date().toISOString(),
+    project: st.project,
+    state: {
+      completed: !!st.settlement,
+      liquidated: !!liquidation,
+      settlement_reference: st.settlement && st.settlement.summary ? (st.settlement.summary.reference || null) : null,
+      liquidation_reference: liquidation ? liquidation.reference : null,
+    },
+    funds: f,
+    position,
+  };
+}
+
+async function exportPersonalReceiptCsv(projectId, { userId }) {
+  const r = await getPersonalReceipt(projectId, { userId });
+  const esc = (v) => {
+    const s = v === null || v === undefined ? '' : String(v);
+    return `"${s.replace(/"/g, '""')}"`;
+  };
+  const header = (label) => esc(label);
+  const L = [];
+  L.push(`Receipt: ${r.receipt_reference}`);
+  L.push(`Project,${header(r.project.name)}`);
+  L.push(`Status,${header(r.project.status)}`);
+  L.push(`Completed,${r.state.completed ? 'yes' : 'no'}`);
+  L.push(`Liquidated,${r.state.liquidated ? 'yes' : 'no'}`);
+  L.push(`Settlement ref,${header(r.state.settlement_reference || '')}`);
+  L.push(`Liquidation ref,${header(r.state.liquidation_reference || '')}`);
+  L.push(`Role,${r.position.role}`);
+  L.push(`Generated at,${header(r.generated_at)}`);
+  L.push('');
+  L.push('Item,Amount');
+  if (r.position.role === 'OWNER') {
+    L.push(`Disbursed to owner,${r.position.from_disbursements}`);
+    L.push(`Reserve released,${r.position.from_reserve}`);
+    L.push(`Residual released,${r.position.from_residual}`);
+    L.push(`Total received,${r.position.received_total}`);
+  } else {
+    L.push(`Invested,${r.position.invested}`);
+    L.push(`Participation %,${r.position.participation_pct}`);
+    L.push(`Escrow returned,${r.position.escrow_return}`);
+    L.push(`Dividends paid,${r.position.dividends_paid}`);
+    L.push(`Dividends pending,${r.position.dividends_pending}`);
+    L.push(`Refunded,${r.position.refunded}`);
+    L.push(`Total received,${r.position.received}`);
+    L.push(`ROI %,${r.position.roi_percent}%`);
+    L.push(`Status,${header(r.position.investment_status)}`);
   }
   return L.join('\n');
 }
@@ -2170,4 +2283,6 @@ module.exports = {
   exportProjectStatementCsv,
   getLiquidationReport,
   liquidateProject,
+  getPersonalReceipt,
+  exportPersonalReceiptCsv,
 };
