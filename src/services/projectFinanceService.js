@@ -4181,6 +4181,154 @@ function renderRevenueRegisterPdf(v, stream) {
 }
 
 // ============================================================================
+// PHASE 25 — WATERFALL RULES GOVERNANCE RECORD
+// ============================================================================
+
+async function getWaterfallGovernance(projectId, { userId, role }) {
+  const p = await getProject(projectId);
+  const isOwner = p.owner_user_id === userId;
+  if (!isOwner && !isExpert(role)) {
+    throw new ValidityError('Huna ruhusa ya rekodi ya utawala wa sheria za mgawanyo.', 403);
+  }
+  const rules = await pool.query(
+    `SELECT r.*, p1.full_name AS proposed_by_name, p1.phone_number AS proposed_by_phone,
+            p2.full_name AS approved_by_name, p2.phone_number AS approved_by_phone,
+            us.full_name AS supersedes_name
+     FROM waterfall_allocation_rules r
+     LEFT JOIN users p1 ON p1.id = r.proposed_by
+     LEFT JOIN users p2 ON p2.id = r.approved_by
+     LEFT JOIN waterfall_allocation_rules us ON us.id = r.supersedes_rule_id
+     WHERE r.project_id = $1 ORDER BY r.version`, [projectId]
+  );
+  const usage = await pool.query(
+    `SELECT rule_id, COUNT(*)::int AS revenue_runs, COUNT(DISTINCT revenue_reference)::int AS revenue_batches
+     FROM waterfall_allocation_records WHERE project_id = $1 GROUP BY rule_id`, [projectId]
+  );
+  const usageById = {};
+  for (const u of usage.rows) usageById[u.rule_id] = u;
+  const STEPS = WATERFALL_STEPS.map((s) => s.column);
+  const versions = rules.rows.map((r) => {
+    const rule = { ...r };
+    const superseded = rules.rows.find((x) => x.id === r.supersedes_rule_id);
+    const diffs = [];
+    if (superseded) {
+      for (const col of STEPS) {
+        if (Number(r[col] || 0) !== Number(superseded[col] || 0)) {
+          diffs.push(`${col}: ${Number(superseded[col] || 0)}% -> ${Number(r[col] || 0)}%`);
+        }
+      }
+    }
+    return {
+      id: r.id, version: r.version, status: r.status,
+      allocations: Object.fromEntries(STEPS.map((c) => [c, Number(r[c] || 0)])),
+      proposed_by: r.proposed_by ? { id: r.proposed_by, name: r.proposed_by_name, phone_number: r.proposed_by_phone } : null,
+      proposed_at: r.proposed_at,
+      approved_by: r.approved_by ? { id: r.approved_by, name: r.approved_by_name, phone_number: r.approved_by_phone } : null,
+      approved_at: r.approved_at,
+      effective_at: r.effective_at,
+      supersedes_rule_id: r.supersedes_rule_id,
+      supersedes_name: r.supersedes_name,
+      change_reason: r.change_reason,
+      usage: usageById[r.id] || { revenue_runs: 0, revenue_batches: 0 },
+      diff_vs_previous: diffs,
+    };
+  });
+  const current = versions.find((v) => v.status === 'FROZEN' || v.status === 'ACTIVE');
+  return {
+    success: true,
+    project: { id: p.id, name: p.name, status: p.status },
+    currency: p.currency_code || 'TZS',
+    generated_at: new Date().toISOString(),
+    summary: {
+      versions: versions.length,
+      current_version: current ? current.version : null,
+      current_status: current ? current.status : 'NONE',
+      frozen: !!current,
+    },
+    versions,
+  };
+}
+
+async function exportWaterfallGovernanceCsv(projectId, { userId, role }) {
+  const r = await getWaterfallGovernance(projectId, { userId, role });
+  const esc = (v) => {
+    const s = v === null || v === undefined ? '' : String(v);
+    return `"${s.replace(/"/g, '""')}"`;
+  };
+  const L = [];
+  L.push(`Project,${esc(r.project.name)} (${r.project.id})`);
+  L.push(`Status,${r.project.status}`);
+  L.push(`Generated at,${esc(r.generated_at)}`);
+  L.push(`Versions,${r.summary.versions}`);
+  L.push(`Current version,${r.summary.current_version} (${r.summary.current_status})`);
+  L.push('');
+  L.push('version,status,proposed_by,proposed_at,approved_by,approved_at,effective_at,supersedes,change_reason,revenue_batches,revenue_runs,allocations,diff_vs_previous');
+  for (const v of r.versions) {
+    L.push([
+      v.version, esc(v.status),
+      v.proposed_by ? esc(`${v.proposed_by.name} (${v.proposed_by.phone_number})`) : '',
+      esc(v.proposed_at || ''), v.approved_by ? esc(`${v.approved_by.name} (${v.approved_by.phone_number})`) : '',
+      esc(v.approved_at || ''), esc(v.effective_at || ''),
+      v.supersedes_rule_id || '', esc(v.change_reason || ''),
+      v.usage.revenue_batches, v.usage.revenue_runs,
+      esc(WATERFALL_STEPS.map((s) => `${s.column}:${v.allocations[s.column]}%`).join(' ')),
+      esc(v.diff_vs_previous.join(' | ')),
+    ].join(','));
+  }
+  return L.join('\n');
+}
+
+async function prepareWaterfallGovernancePdf(projectId, { userId, role }) {
+  const r = await getWaterfallGovernance(projectId, { userId, role });
+  const p = await getProject(projectId);
+  return { ...r, currency: p.currency_code || 'TZS' };
+}
+
+function renderWaterfallGovernancePdf(v, stream) {
+  const doc = new PDFDocument({ size: 'A4', margin: 40 });
+  doc.pipe(stream);
+  const G = '#0B5D1E';
+  const m = (n) => `${formatMoney(n)} ${v.currency}`;
+  const ensure = () => { if (doc.y > 760) doc.addPage(); };
+
+  doc.fontSize(17).fillColor(G).text('AFRIKOBA GLOBAL', { align: 'center' });
+  doc.fontSize(11).fillColor('#333').text('REKODI YA UTAWALA WA SHERIA ZA MGAWANYO (Waterfall Rules Governance)', { align: 'center' });
+  doc.fontSize(8).fillColor('#888').text(`${v.project.name}  (${v.project.id})  ·  ${v.project.status}  ·  Imetolewa: ${new Date(v.generated_at).toISOString()}`, { align: 'center' });
+  doc.moveDown(0.5);
+  vline(doc, doc.y + 4);
+
+  doc.fontSize(10).fillColor(G).text('Muhtasari / Summary');
+  vline(doc, doc.y + 2);
+  voucherField(doc, 'Matoleo / Versions', String(v.summary.versions));
+  voucherField(doc, 'Toleo la sasa / Current', v.summary.current_version ? `v${v.summary.current_version} (${v.summary.current_status})` : '—');
+  doc.moveDown(0.3);
+
+  doc.fontSize(10).fillColor(G).text(`Sheria za mgawanyo / Allocation Rules (${v.versions.length})`);
+  vline(doc, doc.y + 2);
+  for (const x of v.versions) {
+    ensure();
+    doc.fontSize(9).fillColor('#111').text(`v${x.version}  ·  ${x.status}${x.supersedes_rule_id ? `  ·  supersedes v${x.supersedes_rule_id}` : ''}`);
+    doc.fontSize(7.5).fillColor('#444').text('   ' + WATERFALL_STEPS.map((s) => `${s.column} ${x.allocations[s.column]}%`).join(' · '));
+    if (x.proposed_at) doc.fontSize(7).fillColor('#555').text(`   Iliyopendekezwa na ${x.proposed_by ? x.proposed_by.name + ' (' + x.proposed_by.phone_number + ')' : '—'}  ·  ${new Date(x.proposed_at).toISOString()}`);
+    if (x.approved_at) doc.fontSize(7).fillColor('#0B5D1E').text(`   Iliidhinishwa na ${x.approved_by ? x.approved_by.name + ' (' + x.approved_by.phone_number + ')' : '—'}  ·  ${new Date(x.approved_at).toISOString()}`);
+    if (x.change_reason) doc.fontSize(7).fillColor('#555').text(`   Sababu ya mabadiliko: ${x.change_reason}`);
+    if (x.usage.revenue_batches) doc.fontSize(7).fillColor('#555').text(`   Imetumika: ${x.usage.revenue_batches} batches / ${x.usage.revenue_runs} runs`);
+    if (x.diff_vs_previous.length) doc.fontSize(7).fillColor('#B26A00').text(`   Mabadiliko: ${x.diff_vs_previous.join(' · ')}`);
+  }
+
+  ensure();
+  doc.moveDown(0.5);
+  vline(doc, doc.y + 4);
+  doc.moveDown(0.8);
+  doc.fontSize(8).fillColor('#888').text('Mkaguzi Mkuu (Reviewer)', { align: 'center' });
+  doc.moveDown(1.6);
+  doc.moveTo(120, doc.y).lineTo(320, doc.y).stroke('#aaa');
+  doc.fontSize(8).fillColor('#888').text('Mkaguzi Mkuu (Reviewer)', { align: 'center', width: 200, lineBreak: false });
+  doc.end();
+  return doc;
+}
+
+// ============================================================================
 // PHASE 23 — DRAWDOWN SCHEDULE DOCUMENT + PLATFORM DIVIDEND LEDGER
 // ============================================================================
 
@@ -4484,4 +4632,8 @@ module.exports = {
   exportRevenueRegisterCsv,
   prepareRevenueRegisterPdf,
   renderRevenueRegisterPdf,
+  getWaterfallGovernance,
+  exportWaterfallGovernanceCsv,
+  prepareWaterfallGovernancePdf,
+  renderWaterfallGovernancePdf,
 };
