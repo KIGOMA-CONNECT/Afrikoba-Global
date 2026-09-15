@@ -1930,9 +1930,13 @@ async function getInvestorStatement({ userId, role }, projectId) {
   })();
 
   const ruleRes = await pool.query(
-    'SELECT waterfall_percentages FROM project_waterfall_rules WHERE project_id = $1 ORDER BY id DESC LIMIT 1', [projectId]
+    `SELECT ${RULE_COLUMNS.map((c) => c.column).join(', ')}
+       FROM waterfall_allocation_rules WHERE project_id = $1 ORDER BY version DESC LIMIT 1`,
+    [projectId]
   );
-  const waterfallConfig = ruleRes.rows[0]?.waterfall_percentages || {};
+  const waterfallConfig = ruleRes.rows[0]
+    ? Object.fromEntries(RULE_COLUMNS.map((c) => [c.key, Number(ruleRes.rows[0][c.column] || 0)]))
+    : {};
 
   const invested = invRes.rows.filter((r) => r.status === 'CONFIRMED')
     .reduce((a, r) => a + Number(r.amount || 0), 0);
