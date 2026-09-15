@@ -4373,7 +4373,7 @@ async function getSettlementRegister(projectId, { userId, role }) {
     amount: round2(Number(x.amount || 0)),
   }));
   const payouts = await pool.query(
-    `SELECT pi.id AS payout_id, pi.project_id, pi.status, pi.entitlement, pi.paid_at, pi.reference,
+    `SELECT pi.id AS payout_id, pi.project_id, pi.status, pi.entitlement, pi.paid_at, pi.payout_reference,
             u.id AS investor_user_id, u.full_name, u.phone_number
      FROM project_investor_payouts pi
      LEFT JOIN users u ON u.id = pi.investor_user_id
@@ -4417,7 +4417,7 @@ async function getSettlementRegister(projectId, { userId, role }) {
     settled: true,
     settlement,
     investor_returns: investorReturns,
-    payouts: payouts.rows.map((x) => ({ payout_id: x.payout_id, status: x.status, entitlement: round2(Number(x.entitlement || 0)), paid_at: x.paid_at, reference: x.reference, investor_user_id: x.investor_user_id, full_name: x.full_name, phone_number: x.phone_number })),
+    payouts: payouts.rows.map((x) => ({ payout_id: x.payout_id, status: x.status, entitlement: round2(Number(x.entitlement || 0)), paid_at: x.paid_at, payout_reference: x.payout_reference, investor_user_id: x.investor_user_id, full_name: x.full_name, phone_number: x.phone_number })),
     summary: {
       settled: true,
       returned_to_investors_total: round2(Number(st.returned_to_investors || 0)),
