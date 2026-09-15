@@ -982,6 +982,31 @@ router.get('/projects/:id/settlement-register/pdf', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// Phase 32: dividend payment advice (owner/expert/investor self) + export + pdf
+router.get('/projects/:id/investor/:investorUserId/dividend-advice', async (req, res, next) => {
+  try {
+    return res.json(await projectFinance.getDividendAdvice(parseInt(req.params.id, 10), parseInt(req.params.investorUserId, 10), { userId: req.user.id, role: req.user.role }));
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/:id/investor/:investorUserId/dividend-advice/export', async (req, res, next) => {
+  try {
+    const csv = await projectFinance.exportDividendAdviceCsv(parseInt(req.params.id, 10), parseInt(req.params.investorUserId, 10), { userId: req.user.id, role: req.user.role });
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename=dividend-advice.csv');
+    return res.send(csv);
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/:id/investor/:investorUserId/dividend-advice/pdf', async (req, res, next) => {
+  try {
+    const data = await projectFinance.prepareDividendAdvicePdf(parseInt(req.params.id, 10), parseInt(req.params.investorUserId, 10), { userId: req.user.id, role: req.user.role });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'inline; filename=dividend-advice.pdf');
+    projectFinance.renderDividendAdvicePdf(data, res);
+  } catch (e) { next(e); }
+});
+
 // Phase 31: project escrow & wallet journal (JSON / CSV / PDF) - owner/expert
 router.get('/projects/:id/wallet-journal', async (req, res, next) => {
   try {

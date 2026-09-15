@@ -4341,6 +4341,142 @@ function renderRevenueRegisterPdf(v, stream) {
 }
 
 // ============================================================================
+// PHASE 32 — DIVIDEND PAYMENT ADVICE (PER INVESTOR PER PROJECT)
+// ============================================================================
+
+async function getDividendAdvice(projectId, investorUserId, { userId, role }) {
+  const p = await getProject(projectId);
+  const isOwner = p.owner_user_id === userId;
+  const isInvestor = Number(investorUserId) === Number(userId);
+  if (!isOwner && !isExpert(role) && !isInvestor) {
+    throw new ValidityError('Huna ruhusa za ushauri wa gawio wa mwekezaji huyu.', 403);
+  }
+  const inv = await pool.query(`SELECT id, full_name, phone_number FROM users WHERE id = $1`, [investorUserId]);
+  const investor = inv.rows[0] || null;
+
+  const r = await pool.query(
+    `SELECT pi.id AS payout_id, pi.payout_reference, pi.entitlement, pi.status, pi.paid_at,
+            w.id AS allocation_id, w.revenue_reference, w.approval_reference
+     FROM project_investor_payouts pi
+     LEFT JOIN waterfall_allocation_records w ON w.id = pi.allocation_id
+     WHERE pi.project_id = $1 AND pi.investor_user_id = $2 AND w.allocation_step = 'DIVIDEND'
+     ORDER BY pi.paid_at, pi.id`, [projectId, investorUserId]
+  );
+  const paid = r.rows.filter((x) => x.status === 'PAID').map((x) => ({
+    payout_reference: x.payout_reference,
+    amount: round2(Number(x.entitlement || 0)),
+    paid_at: x.paid_at,
+    revenue_reference: x.revenue_reference,
+    approval_reference: x.approval_reference,
+    allocation_id: x.allocation_id,
+  }));
+  const pending = r.rows.filter((x) => x.status === 'PENDING').map((x) => ({
+    payout_reference: x.payout_reference,
+    amount: round2(Number(x.entitlement || 0)),
+    revenue_reference: x.revenue_reference,
+  }));
+  const totalPaid = round2(paid.reduce((s, x) => s + x.amount, 0));
+  const totalPending = round2(pending.reduce((s, x) => s + x.amount, 0));
+
+  return {
+    success: true,
+    project: { id: p.id, name: p.name, status: p.status },
+    currency: p.currency_code || 'TZS',
+    investor: investor ? { id: investor.id, name: investor.full_name, phone_number: investor.phone_number } : null,
+    generated_at: new Date().toISOString(),
+    summary: { payments: paid.length, total_paid: totalPaid, pending: pending.length, total_pending: totalPending },
+    payments: paid,
+    pending,
+  };
+}
+
+async function exportDividendAdviceCsv(projectId, investorUserId, { userId, role }) {
+  const r = await getDividendAdvice(projectId, investorUserId, { userId, role });
+  const esc = (v) => { const s = v === null || v === undefined ? '' : String(v); return `"${s.replace(/"/g, '""')}"`; };
+  const L = [];
+  L.push(`Project,${esc(`${r.project.name} (${r.project.id})`)}`);
+  L.push(`Status,${r.project.status}`);
+  L.push(`Investor,${esc(r.investor ? `${r.investor.name} (${r.investor.phone_number})` : '—')}`);
+  L.push(`Generated at,${esc(r.generated_at)}`);
+  L.push(`Payments,${r.summary.payments}`);
+  L.push(`Total paid,${r.summary.total_paid}`);
+  L.push(`Pending,${r.summary.pending}`);
+  L.push(`Total pending,${r.summary.total_pending}`);
+  L.push('');
+  L.push('payout_reference,amount,paid_at,revenue_reference,approval_reference,status');
+  for (const x of r.payments) {
+    L.push([esc(x.payout_reference), x.amount, esc(x.paid_at), esc(x.revenue_reference), esc(x.approval_reference), 'PAID'].join(','));
+  }
+  for (const x of r.pending) {
+    L.push([esc(x.payout_reference), x.amount, '', esc(x.revenue_reference), '', 'PENDING'].join(','));
+  }
+  return L.join('\n');
+}
+
+async function prepareDividendAdvicePdf(projectId, investorUserId, { userId, role }) {
+  const r = await getDividendAdvice(projectId, investorUserId, { userId, role });
+  const p = await getProject(projectId);
+  return { ...r, currency: p.currency_code || 'TZS' };
+}
+
+function renderDividendAdvicePdf(v, stream) {
+  const doc = new PDFDocument({ size: 'A4', margin: 48 });
+  doc.pipe(stream);
+  const G = '#0B5D1E';
+  const m = (n) => `${formatMoney(n)} ${v.currency}`;
+
+  doc.fontSize(16).fillColor(G).text('AFRIKOBA GLOBAL', { align: 'center' });
+  doc.fontSize(11).fillColor('#333').text('USHAURI WA MALIPO YA GAWIO · DIVIDEND PAYMENT ADVICE', { align: 'center' });
+  doc.moveDown(0.4);
+  vline(doc, doc.y + 4);
+
+  doc.fontSize(10).fillColor('#111').text(`Kwa / To:  ${v.investor ? v.investor.name : '—'}  (${v.investor ? v.investor.phone_number : ''})`);
+  doc.fontSize(10).fillColor('#111').text(`Mradi / Project:  ${v.project.name}  (${v.project.id})  ·  ${v.project.status}`);
+  doc.moveDown(0.4);
+  vline(doc, doc.y + 2);
+
+  if (!v.investor) {
+    doc.fontSize(9).fillColor('#aa0000').text('Hakuna mwekezaji aliyepatikana kwa kitambulisho hiki (investor not found).');
+  }
+
+  doc.fontSize(10).fillColor(G).text('Malipo yaliyolipwa / Payments made:');
+  if (v.payments.length === 0) {
+    doc.fontSize(9).fillColor('#555').text('Hakuna gawio lililolipwa (no dividend paid yet).');
+  }
+  for (const x of v.payments) {
+    doc.moveDown(0.2);
+    voucherField(doc, 'Reference', x.payout_reference);
+    voucherField(doc, 'Kiasi / Amount', m(x.amount));
+    voucherField(doc, 'Tarehe ya malipo', new Date(x.paid_at).toISOString());
+    if (x.revenue_reference) voucherField(doc, 'Mapato / Revenue', x.revenue_reference);
+    if (x.approval_reference) voucherField(doc, 'Idhini / Approval', x.approval_reference);
+  }
+
+  doc.moveDown(0.6);
+  vline(doc, doc.y + 4);
+  doc.fontSize(10).fillColor(G).text(`Jumla / Total paid: ${m(v.summary.total_paid)}`);
+  if (v.pending.length > 0) {
+    doc.fontSize(9).fillColor('#555').text(`${v.pending.length} gawio linatatizika / pending: ${m(v.summary.total_pending)}`);
+    for (const x of v.pending) {
+      doc.fontSize(8).fillColor('#555').text(`   ${x.payout_reference}  ·  ${m(x.amount)}  ·  ${x.revenue_reference || ''}`);
+    }
+  }
+
+  doc.moveDown(1);
+  vline(doc, doc.y + 4);
+  doc.moveDown(0.8);
+  doc.text('Saini / Investor signature', { align: 'left' });
+  doc.text('Saini / Finance Officer signature', { align: 'right' });
+  doc.moveDown(1.2);
+  doc.moveTo(70, doc.y).lineTo(240, doc.y).stroke('#aaa');
+  doc.moveTo(330, doc.y).lineTo(500, doc.y).stroke('#aaa');
+  doc.fontSize(8).fillColor('#888').text('Mshiriki / Investor', 70, doc.y + 2);
+  doc.fontSize(8).fillColor('#888').text('Afisa Fedha / Finance Officer', 330, doc.y + 2);
+  doc.end();
+  return doc;
+}
+
+// ============================================================================
 // PHASE 31 — PROJECT ESCROW & WALLET JOURNAL
 // ============================================================================
 
@@ -5512,6 +5648,10 @@ module.exports = {
   exportWalletJournalCsv,
   prepareWalletJournalPdf,
   renderWalletJournalPdf,
+  getDividendAdvice,
+  exportDividendAdviceCsv,
+  prepareDividendAdvicePdf,
+  renderDividendAdvicePdf,
   exportPlatformProjectRegisterCsv,
   preparePlatformProjectRegisterPdf,
   renderPlatformProjectRegisterPdf,

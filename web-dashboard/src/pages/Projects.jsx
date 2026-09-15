@@ -914,8 +914,14 @@ export default function Projects() {
                         <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadDocumentPdf(`/api/projects/${statement.project.id}/settlement-register/pdf`, `project-${statement.project.id}-settlement-register.pdf`)}>{t('projects.settlement_register_pdf')}</button>
                         <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadFinanceCsv(`/api/projects/${statement.project.id}/wallet-journal/export`, `project-${statement.project.id}-wallet-journal.csv`)}>{t('projects.wallet_journal_csv')}</button>
                         <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadDocumentPdf(`/api/projects/${statement.project.id}/wallet-journal/pdf`, `project-${statement.project.id}-wallet-journal.pdf`)}>{t('projects.wallet_journal_pdf')}</button>
-                      </>
-                    )}
+                        {auth?.user?.id && (
+                          <>
+                            <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadFinanceCsv(`/api/projects/${statement.project.id}/investor/${auth.user.id}/dividend-advice/export`, `dividend-advice-${statement.project.id}-${auth.user.id}.csv`)}>{t('projects.dividend_advice_csv')}</button>
+                            <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadDocumentPdf(`/api/projects/${statement.project.id}/investor/${auth.user.id}/dividend-advice/pdf`, `dividend-advice-${statement.project.id}-${auth.user.id}.pdf`)}>{t('projects.dividend_advice_pdf')}</button>
+                          </>
+                        )}
+                        </>
+                      )}
                   </>
                 )}
               </div>
