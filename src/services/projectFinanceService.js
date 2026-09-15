@@ -4341,6 +4341,120 @@ function renderRevenueRegisterPdf(v, stream) {
 }
 
 // ============================================================================
+// PHASE 35 — DRAWDOWN WORKFLOW & RELEASE REGISTER
+// ============================================================================
+
+async function getDrawdownWorkflow(projectId, { userId, role }) {
+  const p = await getProject(projectId);
+  const isOwner = p.owner_user_id === userId;
+  if (!isOwner && !isExpert(role)) {
+    throw new ValidityError('Huna ruhusa ya rejesta ya workflow ya drawdown ya mradi huu.', 403);
+  }
+  const r = await pool.query(
+    `SELECT d.id, d.plan_id, d.sequence, d.amount, d.purpose, d.status, d.disbursement_reference,
+            d.requested_by, d.requested_at, d.released_at, d.milestone_id, d.created_at,
+            u.full_name AS requested_by_name, u.phone_number AS requested_by_phone,
+            m.name AS milestone_name
+     FROM project_drawdowns d
+     LEFT JOIN users u ON u.id = d.requested_by
+     LEFT JOIN project_milestones m ON m.id = d.milestone_id
+     WHERE d.project_id = $1
+     ORDER BY d.sequence`, [projectId]
+  );
+  const entries = r.rows.map((x) => ({
+    id: x.id, sequence: x.sequence, amount: round2(Number(x.amount || 0)), purpose: x.purpose,
+    status: x.status, disbursement_reference: x.disbursement_reference,
+    milestone_id: x.milestone_id, milestone_name: x.milestone_name || '—',
+    requested_by: x.requested_by
+      ? { id: x.requested_by, name: x.requested_by_name, phone_number: x.requested_by_phone }
+      : null,
+    requested_at: x.requested_at, released_at: x.released_at, created_at: x.created_at,
+  }));
+  const released = round2(entries.filter((x) => x.status === 'RELEASED').reduce((s, x) => s + x.amount, 0));
+  const scheduled = round2(entries.filter((x) => x.status === 'SCHEDULED').reduce((s, x) => s + x.amount, 0));
+  return {
+    success: true,
+    project: { id: p.id, name: p.name, status: p.status },
+    generated_at: new Date().toISOString(),
+    summary: {
+      tranches: entries.length,
+      released_total: released,
+      scheduled_total: scheduled,
+      requested_count: entries.filter((x) => x.status === 'REQUESTED').length,
+    },
+    entries,
+  };
+}
+
+async function exportDrawdownWorkflowCsv(projectId, { userId, role }) {
+  const r = await getDrawdownWorkflow(projectId, { userId, role });
+  const esc = (v) => { const s = v === null || v === undefined ? '' : String(v); return `"${s.replace(/"/g, '""')}"`; };
+  const L = [];
+  L.push(`Project,${esc(`${r.project.name} (${r.project.id})`)}`);
+  L.push(`Status,${r.project.status}`);
+  L.push(`Generated at,${esc(r.generated_at)}`);
+  L.push(`Released total,${r.summary.released_total}`);
+  L.push(`Scheduled total,${r.summary.scheduled_total}`);
+  L.push('');
+  L.push('sequence,amount,purpose,milestone,status,disbursement_reference,requested_by,requested_at,released_at');
+  for (const x of r.entries) {
+    L.push([x.sequence, x.amount, esc(x.purpose || ''), esc(x.milestone_name), esc(x.status),
+            esc(x.disbursement_reference || ''), esc(x.requested_by ? x.requested_by.name : ''),
+            esc(x.requested_at || ''), esc(x.released_at || '')].join(','));
+  }
+  return L.join('\n');
+}
+
+async function prepareDrawdownWorkflowPdf(projectId, { userId, role }) {
+  const r = await getDrawdownWorkflow(projectId, { userId, role });
+  const p = await getProject(projectId);
+  return { ...r, currency: p.currency_code || 'TZS' };
+}
+
+function renderDrawdownWorkflowPdf(v, stream) {
+  const doc = new PDFDocument({ size: 'A4', margin: 40 });
+  doc.pipe(stream);
+  const G = '#0B5D1E';
+  const m = (n) => `${formatMoney(n)} ${v.currency}`;
+  const ensure = () => { if (doc.y > 760) doc.addPage(); };
+
+  doc.fontSize(17).fillColor(G).text('AFRIKOBA GLOBAL', { align: 'center' });
+  doc.fontSize(11).fillColor('#333').text('REJESTA YA WORKFLOW YA DRAWDOWN / DRAWDOWN WORKFLOW REGISTER', { align: 'center' });
+  doc.fontSize(8).fillColor('#888').text(`${v.project.name}  (${v.project.id})  ·  ${v.project.status}  ·  Imetolewa: ${new Date(v.generated_at).toISOString()}`, { align: 'center' });
+  doc.moveDown(0.4);
+  vline(doc, doc.y + 4);
+
+  doc.fontSize(10).fillColor(G).text('Muhtasari / Summary');
+  vline(doc, doc.y + 2);
+  voucherField(doc, 'Tranches', String(v.summary.tranches));
+  voucherField(doc, 'Iliyotolewa / Released', m(v.summary.released_total));
+  voucherField(doc, 'Iliopangwa / Scheduled', m(v.summary.scheduled_total));
+  voucherField(doc, 'Zilizoombwa / Requested', String(v.summary.requested_count));
+  doc.moveDown(0.4);
+
+  doc.fontSize(10).fillColor(G).text(`Workflow / Executions (${v.entries.length})`);
+  vline(doc, doc.y + 2);
+  for (const x of v.entries) {
+    ensure();
+    doc.fontSize(8).fillColor('#111').text(`#${x.sequence}  ${x.purpose || '—'}  ·  ${m(x.amount)}  ·  ${x.status}`);
+    doc.fontSize(7).fillColor('#555').text(`   milestone: ${x.milestone_name}   ref: ${x.disbursement_reference || '—'}`);
+    doc.fontSize(7).fillColor('#555').text(`   requested by ${x.requested_by ? x.requested_by.name : '—'} at ${x.requested_at ? new Date(x.requested_at).toISOString() : '—'}   released at ${x.released_at ? new Date(x.released_at).toISOString() : '—'}`);
+    doc.moveDown(0.15);
+  }
+
+  ensure();
+  doc.moveDown(0.5);
+  vline(doc, doc.y + 4);
+  doc.moveDown(0.7);
+  doc.fontSize(8).fillColor('#888').text('Mkaguzi Mkuu (Reviewer)', { align: 'center' });
+  doc.moveDown(1.2);
+  doc.moveTo(210, doc.y).lineTo(420, doc.y).stroke('#aaa');
+  doc.fontSize(8).fillColor('#888').text('Mkaguzi Mkuu (Reviewer)', { align: 'center' });
+  doc.end();
+  return doc;
+}
+
+// ============================================================================
 // PHASE 34 — PLATFORM CONSULTATION / FEES REGISTER (EXPERT-ONLY)
 // ============================================================================
 
@@ -5948,6 +6062,10 @@ module.exports = {
   getFeesRegister,
   exportFeesRegisterCsv,
   renderFeesRegisterPdf,
+  getDrawdownWorkflow,
+  exportDrawdownWorkflowCsv,
+  prepareDrawdownWorkflowPdf,
+  renderDrawdownWorkflowPdf,
   exportPlatformProjectRegisterCsv,
   preparePlatformProjectRegisterPdf,
   renderPlatformProjectRegisterPdf,

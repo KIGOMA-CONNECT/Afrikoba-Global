@@ -982,6 +982,31 @@ router.get('/projects/:id/settlement-register/pdf', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// Phase 35: drawdown workflow & release register (owner/expert) + export + pdf
+router.get('/projects/:id/drawdown-workflow', async (req, res, next) => {
+  try {
+    return res.json(await projectFinance.getDrawdownWorkflow(parseInt(req.params.id, 10), { userId: req.user.id, role: req.user.role }));
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/:id/drawdown-workflow/export', async (req, res, next) => {
+  try {
+    const csv = await projectFinance.exportDrawdownWorkflowCsv(parseInt(req.params.id, 10), { userId: req.user.id, role: req.user.role });
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename=drawdown-workflow.csv');
+    return res.send(csv);
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/:id/drawdown-workflow/pdf', async (req, res, next) => {
+  try {
+    const data = await projectFinance.prepareDrawdownWorkflowPdf(parseInt(req.params.id, 10), { userId: req.user.id, role: req.user.role });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'inline; filename=drawdown-workflow.pdf');
+    projectFinance.renderDrawdownWorkflowPdf(data, res);
+  } catch (e) { next(e); }
+});
+
 // Phase 34: platform consultation / fees register (expert-only) + export + pdf
 router.get('/projects/ops/fees-register', async (req, res, next) => {
   try {
