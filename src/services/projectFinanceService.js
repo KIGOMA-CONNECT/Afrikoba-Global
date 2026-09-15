@@ -1866,6 +1866,10 @@ async function liquidateProject(projectId, { userId, role }) {
   if (!isOwner && !isExpert(role)) {
     throw new ValidityError('Huna mamlaka ya kufilisi mradi huu.', 403);
   }
+  const liqBefore = await pool.query('SELECT * FROM project_liquidations WHERE project_id = $1', [projectId]);
+  if (liqBefore.rows.length > 0) {
+    return { success: true, already_liquidated: true, project_id: projectId, reference: liqBefore.rows[0].reference };
+  }
   if (p.status !== 'COMPLETED') {
     throw new ValidityError(`Ufilisi hufanyika baada ya mradi kuwa COMPLETED. (sasa: ${p.status})`);
   }
