@@ -982,6 +982,31 @@ router.get('/projects/:id/settlement-register/pdf', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// Phase 40: platform debt service register (expert-only) + export + pdf
+router.get('/projects/ops/debt-service-register', async (req, res, next) => {
+  try {
+    return res.json(await projectFinance.getDebtServiceRegister({ role: req.user.role }));
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/ops/debt-service-register/export', async (req, res, next) => {
+  try {
+    const csv = await projectFinance.exportDebtServiceRegisterCsv({ role: req.user.role });
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename=debt-service-register.csv');
+    return res.send(csv);
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/ops/debt-service-register/pdf', async (req, res, next) => {
+  try {
+    const data = await projectFinance.getDebtServiceRegister({ role: req.user.role });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'inline; filename=debt-service-register.pdf');
+    projectFinance.renderDebtServiceRegisterPdf(data, res);
+  } catch (e) { next(e); }
+});
+
 // Phase 39: platform tax withholding register (expert-only) + export + pdf
 router.get('/projects/ops/tax-register', async (req, res, next) => {
   try {
