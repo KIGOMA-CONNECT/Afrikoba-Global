@@ -4341,6 +4341,125 @@ function renderRevenueRegisterPdf(v, stream) {
 }
 
 // ============================================================================
+// PHASE 28 — FUNDING INTAKE REGISTER (PROJECT INVESTMENTS)
+// ============================================================================
+
+async function getFundingIntakeRegister(projectId, { userId, role }) {
+  const p = await getProject(projectId);
+  const isOwner = p.owner_user_id === userId;
+  if (!isOwner && !isExpert(role)) {
+    throw new ValidityError('Huna ruhusa ya rejesta ya mapato ya uwekezaji wa mradi huu.', 403);
+  }
+  const r = await pool.query(
+    `SELECT i.*, u.full_name AS investor_name, u.phone_number AS investor_phone
+     FROM project_investments i
+     LEFT JOIN users u ON u.id = i.investor_user_id
+     WHERE i.project_id = $1 ORDER BY i.id`, [projectId]
+  );
+  const investments = r.rows.map((x) => ({
+    id: x.id, investor_user_id: x.investor_user_id,
+    investor_name: x.investor_name, investor_phone: x.investor_phone,
+    amount: round2(Number(x.amount || 0)),
+    participation_pct: Number(x.participation_pct || 0),
+    status: x.status, unique_reference: x.unique_reference,
+    refund_reference: x.refund_reference,
+    refunded_at: x.refunded_at, created_at: x.created_at,
+  }));
+  const summary = {
+    total: investments.length,
+    confirmed: investments.filter((i) => i.status === 'CONFIRMED'),
+    refunded: investments.filter((i) => i.status === 'REFUNDED'),
+    pending: investments.filter((i) => i.status === 'PENDING'),
+    cancelled: investments.filter((i) => i.status === 'CANCELLED'),
+  };
+  summary.confirmed_count = summary.confirmed.length;
+  summary.confirmed_total = round2(summary.confirmed.reduce((s, x) => s + x.amount, 0));
+  summary.refunded_count = summary.refunded.length;
+  summary.refunded_total = round2(summary.refunded.reduce((s, x) => s + x.amount, 0));
+  summary.pending_count = summary.pending.length;
+  summary.pending_total = round2(summary.pending.reduce((s, x) => s + x.amount, 0));
+  summary.cancelled_count = summary.cancelled.length;
+  summary.cancelled_total = round2(summary.cancelled.reduce((s, x) => s + x.amount, 0));
+  return {
+    success: true,
+    project: { id: p.id, name: p.name, status: p.status },
+    currency: p.currency_code || 'TZS',
+    generated_at: new Date().toISOString(),
+    summary,
+    investments,
+  };
+}
+
+async function exportFundingIntakeCsv(projectId, { userId, role }) {
+  const r = await getFundingIntakeRegister(projectId, { userId, role });
+  const esc = (v) => { const s = v === null || v === undefined ? '' : String(v); return `"${s.replace(/"/g, '""')}"`; };
+  const m = (n) => formatMoney(n);
+  const L = [];
+  L.push(`Project,${esc(r.project.name)} (${r.project.id})`);
+  L.push(`Status,${r.project.status}`);
+  L.push(`Generated at,${esc(r.generated_at)}`);
+  L.push(`Confirmed,${r.summary.confirmed_count} (${m(r.summary.confirmed_total)})`);
+  L.push(`Refunded,${r.summary.refunded_count} (${m(r.summary.refunded_total)})`);
+  L.push(`Pending,${r.summary.pending_count} (${m(r.summary.pending_total)})`);
+  L.push(`Cancelled,${r.summary.cancelled_count} (${m(r.summary.cancelled_total)})`);
+  L.push('');
+  L.push('id,investor_name,investor_phone,amount,participation_pct,status,unique_reference,refund_reference,refunded_at,created_at');
+  for (const x of r.investments) {
+    L.push([
+      x.id, esc(x.investor_name), esc(x.investor_phone), x.amount,
+      x.participation_pct, esc(x.status), esc(x.unique_reference),
+      esc(x.refund_reference || ''), esc(x.refunded_at || ''), esc(x.created_at),
+    ].join(','));
+  }
+  return L.join('\n');
+}
+
+async function prepareFundingIntakePdf(projectId, { userId, role }) {
+  return await getFundingIntakeRegister(projectId, { userId, role });
+}
+
+function renderFundingIntakePdf(v, stream) {
+  const doc = new PDFDocument({ size: 'A4', margin: 40 });
+  doc.pipe(stream);
+  const G = '#0B5D1E';
+  const m = (n) => `${formatMoney(n)} ${v.currency}`;
+  const ensure = () => { if (doc.y > 760) doc.addPage(); };
+
+  doc.fontSize(17).fillColor(G).text('AFRIKOBA GLOBAL', { align: 'center' });
+  doc.fontSize(11).fillColor('#333').text('REJESTA YA UWEKEZAJI WA MRADI (Funding Intake Register)', { align: 'center' });
+  doc.fontSize(8).fillColor('#888').text(`${v.project.name}  (${v.project.id})  ·  ${v.project.status}  ·  Imetolewa: ${new Date(v.generated_at).toISOString()}`, { align: 'center' });
+  doc.moveDown(0.5);
+  vline(doc, doc.y + 4);
+
+  doc.fontSize(10).fillColor(G).text('Muhtasari / Summary');
+  vline(doc, doc.y + 2);
+  voucherField(doc, 'Imethibitishwa / Confirmed', `${v.summary.confirmed_count} miradi  ·  ${m(v.summary.confirmed_total)}`);
+  voucherField(doc, 'Imerejeshwa / Refunded', `${v.summary.refunded_count} miradi  ·  ${m(v.summary.refunded_total)}`);
+  voucherField(doc, 'Inasubiri / Pending', `${v.summary.pending_count} miradi  ·  ${m(v.summary.pending_total)}`);
+  voucherField(doc, 'Imefutwa / Cancelled', `${v.summary.cancelled_count} miradi  ·  ${m(v.summary.cancelled_total)}`);
+  doc.moveDown(0.3);
+
+  doc.fontSize(10).fillColor(G).text(`Uwekezaji / Investments (${v.investments.length})`);
+  vline(doc, doc.y + 2);
+  for (const x of v.investments) {
+    ensure();
+    doc.fontSize(8.5).fillColor('#111').text(`#${x.id}  ·  ${x.investor_name || x.investor_user_id}  ·  ${x.investor_phone || ''}  ·  ${m(x.amount)}  ·  ${x.status}  ·  ${new Date(x.created_at).toISOString()}`);
+    doc.fontSize(7).fillColor('#555').text(`   participation ${x.participation_pct}%  ·  ref ${x.unique_reference || '—'}${x.refund_reference ? '  ·  refund-ref ' + x.refund_reference : ''}`);
+  }
+
+  ensure();
+  doc.moveDown(0.5);
+  vline(doc, doc.y + 4);
+  doc.moveDown(0.8);
+  doc.fontSize(8).fillColor('#888').text('Mkaguzi Mkuu (Reviewer)', { align: 'center', width: 200, lineBreak: false });
+  doc.moveDown(1.6);
+  doc.moveTo(120, doc.y).lineTo(320, doc.y).stroke('#aaa');
+  doc.fontSize(8).fillColor('#888').text('Mkaguzi Mkuu (Reviewer)', { align: 'center', width: 200, lineBreak: false });
+  doc.end();
+  return doc;
+}
+
+// ============================================================================
 // PHASE 25 — WATERFALL RULES GOVERNANCE RECORD
 // ============================================================================
 
@@ -4932,6 +5051,10 @@ module.exports = {
   prepareMyPerformancePdf,
   renderMyPerformancePdf,
   getPlatformInvestorRegistry,
+  getFundingIntakeRegister,
+  exportFundingIntakeCsv,
+  prepareFundingIntakePdf,
+  renderFundingIntakePdf,
   exportPlatformInvestorRegistryCsv,
   preparePlatformInvestorRegistryPdf,
   renderPlatformInvestorRegistryPdf,

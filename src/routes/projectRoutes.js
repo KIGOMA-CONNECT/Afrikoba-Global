@@ -907,6 +907,31 @@ router.get('/projects/:id/reserve-releases/pdf', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// Phase 28: funding intake register (JSON / CSV / PDF) - owner/expert
+router.get('/projects/:id/funding-intake', async (req, res, next) => {
+  try {
+    return res.json(await projectFinance.getFundingIntakeRegister(parseInt(req.params.id, 10), { userId: req.user.id, role: req.user.role }));
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/:id/funding-intake/export', async (req, res, next) => {
+  try {
+    const csv = await projectFinance.exportFundingIntakeCsv(parseInt(req.params.id, 10), { userId: req.user.id, role: req.user.role });
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename=funding-intake.csv');
+    return res.send(csv);
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/:id/funding-intake/pdf', async (req, res, next) => {
+  try {
+    const data = await projectFinance.prepareFundingIntakePdf(parseInt(req.params.id, 10), { userId: req.user.id, role: req.user.role });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'inline; filename=funding-intake.pdf');
+    projectFinance.renderFundingIntakePdf(data, res);
+  } catch (e) { next(e); }
+});
+
 // Phase 17: admin force-close stuck funding + per-investor dividend statement
 router.post('/projects/:id/funding/force-close', async (req, res, next) => {
   try {

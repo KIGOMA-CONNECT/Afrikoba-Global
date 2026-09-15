@@ -908,6 +908,8 @@ export default function Projects() {
                         <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadFinanceCsv(`/api/projects/${statement.project.id}/waterfall-governance/export`, `project-${statement.project.id}-waterfall-governance.csv`)}>{t('projects.waterfall_governance_csv')}</button>
                         <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadFinanceCsv(`/api/projects/${statement.project.id}/reserve-releases/export`, `project-${statement.project.id}-reserve-releases.csv`)}>{t('projects.reserve_releases_csv')}</button>
                         <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadDocumentPdf(`/api/projects/${statement.project.id}/reserve-releases/pdf`, `project-${statement.project.id}-reserve-releases.pdf`)}>{t('projects.reserve_releases_pdf')}</button>
+                        <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadFinanceCsv(`/api/projects/${statement.project.id}/funding-intake/export`, `project-${statement.project.id}-funding-intake.csv`)}>{t('projects.funding_intake_csv')}</button>
+                        <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => downloadDocumentPdf(`/api/projects/${statement.project.id}/funding-intake/pdf`, `project-${statement.project.id}-funding-intake.pdf`)}>{t('projects.funding_intake_pdf')}</button>
                       </>
                     )}
                   </>
