@@ -28,6 +28,7 @@ export default function Projects() {
   const [ddForm, setDdForm] = useState({ total_amount: '', tranches: 2, milestone_id: '' });
   const [ddEdits, setDdEdits] = useState({});
   const [msg, setMsg] = useState({ type: '', text: '' });
+  const [opsBook, setOpsBook] = useState(null);
   const [role, setRole] = useState('');
   const [expandedForm, setExpandedForm] = useState(false);
 
@@ -413,6 +414,28 @@ export default function Projects() {
     } catch (err) { error(err); }
   };
 
+  const loadOpsBook = async () => {
+    try {
+      const r = await api.get('/projects/ops/pfe-book');
+      setOpsBook(r.data);
+    } catch (err) { error(err); }
+  };
+
+  const downloadOpsCsv = () => {
+    const token = localStorage.getItem('afrikoba_token');
+    fetch('/api/projects/ops/pfe-book/export', { headers: { Authorization: `Bearer ${token}` } })
+      .then((res) => (res.ok ? res.blob() : Promise.reject()))
+      .then((blob) => {
+        const u = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = u;
+        a.download = 'platform-pfe-book.csv';
+        a.click();
+        URL.revokeObjectURL(u);
+      })
+      .catch(() => ok(t('projects.error')));
+  };
+
   const tabs = [
     { id: 'marketplace', label: t('projects.marketplace_tab') },
     { id: 'myprojects', label: t('projects.myprojects_tab') },
@@ -421,6 +444,7 @@ export default function Projects() {
   ];
   if (['ADMIN', 'MODERATOR', 'EXPERT'].includes(role)) {
     tabs.push({ id: 'review', label: `${t('projects.review_queue')} (${queue.length})` });
+    tabs.push({ id: 'ops', label: t('projects.ops_tab') });
   }
 
   const fmt = (v) => money(v);
@@ -1108,6 +1132,69 @@ export default function Projects() {
           )}
         </div>
       )}
+    {tab === 'ops' && (
+      <div className="card">
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
+          <h3 style={{ margin: 0 }}>{t('projects.ops_tab')}</h3>
+          <span className="badge info">{t('projects.ops_integrity')}: {opsBook ? opsBook.counts.integrity_flags : 0}</span>
+          <span className="badge info">{t('projects.ops_open')}: {opsBook ? opsBook.counts.open : 0}</span>
+          <span className="badge info">{t('projects.ops_liquidated')}: {opsBook ? opsBook.counts.liquidated : 0}</span>
+          <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={loadOpsBook}>{t('projects.refresh')}</button>
+          {opsBook && <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={downloadOpsCsv}>{t('projects.ops_csv')}</button>}
+        </div>
+        {opsBook ? (
+          <>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px,1fr))', gap: 12 }}>
+              <div className="card"><div className="roles-tag">{t('projects.ops_invested')}</div><b>{fmt(opsBook.totals.invested)}</b></div>
+              <div className="card"><div className="roles-tag">{t('projects.escrow')}</div><b>{fmt(opsBook.totals.escrow_held)}</b></div>
+              <div className="card"><div className="roles-tag">{t('projects.disbursed_to_owner')}</div><b>{fmt(opsBook.totals.disbursed)}</b></div>
+              <div className="card"><div className="roles-tag">{t('projects.reserve_to_owner')}</div><b>{fmt(opsBook.totals.reserve_released)}</b></div>
+              <div className="card"><div className="roles-tag">{t('projects.residual_to_owner')}</div><b>{fmt(opsBook.totals.residual_released)}</b></div>
+              <div className="card"><div className="roles-tag">{t('projects.escrow_return')}</div><b>{fmt(opsBook.totals.escrow_returned)}</b></div>
+              <div className="card"><div className="roles-tag">{t('projects.dividend_paid_inv')}</div><b>{fmt(opsBook.totals.dividends_paid)}</b></div>
+              <div className="card"><div className="roles-tag">{t('projects.dividend_pending')}</div><b>{fmt(opsBook.totals.dividends_pending)}</b></div>
+              <div className="card"><div className="roles-tag">{t('projects.revenue_processed')}</div><b>{fmt(opsBook.totals.revenue_total)}</b></div>
+              <div className="card"><div className="roles-tag">{t('projects.ops_net')}</div><b>{fmt(opsBook.totals.liquidation_investor_net)}</b></div>
+            </div>
+            <div className="roles-tag" style={{ marginTop: 10 }}>
+              {t('projects.ops_variance')}: <b style={{ color: opsBook.platform_variance === 0 ? '#15803d' : '#dc2626' }}>{fmt(opsBook.platform_variance)}</b>
+            </div>
+            {opsBook.flags.length > 0 && (
+              <div style={{ marginTop: 10, color: '#dc2626' }}>{t('projects.ops_flags')}: {opsBook.flags.map((f) => `${f.name} (${f.variance})`).join(' · ')}</div>
+            )}
+            <div style={{ marginTop: 12, overflowX: 'auto' }}>
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>#</th><th>{t('projects.name')}</th><th>{t('projects.status')}</th><th>{t('projects.owner')}</th>
+                    <th>{t('projects.invested_amount')}</th><th>{t('projects.escrow')}</th><th>{t('projects.disbursed_to_owner')}</th>
+                    <th>{t('projects.dividend_paid_inv')}</th><th>{t('projects.integrity')}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {opsBook.projects.map((p) => (
+                    <tr key={p.project_id}>
+                      <td>{p.project_id}</td>
+                      <td>{p.name}</td>
+                      <td><span className="badge info">{p.status}</span></td>
+                      <td>{p.owner.full_name || `+${p.owner.phone_number}`}</td>
+                      <td>{fmt(p.invested)}</td>
+                      <td>{fmt(p.escrow_held)}</td>
+                      <td>{fmt(p.disbursed)}</td>
+                      <td>{fmt(p.dividends_paid)}</td>
+                      <td style={{ color: p.integrity_ok ? '#15803d' : '#dc2626' }}>{p.integrity_ok ? 'OK' : `${t('projects.ops_var_short')}: ${p.integrity_variance}`}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="roles-tag" style={{ marginTop: 10 }}>{t('projects.waterfall_runs')}: {opsBook.waterfall.map((w) => `${w.step} ${fmt(w.total)}`).join(' · ')}</div>
+          </>
+        ) : (
+          <p className="roles-tag">{t('projects.ops_hint')}</p>
+        )}
+      </div>
+    )}
     {tab === 'review' && (
         <div className="card">
           <h3 style={{ margin: '0 0 14px' }}>{t('projects.review_queue')}</h3>

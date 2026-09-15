@@ -574,6 +574,23 @@ router.get('/projects/mine/investments', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// Phase 16: platform-wide project-finance operations book (ops/compliance)
+router.get('/projects/ops/pfe-book', async (req, res, next) => {
+  try {
+    const book = await projectFinance.getPlatformPfeBook({ userId: req.user.id, role: req.user.role });
+    return res.json(book);
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/ops/pfe-book/export', async (req, res, next) => {
+  try {
+    const csv = await projectFinance.exportPlatformPfeBookCsv({ userId: req.user.id, role: req.user.role });
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename=platform-pfe-book.csv');
+    return res.send(csv);
+  } catch (e) { next(e); }
+});
+
 router.get('/projects/:id', async (req, res, next) => {
   try {
     const project = await projectService.getProject(parseInt(req.params.id, 10));

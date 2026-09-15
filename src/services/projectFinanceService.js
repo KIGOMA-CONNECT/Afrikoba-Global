@@ -1605,6 +1605,185 @@ async function getProjectLedger(projectId, { userId, role }) {
 // No money moves here; release is reconciled against executed disbursements.
 // ============================================================================
 
+// ============================================================================
+// PHASE 16 — PLATFORM-WIDE PROJECT-FINANCE OPERATIONS BOOK
+// Ops/compliance seat across ALL projects: aggregates every append-only PF
+// domain (investments, escrow, disbursements, reserve/residual releases,
+// dividends, settlements, revenue, liquidations) plus an escrow-integrity
+// check. The invariant: invested - refunded ≈ escrow_held + disbursed +
+// reserve_released + residual_released + escrow_returned. Any drift over TZS 1
+// is surfaced as a flag. Read-only; owner/investor data stays scoped out.
+// ============================================================================
+
+async function getPlatformPfeBook({ userId, role }) {
+  if (!isExpert(role)) {
+    throw new ValidityError('Huna mamlaka ya daftari la uendeshaji la fedha za miradi.', 403);
+  }
+
+  const totalRes = await pool.query(`
+    SELECT
+      (SELECT COALESCE(SUM(amount),0) FROM project_investments WHERE status='CONFIRMED') AS invested_confirmed,
+      (SELECT COALESCE(SUM(amount),0) FROM project_investments WHERE status='REFUNDED') AS refunded,
+      (SELECT COALESCE(SUM(remaining_balance),0) FROM controlled_project_accounts) AS escrow_held,
+      (SELECT COALESCE(SUM(amount),0) FROM project_disbursements WHERE status='RELEASED') AS disbursed,
+      (SELECT COALESCE(SUM(amount),0) FROM project_reserve_releases WHERE status='RELEASED' AND reserve_type='DISTRIBUTION_RESERVE') AS reserve_released,
+      (SELECT COALESCE(SUM(amount),0) FROM project_reserve_releases WHERE status='RELEASED' AND reserve_type='OWNER_RESIDUAL') AS residual_released,
+      (SELECT COALESCE(SUM(amount),0) FROM project_investor_payouts WHERE status='PAID') AS dividends_paid,
+      (SELECT COALESCE(SUM(amount),0) FROM project_investor_payouts WHERE status='PENDING') AS dividends_pending,
+      (SELECT COALESCE(SUM(returned_to_investors),0) FROM project_settlements) AS escrow_returned,
+      (SELECT COALESCE(SUM(amount),0) FROM project_revenue) AS revenue_total,
+      (SELECT COALESCE(SUM(investor_net),0) FROM project_liquidations) AS liquidation_investor_net
+  `);
+
+  const statusRes = await pool.query(`
+    SELECT p.status, COUNT(*)::int AS cnt, COALESCE(SUM(pi.invested),0) AS invested
+    FROM projects p
+    LEFT JOIN (SELECT project_id, SUM(amount) AS invested FROM project_investments WHERE status='CONFIRMED' GROUP BY project_id) pi ON pi.project_id = p.id
+    GROUP BY p.status ORDER BY p.status
+  `);
+
+  const waterfallRes = await pool.query(`
+    SELECT allocation_step, COUNT(*)::int AS runs, SUM(amount)::numeric AS total
+    FROM waterfall_allocation_records GROUP BY allocation_step ORDER BY allocation_step
+  `);
+
+  const projRes = await pool.query(`
+    SELECT
+      p.id, p.name, p.status, p.completed_at, p.capital_required, p.amount_raised,
+      u.full_name AS owner_name, u.phone_number AS owner_phone,
+      COALESCE(pi.invested,0) AS invested, COALESCE(pi.refunded,0) AS refunded,
+      COALESCE(cpa.remaining_balance,0) AS escrow_held,
+      COALESCE(pd.disbursed,0) AS disbursed,
+      COALESCE(prr.reserve,0) AS reserve_released, COALESCE(prr.resid,0) AS residual_released,
+      COALESCE(pay.paid,0) AS dividends_paid,
+      COALESCE(s.escrow_returned,0) AS escrow_returned,
+      COALESCE(liq.liquidated,0) AS liquidated, liq.liq_ref
+    FROM projects p
+    JOIN users u ON u.id = p.owner_user_id
+    LEFT JOIN (SELECT project_id, SUM(amount) FILTER (WHERE status='CONFIRMED') AS invested,
+                      SUM(amount) FILTER (WHERE status='REFUNDED') AS refunded
+               FROM project_investments GROUP BY project_id) pi ON pi.project_id = p.id
+    LEFT JOIN controlled_project_accounts cpa ON cpa.project_id = p.id
+    LEFT JOIN (SELECT project_id, SUM(amount) AS disbursed FROM project_disbursements WHERE status='RELEASED' GROUP BY project_id) pd ON pd.project_id = p.id
+    LEFT JOIN (SELECT project_id,
+                      SUM(amount) FILTER (WHERE reserve_type='DISTRIBUTION_RESERVE') AS reserve,
+                      SUM(amount) FILTER (WHERE reserve_type='OWNER_RESIDUAL') AS resid
+               FROM project_reserve_releases WHERE status='RELEASED' GROUP BY project_id) prr ON prr.project_id = p.id
+    LEFT JOIN (SELECT project_id, SUM(amount) FILTER (WHERE status='PAID') AS paid
+               FROM project_investor_payouts GROUP BY project_id) pay ON pay.project_id = p.id
+    LEFT JOIN (SELECT project_id, returned_to_investors AS escrow_returned FROM project_settlements
+               UNION ALL SELECT project_id, 0 FROM projects WHERE NOT EXISTS (SELECT 1 FROM project_settlements s2 WHERE s2.project_id = projects.id)) s ON s.project_id = p.id
+    LEFT JOIN (SELECT project_id, COUNT(*) FILTER (WHERE status='LIQUIDATED') AS liquidated,
+                      MAX(CASE WHEN status='LIQUIDATED' THEN reference END) AS liq_ref
+               FROM project_liquidations GROUP BY project_id) liq ON liq.project_id = p.id
+    ORDER BY p.id
+  `);
+
+  const flags = [];
+  const projects = [];
+  for (const x of projRes.rows) {
+    const breakdown = {
+      escrow_held: Number(x.escrow_held || 0),
+      disbursed: Number(x.disbursed || 0),
+      reserve_released: Number(x.reserve_released || 0),
+      residual_released: Number(x.residual_released || 0),
+      escrow_returned: Number(x.escrow_returned || 0),
+    };
+    const variance = round2(
+      Number(x.invested || 0) - Number(x.refunded || 0)
+      - (breakdown.escrow_held + breakdown.disbursed + breakdown.reserve_released
+         + breakdown.residual_released + breakdown.escrow_returned)
+    );
+    const flagged = Math.abs(variance) > 1;
+    if (flagged) flags.push({ project_id: x.id, name: x.name, variance });
+    projects.push({
+      project_id: x.id, name: x.name, status: x.status, completed_at: x.completed_at,
+      owner: { full_name: x.owner_name, phone_number: x.owner_phone },
+      capital_required: Number(x.capital_required), amount_raised: Number(x.amount_raised),
+      invested: round2(Number(x.invested || 0)), refunded: round2(Number(x.refunded || 0)),
+      ...breakdown,
+      dividends_paid: round2(Number(x.dividends_paid || 0)),
+      liquidated: Number(x.liquidated || 0) > 0,
+      liquidation_reference: x.liq_ref || null,
+      integrity_variance: variance, integrity_ok: !flagged,
+    });
+  }
+
+  const totals = totalRes.rows[0];
+  const invested = Number(totals.invested_confirmed || 0);
+  const out = Number(totals.disbursed || 0) + Number(totals.reserve_released || 0)
+    + Number(totals.residual_released || 0) + Number(totals.escrow_returned || 0);
+  const platformVariance = round2(invested - Number(totals.refunded || 0)
+    - (Number(totals.escrow_held || 0) + out));
+
+  return {
+    success: true,
+    generated_at: new Date().toISOString(),
+    totals: {
+      invested: round2(invested),
+      refunded: round2(Number(totals.refunded || 0)),
+      escrow_held: round2(Number(totals.escrow_held || 0)),
+      disbursed: round2(Number(totals.disbursed || 0)),
+      reserve_released: round2(Number(totals.reserve_released || 0)),
+      residual_released: round2(Number(totals.residual_released || 0)),
+      escrow_returned: round2(Number(totals.escrow_returned || 0)),
+      dividends_paid: round2(Number(totals.dividends_paid || 0)),
+      dividends_pending: round2(Number(totals.dividends_pending || 0)),
+      revenue_total: round2(Number(totals.revenue_total || 0)),
+      liquidation_investor_net: round2(Number(totals.liquidation_investor_net || 0)),
+    },
+    platform_variance: platformVariance,
+    by_status: statusRes.rows.map((r) => ({ status: r.status, projects: r.cnt, invested: round2(Number(r.invested)) })),
+    waterfall: waterfallRes.rows.map((r) => ({ step: r.allocation_step, runs: r.runs, total: round2(Number(r.total)) })),
+    projects,
+    flags,
+    counts: {
+      projects: projRes.rows.length,
+      open: projRes.rows.filter((x) => ['FUNDING', 'ACTIVE', 'PUBLISHED'].includes(x.status)).length,
+      liquidated: projRes.rows.filter((x) => Number(x.liquidated || 0) > 0).length,
+      integrity_flags: flags.length,
+    },
+  };
+}
+
+async function exportPlatformPfeBookCsv({ userId, role }) {
+  const r = await getPlatformPfeBook({ userId, role });
+  const esc = (v) => {
+    const s = v === null || v === undefined ? '' : String(v);
+    return `"${s.replace(/"/g, '""')}"`;
+  };
+  const L = [];
+  L.push(`Generated at,${esc(r.generated_at)}`);
+  L.push(`Platform variance (TZS),${r.platform_variance}`);
+  L.push(`Integrity flags,${r.counts.integrity_flags}`);
+  L.push('');
+  L.push('Metric,Amount');
+  const t = r.totals;
+  L.push(`Invested confirmed,${t.invested}`);
+  L.push(`Refunded,${t.refunded}`);
+  L.push(`Escrow held,${t.escrow_held}`);
+  L.push(`Disbursed to owner,${t.disbursed}`);
+  L.push(`Reserve released,${t.reserve_released}`);
+  L.push(`Residual released,${t.residual_released}`);
+  L.push(`Escrow returned,${t.escrow_returned}`);
+  L.push(`Dividends paid,${t.dividends_paid}`);
+  L.push(`Dividends pending,${t.dividends_pending}`);
+  L.push(`Revenue processed,${t.revenue_total}`);
+  L.push(`Liquidation investor net,${t.liquidation_investor_net}`);
+  L.push('');
+  L.push('Status,#Projects,Invested');
+  for (const s of r.by_status) L.push(`${esc(s.status)},${s.projects},${s.invested}`);
+  L.push('');
+  L.push('Waterfall step,Runs,Total');
+  for (const w of r.waterfall) L.push(`${esc(w.step)},${w.runs},${w.total}`);
+  L.push('');
+  L.push('ProjectId,Name,Status,Owner,Invested,Refunded,EscrowHeld,Disbursed,ReserveReleased,ResidualReleased,EscrowReturned,DividendsPaid,Variance,IntegrityOK,Liquidated');
+  for (const p of r.projects) {
+    L.push(`${p.project_id},${esc(p.name)},${esc(p.status)},${esc(p.owner.full_name || p.owner.phone_number)},${p.invested},${p.refunded},${p.escrow_held},${p.disbursed},${p.reserve_released},${p.residual_released},${p.escrow_returned},${p.dividends_paid},${p.integrity_variance},${p.integrity_ok ? 'yes' : 'no'},${p.liquidated ? 'yes' : 'no'}`);
+  }
+  return L.join('\n');
+}
+
 async function createDrawdownPlan(userId, projectId, { total_amount, tranches = [] } = {}) {
   await getOwnerOnly(projectId, userId);
   const p = await getProject(projectId);
@@ -2717,4 +2896,6 @@ module.exports = {
   requestTranche,
   exportCloseOutReportCsv,
   exportLiquidationCsv,
+  getPlatformPfeBook,
+  exportPlatformPfeBookCsv,
 };
