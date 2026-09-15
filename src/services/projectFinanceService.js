@@ -4341,6 +4341,135 @@ function renderRevenueRegisterPdf(v, stream) {
 }
 
 // ============================================================================
+// PHASE 41 — PLATFORM OPERATING EXPENSES REGISTER (OPEX + PAYROLL, EXPERT-ONLY)
+// ============================================================================
+
+async function getOperatingExpensesRegister({ role }) {
+  if (!isExpert(role)) {
+    throw new ValidityError('Huna ruhusa ya rejesta ya gharama za uendeshaji (expert only).', 403);
+  }
+  const r = await pool.query(
+    `SELECT w.id, w.project_id, p.name AS project_name, p.status AS project_status,
+            w.allocation_step, w.revenue_reference, w.amount, w.percentage, w.source_account_code,
+            w.destination_account_code, w.reconciliation_status, w.rule_version, w.created_at
+     FROM waterfall_allocation_records w
+     JOIN projects p ON p.id = w.project_id
+     WHERE w.allocation_step IN ('OPEX', 'PAYROLL')
+     ORDER BY w.id`
+  );
+  const byStep = { OPEX: 0, PAYROLL: 0 };
+  const byProj = {};
+  const entries = r.rows.map((x) => {
+    const ref = {
+      id: x.id,
+      project: { id: x.project_id, name: x.project_name, status: x.project_status },
+      step: x.allocation_step,
+      revenue_reference: x.revenue_reference,
+      gross_revenue: round2(Number(x.amount || 0) / (Number(x.percentage || 0) / 100)),
+      rate_pct: Number(x.percentage || 0),
+      amount: round2(Number(x.amount || 0)),
+      source_account_code: x.source_account_code,
+      destination_account_code: x.destination_account_code,
+      reconciliation_status: x.reconciliation_status,
+      rule_version: x.rule_version,
+      created_at: x.created_at,
+    };
+    byStep[x.allocation_step] += ref.amount;
+    if (!byProj[x.project_id]) byProj[x.project_id] = { entries: 0, total: 0 };
+    byProj[x.project_id].entries += 1;
+    byProj[x.project_id].total += ref.amount;
+    return ref;
+  });
+  const total = round2(entries.reduce((s, x) => s + x.amount, 0));
+  return {
+    success: true,
+    generated_at: new Date().toISOString(),
+    summary: {
+      allocations: entries.length,
+      total_expenses: total,
+      opex_total: round2(byStep.OPEX),
+      payroll_total: round2(byStep.PAYROLL),
+      projects: Object.keys(byProj).length,
+      per_project: byProj,
+    },
+    entries,
+  };
+}
+
+async function exportOperatingExpensesRegisterCsv({ role }) {
+  const r = await getOperatingExpensesRegister({ role });
+  const esc = (v) => { const s = v === null || v === undefined ? '' : String(v); return `"${s.replace(/"/g, '""')}"`; };
+  const L = [];
+  L.push('AFRIKOBA GLOBAL - OPERATING EXPENSES REGISTER (OPEX + PAYROLL)');
+  L.push(`Generated at,${esc(r.generated_at)}`);
+  L.push(`Allocations,${r.summary.allocations}`);
+  L.push(`Total expenses,${r.summary.total_expenses}`);
+  L.push(`OPEX,${r.summary.opex_total}`);
+  L.push(`PAYROLL,${r.summary.payroll_total}`);
+  L.push(`Projects,${r.summary.projects}`);
+  L.push('');
+  L.push('id,project_id,project_name,step,revenue_reference,gross_revenue,rate_pct,amount,source_account,destination_account,reconciliation_status,rule_version,created_at');
+  for (const x of r.entries) {
+    L.push([x.id, x.project.id, esc(x.project.name), x.step, esc(x.revenue_reference), x.gross_revenue, x.rate_pct, x.amount,
+            esc(x.source_account_code), esc(x.destination_account_code), esc(x.reconciliation_status),
+            x.rule_version, esc(x.created_at)].join(','));
+  }
+  return L.join('\n');
+}
+
+function renderOperatingExpensesRegisterPdf(v, stream) {
+  const doc = new PDFDocument({ size: 'A4', landscape: true, margin: 36 });
+  doc.pipe(stream);
+  const G = '#0B5D1E';
+  const m = (n) => `${formatMoney(n)} TZS`;
+
+  doc.fontSize(16).fillColor(G).text('AFRIKOBA GLOBAL', { align: 'center' });
+  doc.fontSize(12).fillColor('#333').text('REJESTA YA GHARAMA ZA UENDESHAJI / OPERATING EXPENSES REGISTER', { align: 'center' });
+  doc.fontSize(8).fillColor('#888').text(`Imetolewa / Generated: ${new Date(v.generated_at).toISOString()}`, { align: 'center' });
+  doc.moveDown(0.3);
+  vline(doc, doc.y + 4);
+
+  doc.fontSize(10).fillColor(G).text('Muhtasari / Summary');
+  vline(doc, doc.y + 2);
+  voucherField(doc, 'Ugawaji / Allocations', String(v.summary.allocations));
+  voucherField(doc, 'Jumla gharama / Total expenses', m(v.summary.total_expenses));
+  voucherField(doc, 'OPEX', m(v.summary.opex_total));
+  voucherField(doc, 'PAYROLL / Mishahara', m(v.summary.payroll_total));
+  voucherField(doc, 'Miradi / Projects', String(v.summary.projects));
+  doc.moveDown(0.4);
+
+  const tbl = v.entries.map((x) => [
+    String(x.id), String(x.project.id), x.project.name, x.step, x.revenue_reference, m(x.gross_revenue),
+    `${x.rate_pct}%`, m(x.amount), `${x.source_account_code} → ${x.destination_account_code}`,
+    x.reconciliation_status, `v${x.rule_version}`, String(x.created_at || '').slice(0, 19).replace('T', ' '),
+  ]);
+  const hdr = ['#', 'Proj', 'Mradi', 'Hatua', 'Mapato Ref', 'Jumla Mapato', 'Kiwango', 'Gharama', 'Hesabu (Kutoka → Kwenda)', 'Hali Ukaguzi', 'Mst.', 'Tarehe'];
+  const widths = [24, 36, 100, 46, 100, 82, 44, 78, 150, 80, 30, 96];
+  let y = doc.y;
+  const drawRow = (cells, isHeader) => {
+    let x = 40;
+    doc.fontSize(6.5).fillColor(isHeader ? '#0B5D1E' : '#111');
+    cells.forEach((c, i) => {
+      doc.text(String(c || ''), x, y, { width: widths[i], lineBreak: false });
+      x += widths[i];
+    });
+    y += isHeader ? 11 : 13;
+  };
+  drawRow(hdr, true);
+  for (const row of tbl) { if (y > 520) { doc.addPage(); y = 36; drawRow(hdr, true); } drawRow(row, false); }
+
+  doc.moveDown(0.4);
+  vline(doc, y + 4);
+  doc.moveDown(0.7);
+  doc.fontSize(8).fillColor('#888').text('Imekaguliwa na / Reviewed by', { align: 'center' });
+  doc.moveDown(1.2);
+  doc.moveTo(210, doc.y).lineTo(420, doc.y).stroke('#aaa');
+  doc.fontSize(8).fillColor('#888').text('Mkaguzi Mkuu (Reviewer)', { align: 'center' });
+  doc.end();
+  return doc;
+}
+
+// ============================================================================
 // PHASE 40 — PLATFORM DEBT SERVICE REGISTER (EXPERT-ONLY)
 // ============================================================================
 
@@ -6739,6 +6868,9 @@ module.exports = {
   getDebtServiceRegister,
   exportDebtServiceRegisterCsv,
   renderDebtServiceRegisterPdf,
+  getOperatingExpensesRegister,
+  exportOperatingExpensesRegisterCsv,
+  renderOperatingExpensesRegisterPdf,
   exportPlatformProjectRegisterCsv,
   preparePlatformProjectRegisterPdf,
   renderPlatformProjectRegisterPdf,

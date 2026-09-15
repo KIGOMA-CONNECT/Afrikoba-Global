@@ -982,6 +982,31 @@ router.get('/projects/:id/settlement-register/pdf', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// Phase 41: platform operating expenses register (expert-only) + export + pdf
+router.get('/projects/ops/operating-expenses', async (req, res, next) => {
+  try {
+    return res.json(await projectFinance.getOperatingExpensesRegister({ role: req.user.role }));
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/ops/operating-expenses/export', async (req, res, next) => {
+  try {
+    const csv = await projectFinance.exportOperatingExpensesRegisterCsv({ role: req.user.role });
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename=operating-expenses.csv');
+    return res.send(csv);
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/ops/operating-expenses/pdf', async (req, res, next) => {
+  try {
+    const data = await projectFinance.getOperatingExpensesRegister({ role: req.user.role });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'inline; filename=operating-expenses.pdf');
+    projectFinance.renderOperatingExpensesRegisterPdf(data, res);
+  } catch (e) { next(e); }
+});
+
 // Phase 40: platform debt service register (expert-only) + export + pdf
 router.get('/projects/ops/debt-service-register', async (req, res, next) => {
   try {
