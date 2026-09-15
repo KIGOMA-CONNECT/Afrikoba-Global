@@ -1806,6 +1806,142 @@ async function getCloseOutReport(projectId, { userId, role }) {
  * close-out releases) into a single consolidated view for the owner, confirmed
  * investors, or experts. Mirrors the close-out break-down once completed.
  */
+// ============================================================================
+// PHASE 10 — LIQUIDATION & FINAL CLOSE
+// Terminal lifecycle step. A COMPLETED project may be liquidated only once its
+// close-out is fully settled (reserve + residual released, dividends paid,
+// escrow returned). Liquidation archives the project as LIQUIDATED and takes a
+// durable P&L snapshot that survives independent of the live ledger.
+// ============================================================================
+
+async function getLiquidationReport(projectId, { userId, role }) {
+  const p = await getProject(projectId);
+  const isOwner = p.owner_user_id === userId;
+  if (!isOwner && !isExpert(role)) {
+    throw new ValidityError('Huna ruhusa ya taarifa ya ufilisi wa mradi huu.', 403);
+  }
+
+  const liq = await pool.query('SELECT * FROM project_liquidations WHERE project_id = $1', [projectId]);
+  const existing = liq.rows[0] || null;
+
+  const st = await getProjectStatement(projectId, { userId, role });
+  const f = st.funds;
+  const investorReceivedTotal = round2(st.investors.reduce((a, x) => a + x.received, 0));
+  const investorInvestedTotal = round2(f.invested_confirmed);
+  const investorNet = round2(investorReceivedTotal - investorInvestedTotal);
+  const investorNetPct = investorInvestedTotal > 0 ? round2((investorNet / investorInvestedTotal) * 100) : 0;
+  const ownerReceivedTotal = round2(f.disbursed_to_owner + f.reserve_released_to_owner + f.residual_released_to_owner);
+
+  const missing = [];
+  if (Number(f.dividends_pending) > 0) missing.push('dividends_pending');
+  if (Number(f.escrow_held) > Number(f.escrow_returned_to_investors) + 0.01) missing.push('escrow');
+  const accruedReserve = await getAccruedCloseOutTotal(projectId, 'RESERVE', pool);
+  const accruedResidual = await getAccruedCloseOutTotal(projectId, 'OWNER_RESIDUAL', pool);
+  if (Number(f.reserve_released_to_owner) < accruedReserve - 0.01) missing.push('reserve');
+  if (Number(f.residual_released_to_owner) < accruedResidual - 0.01) missing.push('residual');
+
+  const ready = !existing && missing.length === 0;
+  return {
+    success: true,
+    project: st.project,
+    liquidated: !!existing,
+    ready,
+    missing,
+    liquidation: existing,
+    snapshot: {
+      funds: f,
+      investors: st.investors,
+      investor_received_total: investorReceivedTotal,
+      investor_invested_total: investorInvestedTotal,
+      investor_net: investorNet,
+      investor_net_pct: investorNetPct,
+      owner_received_total: ownerReceivedTotal,
+    },
+  };
+}
+
+async function liquidateProject(projectId, { userId, role }) {
+  const p = await getProject(projectId);
+  const isOwner = p.owner_user_id === userId;
+  if (!isOwner && !isExpert(role)) {
+    throw new ValidityError('Huna mamlaka ya kufilisi mradi huu.', 403);
+  }
+  if (p.status !== 'COMPLETED') {
+    throw new ValidityError(`Ufilisi hufanyika baada ya mradi kuwa COMPLETED. (sasa: ${p.status})`);
+  }
+
+  const report = await getLiquidationReport(projectId, { userId, role });
+  if (report.liquidated) {
+    return { success: true, already_liquidated: true, project_id: projectId, reference: report.liquidation.reference };
+  }
+  if (!report.ready) {
+    throw new ValidityError(`Mradi haujafikia hali ya kufilisiwa: hatua zifuatazo hazijakamilika - ${report.missing.join(', ')}.`, 409);
+  }
+
+  const s = report.snapshot;
+  const settlementRes = await pool.query('SELECT * FROM project_settlements WHERE project_id = $1', [projectId]);
+  const ref = `LIQD-${projectId}-${Date.now()}`;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const ins = await client.query(
+      `INSERT INTO project_liquidations
+         (project_id, settlement_id, reference, status,
+          funds_invested_total, revenue_total, disbursed_to_owner,
+          dividends_paid_to_investors, escrow_returned_to_investors,
+          reserve_released_to_owner, residual_released_to_owner,
+          owner_received_total, investor_received_total, investor_net, investor_net_pct,
+          summary, created_by)
+       VALUES ($1,$2,$3,'LIQUIDATED',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+       RETURNING *`,
+      [
+        projectId,
+        settlementRes.rows[0]?.id || null,
+        ref,
+        s.funds.invested_confirmed, s.funds.revenue_total, s.funds.disbursed_to_owner,
+        s.funds.dividends_paid_to_investors, s.funds.escrow_returned_to_investors,
+        s.funds.reserve_released_to_owner, s.funds.residual_released_to_owner,
+        s.owner_received_total, s.investor_received_total, s.investor_net, s.investor_net_pct,
+        JSON.stringify({ funds: s.funds, investors: s.investors, reference: ref }),
+        userId,
+      ]
+    );
+    await client.query(`UPDATE projects SET status = 'LIQUIDATED', updated_at = NOW() WHERE id = $1`, [projectId]);
+    await logAudit({
+      eventType: 'PROJECT_LIQUIDATED', action: 'CREATE', entityType: 'PROJECT',
+      userId, entityId: projectId, referenceId: ref,
+      afterData: { funds_invested_total: s.funds.invested_confirmed, owner_received_total: s.owner_received_total, investor_received_total: s.investor_received_total, missing: report.missing },
+      client,
+    });
+    await client.query('COMMIT');
+
+    await createNotification(p.owner_user_id, {
+      title: 'Mradi umefilisiwa',
+      body: `Mradi "${p.name}" umefilisiwa (zimefungwa). Rejea: ${ref}`,
+      type: 'PROJECT', entityType: 'PROJECT', entityId: projectId,
+    });
+    await enqueueOutbox({
+      eventType: 'PROJECT_LIQUIDATED',
+      aggregateId: String(projectId),
+      payload: { projectId, name: p.name, reference: ref, owner_received_total: s.owner_received_total, investor_received_total: s.investor_received_total },
+      reference: `${ref}-outbox`,
+    }).catch(() => {});
+
+    return { success: true, project_id: projectId, reference: ref, liquidation: ins.rows[0] };
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    if (String(e.message || '').toLowerCase().includes('duplicate key')) {
+      const existing = await pool.query('SELECT * FROM project_liquidations WHERE project_id = $1', [projectId]);
+      if (existing.rows.length > 0) {
+        return { success: true, already_liquidated: true, project_id: projectId, reference: existing.rows[0].reference };
+      }
+    }
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
 async function getProjectStatement(projectId, { userId, role }) {
   const p = await getProject(projectId);
   const isOwner = p.owner_user_id === userId;
@@ -2028,4 +2164,6 @@ module.exports = {
   getCloseOutReport,
   getProjectStatement,
   exportProjectStatementCsv,
+  getLiquidationReport,
+  liquidateProject,
 };

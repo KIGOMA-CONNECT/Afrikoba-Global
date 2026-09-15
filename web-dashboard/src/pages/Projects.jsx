@@ -20,6 +20,7 @@ export default function Projects() {
   const [settlement, setSettlement] = useState(null);
   const [closeOut, setCloseOut] = useState(null);
   const [statement, setStatement] = useState(null);
+  const [liquidation, setLiquidation] = useState(null);
   const [msg, setMsg] = useState({ type: '', text: '' });
   const [role, setRole] = useState('');
   const [expandedForm, setExpandedForm] = useState(false);
@@ -254,6 +255,25 @@ export default function Projects() {
       .catch(() => ok(t('projects.error')));
   };
 
+  const viewLiquidation = async (id) => {
+    try {
+      const r = await api.get(`/projects/${id}/liquidation`);
+      setLiquidation(r.data);
+      setStatement(null);
+      setCloseOut(null);
+    } catch (err) { error(err); }
+  };
+
+  const liquidate = async (id) => {
+    if (!window.confirm(t('projects.liquidation_confirm'))) return;
+    try {
+      const r = await api.post(`/projects/${id}/liquidate`);
+      ok(`${t('projects.liquidated_ok')} ${t('projects.liq_reference')}: ${r.data.reference}`);
+      load();
+      viewLiquidation(id);
+    } catch (err) { error(err); }
+  };
+
   const tabs = [
     { id: 'marketplace', label: t('projects.marketplace_tab') },
     { id: 'myprojects', label: t('projects.myprojects_tab') },
@@ -422,7 +442,7 @@ export default function Projects() {
                             <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => payConsultation(p.id)}>{t('projects.pay_fee')}</button>
                           )}
                           <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => runAiReview(p.id)}>{t('projects.ai_rereun')}</button>
-                          {['PUBLISHED', 'FUNDING', 'APPROVED', 'ACTIVE', 'COMPLETED'].includes(p.status) && (
+                          {['PUBLISHED', 'FUNDING', 'APPROVED', 'ACTIVE', 'COMPLETED', 'LIQUIDATED'].includes(p.status) && (
                             <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => viewStatement(p.id)}>{t('projects.statement')}</button>
                           )}
                           {['PUBLISHED', 'FUNDING', 'ACTIVE', 'APPROVED'].includes(p.status) && (
@@ -483,6 +503,7 @@ export default function Projects() {
                 <button className="btn" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => releaseReserve('DISTRIBUTION_RESERVE')}>{t('projects.reserve_payout')}</button>
                 <button className="btn" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => releaseReserve('OWNER_RESIDUAL')}>{t('projects.residual_payout')}</button>
                 <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => viewCloseOut(settlement.project.id)}>{t('projects.close_out')}</button>
+                <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => viewLiquidation(settlement.project.id)}>{t('projects.liquidation')}</button>
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px,1fr))', gap: 12 }}>
                 <div className="card"><div className="roles-tag">{t('projects.invested_total')}</div><b>{fmt(settlement.settlement.invested_total)}</b></div>
@@ -641,6 +662,43 @@ export default function Projects() {
               )}
             </div>
           )}
+          {liquidation && (
+            <div style={{ marginTop: 16 }}>
+              <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 8, flexWrap: 'wrap' }}>
+                <h4 style={{ margin: 0 }}>{t('projects.liquidation')}: {liquidation.project.name}</h4>
+                {liquidation.liquidated
+                  ? <span className="badge success">✓ {t('projects.already_liquidated')}</span>
+                  : (
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                      <span className={`badge ${liquidation.ready ? 'success' : 'warning'}`}>
+                        {liquidation.ready ? t('projects.liquidation_ready') : t('projects.liquidation_blocked')}
+                      </span>
+                      {liquidation.ready && (
+                        <button className="btn" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => liquidate(liquidation.project.id)}>{t('projects.liquidate')}</button>
+                      )}
+                    </div>
+                  )}
+              </div>
+              {!liquidation.liquidated && liquidation.missing.length > 0 && (
+                <p className="roles-tag" style={{ marginTop: 4 }}>{t('projects.liq_missing')}: {liquidation.missing.join(', ')}</p>
+              )}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px,1fr))', gap: 12 }}>
+                <div className="card"><div className="roles-tag">{t('projects.invested_total')}</div><b>{fmt(liquidation.snapshot.funds.invested_confirmed)}</b></div>
+                <div className="card"><div className="roles-tag">{t('projects.revenue_processed')}</div><b>{fmt(liquidation.snapshot.funds.revenue_total)}</b></div>
+                <div className="card"><div className="roles-tag">{t('projects.disbursed_to_owner')}</div><b>{fmt(liquidation.snapshot.funds.disbursed_to_owner)}</b></div>
+                <div className="card"><div className="roles-tag">{t('projects.reserve_to_owner')}</div><b>{fmt(liquidation.snapshot.funds.reserve_released_to_owner)}</b></div>
+                <div className="card"><div className="roles-tag">{t('projects.residual_to_owner')}</div><b>{fmt(liquidation.snapshot.funds.residual_released_to_owner)}</b></div>
+                <div className="card"><div className="roles-tag">{t('projects.owner_received')}</div><b>{fmt(liquidation.snapshot.owner_received_total)}</b></div>
+                <div className="card"><div className="roles-tag">{t('projects.escrow_return')}</div><b>{fmt(liquidation.snapshot.funds.escrow_returned_to_investors)}</b></div>
+                <div className="card"><div className="roles-tag">{t('projects.dividend_paid_inv')}</div><b>{fmt(liquidation.snapshot.funds.dividends_paid_to_investors)}</b></div>
+                <div className="card"><div className="roles-tag">{t('projects.investor_received_total')}</div><b>{fmt(liquidation.snapshot.investor_received_total)}</b></div>
+                <div className="card"><div className="roles-tag">Investor Net</div><b style={{ color: liquidation.snapshot.investor_net >= 0 ? '#15803d' : '#dc2626' }}>{fmt(liquidation.snapshot.investor_net)} ({liquidation.snapshot.investor_net_pct}%)</b></div>
+              </div>
+              {liquidation.liquidated && (
+                <div className="roles-tag" style={{ marginTop: 8 }}>{t('projects.liq_reference')}: {liquidation.liquidation.reference}</div>
+              )}
+            </div>
+          )}
         </div>
       )}
 
@@ -709,7 +767,7 @@ export default function Projects() {
                       <td><span className="badge info">{i.status}</span></td>
                       <td>
                         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                          {['PUBLISHED', 'FUNDING', 'APPROVED', 'ACTIVE', 'COMPLETED'].includes(i.project_status) && (
+                          {['PUBLISHED', 'FUNDING', 'APPROVED', 'ACTIVE', 'COMPLETED', 'LIQUIDATED'].includes(i.project_status) && (
                             <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => viewStatement(i.project_id)}>{t('projects.statement')}</button>
                           )}
                           {i.project_status === 'EXPIRED' && i.status === 'CONFIRMED' && (

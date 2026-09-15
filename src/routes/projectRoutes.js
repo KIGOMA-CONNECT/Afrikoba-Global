@@ -405,6 +405,21 @@ router.get('/projects/:id/statement/export', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// Phase 10: liquidation report + final close (terminal lifecycle step)
+router.get('/projects/:id/liquidation', async (req, res, next) => {
+  try {
+    const report = await projectFinance.getLiquidationReport(parseInt(req.params.id, 10), { userId: req.user.id, role: req.user.role });
+    return res.json(report);
+  } catch (e) { next(e); }
+});
+
+router.post('/projects/:id/liquidate', async (req, res, next) => {
+  try {
+    const result = await projectFinance.liquidateProject(parseInt(req.params.id, 10), { userId: req.user.id, role: req.user.role });
+    return res.json({ success: true, ...result });
+  } catch (e) { next(e); }
+});
+
 // --- Budget & Milestones ---------------------------------------------------
 router.post('/projects/:id/budget', async (req, res, next) => {
   try {
