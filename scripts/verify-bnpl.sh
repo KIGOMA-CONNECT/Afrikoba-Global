@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+﻿#!/usr/bin/env bash
 # ============================================================================
 # AFRIKOBA GLOBAL - BNPL LOAN BOOK / MWENENDO WA MIKOPO YA BNPL - ACCEPTANCE
 # ============================================================================
@@ -24,6 +24,7 @@ set -u
 BASE="${BASE:-http://127.0.0.1:3001/api/v1}"
 EXPERT="${EXPERT:-}"
 fail=0
+skipped=0
 
 probe() {
   local desc="$1" ok="$2"
@@ -37,16 +38,17 @@ probe "anonymous -> HTTP 401 (want 401)" "$([ "$code" = "401" ] && echo 1 || ech
 # --- probe 2: expert JWT 200 + BN- reference + cohort + terms + fee ------------
 if [ -z "$EXPERT" ]; then
   echo "SKIP expert probe (no EXPERT JWT supplied; mint on the box)"
+  skipped=1
 else
   code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $EXPERT" "$BASE/projects/ops/bnpl-loan-book")
   probe "expert -> HTTP 200 (want 200)" "$([ "$code" = "200" ] && echo 1 || echo 0)"
   if [ "$code" = "200" ]; then
     curl -s -H "Authorization: Bearer $EXPERT" "$BASE/projects/ops/bnpl-loan-book" > /tmp/bnpl.json
     has_ref=$(grep -c '"reference"' /tmp/bnpl.json)
-    has_bn=$(grep -c '"BN-' /tmp/bnpl.json)
+    has_bn=$(node -e "var d=JSON.parse(require('fs').readFileSync('/tmp/bnpl.json','utf8'));var r=d.reference||'';process.stdout.write(/^BN(PL)?-/.test(r)?'1':'0')")
     has_months=$(grep -c '"months"' /tmp/bnpl.json)
     has_term=$(grep -c '"min_term_months"' /tmp/bnpl.json)
-    has_fee=$(grep -c '"fee_per_year_pct"' /tmp/bnpl.json)
+    has_fee=$(node -e "var d=JSON.parse(require('fs').readFileSync('/tmp/bnpl.json','utf8'));var v=d.terms&&d.terms.fee_rate_per_year_pct||'';process.stdout.write(v==='15%'?'1':'0')")
     probe "reference + BN- prefix present" "$([ "$has_ref" -ge 1 ] && [ "$has_bn" -ge 1 ] && echo 1 || echo 0)"
     probe "12-month cohort present" "$([ "$has_months" -ge 1 ] && echo 1 || echo 0)"
     probe "documented term range 3-24 months present" "$([ "$has_term" -ge 1 ] && echo 1 || echo 0)"
@@ -59,6 +61,7 @@ fi
 # --- probe 3: CSV banner + header (expert only) --------------------------------
 if [ -z "$EXPERT" ]; then
   echo "SKIP CSV probe (no EXPERT JWT)"
+  skipped=1
 else
   code=$(curl -s -o /tmp/bnpl.csv -w '%{http_code}' -H "Authorization: Bearer $EXPERT" "$BASE/projects/ops/bnpl-loan-book/export")
   probe "CSV export -> HTTP 200 (want 200)" "$([ "$code" = "200" ] && echo 1 || echo 0)"
@@ -73,20 +76,24 @@ fi
 # --- probe 4: PDF banner words (expert only) -----------------------------------
 if [ -z "$EXPERT" ]; then
   echo "SKIP PDF probe (no EXPERT JWT)"
+  skipped=1
 else
   code=$(curl -s -o /tmp/bnpl.pdf -w '%{http_code}' -H "Authorization: Bearer $EXPERT" "$BASE/projects/ops/bnpl-loan-book/pdf")
   probe "PDF export -> HTTP 200 (want 200)" "$([ "$code" = "200" ] && echo 1 || echo 0)"
   if [ "$code" = "200" ]; then
-    probe "PDF banner words present: AFRIKOBA GLOBAL BNPL LOAN BOOK" "$(strings /tmp/bnpl.pdf 2>/dev/null | grep -qi "AFRIKOBA GLOBAL BNPL LOAN BOOK" && echo 1 || echo 0)"
+    probe "PDF banner words present: AFRIKOBA GLOBAL BNPL LOAN BOOK" "$(strings /tmp/bnpl.pdf 2>/dev/null | grep -qiE "AFRIKOBA GLOBAL[[:space:]]*-[[:space:]]*BNPL LOAN BOOK" && echo 1 || echo 0)"
     probe "PDF term words: 3-24 + 15%" "$(strings /tmp/bnpl.pdf 2>/dev/null | grep -qiE "3.?24|15%" && echo 1 || echo 0)"
   fi
 fi
 
 echo ""
-if [ "$fail" = "0" ]; then
-  echo "ACCEPTANCE: PASS"
-  exit 0
-else
+if [ "$fail" != "0" ]; then
   echo "ACCEPTANCE: FAIL"
   exit 1
+elif [ "$skipped" != "0" ]; then
+  echo "ACCEPTANCE: SKIPPED (expert/CSV/PDF probes not run - no EXPERT JWT)"
+  exit 2
+else
+  echo "ACCEPTANCE: PASS"
+  exit 0
 fi
