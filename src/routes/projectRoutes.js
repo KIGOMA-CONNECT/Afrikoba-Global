@@ -1112,6 +1112,32 @@ router.get('/projects/ops/earnings-trend/pdf', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// Phase 57: BNPL loan book (expert-only) - JSON + CSV + PDF, twins earnings-trend seam
+const bnplFinance = require('../services/bnplService');
+
+router.get('/projects/ops/bnpl-loan-book', async (req, res, next) => {
+  try {
+    return res.json(await bnplFinance.getPlatformBnplLoanBook({ userId: req.user.id, role: req.user.role }));
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/ops/bnpl-loan-book/export', async (req, res, next) => {
+  try {
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename=platform-bnpl-loan-book.csv');
+    return res.send(await bnplFinance.exportPlatformBnplLoanBookCsv({ userId: req.user.id, role: req.user.role }));
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/ops/bnpl-loan-book/pdf', async (req, res, next) => {
+  try {
+    const data = await bnplFinance.preparePlatformBnplLoanBookPdf({ userId: req.user.id, role: req.user.role });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'inline; filename=platform-bnpl-loan-book.pdf');
+    bnplFinance.renderPlatformBnplLoanBookPdf(data, res);
+  } catch (e) { next(e); }
+});
+
 // Phase 46: platform finance control audit register (expert-only) + export + pdf
 router.get('/projects/ops/finance-audit', async (req, res, next) => {
   try {
