@@ -1088,6 +1088,30 @@ router.get('/projects/ops/kpi/pdf', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// Phase 55: platform earnings & returns trend (12-month waterfall cohort) - expert only
+router.get('/projects/ops/earnings-trend', async (req, res, next) => {
+  try {
+    return res.json(await projectFinance.getPlatformEarningsTrend({ userId: req.user.id, role: req.user.role }));
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/ops/earnings-trend/export', async (req, res, next) => {
+  try {
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename=platform-earnings-trend.csv');
+    return res.send(await projectFinance.exportPlatformEarningsTrendCsv({ userId: req.user.id, role: req.user.role }));
+  } catch (e) { next(e); }
+});
+
+router.get('/projects/ops/earnings-trend/pdf', async (req, res, next) => {
+  try {
+    const data = await projectFinance.preparePlatformEarningsTrendPdf({ userId: req.user.id, role: req.user.role });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'inline; filename=platform-earnings-trend.pdf');
+    projectFinance.renderPlatformEarningsTrendPdf(data, res);
+  } catch (e) { next(e); }
+});
+
 // Phase 46: platform finance control audit register (expert-only) + export + pdf
 router.get('/projects/ops/finance-audit', async (req, res, next) => {
   try {

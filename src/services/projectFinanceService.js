@@ -6493,6 +6493,184 @@ async function buildProjectArchive({ userId, role, projectId }) {
 }
 
 // ============================================================================
+// PHASE 55 — PLATFORM EARNINGS & RETURNS TREND (EXPERT-ONLY, 12-MONTH COHORT)
+// JSON + CSV + PDF, COMPOSED FROM THE SAME REGISTERS AS THE KPI DASHBOARD.
+// ============================================================================
+
+async function getPlatformEarningsTrend({ userId, role }) {
+  if (!isExpert(role)) {
+    throw new ValidityError('Huna ruhusa ya mwenendo wa mapato ya jukwaa (expert only).', 403);
+  }
+  const ctx = { userId, role };
+  const [pfe, cert, kyc, sched, wf] = await Promise.all([
+    getPlatformPfeBook(ctx),
+    getPfeMasterCertificate(ctx),
+    getKycComplianceRegister(ctx),
+    getScheduleMonitor(ctx),
+    getWaterfallSummary(ctx),
+  ]);
+
+  const T = pfe.totals || {};
+  const V = cert.totals || {};
+  const invested = Number(T.invested || 0);
+  const escrowReturned = Number(V.escrow_returned || 0);
+  const dividendsPaid = Number(V.dividends_paid || 0);
+  const capitalReturned = round2(escrowReturned + dividendsPaid women_still);
+  capitalReturned = round2(Number(escrowReturned) + Number(dividendsPaid));
+  const escrowHeld = Number(V.escrow_held || 0);
+
+  const months = (wf.months || []).map((mn) => {
+    const revenue = round2(Number(mn.revenue || 0));
+    const escrowReturnedM = round2(Number(mn.escrow_returned || 0));
+    const dividendM = round2(Number(mn.dividends_paid || 0));
+    const returnedM = round2(escrowReturnedM + dividendM);
+    return {
+      month: mn.month,
+      revenue,
+      invested: round2(Number(mn.invested || 0)),
+      escrow_held: round2(Number(mn.escrow_held || 0)),
+      escrow_returned: escrowReturnedM,
+      dividends_paid: dividendM,
+      cumulative_returned: round2(Number(mn.cumulative_returned || returnedM)),
+      recovery_pct: round2(Number(mn.recovery_pct || 0)),
+    };
+  });
+
+  return {
+    success: true,
+    reference: `ET-${Date.now()}`,
+    generated_at: new Date().toISOString(),
+    currency: 'TZS',
+    summary: {
+      projects: wf.summary ? wf.summary.projects : 0,
+      open: wf.summary ? wf.summary.open : 0,
+      active_schedule: sched.summary ? sched.summary.active_projects : 0,
+      milestones_due: sched.summary ? sched.summary.milestones_due : 0,
+      funding_deadlines: sched.summary ? sched.summary.funding_deadlines : 0,
+      overdue: sched.summary ? sched.summary.overdue : 0,
+    },
+    capital: {
+      invested,
+      escrow_held: escrowHeld,
+      escrow_returned: escrowReturned,
+      dividends_paid: dividendsPaid,
+      capital_returned: capitalReturned,
+      capital_recovery_pct: invested > 0 ? round2((capitalReturned / invested) * 100) : 0,
+      liquidity_ratio: invested > 0 ? round2((escrowHeld / invested) * 100) : 0,
+      wallet_closing: round2(Number(V.wallet_closing || 0)),
+    },
+    months,
+    totals: {
+      revenue: round2(months.reduce((s, x) => s + x.revenue, 0)),
+      invested,
+      escrow_held: escrowHeld,
+      escrow_returned: escrowReturned,
+      dividends_paid: dividendsPaid,
+      capital_returned: capitalReturned,
+    },
+  };
+}
+
+async function exportPlatformEarningsTrendCsv({ userId, role }) {
+  const r = await getPlatformEarningsTrend({ userId, role });
+  const esc = (v) => { const s = v === null || v === undefined ? '' : String(v); return `"${s.replace(/"/g, '""')}"`; };
+  const m = (v) => `${Number(v || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })} TZS`;
+  const L = [];
+  L.push('AFRIKOBA GLOBAL - PLATFORM EARNINGS TREND / MWENENDO WA MAPATO YA JUKWAA');
+  L.push(`Reference,${esc(r.reference)}`);
+  L.push(`Generated at,${esc(r.generated_at)}`);
+  L.push('Currency,TZS');
+  L.push('');
+  L.push('Summary');
+  L.push(`Projects,${r.summary.projects}`);
+  L.push(`Open,${r.summary.open}`);
+  L.push(`Active (schedule),${r.summary.active_schedule}`);
+  L.push(`Milestones due,${r.summary.milestones_due}`);
+  L.push(`Funding deadlines,${r.summary.funding_deadlines}`);
+  L.push(`Overdue,${r.summary.overdue}`);
+  L.push('');
+  L.push('Capital');
+  L.push(`Invested,${m(r.capital.invested)}`);
+  L.push(`Escrow held,${m(r.capital.escrow_held)}`);
+  L.push(`Escrow returned,${m(r.capital.escrow_returned)}`);
+  L.push(`Dividends paid,${m(r.capital.dividends_paid)}`);
+  L.push(`Capital returned,${m(r.capital.capital_returned)}`);
+  L.push(`Capital recovery %,${r.capital.capital_recovery_pct}`);
+  L.push(`Liquidity ratio %,${r.capital.liquidity_ratio}`);
+  L.push(`Wallet closing,${m(r.capital.wallet_closing)}`);
+  L.push('');
+  L.push('Monthly cohort');
+  L.push('month,revenue,invested,escrow_held,dividends_paid,escrow_returned,cumulative_returned,recovery_pct');
+  for (const x of r.months) {
+    L.push([x.month, m(x.revenue), m(x.invested), m(x.escrow_held), m(x.dividends_paid), m(x.escrow_returned), m(x.cumulative_returned), `${x.recovery_pct}%`].join(','));
+  }
+  L.push('');
+  L.push(`Revenue (12M),${m(r.totals.revenue)}`);
+  L.push(`Invested,${m(r.totals.invested)}`);
+  L.push(`Escrow held,${m(r.totals.escrow_held)}`);
+  L.push(`Escrow returned,${m(r.totals.escrow_returned)}`);
+  L.push(`Dividends paid,${m(r.totals.dividends_paid)}`);
+  L.push(`Capital returned,${m(r.totals.capital_returned)}`);
+  return L.join('\n');
+}
+
+async function preparePlatformEarningsTrendPdf({ userId, role }) {
+  return getPlatformEarningsTrend({ userId, role });
+}
+
+function renderPlatformEarningsTrendPdf(v, stream) {
+  const doc = new PDFDocument({ size: 'A4', margin: 40 });
+  doc.pipe(stream);
+  const G = '#0B5D1E';
+  const R = '#B3261E';
+  const m = (n) => `${formatMoney(n)} TZS`;
+  const ensure = () => { if (doc.y > 600) doc.addPage(); };
+
+  doc.fontSize(17).fillColor(G).text('AFRIKOBA GLOBAL', { align: 'center' });
+  doc.fontSize(12).fillColor('#333').text('PLATFORM EARNINGS TREND / MWENENDO WA MAPATO YA JUKWAA', { align: 'center' });
+  doc.fontSize(8).fillColor('#888').text(`Ref: ${v.reference}  |  Generated: ${new Date(v.generated_at).toISOString()}`, { align: 'center' });
+  doc.moveDown(0.3);
+  const status = 'RECONCILED';
+  doc.fontSize(11).fillColor(G).text(`HALI: ${status} / STATUS: ${status}`, { align: 'center' });
+  doc.moveDown(0.3 MJ);
+  doc.moveDown(0.3);
+
+  voucherField(doc, 'Projects', String(v.summary.projects));
+  voucherField(doc, 'Open', String(v.summary.open));
+  voucherField(doc, 'Active (schedule)', String(v.summary.active_schedule));
+  voucherField(doc, 'Milestones due', String(v.summary.milestones_due));
+  voucherField(doc, 'Funding deadlines', String(v.summary.funding_deadlines));
+  voucherField(doc, 'Overdue', String(v.summary.overdue));
+  vline(doc, doc.y + 4);
+  doc.moveDown(0.3);
+
+  doc.fontSize(10).fillColor(G).text('Capital / Mtaji');
+  vline(doc, doc.y + 2);
+  voucherField(doc, 'Invested', m(v.capital.invested));
+  voucherField(doc, 'Escrow held', m(v.capital.escrow_held));
+  voucherField(doc, 'Escrow returned', m(v.capital.escrow_returned));
+  voucherField(doc, 'Dividends paid', m(v.capital.dividends_paid));
+  voucherField(doc, 'Capital returned', m(v.capital.capital_returned));
+  voucherField(doc, 'Capital recovery', `${v.capital.capital_recovery_pct}%`);
+  voucherField(doc, 'Liquidity ratio', `${v.capital.liquidity_ratio}%`);
+  voucherField(doc, 'Wallet closing', m(v.capital.wallet_closing));
+  doc.moveDown(0.3);
+
+  ensure();
+  doc.fontSize(10).fillColor(G).text('Monthly cohort / Miezi 12');
+  vline(doc, doc.y + 2);
+  for (const x of v.months) {
+    ensure();
+    doc.fontSize(8).fillColor('#111').text(`${x.month}  |  revenue ${m(x.revenue)}  |  invested ${m(x.invested)}  |  escrow ${m(x.escrow_held)}  |  div ${m(x.dividends_paid)}  |  returned ${m(x.escrow_returned)}  |  cum ${m(x.cumulative_returned)}  |  ${x.recovery_pct}%`);
+  }
+  doc.moveDown(0.4);
+
+  doc.fontSize(8).fillColor('#888').text('AFRIKOBA GLOBAL - Kitengo cha Fedha cha Jukwaa / Platform Finance Unit');
+  doc.end();
+  return doc;
+}
+
+// ============================================================================
 // PHASE 53 — PLATFORM KPI & HEALTH DASHBOARD (EXPERT-ONLY, COMPOSED REGISTERS)
 // ============================================================================
 
