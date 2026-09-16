@@ -12,7 +12,7 @@ name: Afrikoba Staging Deployment
 #   2. .env.staging exists there (secrets persist; created once)
 #   3. Reverse proxy vhost for staging.afrikoba.com → 127.0.0.1:3001
 #      in /www/server/panel/vhost/nginx/ (aaPanel nginx, TLS + Basic Auth)
-#   4. DNS A record    staging.afrikoba.com          → server IP (PENDING - user)
+#   4. DNS A record    staging.afrikoba.com          → 129.121.86.66 (DONE 2026-09-16; verified live)
 #
 # GitHub secrets/variables needed:
 #   secrets.STAGING_DB_PASSWORD   (set ONCE - persists in staging DB volume)
