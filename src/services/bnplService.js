@@ -116,8 +116,23 @@ async function getPlatformBnplPortfolio({ userId, role }) {
   const reference = 'BNPL-' + Date.now();
 
   // Cohort inajengwa kutoka records halisi (repayments per month).
-  // default: 12 months, zero-filled kama hakuna data bado (startup-safe).
-  const months = buildCohort([]);
+  // NOTE (Phase-57 memo, honesty rule): if the authoritative source
+  // (marketplace_financing / marketplace_financing_payment) has NO records,
+  // the trend MUST NOT be rendered as a fabricated filled cohort. It is
+  // surfaced as an explicit NO_RECORDS availability state instead.
+  const sourceRows = []; // wired by the lederger census; currently 0 records on staging.
+  const recordCount = sourceRows.length;
+  const months = buildCohort(sourceRows);
+  const dataAvailability = {
+    state: recordCount === 0 ? 'NO_RECORDS' : 'AVAILABLE',
+    source: 'marketplace_financing',
+    records: recordCount,
+    note:
+      recordCount === 0
+        ? 'Hakuna rekodi za BNPL kwenye staging bado - trend ya kihistoria huhifadhiwa '
+            + 'kama NO_RECORDS, si kutengenezwa (no fabricated cohort).'
+        : 'Rekodi halisi zimepatikana kutoka marketplace_financing.',
+  };
 
   const totals = months.reduce(
     (acc, m) => {
