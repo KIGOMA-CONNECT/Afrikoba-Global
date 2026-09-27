@@ -1,0 +1,48 @@
+TEST #1R focused re-test nonce=JI7RLW
+
+########## #1R-A  lockWallet race: 2 x 50000 against 70000 available ##########
+  A user = {"id":9}
+  A state BEFORE = {"wallet":70000,"locked":0}
+  A refs = {"a":"L1RAJI7RLW","b":"L1RBJI7RLW"}
+  A each claim 50000 <= 70000 available, but 2 x 50000 = 100000 > 70000 = undefined
+  A execution A = {"label":"A","outcome":"SUCCESS","attempt":1,"result":{"success":true,"reference":"L1RAJI7RLW","locked":50000}}
+  A execution B = {"label":"B","outcome":"REJECTED","attempt":1,"error":"Salio lako halitoshi kwa hold hii."}
+  A state AFTER = {"wallet":20000,"locked":50000}
+  A op row A = {"id":"25","operation_type":"LOCK","reference_id":"L1RAJI7RLW","status":"SUCCESS","amount":"50000.0000","last_error":null}
+  A op row B = null
+  A journal A = [{"id":"32","account_code":"CUSTOMER_WALLET","direction":"DR","amount":"50000.0000"},{"id":"33","account_code":"CARD_HOLD","direction":"CR","amount":"50000.0000"}]
+  A journal B = []
+  A WINNERS (expect exactly 1) = 1
+  A total funds before -> after = 70000 -> 70000
+  >> #1R-A VERDICT = PASS  (exactly one claim honoured, second blocked by conditional guard, funds conserved)
+
+########## #1R-B  holdFunds race: 2 x 50000 against 70000 available ##########
+  B user = {"id":10}
+  B state BEFORE = {"wallet":70000,"locked":0}
+  B A attempt 1 -> deadlock, retrying
+  B execution A = {"label":"A","outcome":"REJECTED","attempt":2,"error":"Salio lako halitoshi kwa hold hii."}
+  B execution B = {"label":"B","outcome":"SUCCESS","attempt":1,"result":{"success":true,"reference":"L1RDJI7RLW","held":50000}}
+  B state AFTER = {"wallet":20000,"locked":50000}
+  B op row A = null
+  B op row B = {"id":"28","operation_type":"HOLD","reference_id":"L1RDJI7RLW","status":"NEW","amount":"50000.0000","last_error":null}
+  B journal A = []
+  B journal B = [{"id":"34","account_code":"CUSTOMER_WALLET","direction":"DR","amount":"50000.0000"},{"id":"35","account_code":"CARD_HOLD","direction":"CR","amount":"50000.0000"}]
+  B WINNERS (expect exactly 1) = 1
+  B total funds before -> after = 70000 -> 70000
+  >> #1R-B VERDICT = FAIL
+  !! #1R-B assertion mismatch
+
+########## #1R-C  sequential: single affordable lock, then an unaffordable one ##########
+  C user = {"id":11}
+  C state BEFORE = {"wallet":40000,"locked":0}
+  C lock 1 (40000 of 40000) result = {"success":true,"reference":"L1REJI7RLW","locked":40000}
+  C state after lock 1 = {"wallet":0,"locked":40000}
+  C op row 1 = {"id":"30","operation_type":"LOCK","reference_id":"L1REJI7RLW","status":"SUCCESS","amount":"40000.0000","last_error":null}
+  C lock 2 (1 with 0 available) result = null
+  C lock 2 error = Salio lako halitoshi kwa hold hii.
+  C state AFTER = {"wallet":0,"locked":40000}
+  C op row 2 (rolled back -> must be null) = null
+  C journal 2 (must be empty) = []
+  >> #1R-C VERDICT = PASS
+
+FOCUSED RE-TEST COMPLETE

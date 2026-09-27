@@ -1,0 +1,11 @@
+PASS  #1 LOCK is conditional-atomic: wallet_balance must cover the hold inline
+PASS  #2 RELEASE is idempotent on a reference and restores available balance
+PASS  #3 duplicate RELEASE (same reference) cannot double the financial effect
+PASS  #4 wallet mutations are conditional and cannot drive wallet OR locked negative (combined effect-guards)
+PASS  #5 financial_operations finalizes to SUCCESS or FAILED (never NEW as terminal)
+PASS  #6 retry of a FAILED op cannot double the financial effect (dedup on reference)
+PASS  #7 atomicity: wallet mutation + journal + audit + finalize are in ONE transaction (RC with command)
+PASS  #8 double-entry DR+CR journal records each effect
+PASS  #9 TX224 not special-cased; fix is generic (no TX224 literal in engine path)
+
+9 passed, 0 failed

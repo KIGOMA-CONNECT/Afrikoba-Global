@@ -1,0 +1,71 @@
+READ-ONLY CONFIRMATION 2  (no mutation)
+
+===== 1. financial_anomalies REAL columns (no assumptions) =====
+  id | integer
+  anomaly_type | character varying
+  severity | character varying
+  description | text
+  metadata | jsonb
+  is_resolved | boolean
+  resolved_by | integer
+  created_at | timestamp with time zone
+  text-ish columns = ["anomaly_type","severity","description"]
+  financial_anomalies rows where anomaly_type mentions TX224 = 0
+  financial_anomalies rows where severity mentions TX224 = 0
+  financial_anomalies rows where description mentions TX224 = 0
+
+===== 2. Divergence attribution: journal posted WITHOUT a balance mutation =====
+  (auditBalance writes a financial_audit_log row only after the balance UPDATE succeeds)
+  op#1 HOLD L1AJI68K7 status=NEW journalLines=2 journalDR=30000.0000 auditRows=2
+  op#5 HOLD L2AHJI68K7 status=NEW journalLines=2 journalDR=25000.0000 auditRows=2
+  op#6 RELEASE L2ARJI68K7 status=SUCCESS journalLines=2 journalDR=25000.0000 auditRows=2
+  op#8 LOCK L2BHJI68K7 status=SUCCESS journalLines=2 journalDR=40000.0000 auditRows=2
+  op#9 UNLOCK L2BRJI68K7 status=SUCCESS journalLines=2 journalDR=40000.0000 auditRows=2
+  op#11 HOLD L3HJI68K7 status=NEW journalLines=2 journalDR=20000.0000 auditRows=2
+  op#12 RELEASE L3RJI68K7 status=SUCCESS journalLines=2 journalDR=20000.0000 auditRows=2
+  op#16 UNLOCK L4AJI68K7 status=FAILED journalLines=2 journalDR=999999.0000 auditRows=0  <<< LEDGER POSTED, NO BALANCE MOVEMENT
+  op#17 RELEASE L4BJI68K7 status=SUCCESS journalLines=2 journalDR=999999.0000 auditRows=2
+  op#18 LOCK L5OKJI68K7 status=SUCCESS journalLines=2 journalDR=10000.0000 auditRows=2
+  op#19 UNLOCK L5FLJI68K7 status=FAILED journalLines=2 journalDR=999999.0000 auditRows=0  <<< LEDGER POSTED, NO BALANCE MOVEMENT
+  op#20 CAPTURE L5CPJI68K7 status=NEW journalLines=2 journalDR=10000.0000 auditRows=1
+  op#21 UNLOCK L6RTJI68K7 status=FAILED journalLines=2 journalDR=60000.0000 auditRows=0  <<< LEDGER POSTED, NO BALANCE MOVEMENT
+  op#22 HOLD L6FHJI68K7 status=NEW journalLines=2 journalDR=60000.0000 auditRows=2
+  op#25 LOCK L1RAJI7RLW status=SUCCESS journalLines=2 journalDR=50000.0000 auditRows=2
+  op#28 HOLD L1RDJI7RLW status=NEW journalLines=2 journalDR=50000.0000 auditRows=2
+  op#30 LOCK L1REJI7RLW status=SUCCESS journalLines=2 journalDR=40000.0000 auditRows=2
+  divergent operations (journal without balance movement) = 3
+  ledger value posted with no matching balance movement = 2059998
+
+===== 3. Reconciliation, stated as a ledger-vs-projection identity =====
+  CARD_HOLD net credit (CR-DR) = ledger view of held funds = -2829997
+  users.locked_balance             = projection view of held funds = 230000.00
+  IDENTITY GAP (ledger - projection) = -3059997
+  expected value for a correct engine = 0
+  ledger implies held funds of = -2829997 (negative = ledger believes nothing is held / phantom debits)
+  projection says held funds of = 230000.00
+
+===== 4. TX224 final safety verification (all tables, no assumptions) =====
+  (no lines above = zero TX224 / WD-3EC32D6D rows in any scanned text column)
+  TX224 / WD-3EC32D6D literals in financialEngine.js = 0
+  financialEngine.js size = 33544 bytes
+  financialEngine.js mtime = 2026-09-22T06:46:29.286Z
+  wallet_ledger total rows (engine never writes it) = 0
+
+===== 5. Test-user inventory created by this validation =====
+  user#1 phone=06446169201 wallet=70000.00 locked=30000.00
+  user#2 phone=06446293202 wallet=100000.00 locked=0.00
+  user#3 phone=06446306803 wallet=80000.00 locked=0.00
+  user#4 phone=06446315004 wallet=60000.00 locked=0.00
+  user#5 phone=06446323405 wallet=50000.00 locked=0.00
+  user#6 phone=06446331806 wallet=80000.00 locked=0.00
+  user#7 phone=06446352807 wallet=10000.00 locked=60000.00
+  user#8 phone=06446360008 wallet=120000.00 locked=0.00
+  user#9 phone=07453299601 wallet=20000.00 locked=50000.00
+  user#10 phone=07453326102 wallet=20000.00 locked=50000.00
+  user#11 phone=07453446203 wallet=0.00 locked=40000.00
+  total test users created = 11
+  distinct references used = 17
+  reference length range = 9..10 (limit 15)
+  pre-existing (non-test) users in regression DB = 0
+
+CONFIRMATION 2 COMPLETE (read-only)

@@ -1,0 +1,24 @@
+# FROZEN — financialEngine.js transaction-safety validation
+# Accepted: engine validation scope only. No further functional changes
+# to src/services/financialEngine.js without a new defect discovered
+# through a separately documented test.
+# Verify on Windows PowerShell:
+#   Get-FileHash -Algorithm SHA256 -LiteralPath <path>
+# format: <sha256>  <path>
+
+# ---- frozen engine binary ----
+1c5e80cdb199e4275086f1c928d0fc3814c818542e8abb0c530abe66391593cc  src/services/financialEngine.js
+
+# ---- post-fix acceptance evidence (immutable) ----
+5abb02854ae23e4d1eaed600e3bb0fc9e40a17c5df511d0714bc51b795f6d005  tests/zz_out_prelive.txt
+582529a5287be0b1bf07c4b1042a8245407184ab20521d60f279a3fc16a33d01  tests/zz_struct_out.txt
+c1b4dbc0758166eac0815b80074ac7011529d9fba64750ede6398fd9022842e0  tests/zz_out_live_after_fix.txt
+2112f3109da03fbc1d7764a9169a31f8376cf555c18d3d64cb778b85e3af46d3  tests/zz_out_live_after_fix2.txt
+
+# ---- pre-fix historical baseline evidence (immutable, never regenerated) ----
+a45b0c2aa814de6773f0c662929a52d5f8c98056010c724de7f8adc75c6b10f1  tests/zz_out_preflight.txt
+238e0cb6d11cee6b4fa14bc39ad7af5e99828888241cc74f7fb0e7006cb2c91f  tests/zz_out_preflight2.txt
+5ff3a9ac598d83ed217342c1ced0a30631356cef6e1f7de7da1ad8bc833dc3f0  tests/zz_out_live.txt
+ada92f8396b7bc7adb36fa708b9db6bf21044146ea7daffee4cfdea2a2206343  tests/zz_out_t1r.txt
+3658d6feb5c4b578fe74918b4833eb151f36991f784d4897849da9d5ebb51495  tests/zz_out_confirm.txt
+d090c0785050e1474e87d41271cb5aba57bc548468753f91765c32b1322fae10  tests/zz_out_confirm2.txt

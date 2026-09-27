@@ -1,0 +1,97 @@
+CORRECTED POST-FIX RE-RUN  nonce=JJ1EM3
+  identity = {"db":"afrikoba_regression","usr":"afrikoba_r"}
+  counts at START = {"ops":42,"je":84,"au":75,"us":28}
+
+########## TEST #1 (corrected)  Hold - conditional atomic guard ##########
+  1a user = {"id":29,"wallet":100000,"locked":0}
+  1a reference = R1AJJ1EM3
+  1a result = {"success":true,"reference":"R1AJJ1EM3","held":30000}
+  1a wallet 100000 -> 70000 | locked 0 -> 30000 = undefined
+  1a op row = {"id":"77","operation_type":"HOLD","reference_id":"R1AJJ1EM3","status":"SUCCESS","amount":"30000.0000"}
+  1a journal = [{"account_code":"CUSTOMER_WALLET","direction":"DR","amount":"30000.0000"},{"account_code":"CARD_HOLD","direction":"CR","amount":"30000.0000"}]
+  1a audit rows = 2
+  1b reference = R1BJJ1EM3
+  1b state before = {"wallet":70000,"locked":30000}
+  1b rejected with = Salio lako halitoshi kwa hold hii.
+  1b state after = {"wallet":70000,"locked":30000}
+  1b RESIDUE op/journal/audit = {"op":null,"j":0,"a":0}
+  --- 1 race via lockWallet : 2 x 50000 against 70000 available ---
+  refs = {"a":"R1GAJJ1EM3","b":"R1GBJJ1EM3"}
+  B attempt 1 deadlock -> retry
+  execution A = {"label":"A","out":"SUCCESS","attempt":1,"r":{"success":true,"reference":"R1GAJJ1EM3","locked":50000}}
+  execution B = {"label":"B","out":"REJECTED","attempt":2,"error":"Salio lako halitoshi kwa hold hii."}
+  winners (expect 1) = 1
+  winner reference = R1GAJJ1EM3
+  loser reference = R1GBJJ1EM3
+  state before -> after = {"before":{"wallet":70000,"locked":0},"after":{"wallet":20000,"locked":50000}}
+  winner op row = {"id":"80","operation_type":"LOCK","reference_id":"R1GAJJ1EM3","status":"SUCCESS","amount":"50000.0000"}
+  winner journal = [{"account_code":"CUSTOMER_WALLET","direction":"DR","amount":"50000.0000"},{"account_code":"CARD_HOLD","direction":"CR","amount":"50000.0000"}]
+  loser RESIDUE op/journal/audit = {"op":null,"j":0,"a":0}
+  --- 1 race via holdFunds : 2 x 50000 against 70000 available ---
+  refs = {"a":"R1HAJJ1EM3","b":"R1HBJJ1EM3"}
+  A attempt 1 deadlock -> retry
+  execution A = {"label":"A","out":"REJECTED","attempt":2,"error":"Salio lako halitoshi kwa hold hii."}
+  execution B = {"label":"B","out":"SUCCESS","attempt":1,"r":{"success":true,"reference":"R1HBJJ1EM3","held":50000}}
+  winners (expect 1) = 1
+  winner reference = R1HBJJ1EM3
+  loser reference = R1HAJJ1EM3
+  state before -> after = {"before":{"wallet":70000,"locked":0},"after":{"wallet":20000,"locked":50000}}
+  winner op row = {"id":"83","operation_type":"HOLD","reference_id":"R1HBJJ1EM3","status":"SUCCESS","amount":"50000.0000"}
+  winner journal = [{"account_code":"CUSTOMER_WALLET","direction":"DR","amount":"50000.0000"},{"account_code":"CARD_HOLD","direction":"CR","amount":"50000.0000"}]
+  loser RESIDUE op/journal/audit = {"op":null,"j":0,"a":0}
+  >> TEST #1 = PASS
+
+########## TEST #9 (corrected)  Reconciliation + TX224 untouched ##########
+  9 scenario users = {"u1":32,"u2":33,"u3":34,"u4":35}
+  9 u1 after hold+release = {"wallet":200000,"locked":0}
+  9 u2 after lock+capture = {"wallet":120000,"locked":50000}
+  9 u3 after lock+unlock = {"wallet":200000,"locked":0}
+  9 u4 after hold = {"wallet":175000,"locked":25000}
+  9 u4 REJECTED release error = Salio lako halitoshi kwa release hii.
+  9 u4 state after rejected release = {"wallet":175000,"locked":25000}
+  9 u4 REJECTED reference RESIDUE op/journal/audit = {"op":null,"j":0,"a":0}
+  9a every operation of this scenario
+     HOLD R1AJJ1EM3 status=SUCCESS amount=30000.0000
+     LOCK R1GAJJ1EM3 status=SUCCESS amount=50000.0000
+     HOLD R1HBJJ1EM3 status=SUCCESS amount=50000.0000
+     HOLD RRH1JJ1EM3 status=SUCCESS amount=60000.0000
+     RELEASE RRR1JJ1EM3 status=SUCCESS amount=60000.0000
+     LOCK RRL2JJ1EM3 status=SUCCESS amount=80000.0000
+     CAPTURE RRC2JJ1EM3 status=SUCCESS amount=30000.0000
+     LOCK RRL3JJ1EM3 status=SUCCESS amount=45000.0000
+     UNLOCK RRU3JJ1EM3 status=SUCCESS amount=45000.0000
+     HOLD RRH4JJ1EM3 status=SUCCESS amount=25000.0000
+  9a operation count = 10
+  9b IDENTITY A (corrected: net = CR - DR) : CARD_HOLD  ==  SUM(locked_balance)
+  9b ledger  CARD_HOLD net (CR-DR) = 205000.0000
+  9b projection SUM(locked_balance) = 205000.00
+  9b GAP (must be 0) = 0
+  9c IDENTITY B : CUSTOMER_WALLET net (CR-DR)  ==  SUM(wallet) - SUM(seed)
+  9c ledger  CUSTOMER_WALLET net (CR-DR) = -235000.0000
+  9c projection SUM(wallet_balance) = 805000.00
+  9c seeded wallet total = 1040000
+  9c projection movement = -235000
+  9c GAP (must be 0) = 0
+  9d IDENTITY C (corrected SQL) : ledger entry with NO balance movement
+     (none)
+  9d orphan count (pre-fix run found 3) = 0
+  9e IDENTITY D : audit row with NO ledger group
+  9e audit-without-journal = (none)
+  9f double-entry on this scenario
+  9f DR / CR / diff = {"dr":"475000.0000","cr":"475000.0000","diff":0,"rows":20}
+  9g non-negativity
+  9g users with negative wallet/locked, whole DB = 0
+  9h PRE-FIX BASELINE UNCHANGED (no tampering, no data fix-up)
+  9h counts at END = {"ops":52,"je":104,"au":94,"us":35}
+  9h rows ADDED by this script (none removed) = {"ops":10,"je":20,"au":19,"us":7}
+  9h pre-fix residue still present (expected 2254998 across 9 refs) = 2254998.0000 across 9 refs
+  9i TX224 / WD-3EC32D6D safety
+  9i TX224 rows across all scanned tables = 0
+  9i TX224 literals in engine source = 0
+  9i references used = 14 (length 9..11, limit 15)
+  >> TEST #9 = PASS
+
+########## CORRECTED RESULTS ##########
+ 1  Hold conditional-atomic             PASS
+ 9  Reconciliation + TX224 untouched    PASS
+assertion failures = 0
