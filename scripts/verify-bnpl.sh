@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env bash
+#!/usr/bin/env bash
 # ============================================================================
 # AFRIKOBA GLOBAL - BNPL LOAN BOOK / MWENENDO WA MIKOPO YA BNPL - ACCEPTANCE
 # ============================================================================
