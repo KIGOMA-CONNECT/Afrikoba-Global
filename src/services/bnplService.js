@@ -282,10 +282,19 @@ function renderPlatformBnplPortfolioPdf(v, stream) {
   return stream;
 }
 
+const getPlatformBnplLoanBook = getPlatformBnplPortfolio;
+const exportPlatformBnplLoanBookCsv = exportPlatformBnplPortfolioCsv;
+
 module.exports = {
   isBnplExpert,
+  // portfolio (canonical)
   getPlatformBnplPortfolio,
   exportPlatformBnplPortfolioCsv,
   preparePlatformBnplPortfolioPdf,
   renderPlatformBnplPortfolioPdf,
+  // loan-book (route/API alias)
+  getPlatformBnplLoanBook,
+  exportPlatformBnplLoanBookCsv,
+  preparePlatformBnplLoanBookPdf: preparePlatformBnplPortfolioPdf,
+  renderPlatformBnplLoanBookPdf: renderPlatformBnplPortfolioPdf,
 };
