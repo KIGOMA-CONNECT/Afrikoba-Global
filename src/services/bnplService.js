@@ -116,11 +116,16 @@ async function getPlatformBnplPortfolio({ userId, role }) {
   const reference = 'BNPL-' + Date.now();
 
   // Cohort inajengwa kutoka records halisi (repayments per month).
-  // NOTE (Phase-57 memo, honesty rule): if the authoritative source
-  // (marketplace_financing / marketplace_financing_payment) has NO records,
-  // the trend MUST NOT be rendered as a fabricated filled cohort. It is
-  // surfaced as an explicit NO_RECORDS availability state instead.
-  const sourceRows = []; // wired by the lederger census; currently 0 records on staging.
+  // Honesty rule (Phase-57 memo, implemented in Phase-60): if the authoritative
+  // source (marketplace_financing / marketplace_financing_payment) has NO
+  // records, the trend MUST NOT be presented as a filled cohort.
+  // Phase-60 decision: the 12-month calendar axis is RETAINED, because the
+  // functional notes define the cohort as 12 monthly buckets, and a bare axis
+  // asserts no data. What is forbidden is presenting that axis as a real
+  // repayment trend, so emptiness is made explicit three ways -
+  //   dataAvailability.state = NO_RECORDS, months_populated = false,
+  //   health = NO_RECORDS (never CLEAN).
+  const sourceRows = []; // wired by the ledger census; currently 0 records on staging.
   const recordCount = sourceRows.length;
   const months = buildCohort(sourceRows);
   const dataAvailability = {
@@ -165,6 +170,12 @@ async function getPlatformBnplPortfolio({ userId, role }) {
       fee_rate_per_year: 0.15,
       fee_rate_per_year_pct: '15%',
     },
+    // Availability state is part of the contract, not an internal note.
+    // A client must be able to tell "no records yet" from "zero happened".
+    dataAvailability,
+    // The 12-month axis is a calendar scaffold, always present. This flag says
+    // whether any of those buckets are actually backed by source records.
+    months_populated: recordCount > 0,
     months,
     totals: {
       disbursements: round2(totals.disbursements),
@@ -172,9 +183,13 @@ async function getPlatformBnplPortfolio({ userId, role }) {
       overdue: round2(totals.overdue),
       active_contracts: totals.active_contracts,
       avg_ticket: round2(totals.avg_ticket),
-      defaulted: totals.defaulted,
+      defaulted: round2(totals.defaulted),
     },
-    health: totals.overdue === 0 ? 'CLEAN' : 'ACTION_REQUIRED',
+    // health must never read CLEAN for a portfolio that holds no records:
+    // CLEAN means "examined, nothing overdue", which is not knowable at 0 rows.
+    health: recordCount === 0
+      ? 'NO_RECORDS'
+      : (totals.overdue === 0 ? 'CLEAN' : 'ACTION_REQUIRED'),
   };
 }
 
@@ -196,6 +211,13 @@ async function exportPlatformBnplPortfolioCsv({ userId, role }) {
   lines.push('Currency,TZS');
   lines.push('Term range months,' + v.terms.min_term_months + '-' + v.terms.max_term_months);
   lines.push('Fee per year,' + v.terms.fee_rate_per_year_pct);
+  // Availability is declared in the header block so a spreadsheet reader sees it
+  // before the cohort table, never only after scrolling past 12 zero rows.
+  lines.push('Data availability,' + esc(v.dataAvailability.state));
+  lines.push('Source,' + esc(v.dataAvailability.source));
+  lines.push('Records,' + v.dataAvailability.records);
+  lines.push('Cohort populated,' + (v.months_populated ? 'yes' : 'no'));
+  lines.push('Availability note,' + esc(v.dataAvailability.note));
   lines.push('');
   lines.push('Monthly cohort');
   lines.push('month,disbursements,repayments_received,overdue,active_contracts,avg_ticket,defaulted');
@@ -220,8 +242,7 @@ async function exportPlatformBnplPortfolioCsv({ userId, role }) {
   lines.push('Average ticket,' + money(v.totals.avg_ticket));
   lines.push('Defaulted,' + money(v.totals.defaulted));
   lines.push('Health,' + v.health);
-  return { rowCount: v.months.length + 3, csv: lines.join('\n') };
-}
+  return { rowCount: v.months.length + 3, csv: lines.join('\n') };}
 
 // ---------------------------------------------------------------------------
 // PDF payload (banner words must survive PDF text extraction)
@@ -237,6 +258,8 @@ async function preparePlatformBnplPortfolioPdf({ userId, role }) {
     generated_at: v.generated_at,
     currency: 'TZS',
     terms: v.terms,
+    dataAvailability: v.dataAvailability,
+    months_populated: v.months_populated,
     months: v.months,
     totals: v.totals,
     health: v.health,
@@ -260,7 +283,10 @@ function renderPlatformBnplPortfolioPdf(v, stream) {
     'AFRIKOBA GLOBAL - BNPL LOAN BOOK / MWENENDO WA MIKOPO YA BNPL - '
     + 'Reference ' + v.reference + ' - 15% per year - Term 3-24 months';
   const body =
-    banner + '\n' + v.months.length + ' months\n'
+    banner + '\n' + v.months.length + ' months'
+    + ' (' + v.dataAvailability.state + ', records=' + v.dataAvailability.records
+    + ', cohort_populated=' + (v.months_populated ? 'yes' : 'no') + ')' + '\n'
+    + v.dataAvailability.note + '\n'
     + 'Total disbursements ' + v.totals.disbursements + ' TZS\n'
     + 'Repayments received ' + v.totals.repayments_received + ' TZS\n'
     + 'Overdue ' + v.totals.overdue + ' TZS\n'

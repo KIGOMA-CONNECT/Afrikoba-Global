@@ -2,6 +2,9 @@
 
 **Status:** defects recorded. **No acceptance is claimed.**
 **Date:** 2026-09-27
+**Updated:** Phase 61 closed exit criteria 1-4 without a further live run, so
+that the next run measures BNPL rather than the harness. Criteria 5-8 remain
+open. See section 8.
 **Runs against:** local `node src/server.js` on port 3001, `DISABLE_CRON=true`,
 database `localhost:5432/afrikoba_global` (the dev instance on this host).
 **Supersedes:** commit `5852d83`, which stated the BNPL surface does not claim
@@ -290,21 +293,118 @@ Do not re-run the harness and call it accepted. Before this surface can be
 accepted:
 
 1. **Return `dataAvailability`.** The `NO_RECORDS` state must reach the client
-   (D1).
+   (D1). **[CLOSED in Phase 61]**
 2. **Do not serve a fabricated cohort.** Either suppress the 12 months when
    `recordCount === 0`, or render them explicitly as an empty series. `health`
-   must not read `CLEAN` for a portfolio with no records (D2).
+   must not read `CLEAN` for a portfolio with no records (D2). **[CLOSED in
+   Phase 61 - decision A]**
 3. **Make probe 6 assert the availability state**, not just the array length, so
-   the harness stops rewarding fabrication (D2/D4 in section 4).
+   the harness stops rewarding fabrication (D2/D4 in section 4). **[CLOSED in
+   Phase 61]**
 4. **Add the missing 403 probe** the header already promises, using a
-   non-expert token (D4).
+   non-expert token (D4). **[CLOSED in Phase 61, behaviourally unverified]**
 5. **Replace the PDF with a real one** - a font resource, proper text objects,
-   correct xref offsets - or stop claiming a PDF deliverable (D3).
+   correct xref offsets - or stop claiming a PDF deliverable (D3). **[OPEN]**
 6. **Remove the BOM from `scripts/verify-bnpl.sh`** so the documented
    `./scripts/verify-bnpl.sh` invocation works, and make the capture path
-   portable instead of hard-coding `/tmp` (D5, D6).
+   portable instead of hard-coding `/tmp` (D5, D6). **[OPEN]**
 7. **Decide the intended persona.** If `EXPERT` is a real role, seed one; if not,
    drop `EXPERT` from the FN and the constant so the code matches reality
-   (section 5).
+   (section 5). **[OPEN]**
 8. **Do not modify `src/services/financialEngine.js`.** The Phase 58 contract
-   stays exactly as committed in `8f0647c`.
+   stays exactly as committed in `8f0647c`. **[HONOURED]**
+
+---
+
+## 8. Closure status of criteria 1-4 (Phase 61)
+
+Closed deliberately **without** another live acceptance run, so that the next run
+measures BNPL rather than the harness's ability to manufacture a PASS.
+
+### Criterion 1 - `dataAvailability` reaches the client
+
+`bnplService.js` now returns `dataAvailability` (state, source, records, note)
+and a new `months_populated` boolean. Verified by direct call, no server:
+`dataAvailability present = true`, `state = NO_RECORDS`, `records = 0`.
+
+The same fields are carried into the CSV export, in the **header block** so a
+spreadsheet reader sees them before the cohort table rather than after scrolling
+past 12 zero rows, and into the PDF payload, where the body now prints
+`12 months (NO_RECORDS, records=0, cohort_populated=no)` plus the availability
+note. The JSON, CSV and PDF can no longer disagree about whether data exists.
+
+### Criterion 2 - decision A: keep the axis, declare the emptiness
+
+The 12-month calendar axis is retained, because the functional notes define the
+cohort as 12 monthly buckets and a bare axis asserts no data. Emptiness is now
+declared three ways, and the old contradiction is gone:
+
+| field | before | after |
+|---|---|---|
+| `dataAvailability` | computed then discarded | returned |
+| `months_populated` | did not exist | `false` at 0 records |
+| `health` | `CLEAN` at 0 records | `NO_RECORDS` |
+
+`health` can no longer read `CLEAN` for an empty portfolio, because `CLEAN` means
+"examined, nothing overdue", which is not knowable at zero rows. The guard is
+explicit in code: `recordCount === 0 ? 'NO_RECORDS' : (...)`.
+
+### Criterion 3 - the probe now tests honesty, not array length
+
+Probe 6 previously asserted only `months.length === 12`, which the 12 fabricated
+zero months satisfied by construction. It now parses
+`state | records | months_populated | health | non_zero_month_count` and asserts
+the combination:
+
+- `state` is `NO_RECORDS` or `AVAILABLE`;
+- `months_populated` is present and boolean;
+- when `NO_RECORDS`: `records = 0`, `months_populated = false`, and **`health` is
+  not `CLEAN`**;
+- when `AVAILABLE`: `records > 0`, `months_populated = true`, and **at least one
+  month actually carries data**.
+
+This was verified against the assertion body **extracted from the harness
+itself**, not a re-typed copy, using five fixtures:
+
+| fixture | parsed | expected | result |
+|---|---|---|---|
+| A: the exact pre-Phase-61 shape (12 zeros, `CLEAN`, no availability) | `MISSING|MISSING|MISSING|CLEAN|0` | FAIL | FAIL |
+| B: the shape now shipped (honest empty series) | `NO_RECORDS|0|false|NO_RECORDS|0` | PASS | PASS |
+| C: defect D2 verbatim - declares `NO_RECORDS` yet reports `CLEAN` | `NO_RECORDS|0|false|CLEAN|0` | FAIL | FAIL |
+| D: claims `AVAILABLE` with 5 records while all 12 months are zero | `AVAILABLE|5|true|CLEAN|0` | FAIL | FAIL |
+| E: `AVAILABLE` with genuine data | `AVAILABLE|5|true|CLEAN|1` | PASS | PASS |
+
+So the new probe fails the old shape, fails the D2 shape, and fails a false
+`AVAILABLE` claim, while accepting the honest empty series. That is the property
+criterion 3 asked for.
+
+### Criterion 4 - the 403 probe exists at last
+
+`MEMBER` is now a required input alongside `EXPERT`, and probe 5 asserts `403` on
+all three endpoints with a non-expert token. The header now states the
+requirement, so an operator cannot unknowingly produce a run in which the
+authorization gate is untested.
+
+Only the **control flow** was verified, deliberately without a server: with no
+`MEMBER` supplied the probe prints `SKIP 403 probe ...` and sets the run's
+`skipped` flag. Its pass/fail behaviour, and the harness's `exit 2` SKIPPED
+outcome, remain **unverified by design** - the anonymous probe fails against a
+dead port, and the script checks `fail` before `skipped`, so `SKIPPED` cannot be
+observed while any other probe is red. Confirming that needs a live run, which is
+the next step and is exactly what should not happen before these criteria are met.
+
+### Known behaviour change for downstream consumers
+
+`health` changes value at zero records, and the CSV gains five header lines.
+Anything that asserted `health === 'CLEAN'`, or parsed the CSV by fixed row
+offset, needs review. This is the intended consequence of refusing to report an
+empty portfolio as healthy.
+
+### Still open, deliberately
+
+Criteria 5-8 above remain open. In particular the PDF is still not a structurally
+valid PDF (D3) and `scripts/verify-bnpl.sh` still carries the BOM and the
+hard-coded `/tmp` path (D5, D6) - the header now records both as known-open so
+the next operator is not misled by the documented `./scripts/verify-bnpl.sh`
+invocation. The next live run will still be blocked by D6 on a Windows host, so
+it must run on the Linux staging box, or D6 must be closed first.
