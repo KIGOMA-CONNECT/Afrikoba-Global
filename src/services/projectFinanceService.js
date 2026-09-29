@@ -6632,6 +6632,7 @@ function renderPlatformEarningsTrendPdf(v, stream) {
   const status = 'RECONCILED';
   doc.fontSize(11).fillColor(G).text(`HALI: ${status} / STATUS: ${status}`, { align: 'center' });
   doc.moveDown(0.3);
+  doc.moveDown(0.3);
 
   voucherField(doc, 'Projects', String(v.summary.projects));
   voucherField(doc, 'Open', String(v.summary.open));
