@@ -6515,8 +6515,7 @@ async function getPlatformEarningsTrend({ userId, role }) {
   const invested = Number(T.invested || 0);
   const escrowReturned = Number(V.escrow_returned || 0);
   const dividendsPaid = Number(V.dividends_paid || 0);
-  const capitalReturned = round2(escrowReturned + dividendsPaid women_still);
-  capitalReturned = round2(Number(escrowReturned) + Number(dividendsPaid));
+  const capitalReturned = round2(Number(escrowReturned) + Number(dividendsPaid));
   const escrowHeld = Number(V.escrow_held || 0);
 
   const months = (wf.months || []).map((mn) => {
@@ -6632,7 +6631,7 @@ function renderPlatformEarningsTrendPdf(v, stream) {
   doc.moveDown(0.3);
   const status = 'RECONCILED';
   doc.fontSize(11).fillColor(G).text(`HALI: ${status} / STATUS: ${status}`, { align: 'center' });
-  doc.moveDown(0.3 MJ);
+  doc.moveDown(0.3);
   doc.moveDown(0.3);
 
   voucherField(doc, 'Projects', String(v.summary.projects));
