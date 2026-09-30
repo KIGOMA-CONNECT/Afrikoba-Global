@@ -56,6 +56,39 @@ async function claimOperation({ client, operationType, reference, transactionId 
 }
 
 /**
+ * FINALIZE a financial operation's status - idempotent transition of the
+ * claimed operation row into a terminal SUCCESS or FAILED state within the
+ * SAME transaction as the wallet mutation so they commit/rollback together.
+ *   NEW -> SUCCESS | FAILED  (never leaves NEW as a terminal state)
+ */
+async function setOperationState({ client, reference, status }) {
+  const res = await client.query(
+    `UPDATE financial_operations SET status = $1, updated_at = NOW()
+     WHERE reference_id = $2 AND status = 'NEW'`,
+    [status, reference]
+  );
+  return { transitioned: res.rowCount === 1, reference, status };
+}
+
+/**
+ * FINALIZE an operation row - moves it out of the transient NEW state to a
+ * terminal SUCCESS/FAILED state. Effect-guarded & idempotent on status.
+ * Must run INSIDE the same transaction as the wallet mutation so that the
+ * whole ledger effect + status transition commit (or roll back) together.
+ */
+async function finalizeOperation({ client, reference, status }) {
+  const valid = ['SUCCESS', 'FAILED'];
+  if (!valid.includes(status)) throw new Error(`Invalid final status: ${status}`);
+  const r = await client.query(
+    `UPDATE financial_operations SET status = $1, attempts = attempts + 1, updated_at = NOW()
+     WHERE reference_id = $2 AND status = 'NEW'
+     RETURNING id`,
+    [status, reference]
+  );
+  return { finalized: r.rows.length === 1, id: r.rows[0]?.id ?? null };
+}
+
+/**
  * Write a financial audit row describing one projection-balance mutation.
  */
 async function auditBalance({ client, accountKind, accountId, operation, amount, balanceBefore, balanceAfter, reference, actor = 'engine' }) {
@@ -68,6 +101,7 @@ async function auditBalance({ client, accountKind, accountId, operation, amount,
     );
   } catch (e) {
     logger.error('FIN_AUDIT', `audit write failed for ${reference}: ${e.message}`);
+    throw e;
   }
 }
 
@@ -161,22 +195,33 @@ async function postDeposit({ userId, amount, commission, reference, externalTxId
     if (commissionN > 0) {
       journalLines.push({ accountCode: 'COMMISSION', direction: 'CR', amount: commissionN });
     }
+    const before = await client.query(`SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE`, [userId]);
+    if (before.rows.length === 0) {
+      await setOperationState({ client, reference, status: 'FAILED' });
+      throw new Error('User not found');
+    }
+    const beforeBal = Number(before.rows[0].wallet_balance);
+
+    // Projection update FIRST, journal second.
+    const credited = await client.query(
+      `UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2`,
+      [amountN, userId]
+    );
+    if (credited.rowCount !== 1) {
+      await setOperationState({ client, reference, status: 'FAILED' });
+      throw new Error('User not found');
+    }
+    await client.query(
+      `UPDATE company_revenue SET total_commission = total_commission + $1, updated_at = NOW() WHERE id = 1`,
+      [commissionN]
+    );
+
     await postJournal({
       client, lines: journalLines, referenceId: reference,
       description, postedBy: 'engine:deposit'
     });
 
-    const before = await client.query(`SELECT wallet_balance FROM users WHERE id = $1`, [userId]);
-    const beforeBal = Number(before.rows[0].wallet_balance);
-
-    await client.query(
-      `UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2`,
-      [amountN, userId]
-    );
-    await client.query(
-      `UPDATE company_revenue SET total_commission = total_commission + $1, updated_at = NOW() WHERE id = 1`,
-      [commissionN]
-    );
+    await setOperationState({ client, reference, status: 'SUCCESS' });
 
     await auditBalance({ client, accountKind: 'USER_BALANCE', accountId: userId, operation: 'deposit', amount: amountN, balanceBefore: beforeBal, balanceAfter: beforeBal + amountN, reference, actor: 'engine:deposit' });
     if (commissionN > 0) {
@@ -225,6 +270,19 @@ async function holdFunds({ userId, amount, accountCode = 'CUSTOMER_WALLET', refe
       throw Object.assign(new Error('Salio lako halitoshi kwa hold hii.'), { statusCode: 400 });
     }
 
+    // Guarded projection update runs BEFORE the journal. The ledger is only
+    // posted for a movement that actually happened, and rowCount - not the
+    // journal - is the authoritative decision.
+    const guarded = await client.query(
+      `UPDATE users SET wallet_balance = wallet_balance - $1, locked_balance = locked_balance + $1 WHERE id = $2 AND wallet_balance >= $1`,
+      [amountN, userId]
+    );
+    if (guarded.rowCount !== 1) {
+      // Rolled back together with the claim: no residue in any table.
+      await setOperationState({ client, reference, status: 'FAILED' });
+      throw Object.assign(new Error('Salio lako halitoshi kwa hold hii (locked)'), { statusCode: 400 });
+    }
+
     await postJournal({
       client,
       lines: [
@@ -234,10 +292,8 @@ async function holdFunds({ userId, amount, accountCode = 'CUSTOMER_WALLET', refe
       referenceId: reference, description, postedBy: 'engine:hold'
     });
 
-    await client.query(
-      `UPDATE users SET wallet_balance = wallet_balance - $1, locked_balance = locked_balance + $1 WHERE id = $2`,
-      [amountN, userId]
-    );
+    // NEW -> SUCCESS. A financial operation never ends in the transient NEW state.
+    await setOperationState({ client, reference, status: 'SUCCESS' });
 
     await auditBalance({ client, accountKind: 'USER_BALANCE', accountId: userId, operation: 'hold', amount: amountN, balanceBefore: avail, balanceAfter: avail - amountN, reference, actor: 'engine:hold' });
     await auditBalance({ client, accountKind: 'USER_LOCKED', accountId: userId, operation: 'hold', amount: amountN, balanceBefore: lockedBefore, balanceAfter: lockedBefore + amountN, reference, actor: 'engine:hold' });
@@ -275,8 +331,22 @@ async function releaseHold({ userId, amount, accountCode = 'CUSTOMER_WALLET', re
     const { rows } = await client.query(
       `SELECT wallet_balance, locked_balance FROM users WHERE id = $1 FOR UPDATE`, [userId]
     );
+    if (rows.length === 0) throw new Error('User not found');
     const availBefore = Number(rows[0].wallet_balance);
     const lockedBefore = Number(rows[0].locked_balance);
+
+    // Guarded projection update FIRST, and its rowCount decides the outcome.
+    // Nothing is posted to the ledger and no audit is written unless the
+    // movement actually happened.
+    const released = await client.query(
+      `UPDATE users SET wallet_balance = wallet_balance + $1, locked_balance = locked_balance - $1 WHERE id = $2 AND locked_balance >= $1`,
+      [amountN, userId]
+    );
+    if (released.rowCount !== 1) {
+      // Rolls back with the whole transaction - the claim leaves no trace.
+      await setOperationState({ client, reference, status: 'FAILED' });
+      throw Object.assign(new Error('Salio lako halitoshi kwa release hii.'), { statusCode: 400 });
+    }
 
     await postJournal({
       client,
@@ -287,10 +357,7 @@ async function releaseHold({ userId, amount, accountCode = 'CUSTOMER_WALLET', re
       referenceId: reference, description, postedBy: 'engine:release'
     });
 
-    await client.query(
-      `UPDATE users SET wallet_balance = wallet_balance + $1, locked_balance = locked_balance - $1 WHERE id = $2`,
-      [amountN, userId]
-    );
+    await setOperationState({ client, reference, status: 'SUCCESS' });
 
     await auditBalance({ client, accountKind: 'USER_BALANCE', accountId: userId, operation: 'release', amount: amountN, balanceBefore: availBefore, balanceAfter: availBefore + amountN, reference, actor: 'engine:release' });
     await auditBalance({ client, accountKind: 'USER_LOCKED', accountId: userId, operation: 'release', amount: amountN, balanceBefore: lockedBefore, balanceAfter: lockedBefore - amountN, reference, actor: 'engine:release' });
@@ -328,7 +395,18 @@ async function captureHold({ userId, amount, accountCode = 'CUSTOMER_WALLET', re
     const { rows } = await client.query(
       `SELECT locked_balance FROM users WHERE id = $1 FOR UPDATE`, [userId]
     );
+    if (rows.length === 0) throw new Error('User not found');
     const lockedBefore = Number(rows[0].locked_balance);
+
+    // Guarded projection update FIRST, journal second.
+    const captured = await client.query(
+      `UPDATE users SET locked_balance = locked_balance - $1 WHERE id = $2 AND locked_balance >= $1`,
+      [amountN, userId]
+    );
+    if (captured.rowCount !== 1) {
+      await setOperationState({ client, reference, status: 'FAILED' });
+      throw Object.assign(new Error('Salio lako halitoshi kwa capture hii.'), { statusCode: 400 });
+    }
 
     await postJournal({
       client,
@@ -339,10 +417,7 @@ async function captureHold({ userId, amount, accountCode = 'CUSTOMER_WALLET', re
       referenceId: reference, description, postedBy: 'engine:capture'
     });
 
-    await client.query(
-      `UPDATE users SET locked_balance = locked_balance - $1 WHERE id = $2`,
-      [amountN, userId]
-    );
+    await setOperationState({ client, reference, status: 'SUCCESS' });
 
     await auditBalance({ client, accountKind: 'USER_LOCKED', accountId: userId, operation: 'capture', amount: amountN, balanceBefore: lockedBefore, balanceAfter: lockedBefore - amountN, reference, actor: 'engine:capture' });
 
@@ -385,12 +460,36 @@ async function transfer({ fromUserId, toUserId, amount, reference, description =
     const { rows } = await client.query(
       `SELECT wallet_balance FROM users WHERE id = $1`, [fromUserId]
     );
+    if (rows.length === 0) {
+      await setOperationState({ client, reference, status: 'FAILED' });
+      throw new Error('Sender not found');
+    }
     const fromBefore = Number(rows[0].wallet_balance);
     if (fromBefore < amountN) {
       throw Object.assign(new Error('Salio lako halitoshi.'), { statusCode: 400 });
     }
     const toRows = await client.query(`SELECT wallet_balance FROM users WHERE id = $1`, [toUserId]);
+    if (toRows.rows.length === 0) {
+      await setOperationState({ client, reference, status: 'FAILED' });
+      throw new Error('Recipient not found');
+    }
     const toBefore = Number(toRows.rows[0].wallet_balance);
+
+    // Guarded projection updates FIRST, journal second.
+    const debited = await client.query(
+      `UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2 AND wallet_balance >= $1`, [amountN, fromUserId]
+    );
+    if (debited.rowCount !== 1) {
+      await setOperationState({ client, reference, status: 'FAILED' });
+      throw Object.assign(new Error('Salio lako halitoshi.'), { statusCode: 400 });
+    }
+    const credited = await client.query(
+      `UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2`, [amountN, toUserId]
+    );
+    if (credited.rowCount !== 1) {
+      await setOperationState({ client, reference, status: 'FAILED' });
+      throw new Error('Recipient not found');
+    }
 
     await postJournal({
       client,
@@ -401,12 +500,7 @@ async function transfer({ fromUserId, toUserId, amount, reference, description =
       referenceId: reference, description, postedBy: 'engine:transfer'
     });
 
-    await client.query(
-      `UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2`, [amountN, fromUserId]
-    );
-    await client.query(
-      `UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2`, [amountN, toUserId]
-    );
+    await setOperationState({ client, reference, status: 'SUCCESS' });
 
     await auditBalance({ client, accountKind: 'USER_BALANCE', accountId: fromUserId, operation: 'transfer_debit', amount: amountN, balanceBefore: fromBefore, balanceAfter: fromBefore - amountN, reference, actor: 'engine:transfer' });
     await auditBalance({ client, accountKind: 'USER_BALANCE', accountId: toUserId, operation: 'transfer_credit', amount: amountN, balanceBefore: toBefore, balanceAfter: toBefore + amountN, reference, actor: 'engine:transfer' });
@@ -458,8 +552,18 @@ async function creditWallet({ client, userId, amount, reference, fromAccount = '
   if (!op.claimed) return { dedup: true, reference };
 
   const { rows } = await client.query(`SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE`, [userId]);
-  if (rows.length === 0) throw new Error('User not found');
+  if (rows.length === 0) {
+    await setOperationState({ client, reference, status: 'FAILED' });
+    throw new Error('User not found');
+  }
   const before = Number(rows[0].wallet_balance);
+
+  // Projection update FIRST, journal second.
+  const credited = await client.query(`UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2`, [amountN, userId]);
+  if (credited.rowCount !== 1) {
+    await setOperationState({ client, reference, status: 'FAILED' });
+    throw new Error('User not found');
+  }
 
   await postJournal({
     client,
@@ -470,7 +574,7 @@ async function creditWallet({ client, userId, amount, reference, fromAccount = '
     referenceId: reference, description, postedBy: actor, productType, productRef,
   });
 
-  await client.query(`UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2`, [amountN, userId]);
+  await setOperationState({ client, reference, status: 'SUCCESS' });
   await auditBalance({ client, accountKind: 'USER_BALANCE', accountId: userId, operation: 'credit', amount: amountN, balanceBefore: before, balanceAfter: before + amountN, reference, actor });
   return { success: true, reference, credited: amountN };
 }
@@ -486,9 +590,21 @@ async function debitWallet({ client, userId, amount, reference, toAccount = 'PLA
   if (!op.claimed) return { dedup: true, reference };
 
   const { rows } = await client.query(`SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE`, [userId]);
-  if (rows.length === 0) throw new Error('User not found');
+  if (rows.length === 0) {
+    await setOperationState({ client, reference, status: 'FAILED' });
+    throw new Error('User not found');
+  }
   const before = Number(rows[0].wallet_balance);
   if (before < amountN) {
+    throw Object.assign(new Error('Salio lako halitoshi.'), { statusCode: 400 });
+  }
+
+  // Guarded projection update FIRST, journal second.
+  const debited = await client.query(
+    `UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2 AND wallet_balance >= $1`, [amountN, userId]
+  );
+  if (debited.rowCount !== 1) {
+    await setOperationState({ client, reference, status: 'FAILED' });
     throw Object.assign(new Error('Salio lako halitoshi.'), { statusCode: 400 });
   }
 
@@ -501,7 +617,7 @@ async function debitWallet({ client, userId, amount, reference, toAccount = 'PLA
     referenceId: reference, description, postedBy: actor, productType, productRef,
   });
 
-  await client.query(`UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2`, [amountN, userId]);
+  await setOperationState({ client, reference, status: 'SUCCESS' });
   await auditBalance({ client, accountKind: 'USER_BALANCE', accountId: userId, operation: 'debit', amount: amountN, balanceBefore: before, balanceAfter: before - amountN, reference, actor });
   return { success: true, reference, debited: amountN };
 }
@@ -521,14 +637,36 @@ async function internalTransfer({ client, fromUserId, toUserId, amount, referenc
     await client.query(`SELECT id FROM users WHERE id = $1 FOR UPDATE`, [id]);
   }
   const f = await client.query(`SELECT wallet_balance FROM users WHERE id = $1`, [fromUserId]);
-  if (f.rows.length === 0) throw new Error('Sender not found');
+  if (f.rows.length === 0) {
+    await setOperationState({ client, reference, status: 'FAILED' });
+    throw new Error('Sender not found');
+  }
   const fromBefore = Number(f.rows[0].wallet_balance);
   if (fromBefore < amountN) {
     throw Object.assign(new Error('Salio lako halitoshi.'), { statusCode: 400 });
   }
   const t = await client.query(`SELECT wallet_balance FROM users WHERE id = $1`, [toUserId]);
-  if (t.rows.length === 0) throw new Error('Recipient not found');
+  if (t.rows.length === 0) {
+    await setOperationState({ client, reference, status: 'FAILED' });
+    throw new Error('Recipient not found');
+  }
   const toBefore = Number(t.rows[0].wallet_balance);
+
+  // Guarded projection updates FIRST, journal second.
+  const debited = await client.query(
+    `UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2 AND wallet_balance >= $1`, [amountN, fromUserId]
+  );
+  if (debited.rowCount !== 1) {
+    await setOperationState({ client, reference, status: 'FAILED' });
+    throw Object.assign(new Error('Salio lako halitoshi.'), { statusCode: 400 });
+  }
+  const credited = await client.query(
+    `UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2`, [amountN, toUserId]
+  );
+  if (credited.rowCount !== 1) {
+    await setOperationState({ client, reference, status: 'FAILED' });
+    throw new Error('Recipient not found');
+  }
 
   await postJournal({
     client,
@@ -539,8 +677,7 @@ async function internalTransfer({ client, fromUserId, toUserId, amount, referenc
     referenceId: reference, description, postedBy: actor, productType, productRef,
   });
 
-  await client.query(`UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2`, [amountN, fromUserId]);
-  await client.query(`UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2`, [amountN, toUserId]);
+  await setOperationState({ client, reference, status: 'SUCCESS' });
   await auditBalance({ client, accountKind: 'USER_BALANCE', accountId: fromUserId, operation: 'transfer_debit', amount: amountN, balanceBefore: fromBefore, balanceAfter: fromBefore - amountN, reference, actor });
   await auditBalance({ client, accountKind: 'USER_BALANCE', accountId: toUserId, operation: 'transfer_credit', amount: amountN, balanceBefore: toBefore, balanceAfter: toBefore + amountN, reference, actor });
   return { success: true, reference, transferred: amountN };
@@ -556,10 +693,25 @@ async function walletToGroup({ client, userId, groupId, groupAccount = 'VICOBA_G
   if (!op.claimed) return { dedup: true, reference };
 
   const { rows } = await client.query(`SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE`, [userId]);
-  if (rows.length === 0) throw new Error('User not found');
+  if (rows.length === 0) {
+    await setOperationState({ client, reference, status: 'FAILED' });
+    throw new Error('User not found');
+  }
   const before = Number(rows[0].wallet_balance);
   if (before < amountN) {
     throw Object.assign(new Error('Salio lako halitoshi.'), { statusCode: 400 });
+  }
+
+  // Guarded projection update FIRST, journal second.
+  const debited = await client.query(
+    `UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2 AND wallet_balance >= $1`, [amountN, userId]
+  );
+  if (debited.rowCount !== 1) {
+    await setOperationState({ client, reference, status: 'FAILED' });
+    throw Object.assign(new Error('Salio lako halitoshi.'), { statusCode: 400 });
+  }
+  if (groupSql) {
+    await client.query(groupSql, [amountN, groupId]);
   }
 
   await postJournal({
@@ -571,10 +723,7 @@ async function walletToGroup({ client, userId, groupId, groupAccount = 'VICOBA_G
     referenceId: reference, description, postedBy: actor, productType, productRef,
   });
 
-  await client.query(`UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2`, [amountN, userId]);
-  if (groupSql) {
-    await client.query(groupSql, [amountN, groupId]);
-  }
+  await setOperationState({ client, reference, status: 'SUCCESS' });
   await auditBalance({ client, accountKind: 'USER_BALANCE', accountId: userId, operation: 'wallet_to_group', amount: amountN, balanceBefore: before, balanceAfter: before - amountN, reference, actor });
   return { success: true, reference, moved: amountN };
 }
@@ -589,8 +738,21 @@ async function groupToWallet({ client, userId, groupId, groupAccount = 'VICOBA_G
   if (!op.claimed) return { dedup: true, reference };
 
   const { rows } = await client.query(`SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE`, [userId]);
-  if (rows.length === 0) throw new Error('User not found');
+  if (rows.length === 0) {
+    await setOperationState({ client, reference, status: 'FAILED' });
+    throw new Error('User not found');
+  }
   const before = Number(rows[0].wallet_balance);
+
+  if (groupSql) {
+    await client.query(groupSql, [amountN, groupId]);
+  }
+  // Projection update FIRST, journal second.
+  const credited = await client.query(`UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2`, [amountN, userId]);
+  if (credited.rowCount !== 1) {
+    await setOperationState({ client, reference, status: 'FAILED' });
+    throw new Error('User not found');
+  }
 
   await postJournal({
     client,
@@ -601,10 +763,7 @@ async function groupToWallet({ client, userId, groupId, groupAccount = 'VICOBA_G
     referenceId: reference, description, postedBy: actor, productType, productRef,
   });
 
-  if (groupSql) {
-    await client.query(groupSql, [amountN, groupId]);
-  }
-  await client.query(`UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2`, [amountN, userId]);
+  await setOperationState({ client, reference, status: 'SUCCESS' });
   await auditBalance({ client, accountKind: 'USER_BALANCE', accountId: userId, operation: 'group_to_wallet', amount: amountN, balanceBefore: before, balanceAfter: before + amountN, reference, actor });
   return { success: true, reference, moved: amountN };
 }
@@ -626,6 +785,17 @@ async function lockWallet({ client, userId, amount, reference, sourceAccount = '
     throw Object.assign(new Error('Salio lako halitoshi kwa hold hii.'), { statusCode: 400 });
   }
 
+  // Guarded projection update FIRST, journal second - same contract as the
+  // other balance movers, so a failed guard can never leave an orphan entry.
+  const guarded = await client.query(
+    `UPDATE users SET wallet_balance = wallet_balance - $1, locked_balance = locked_balance + $1 WHERE id = $2 AND wallet_balance >= $1`,
+    [amountN, userId]
+  );
+  if (guarded.rowCount !== 1) {
+    await setOperationState({ client, reference, status: 'FAILED' });
+    throw Object.assign(new Error('Salio lako halitoshi kwa hold hii (locked)'), { statusCode: 400 });
+  }
+
   await postJournal({
     client,
     lines: [
@@ -635,7 +805,7 @@ async function lockWallet({ client, userId, amount, reference, sourceAccount = '
     referenceId: reference, description, postedBy: actor,
   });
 
-  await client.query(`UPDATE users SET wallet_balance = wallet_balance - $1, locked_balance = locked_balance + $1 WHERE id = $2`, [amountN, userId]);
+  await setOperationState({ client, reference, status: 'SUCCESS' });
   await auditBalance({ client, accountKind: 'USER_BALANCE', accountId: userId, operation: 'lock', amount: amountN, balanceBefore: availBefore, balanceAfter: availBefore - amountN, reference, actor });
   await auditBalance({ client, accountKind: 'USER_LOCKED', accountId: userId, operation: 'lock', amount: amountN, balanceBefore: lockedBefore, balanceAfter: lockedBefore + amountN, reference, actor });
   return { success: true, reference, locked: amountN };
@@ -655,6 +825,18 @@ async function unlockWallet({ client, userId, amount, reference, sourceAccount =
   const availBefore = Number(rows[0].wallet_balance);
   const lockedBefore = Number(rows[0].locked_balance);
 
+  // Guarded projection update FIRST. rowCount decides; the journal is only
+  // posted for a movement that actually happened.
+  const released = await client.query(
+    `UPDATE users SET wallet_balance = wallet_balance + $1, locked_balance = locked_balance - $1 WHERE id = $2 AND locked_balance >= $1`,
+    [amountN, userId]
+  );
+  if (released.rowCount !== 1) {
+    // The caller rolls back: the claim and the FAILED marker leave no residue.
+    await setOperationState({ client, reference, status: 'FAILED' });
+    throw Object.assign(new Error('Salio lako halitoshi kwa release hii.'), { statusCode: 400 });
+  }
+
   await postJournal({
     client,
     lines: [
@@ -664,7 +846,7 @@ async function unlockWallet({ client, userId, amount, reference, sourceAccount =
     referenceId: reference, description, postedBy: actor,
   });
 
-  await client.query(`UPDATE users SET wallet_balance = wallet_balance + $1, locked_balance = locked_balance - $1 WHERE id = $2`, [amountN, userId]);
+  await setOperationState({ client, reference, status: 'SUCCESS' });
   await auditBalance({ client, accountKind: 'USER_BALANCE', accountId: userId, operation: 'unlock', amount: amountN, balanceBefore: availBefore, balanceAfter: availBefore + amountN, reference, actor });
   await auditBalance({ client, accountKind: 'USER_LOCKED', accountId: userId, operation: 'unlock', amount: amountN, balanceBefore: lockedBefore, balanceAfter: lockedBefore - amountN, reference, actor });
   return { success: true, reference, unlocked: amountN };
@@ -683,6 +865,16 @@ async function captureLock({ client, userId, amount, reference, toAccount = 'MNO
   if (rows.length === 0) throw new Error('User not found');
   const lockedBefore = Number(rows[0].locked_balance);
 
+  // Guarded projection update FIRST - the decrement is conditional and atomic.
+  const captured = await client.query(
+    `UPDATE users SET locked_balance = locked_balance - $1 WHERE id = $2 AND locked_balance >= $1`,
+    [amountN, userId]
+  );
+  if (captured.rowCount !== 1) {
+    await setOperationState({ client, reference, status: 'FAILED' });
+    throw Object.assign(new Error('Salio lako halitoshi kwa capture hii.'), { statusCode: 400 });
+  }
+
   await postJournal({
     client,
     lines: [
@@ -692,7 +884,7 @@ async function captureLock({ client, userId, amount, reference, toAccount = 'MNO
     referenceId: reference, description, postedBy: actor,
   });
 
-  await client.query(`UPDATE users SET locked_balance = locked_balance - $1 WHERE id = $2`, [amountN, userId]);
+  await setOperationState({ client, reference, status: 'SUCCESS' });
   await auditBalance({ client, accountKind: 'USER_LOCKED', accountId: userId, operation: 'capture', amount: amountN, balanceBefore: lockedBefore, balanceAfter: lockedBefore - amountN, reference, actor });
   return { success: true, reference, captured: amountN };
 }
