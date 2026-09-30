@@ -107,21 +107,34 @@ async function updateRate(fromCurrency, toCurrency, rate, source = 'MANUAL') {
   await validateActiveCurrency(from);
   await validateActiveCurrency(to);
 
-  await pool.query(
-    `INSERT INTO exchange_rates (from_currency, to_currency, rate, source)
-     VALUES ($1, $2, $3, $4)
-     ON CONFLICT (from_currency, to_currency, valid_from)
-     DO UPDATE SET rate = $3, source = $4`,
-    [from, to, rateNum, source]
-  );
-  await pool.query(
-    `INSERT INTO exchange_rate_history (from_currency, to_currency, day, rate, source, sampled_at)
-     VALUES ($1, $2, $3, $4, NOW(), NOW())
-     ON CONFLICT (from_currency, to_currency, day)
-     DO UPDATE SET rate = EXCLUDED.rate, source = EXCLUDED.source`,
-    [from, to, rateNum, source]
-  );
-  return { success: true, from, to, rate: rateNum };
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    await client.query(
+      `INSERT INTO exchange_rates (from_currency, to_currency, rate, source)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (from_currency, to_currency, valid_from)
+       DO UPDATE SET rate = $3, source = $4`,
+      [from, to, rateNum, source]
+    );
+
+    await client.query(
+      `INSERT INTO exchange_rate_history (from_currency, to_currency, day, rate, source, sampled_at)
+       VALUES ($1, $2, $3, $4, $5, NOW())
+       ON CONFLICT (from_currency, to_currency, day)
+       DO UPDATE SET rate = EXCLUDED.rate, source = EXCLUDED.source`,
+      [from, to, new Date().toISOString().slice(0, 10), rateNum, source]
+    );
+
+    await client.query('COMMIT');
+    return { success: true, from, to, rate: rateNum };
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
 }
 
 /**
