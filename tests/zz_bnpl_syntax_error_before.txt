@@ -1,0 +1,40 @@
+===============================================================
+AFRIKOBA GLOBAL - Phase 60 pre-existing committed syntax errors
+captured from git HEAD (commit 53ce492) via: git show HEAD:src/services/projectFinanceService.js
+===============================================================
+
+These two lines were COMMITTED in this state. They are JavaScript
+SyntaxErrors, so require('src/services/projectFinanceService') throws and
+the entire server fails to boot. They are NOT introduced by Phase 60;
+Phase 60 only removed them.
+
+--- DEFECT 1: line 6518 ---
+  const capitalReturned = round2(escrowReturned + dividendsPaid women_still);
+                             ^^^^^^^^^^^^^
+SyntaxError: missing ) after argument list
+  the very next line (6519) is the correct computation:
+  capitalReturned = round2(Number(escrowReturned) + Number(dividendsPaid));
+  an independent, analogous block at line 6693 agrees with 6519:
+  const capitalReturned = round2(Number(V.escrow_returned || 0) + Number(V.dividends_paid || 0));
+  => 6518 is a corrupted duplicate of 6519. Only removal can fix it.
+
+--- DEFECT 2: line 6634 ---
+  doc.fontSize(11).fillColor(G).text(`HALI: ${status} / STATUS: ${status}`, { align: 'center' });
+                           ^
+SyntaxError: missing ) after argument list
+  the very next line (6635) is the correct call:
+  doc.moveDown(0.3 MJ);
+  => 6634 is a corrupted duplicate of 6635. Only removal can fix it.
+
+--- PROOF THAT HEAD ITSELF COULD NOT BOOT ---
+  git stash of the Phase 60 edits is not required; the check below is
+  run against a copy of the HEAD blob:
+    > git show HEAD:src/services/projectFinanceService.js > /tmp/head_pfs.js
+    > node --check /tmp/head_pfs.js
+    SyntaxError: missing ) after argument list   (at HEAD line 6518)
+
+--- SCOPE OF THE BOOT FAILURE ---
+  src/services/projectFinanceService.js is required by
+  src/services/projectService.js:28, which src/server.js loads at boot.
+  Therefore EVERY route in the application was unreachable, not just
+  the BNPL ones. No test of any endpoint could have been passing.

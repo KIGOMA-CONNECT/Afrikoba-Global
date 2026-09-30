@@ -1,0 +1,246 @@
+LIVE VALIDATION RUN nonce=JI68K7
+target: afrikoba_regression @ localhost:5436 (container 5436)
+  identity = {"db":"afrikoba_regression","usr":"afrikoba_r"}
+
+########## TEST #1  Hold - conditional atomic guard ##########
+  1a new user = {"id":1,"wallet":100000,"locked":0}
+  1a reference = L1AJI68K7 (len=9)
+  1a result = {"success":true,"reference":"L1AJI68K7","held":30000}
+  1a wallet before->after = 100000 -> 70000
+  1a locked before->after = 0 -> 30000
+  1a operation row = {"id":"1","operation_type":"HOLD","reference_id":"L1AJI68K7","status":"NEW","attempts":1,"amount":"30000.0000","last_error":null}
+  1a journal rows = [{"id":"2","account_code":"CUSTOMER_WALLET","direction":"DR","amount":"30000.0000","entry_group_id":"L1AJI68K7"},{"id":"3","account_code":"CARD_HOLD","direction":"CR","amount":"30000.0000","entry_group_id":"L1AJI68K7"}]
+  1a DR/CR/diff = {"dr":30000,"cr":30000,"n":2,"diff":0}
+  !! 1a operation left NEW (no terminal state)
+  1b reference = L1BJI68K7
+  1b state before = {"wallet":70000,"locked":30000}
+  1b request amount=999999 > available = undefined
+  1b error thrown = true :: Salio lako halitoshi kwa hold hii.
+  1b state after = {"wallet":70000,"locked":30000}
+  1b journal rows (must be 0) = []
+  1b operation row (must be null - rolled back) = null
+  1c concurrent refs = {"a":"L1CJI68K7","b":"L1DJI68K7"}
+  1c state before = {"wallet":70000,"locked":30000}
+  1c available for each claim = 70000 each; 2 x 80000 = 160000 > available
+  1c execution A = {"ref":"L1CJI68K7","ok":false,"err":"deadlock detected"}
+  1c execution B = {"ref":"L1DJI68K7","ok":false,"err":"Salio lako halitoshi kwa hold hii."}
+  1c state after = {"wallet":70000,"locked":30000}
+  1c op row A = null
+  1c op row B = null
+  1c winners (must be 1) = 0
+  !! 1c concurrent guard allowed 0 winners
+  >> TEST #1 RESULT = FAIL  (1a holdFunds status=NEW; 1c winners=0)
+
+########## TEST #2  Release - restores balance + idempotency ##########
+  2a user = {"id":2}
+  2a hold ref / release ref = {"hold":"L2AHJI68K7","release":"L2ARJI68K7"}
+  2a state after hold = {"wallet":75000,"locked":25000}
+  2a release request = {"userId":2,"amount":25000,"reference":"L2ARJI68K7"}
+  2a FIRST execution result = {"success":true,"reference":"L2ARJI68K7","released":25000}
+  2a financial state after FIRST = {"wallet":100000,"locked":0}
+  2a journal after FIRST = [{"id":"6","account_code":"CARD_HOLD","direction":"DR","amount":"25000.0000","entry_group_id":"L2ARJI68K7"},{"id":"7","account_code":"CUSTOMER_WALLET","direction":"CR","amount":"25000.0000","entry_group_id":"L2ARJI68K7"}]
+  2a effective ledger entries after FIRST = 2
+  2a SECOND execution result (identical request) = {"dedup":true,"reference":"L2ARJI68K7"}
+  2a financial state after SECOND = {"wallet":100000,"locked":0}
+  2a journal after SECOND = [{"id":"6","account_code":"CARD_HOLD","direction":"DR","amount":"25000.0000","entry_group_id":"L2ARJI68K7"},{"id":"7","account_code":"CUSTOMER_WALLET","direction":"CR","amount":"25000.0000","entry_group_id":"L2ARJI68K7"}]
+  2a effective ledger entries after SECOND = 2
+  2a op row = {"id":"6","operation_type":"RELEASE","reference_id":"L2ARJI68K7","status":"SUCCESS","attempts":1,"amount":"25000.0000","last_error":null}
+  2a operation status = SUCCESS
+  2b user = {"id":3}
+  2b lock ref / unlock ref = {"lock":"L2BHJI68K7","unlock":"L2BRJI68K7"}
+  2b lockWallet result = {"success":true,"reference":"L2BHJI68K7","locked":40000}
+  2b state after lock = {"wallet":40000,"locked":40000}
+  2b lock op status = {"id":"8","operation_type":"LOCK","reference_id":"L2BHJI68K7","status":"SUCCESS","attempts":1,"amount":"40000.0000","last_error":null}
+  2b FIRST unlockWallet execution = {"success":true,"reference":"L2BRJI68K7","unlocked":40000}
+  2b financial state after FIRST = {"wallet":80000,"locked":0}
+  2b journal after FIRST = [{"id":"10","account_code":"CARD_HOLD","direction":"DR","amount":"40000.0000","entry_group_id":"L2BRJI68K7"},{"id":"11","account_code":"CUSTOMER_WALLET","direction":"CR","amount":"40000.0000","entry_group_id":"L2BRJI68K7"}]
+  2b effective ledger entries after FIRST = 2
+  2b SECOND unlockWallet execution (identical request) = {"dedup":true,"reference":"L2BRJI68K7"}
+  2b financial state after SECOND = {"wallet":80000,"locked":0}
+  2b journal after SECOND = [{"id":"10","account_code":"CARD_HOLD","direction":"DR","amount":"40000.0000","entry_group_id":"L2BRJI68K7"},{"id":"11","account_code":"CUSTOMER_WALLET","direction":"CR","amount":"40000.0000","entry_group_id":"L2BRJI68K7"}]
+  2b effective ledger entries after SECOND = 2
+  2b op row = {"id":"9","operation_type":"UNLOCK","reference_id":"L2BRJI68K7","status":"SUCCESS","attempts":1,"amount":"40000.0000","last_error":null}
+  >> TEST #2 RESULT = PASS
+
+########## TEST #3  Duplicate release - no double effect ##########
+  3 user = {"id":4}
+  3 state after hold = {"wallet":40000,"locked":20000}
+  3 same release request repeated 4x on reference L3RJI68K7 (amount=20000) = undefined
+  3 attempt 1 = {"attempt":1,"result":{"success":true,"reference":"L3RJI68K7","released":20000},"wallet":60000,"locked":0,"ledgerEntries":2}
+  3 attempt 2 = {"attempt":2,"result":{"dedup":true,"reference":"L3RJI68K7"},"wallet":60000,"locked":0,"ledgerEntries":2}
+  3 attempt 3 = {"attempt":3,"result":{"dedup":true,"reference":"L3RJI68K7"},"wallet":60000,"locked":0,"ledgerEntries":2}
+  3 attempt 4 = {"attempt":4,"result":{"dedup":true,"reference":"L3RJI68K7"},"wallet":60000,"locked":0,"ledgerEntries":2}
+  3 final op row = {"id":"12","operation_type":"RELEASE","reference_id":"L3RJI68K7","status":"SUCCESS","attempts":1,"amount":"20000.0000","last_error":null}
+  3 final journal rows = [{"id":"14","account_code":"CARD_HOLD","direction":"DR","amount":"20000.0000","entry_group_id":"L3RJI68K7"},{"id":"15","account_code":"CUSTOMER_WALLET","direction":"CR","amount":"20000.0000","entry_group_id":"L3RJI68K7"}]
+  3 final audit rows = [{"id":"13","account_kind":"USER_BALANCE","account_id":"4","operation":"release","amount":"20000.0000","balance_before":"40000.0000","balance_after":"60000.0000"},{"id":"14","account_kind":"USER_LOCKED","account_id":"4","operation":"release","amount":"20000.0000","balance_before":"20000.0000","balance_after":"0.0000"}]
+  >> TEST #3 RESULT = PASS
+
+########## TEST #4  Combined effect guards - wallet/locked never negative ##########
+  4 user = {"id":5,"wallet":50000,"locked":0}
+  4 state before = {"wallet":50000,"locked":0}
+  4a reference = L4AJI68K7
+  4a request = unlockWallet amount=999999 while locked_balance=0
+  4a result = {"success":false,"failed":true,"reference":"L4AJI68K7","reason":"INSUFFICIENT_LOCKED","requested":999999}
+  4a error = null
+  4a state after (must equal before) = {"wallet":50000,"locked":0}
+  4a op row (FAILED expected, last_error set) = {"id":"16","operation_type":"UNLOCK","reference_id":"L4AJI68K7","status":"FAILED","attempts":1,"amount":"999999.0000","last_error":"insufficient locked_balance"}
+  4a journal rows = [{"id":"16","account_code":"CARD_HOLD","direction":"DR","amount":"999999.0000","entry_group_id":"L4AJI68K7"},{"id":"17","account_code":"CUSTOMER_WALLET","direction":"CR","amount":"999999.0000","entry_group_id":"L4AJI68K7"}]
+  4a audit rows = []
+  4b reference = L4BJI68K7
+  4b request = releaseHold amount=999999 while locked_balance=0
+  4b result = {"success":true,"reference":"L4BJI68K7","released":999999}
+  4b error = null
+  4b state after = {"wallet":50000,"locked":0}
+  4b op row = {"id":"17","operation_type":"RELEASE","reference_id":"L4BJI68K7","status":"SUCCESS","attempts":1,"amount":"999999.0000","last_error":null}
+  4b journal rows = [{"id":"18","account_code":"CARD_HOLD","direction":"DR","amount":"999999.0000","entry_group_id":"L4BJI68K7"},{"id":"19","account_code":"CUSTOMER_WALLET","direction":"CR","amount":"999999.0000","entry_group_id":"L4BJI68K7"}]
+  !! 4b releaseHold reported success=true but moved nothing (silent no-op)
+  4c request = UPDATE users SET locked_balance=-1 (must be refused by chk_users_locked_balance_check)
+  4c refused by DB = true
+  4c error = new row for relation "users" violates check constraint "users_locked_balance_check"
+  4c state after = {"wallet":50000,"locked":0}
+  >> TEST #4 RESULT = FAIL  (4b silent no-op reported success)
+
+########## TEST #5  Finalize - SUCCESS/FAILED terminal state ##########
+  5 user = {"id":6}
+  5a lockWallet result = {"success":true,"reference":"L5OKJI68K7","locked":10000}
+  5a op row (expect SUCCESS) = {"id":"18","operation_type":"LOCK","reference_id":"L5OKJI68K7","status":"SUCCESS","attempts":1,"amount":"10000.0000","last_error":null}
+  5b insufficient-unlock result (expect failure signal) = {"success":false,"failed":true,"reference":"L5FLJI68K7","reason":"INSUFFICIENT_LOCKED","requested":999999}
+  5b op row (expect FAILED) = {"id":"19","operation_type":"UNLOCK","reference_id":"L5FLJI68K7","status":"FAILED","attempts":1,"amount":"999999.0000","last_error":"insufficient locked_balance"}
+  5c captureLock result = {"success":true,"reference":"L5CPJI68K7","captured":10000}
+  5c captureLock error = null
+  5c op row after captureLock = {"id":"20","operation_type":"CAPTURE","reference_id":"L5CPJI68K7","status":"NEW","attempts":1,"amount":"10000.0000","last_error":null}
+  5c audit rows = [{"id":"19","account_kind":"USER_LOCKED","account_id":"6","operation":"capture","amount":"10000.0000","balance_before":"10000.0000","balance_after":"0.0000"}]
+  !! 5c captureLock left operation in transient NEW (never finalized)
+  5d ALL operations still in NEW state = [{"reference_id":"L1AJI68K7","operation_type":"HOLD","status":"NEW"},{"reference_id":"L2AHJI68K7","operation_type":"HOLD","status":"NEW"},{"reference_id":"L3HJI68K7","operation_type":"HOLD","status":"NEW"},{"reference_id":"L5CPJI68K7","operation_type":"CAPTURE","status":"NEW"}]
+  !! 5d 4 operation(s) left in NEW
+  >> TEST #5 RESULT = FAIL  (5c captureLock status=NEW; 5d NEW rows=4)
+
+########## TEST #6  Retry FAILED - no double financial effect ##########
+  6 user = {"id":7}
+  6 reference (will first FAIL, then be retried) = L6RTJI68K7
+  6 state before = {"wallet":70000,"locked":0}
+  6 FIRST execution result = {"success":false,"failed":true,"reference":"L6RTJI68K7","reason":"INSUFFICIENT_LOCKED","requested":60000}
+  6 FIRST execution error = null
+  6 financial state after FIRST = {"wallet":70000,"locked":0}
+  6 operation row after FIRST = {"id":"21","operation_type":"UNLOCK","reference_id":"L6RTJI68K7","status":"FAILED","attempts":1,"amount":"60000.0000","last_error":"insufficient locked_balance"}
+  6 effective ledger entries after FIRST = {"dr":60000,"cr":60000,"n":2,"diff":0}
+  6 journal rows after FIRST = [{"id":"26","account_code":"CARD_HOLD","direction":"DR","amount":"60000.0000","entry_group_id":"L6RTJI68K7"},{"id":"27","account_code":"CUSTOMER_WALLET","direction":"CR","amount":"60000.0000","entry_group_id":"L6RTJI68K7"}]
+  6 RETRY = same reference L6RTJI68K7, amount now 60000 after funding lock = undefined
+  6 state after funding hold = {"wallet":10000,"locked":60000}
+  6 SECOND execution result = {"dedup":true,"reference":"L6RTJI68K7"}
+  6 SECOND execution error = null
+  6 financial state after SECOND (retry) = {"wallet":10000,"locked":60000}
+  6 operation row after SECOND = {"id":"21","operation_type":"UNLOCK","reference_id":"L6RTJI68K7","status":"FAILED","attempts":1,"amount":"60000.0000","last_error":"insufficient locked_balance"}
+  6 effective ledger entries after SECOND = {"dr":60000,"cr":60000,"n":2,"diff":0}
+  6 journal rows after SECOND = [{"id":"26","account_code":"CARD_HOLD","direction":"DR","amount":"60000.0000","entry_group_id":"L6RTJI68K7"},{"id":"27","account_code":"CUSTOMER_WALLET","direction":"CR","amount":"60000.0000","entry_group_id":"L6RTJI68K7"}]
+  6 NOTE: balances after retry reflect ONLY the funding hold, retry itself had zero effect = undefined
+  >> TEST #6 RESULT = PASS
+
+########## TEST #7  Single-transaction atomicity (rollback leaves no partial state) ##########
+  7 user = {"id":8}
+  7 reference = L7TXJI68K7
+  7 BEFORE  balances = {"wallet":120000,"locked":0}
+  7 BEFORE  operation row = null
+  7 BEFORE  journal rows = []
+  7 BEFORE  row counts = {"o":14,"j":28,"a":21}
+7 --- inside BEGIN ---
+  7 inside-tx lockWallet result = {"success":true,"reference":"L7TXJI68K7","locked":45000}
+  7 inside-tx balances AFTER mutation (uncommitted) = {"wallet":75000,"locked":45000}
+  7 inside-tx journal rows (uncommitted) = [{"id":"30","account_code":"CUSTOMER_WALLET","direction":"DR","amount":"45000.0000"},{"id":"31","account_code":"CARD_HOLD","direction":"CR","amount":"45000.0000"}]
+  7 inside-tx operation row (uncommitted) = [{"id":"24","operation_type":"LOCK","reference_id":"L7TXJI68K7","status":"SUCCESS"}]
+7 --- forcing failure INSIDE the transaction ---
+  7 forced failure SQLSTATE/message = relation "tbl_zz_nonexistent_force_error" does not exist
+7 --- ROLLBACK executed ---
+  7 AFTER  balances = {"wallet":120000,"locked":0}
+  7 AFTER  operation row = null
+  7 AFTER  journal rows = []
+  7 AFTER  audit rows = []
+  7 AFTER  row counts = {"o":14,"j":28,"a":21}
+  >> TEST #7 RESULT = PASS
+
+########## TEST #8  Double-entry journal - DR == CR ##########
+8 per-group breakdown:
+   group=L1AJI68K7 ref=L1AJI68K7 DR=30000.0000 CR=30000.0000 diff=0 lines=2
+   group=L2AHJI68K7 ref=L2AHJI68K7 DR=25000.0000 CR=25000.0000 diff=0 lines=2
+   group=L2ARJI68K7 ref=L2ARJI68K7 DR=25000.0000 CR=25000.0000 diff=0 lines=2
+   group=L2BHJI68K7 ref=L2BHJI68K7 DR=40000.0000 CR=40000.0000 diff=0 lines=2
+   group=L2BRJI68K7 ref=L2BRJI68K7 DR=40000.0000 CR=40000.0000 diff=0 lines=2
+   group=L3HJI68K7 ref=L3HJI68K7 DR=20000.0000 CR=20000.0000 diff=0 lines=2
+   group=L3RJI68K7 ref=L3RJI68K7 DR=20000.0000 CR=20000.0000 diff=0 lines=2
+   group=L4AJI68K7 ref=L4AJI68K7 DR=999999.0000 CR=999999.0000 diff=0 lines=2
+   group=L4BJI68K7 ref=L4BJI68K7 DR=999999.0000 CR=999999.0000 diff=0 lines=2
+   group=L5CPJI68K7 ref=L5CPJI68K7 DR=10000.0000 CR=10000.0000 diff=0 lines=2
+   group=L5FLJI68K7 ref=L5FLJI68K7 DR=999999.0000 CR=999999.0000 diff=0 lines=2
+   group=L5OKJI68K7 ref=L5OKJI68K7 DR=10000.0000 CR=10000.0000 diff=0 lines=2
+   group=L6FHJI68K7 ref=L6FHJI68K7 DR=60000.0000 CR=60000.0000 diff=0 lines=2
+   group=L6RTJI68K7 ref=L6RTJI68K7 DR=60000.0000 CR=60000.0000 diff=0 lines=2
+  8 TOTAL DR = 3339997.0000
+  8 TOTAL CR = 3339997.0000
+  8 DIFFERENCE = 0
+  8 total journal rows = 28
+  8 groups checked = 14
+  8 non-positive journal amounts = 0
+  >> TEST #8 RESULT = PASS
+
+########## TEST #9  Reconciliation + TX224 untouched ##########
+9 all test users created in this run:
+     user 1 = {"wallet":70000,"locked":30000,"total":100000}
+     user 2 = {"wallet":100000,"locked":0,"total":100000}
+     user 3 = {"wallet":80000,"locked":0,"total":80000}
+     user 4 = {"wallet":60000,"locked":0,"total":60000}
+     user 5 = {"wallet":50000,"locked":0,"total":50000}
+     user 6 = {"wallet":80000,"locked":0,"total":80000}
+     user 7 = {"wallet":10000,"locked":60000,"total":70000}
+     user 8 = {"wallet":120000,"locked":0,"total":120000}
+  9 test users with negative wallet/locked = []
+9 every operation row created in this run:
+   #1 HOLD ref=L1AJI68K7 status=NEW amount=30000.0000 attempts=1
+   #5 HOLD ref=L2AHJI68K7 status=NEW amount=25000.0000 attempts=1
+   #6 RELEASE ref=L2ARJI68K7 status=SUCCESS amount=25000.0000 attempts=1
+   #8 LOCK ref=L2BHJI68K7 status=SUCCESS amount=40000.0000 attempts=1
+   #9 UNLOCK ref=L2BRJI68K7 status=SUCCESS amount=40000.0000 attempts=1
+   #11 HOLD ref=L3HJI68K7 status=NEW amount=20000.0000 attempts=1
+   #12 RELEASE ref=L3RJI68K7 status=SUCCESS amount=20000.0000 attempts=1
+   #16 UNLOCK ref=L4AJI68K7 status=FAILED amount=999999.0000 attempts=1
+   #17 RELEASE ref=L4BJI68K7 status=SUCCESS amount=999999.0000 attempts=1
+   #18 LOCK ref=L5OKJI68K7 status=SUCCESS amount=10000.0000 attempts=1
+   #19 UNLOCK ref=L5FLJI68K7 status=FAILED amount=999999.0000 attempts=1
+   #20 CAPTURE ref=L5CPJI68K7 status=NEW amount=10000.0000 attempts=1
+   #21 UNLOCK ref=L6RTJI68K7 status=FAILED amount=60000.0000 attempts=1
+   #22 HOLD ref=L6FHJI68K7 status=NEW amount=60000.0000 attempts=1
+  9 operation status distribution = [{"status":"FAILED","c":3},{"status":"NEW","c":5},{"status":"SUCCESS","c":6}]
+  !! 9 operations left in NEW state
+  9 financial_audit_log summary = [{"account_kind":"USER_BALANCE","operation":"hold","c":4,"total":"135000.0000"},{"account_kind":"USER_BALANCE","operation":"lock","c":2,"total":"50000.0000"},{"account_kind":"USER_BALANCE","operation":"release","c":3,"total":"1044999.0000"},{"account_kind":"USER_BALANCE","operation":"unlock","c":1,"total":"40000.0000"},{"account_kind":"USER_LOCKED","operation":"capture","c":1,"total":"10000.0000"},{"account_kind":"USER_LOCKED","operation":"hold","c":4,"total":"135000.0000"},{"account_kind":"USER_LOCKED","operation":"lock","c":2,"total":"50000.0000"},{"account_kind":"USER_LOCKED","operation":"release","c":3,"total":"1044999.0000"},{"account_kind":"USER_LOCKED","operation":"unlock","c":1,"total":"40000.0000"}]
+  9 negative audit amounts = 0
+  9 CUSTOMER_WALLET account DR = 185000.0000
+  9 CUSTOMER_WALLET account CR = 3144997.0000
+  9 CARD_HOLD account DR = 3154997.0000
+  9 CARD_HOLD account CR = 185000.0000
+  9 SUM(users.locked_balance) for test users = 90000.00
+  9 journal CARD_HOLD CR - DR (expected to equal sum locked) = -2969997
+  9 RECONCILIATION difference (CARD_HOLD net vs projection) = -3059997
+  !! 9 reconciliation difference = -3059997
+  9 TX224/WD-3EC32D6D operation rows = 0
+  9 TX224/WD-3EC32D6D journal rows = 0
+  9 TX224 wallet_ledger rows = 0
+  9 TX224 audit rows = 0
+  9 TX224 literals in financialEngine.js source = 0
+  9 every reference used in this run = ["L1AJI68K7","L2AHJI68K7","L2ARJI68K7","L2BHJI68K7","L2BRJI68K7","L3HJI68K7","L3RJI68K7","L4AJI68K7","L4BJI68K7","L5OKJI68K7","L5FLJI68K7","L5CPJI68K7","L6RTJI68K7","L6FHJI68K7"]
+  9 longest reference length (limit 15) = 10
+  >> TEST #9 RESULT = FAIL  (9 NEW status remains; 9 recon diff=-3059997)
+
+########## FINAL MATRIX ##########
+ 1  Hold conditional-atomic             FAIL   [1a holdFunds status=NEW; 1c winners=0]
+ 2  Release + idempotency               PASS
+ 3  Duplicate release                   PASS
+ 4  Combined effect guards              FAIL   [4b silent no-op reported success]
+ 5  SUCCESS/FAILED terminal state       FAIL   [5c captureLock status=NEW; 5d NEW rows=4]
+ 6  FAILED retry no double effect       PASS
+ 7  Single-tx atomicity                 PASS
+ 8  Double-entry DR == CR               PASS
+ 9  Reconciliation + TX224 untouched    FAIL   [9 NEW status remains; 9 recon diff=-3059997]
+
+########## SUMMARY ##########
+LIVE results = FAIL, PASS, PASS, FAIL, FAIL, PASS, PASS, PASS, FAIL
+PASS=5 FAIL=4 PENDING=0
+assertion failures logged = 7

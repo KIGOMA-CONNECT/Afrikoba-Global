@@ -1,0 +1,13 @@
+-- Phase 58 — Legacy P2P -> authoritative projects reconciliation bridge (idempotent).
+-- If this migration is ALREADY applied on a given environment (the task premise claims 138
+-- was applied on staging), every statement below is a no-op thanks to the IF [NOT] EXISTS guards.
+-- Guarantees the reconciliation idempotency contract even when 138 is absent:
+--   * no two legacy projects may point at the same authoritative project; and
+--   * the bridge is an explicit nullable join, not a fabricated 1:1 assumption.
+
+ALTER TABLE investment_projects
+  ADD COLUMN IF NOT EXISTS authoritative_project_id BIGINT REFERENCES projects(id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_investment_projects_authoritative_project
+  ON investment_projects (authoritative_project_id)
+  WHERE authoritative_project_id IS NOT NULL;

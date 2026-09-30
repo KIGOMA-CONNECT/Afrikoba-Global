@@ -1,0 +1,84 @@
+DB      = afrikoba_regression
+PORT    = 5432
+DB user = afrikoba_r
+version = PostgreSQL 16.14
+
+== users ==
+  id | integer | NOT NULL | default=nextval('users_id_seq'::regclass)
+  full_name | character varying(120) | NOT NULL
+  phone_number | character varying(15) | NOT NULL
+  email | character varying(100) | NULL
+  password_hash | character varying(255) | NULL
+  pin_hash | character varying(255) | NULL
+  nida_number | character varying(20) | NULL
+  kyc_level | integer | NULL | default=1
+  id_document_url | character varying(255) | NULL
+  residential_address | character varying(255) | NULL
+  role | character varying(20) | NULL | default='MJUMBE'::character varying
+  wallet_balance | numeric | NULL | default=0.00
+  locked_balance | numeric | NULL | default=0.00
+  trust_score | integer | NULL | default=100
+  currency_code | character varying(3) | NULL | default='TZS'::character varying
+  is_active | boolean | NULL | default=true
+  created_at | timestamp without time zone | NULL | default=CURRENT_TIMESTAMP
+  updated_at | timestamp without time zone | NULL | default=CURRENT_TIMESTAMP
+  totp_secret | character varying(255) | NULL
+  totp_enabled | boolean | NULL | default=false
+  totp_verified_at | timestamp without time zone | NULL
+  country_code | character varying(2) | NULL | default='TZ'::character varying
+  auth_version | integer | NOT NULL | default=0
+  failed_login_attempts | integer | NULL | default=0
+  locked_until | timestamp without time zone | NULL
+  last_failed_login | timestamp without time zone | NULL
+  device_policy | character varying(20) | NULL | default='PERMISSIVE'::character varying
+  >> INSERT-REQUIRED (NOT NULL, no default): full_name, phone_number
+
+== financial_operations ==
+  id | bigint | NOT NULL | default=nextval('financial_operations_id_seq'::regclass)
+  operation_type | character varying(30) | NOT NULL
+  reference_id | character varying(64) | NOT NULL
+  transaction_id | integer | NULL
+  user_id | integer | NULL
+  amount | numeric | NOT NULL | default=0
+  status | character varying(20) | NOT NULL | default='NEW'::character varying
+  attempts | integer | NOT NULL | default=0
+  last_error | text | NULL
+  created_at | timestamp with time zone | NULL | default=now()
+  updated_at | timestamp with time zone | NULL | default=now()
+  >> INSERT-REQUIRED (NOT NULL, no default): operation_type, reference_id
+
+== journal_entries ==
+  id | bigint | NOT NULL | default=nextval('journal_entries_id_seq1'::regclass)
+  entry_group_id | character varying(64) | NOT NULL
+  transaction_id | integer | NULL
+  account_id | integer | NOT NULL
+  direction | character varying(4) | NOT NULL
+  amount | numeric | NOT NULL
+  currency_code | character varying(3) | NULL | default='TZS'::character varying
+  reference_id | character varying(50) | NULL
+  description | text | NULL
+  posted_by | character varying(40) | NULL
+  posted_at | timestamp with time zone | NOT NULL | default=now()
+  product_type | character varying(40) | NULL
+  product_ref | character varying(64) | NULL
+  >> INSERT-REQUIRED (NOT NULL, no default): entry_group_id, account_id, direction, amount
+
+== wallet_ledger ==
+  id | integer | NOT NULL | default=nextval('wallet_ledger_id_seq'::regclass)
+  transaction_id | integer | NULL
+  reference_id | character varying(50) | NOT NULL
+  from_user_id | integer | NULL
+  to_user_id | integer | NULL
+  amount | numeric | NOT NULL
+  currency_code | character varying(3) | NULL | default='TZS'::character varying
+  description | character varying(255) | NULL
+  created_at | timestamp without time zone | NULL | default=CURRENT_TIMESTAMP
+  product_type | character varying(40) | NULL
+  product_ref | character varying(64) | NULL
+  >> INSERT-REQUIRED (NOT NULL, no default): reference_id, amount
+
+reference columns = [{"column_name":"reference_id","len":64,"data_type":"character varying"}]
+financial/journal/ledger tables = financial_anomalies, financial_audit_log, financial_operations, financial_passports, financial_tips, governance_financial_executions, journal_entries, journal_entries_y2026m09, journal_entries_y2026m10, journal_entries_y2026m11, journal_entries_y2026m12, journal_entries_y2027m01, journal_entries_y2027m02, journal_entries_y2027m03, journal_entries_y2027m04, journal_entries_y2027m05, journal_entries_y2027m06, journal_entries_y2027m07, journal_entries_y2027m08, journal_entries_y2027m09, ledger_accounts, marketplace_financing, supplier_financing, v_product_ledger_summary, wallet_ledger
+existing TX224/WD-3EC32D6D ops in regression DB = 0
+
+PREFLIGHT OK (read-only, no mutation)

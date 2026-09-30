@@ -1,0 +1,204 @@
+'use strict';
+
+const { logAudit } = require('./auditService');
+
+const AVAILABLE = 'AVAILABLE';
+const NO_RECORDS = 'NO_RECORDS';
+
+const data_availability = {
+  AVAILABLE,
+  NO_RECORDS,
+  state: NO_RECORDS,
+  recordCount: 0,
+  entries: [],
+  rationale: 'No authoritative legacy cohort is fabricated by this service. Live ' +
+    'reconciliation is NOT executed here; NO_RECORDS is the truthful availability ' +
+    'surface until an approved EXPERT-run performs the live reconcile on-box. ' +
+    'Historical P2P records remain untouched in the authoritative bridge as-is.',
+};
+/**
+ * Legacy P2P -> authoritative project reconciliation (Phase 58).
+ *
+ * Operates on the ALREADY-EXISTING authoritative bridge
+ *   investment_projects.authoritative_project_id -> projects(id)
+ * which is tracked/applied on the staging box as
+ *   db/migrations/138_project_identity_bridge.sql
+ * (DB column verified present: authoritative_project_id; unique partial index
+ * on (authoritative_project_id) WHERE authoritative_project_id IS NOT NULL).
+ *
+ * This module does NOT create or duplicate that bridge (server already has it).
+ * It performs the reconciliation WRITE, guarded and idempotent, in ONE
+ * transaction that also commits the audit record in the same tx.
+ *
+ * HARD RULES (never violated by this module):
+ *  - no call to projectService.invest() / acceptAgreement() / submitProject()
+ *    / makeWorkflowDecision() / publishProject();
+ *  - no call to financialEngine.debitWallet() and no financial_operations row;
+ *  - no financial_journal / transactions row (investor(s) already paid in the
+ *    legacy domain; historical amounts are identity/ledger facts, not funding);
+ *  - no consultation fee re-application (payConsultationFee NOT called);
+ *  - documents historical agreement terms WITHOUT accepted_user_id /
+ *    accepted_at (terms are a historical record, not a new acceptance).
+ */
+
+const DEFAULT_MIGRATION_BRIDGE = '138_project_identity_bridge';
+
+function buildTermsFromLegacy(legacyRow, nowIso) {
+  return {
+    sourceSystem: 'legacy P2P',
+    legacyProjectId: legacyRow.id,
+    title: legacyRow.title,
+    sector: legacyRow.sector,
+    targetAmount: legacyRow.target_amount,
+    sharePrice: legacyRow.share_price,
+    roiPercentage: legacyRow.roi_percentage,
+    tenureMonths: legacyRow.tenure_months,
+    paybackStartMonths: legacyRow.payback_start_months,
+    minInvestment: legacyRow.min_investment_amount,
+    currency: legacyRow.currency_code,
+    historicalStatus: legacyRow.status,
+    reconciliationTimestampUtc: nowIso,
+  };
+}
+
+/**
+ * @param {object} deps
+ * @param {object} deps.pool       pg Pool (injectable for isolated tests)
+ */
+function createReconciliationService({ pool }) {
+  if (!pool) throw new Error('createReconciliationService requires { pool }');
+
+  /**
+   * Reconcile ONE legacy P2P project into the authoritative projects domain.
+   * Idempotent: if authoritative_project_id is already set on the legacy row,
+   * returns the existing mapping without writing anything.
+   *
+   * @param {number} legacyProjectId  investment_projects.id
+   * @param {number} expertUserId     users.id performing the reconciliation
+   * @returns {Promise<object>}
+   */
+  async function reconcileLegacyProject(legacyProjectId, expertUserId) {
+    const { pool: dbPool = pool } = { pool };
+    const client = await dbPool.connect();
+    let committed = false;
+    try {
+      await client.query('BEGIN');
+
+      const legacyRes = await client.query(
+        `SELECT id, owner_user_id, title, sector, description,
+                target_amount, raised_amount, share_price, roi_percentage,
+                tenure_months, payback_start_months, business_plan, team_info,
+                min_investment_amount, currency_code, status,
+                authoritative_project_id
+           FROM investment_projects
+          WHERE id = $1
+          FOR UPDATE`,
+        [legacyProjectId]
+      );
+      if (legacyRes.rowCount === 0) {
+        await client.query('ROLLBACK');
+        return { reconciled: false, reason: 'LEGACY_PROJECT_NOT_FOUND', legacyProjectId };
+      }
+
+      const legacy = legacyRes.rows[0];
+
+      // Idempotency gate: bridge already exists -> no double reconciliation.
+      if (legacy.authoritative_project_id != null) {
+        await client.query('ROLLBACK');
+        return {
+          reconciled: true,
+          idempotent: true,
+          authoritativeProjectId: legacy.authoritative_project_id,
+          legacyProjectId,
+          skippedExistingBridge: true,
+        };
+      }
+
+      const nowIso = new Date().toISOString();
+
+      // 1) Authoritative project (single row; the authoritative record of the
+      //    historically settled legacy project). Historical financial facts are
+      //    transcribed verbatim - capital_required / amount_raised / min_investment
+      //    are identity facts of an already-settled portfolio, NOT new funding.
+      const projectRes = await client.query(
+        `INSERT INTO projects
+           (owner_user_id, name, description, category, location,
+            capital_required, amount_raised, min_investment,
+            business_plan, status, current_stage)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'ACTIVE','ACTIVE')
+         RETURNING id, name, status`,
+        [
+          legacy.owner_user_id,
+          legacy.title,
+          legacy.description,
+          legacy.sector,
+          'AFRIKOBA GLOBAL',
+          legacy.target_amount,
+          legacy.raised_amount,
+          legacy.min_investment_amount,
+          legacy.business_plan,
+        ]
+      );
+      const authoritativeProjectId = projectRes.rows[0].id;
+
+      // 2) Historical agreement terms (NOT a new acceptance; no
+      //    accepted_user_id / accepted_at written).
+      await client.query(
+        `INSERT INTO project_agreements
+           (project_id, terms_version, terms, created_by)
+         VALUES ($1, 1, $2::jsonb, $3)`,
+        [authoritativeProjectId, buildTermsFromLegacy(legacy, nowIso), expertUserId]
+      );
+
+      // 3) Bridge: authoritative_project_id set ONLY after the authoritative
+      //    row + terms are created and ONLY for this legacy row.
+      await client.query(
+        `UPDATE investment_projects
+            SET authoritative_project_id = $2,
+                authoritative_bridged_at = NOW()
+          WHERE id = $1 AND authoritative_project_id IS NULL`,
+        [legacyProjectId, authoritativeProjectId]
+      );
+
+      // 4) Audit committed in the SAME transaction as the reconciliation.
+      await logAudit({
+        client,
+        eventType: 'PROJECT_IDENTITY_RECONCILIATION',
+        action: 'RECONCILE',
+        entityType: 'PROJECT',
+        userId: expertUserId,
+        entityId: authoritativeProjectId,
+        meta: {
+          legacyProjectId,
+          authoritativeProjectId,
+          sourceMigration: DEFAULT_MIGRATION_BRIDGE,
+          historicalRaisedAmount: legacy.raised_amount,
+          walletMutationPerformed: false,
+          financialJournalMutationPerformed: false,
+          consultationFeeReapplied: false,
+          legacyRecordsPreserved: true,
+          reconciliationTimestampUtc: nowIso,
+        },
+      });
+
+      await client.query('COMMIT');
+      committed = true;
+      return {
+        reconciled: true,
+        idempotent: false,
+        authoritativeProjectId,
+        legacyProjectId,
+        auditEvent: 'PROJECT_IDENTITY_RECONCILIATION',
+      };
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  return { reconcileLegacyProject };
+}
+
+module.exports = { createReconciliationService, data_availability };
