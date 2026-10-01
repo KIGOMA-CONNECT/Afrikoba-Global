@@ -165,7 +165,9 @@ Result:
 
 **8/8 executable mutation-guard scenarios PASS.**
 
-The internal-transfer scenario was not executed because the isolated regression fixture contains only user ID 1. No synthetic second customer was created merely to force a PASS.
+The internal-transfer runtime scenario was subsequently executed against the isolated regression database using a synthetic recipient created only for the test. The actual `financialEngine.transfer()` path returned `success: true` with a 1,000 TZS transfer. User #1 moved from 70,000 TZS to 69,000 TZS and the synthetic recipient moved from 0 TZS to 1,000 TZS. The financial operation was `TRANSFER / SUCCESS`; the journal contained balanced DR 1,000 / CR 1,000 entries; and audit records captured both the sender debit and recipient credit. The synthetic recipient and all test financial records were then removed. User #1 was restored to 70,000 TZS / 30,000 TZS, and no test residue remained in operations, journals, audits, or transactions.
+
+**Internal-transfer runtime scenario: PASS.**
 
 ## Internal-transfer lock verification
 
@@ -259,7 +261,7 @@ The following are verified:
 | Structural regression | 5/5 PASS |
 | Mutation guards | 8/8 executable PASS |
 | Internal-transfer row lock | PASS |
-| Internal-transfer runtime scenario | SKIPPED — fixture has only one user |
+| Internal-transfer runtime scenario | PASS — runtime transfer, journal, audit, and cleanup verified |
 | Production validation | NOT DONE |
 | Production deployment | NOT DONE |
 | Production acceptance | NOT CLAIMED |
