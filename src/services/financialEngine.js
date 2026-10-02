@@ -769,11 +769,28 @@ async function groupToWallet({ client, userId, groupId, groupAccount = 'VICOBA_G
 }
 
 /**
+ * INV-12: a balance mover may only be driven by a strictly positive, finite
+ * amount. Rejecting here - before claimOperation - guarantees an invalid
+ * request leaves no operation, journal or audit residue at all.
+ * `amountN > 0` also rejects NaN; Number.isFinite additionally rejects
+ * Infinity, which would otherwise pass a bare `> 0` test.
+ */
+function assertPositiveAmount(amountN, fnName) {
+  if (!Number.isFinite(amountN) || amountN <= 0) {
+    throw Object.assign(
+      new Error(`Kiasi kimekatizwa: ${fnName} inahitaji kiasi kikubwa kuliko 0.`),
+      { statusCode: 400 }
+    );
+  }
+}
+
+/**
  * LOCK available funds (available -> locked). In-transaction hold.
  *   DR <sourceAccount>   CR CARD_HOLD
  */
 async function lockWallet({ client, userId, amount, reference, sourceAccount = 'CUSTOMER_WALLET', description = 'Lock funds', actor = 'engine:lock' }) {
   const amountN = Number(amount);
+  assertPositiveAmount(amountN, 'lockWallet');
   const op = await claimOperation({ client, operationType: 'LOCK', reference, userId, amount: amountN });
   if (!op.claimed) return { dedup: true, reference };
 
@@ -817,6 +834,7 @@ async function lockWallet({ client, userId, amount, reference, sourceAccount = '
  */
 async function unlockWallet({ client, userId, amount, reference, sourceAccount = 'CUSTOMER_WALLET', description = 'Unlock funds', actor = 'engine:unlock' }) {
   const amountN = Number(amount);
+  assertPositiveAmount(amountN, 'unlockWallet');
   const op = await claimOperation({ client, operationType: 'UNLOCK', reference, userId, amount: amountN });
   if (!op.claimed) return { dedup: true, reference };
 
@@ -858,6 +876,7 @@ async function unlockWallet({ client, userId, amount, reference, sourceAccount =
  */
 async function captureLock({ client, userId, amount, reference, toAccount = 'MNO_CLEARING', description = 'Capture locked funds', actor = 'engine:captureLock' }) {
   const amountN = Number(amount);
+  assertPositiveAmount(amountN, 'captureLock');
   const op = await claimOperation({ client, operationType: 'CAPTURE', reference, userId, amount: amountN });
   if (!op.claimed) return { dedup: true, reference };
 
