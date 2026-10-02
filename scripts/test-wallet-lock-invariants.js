@@ -150,8 +150,29 @@ async function inTx(fn) {
     `SELECT pg_get_constraintdef(oid) d FROM pg_constraint
       WHERE conrelid='users'::regclass AND contype='c'`
   );
-  const hasNonNeg = chk.rows.some((r) => /wallet_balance|locked_balance/.test(r.d) && />= *0/.test(r.d));
-  expect(hasNonNeg, 'users carries DB-level CHECK preventing negative balances', JSON.stringify(chk.rows.map((r) => r.d)));
+  // pg_get_constraintdef() deparses a numeric literal with an explicit cast,
+  // so wallet_balance NUMERIC(15,2) CHECK (wallet_balance >= 0) comes back as
+  // `CHECK ((wallet_balance >= (0)::numeric))`. A literal `/>= *0/` scan
+  // therefore misses a constraint that is present and correct - that was a
+  // harness bug, not a missing CHECK. Normalise the deparsed text (drop cast
+  // decorations and parens) so the test reads the constraint's meaning
+  // instead of Postgres' type decoration. The intent is unchanged: the row
+  // must name the column and must still compare it against 0.
+  const deparsed = chk.rows.map((r) => String(r.d));
+  const normalise = (s) => s
+    .replace(/::[a-zA-Z_][a-zA-Z0-9_]*(\s*\([^)]*\))?/g, '')
+    .replace(/[()]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const guardedBy = (col) => deparsed.some((raw) => (
+    new RegExp(`${col}\\s*>=\\s*0(?![.\\d])`).test(normalise(raw))
+  ));
+  console.log(`  INFO  pg_get_constraintdef(users) -> ${JSON.stringify(deparsed)}`);
+  const walletGuarded = guardedBy('wallet_balance');
+  const lockedGuarded = guardedBy('locked_balance');
+  expect(walletGuarded && lockedGuarded,
+    'users carries DB-level CHECK preventing negative balances on wallet_balance AND locked_balance',
+    JSON.stringify({ walletGuarded, lockedGuarded, deparsed }));
 
   // ---- T1: LOCK -> UNLOCK round trip, total conserved ---------------------
   section('T1  LOCK -> UNLOCK round trip (INV-1, INV-5)');
@@ -352,6 +373,8 @@ async function inTx(fn) {
         `INV-12 ${fn}(${args.amount}) left balances untouched`, JSON.stringify({ before, after }));
       const j = await journalFor(ref);
       expect(j.n === 0, `INV-12 ${fn}(${args.amount}) wrote no journal`, `lines=${j.n}`);
+      const ops = await opsFor(ref);
+      expect(ops.length === 0, `INV-12 ${fn}(${args.amount}) was rejected before claimOperation (no operation residue)`, JSON.stringify(ops));
       before.wallet = after.wallet; before.locked = after.locked;
     }
   }
