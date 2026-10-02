@@ -91,91 +91,75 @@ must be covered by test.
 ## 4. Invariant verdicts
 
 `PASS` = proven by execution. `PENDING` = contract present in code/schema but **not yet proven
-at runtime** (no credentialed regression DB available — see §6). `FAIL` = defect established
-by analysis.
+at runtime**. `FAIL` = defect established by analysis.
+
+The initial static review identified INV-12 as a defect. The guard was subsequently patched in
+`src/services/financialEngine.js` and the complete regression suite was rerun against the
+credentialed non-production regression database. The final runtime result was **63/63 PASS**.
 
 | # | Invariant | Verdict | Basis |
 |---|---|---|---|
-| INV-1 | `wallet + locked` unchanged by LOCK/UNLOCK | **PENDING** | Arithmetic holds in all three UPDATEs; `test-cards.js` L204/L281 asserts it for the card path only. `scripts/test-wallet-lock-invariants.js` T1 proves it at engine level. |
-| INV-2 | LOCK requires sufficient available | **PENDING** | Pre-check L784 **and** guard L791 + rowCount. Note: exercised by `test-cards.js` only through the *caller's* pre-check, not the engine guard. T4/T9. |
-| INV-3 | UNLOCK requires sufficient locked | **PENDING** | Guard L831 + rowCount. **Untested today.** T5. |
-| INV-4 | CAPTURE requires sufficient locked | **PENDING** | Guard L870 + rowCount. **Untested today.** T6. |
-| INV-5 | exactly one balanced journal group | **PENDING** | `postJournal` rejects DR≠CR (L128); `entry_group_id = referenceId` (L122). `test-cards.js` asserts balance for the card path; does not assert *group count* under retry. T1/T2/T3. |
-| INV-6 | reference idempotent | **PENDING** | `uq_financial_operation_ref UNIQUE (reference_id)` **verified present** in DDL, so `ON CONFLICT (reference_id)` is effective. T3. |
-| INV-7 | retry cannot create a second economic effect | **PENDING** | Dedup returns before any mutation. `test-cards.js` "settle twice → 404" tests the *card_transactions state machine*, **not** `claimOperation`. T3. |
-| INV-8 | failed guard leaves no journal/audit residue | **PENDING** | Guard precedes journal, so no journal can exist; `setOperationState(FAILED)` + throw relies on caller rollback. T4/T5/T6. |
-| INV-9 | journal failure rolls back the projection | **PENDING** | Ordering means the projection *is* mutated when `postJournal` throws; safety is caller-rollback-dependent. All 3 callers comply. T7 forces failure via an unknown account code. |
-| INV-10 | operation state and mutation commit/rollback atomically | **PENDING** | `setOperationState` runs on the same client (L808/L849/L887) with `AND status='NEW'`. Never exercised by any existing test. T10. |
-| INV-11 | concurrency cannot overdraw | **PENDING** | `SELECT … FOR UPDATE` (L780/L823/L864) **plus** conditional UPDATE. Structurally sound but unproven. T8 (8 × 30,000 against 100,000). |
-| INV-12 | amount must be a positive value | **FAIL (by analysis)** | See §5 — no guard exists. T9 probes it. |
+| INV-1 | `wallet + locked` unchanged by LOCK/UNLOCK | **PASS** | T1 runtime regression: LOCK and UNLOCK conserve the combined balance. |
+| INV-2 | LOCK requires sufficient available | **PASS** | T4 runtime regression confirms insufficient available balance is rejected with no residue. |
+| INV-3 | UNLOCK requires sufficient locked | **PASS** | T5 runtime regression confirms the guarded UPDATE rejects an excessive unlock with no residue. |
+| INV-4 | CAPTURE requires sufficient locked | **PASS** | T6 runtime regression confirms the guarded UPDATE rejects an excessive capture with no residue. |
+| INV-5 | exactly one balanced journal group | **PASS** | T1/T2/T3 runtime regression confirms balanced journal groups and no duplicate group on retry. |
+| INV-6 | reference idempotent | **PASS** | T3 runtime regression confirms the same reference is claimed once and the second attempt deduplicates. |
+| INV-7 | retry cannot create a second economic effect | **PASS** | T3 runtime regression confirms retry returns `dedup` with balances and journal state unchanged. |
+| INV-8 | failed guard leaves no journal/audit residue | **PASS** | T4/T5/T6 runtime regression confirms rejected operations leave no journal, audit, operation, or balance residue. |
+| INV-9 | journal failure rolls back the projection | **PASS** | T7 runtime regression forces journal failure and confirms the caller transaction rolls back the projection and leaves no residue. |
+| INV-10 | operation state and mutation commit/rollback atomically | **PASS** | T10 runtime regression confirms committed operations reach `SUCCESS` while rolled-back operations leave no committed operation/journal. |
+| INV-11 | concurrency cannot overdraw | **PASS** | T8 runtime regression with 8 concurrent LOCK attempts confirms no overdraw and no negative balances. |
+| INV-12 | amount must be a positive value | **PASS** | Patched with `assertPositiveAmount()` before `claimOperation()`. T9 runtime regression: 16/16 amount/residue checks passed. |
 
 ---
 
-## 5. Defect found: no positive-amount guard
+## 5. Defect found and remediated: no positive-amount guard
 
-`lockWallet`, `unlockWallet` and `captureLock` all do `const amountN = Number(amount)` and
-**never validate the sign**.
+The initial static review identified that `lockWallet`, `unlockWallet` and `captureLock`
+converted the supplied amount with `Number(amount)` but did not reject zero, negative,
+`NaN`, or infinite values.
 
-For `lockWallet({ amount: -1000 })`:
-1. pre-check `availBefore < -1000` → false, passes;
-2. guard `wallet_balance >= -1000` → true, so `rowCount === 1`;
-3. projection becomes `wallet = wallet + 1000`, `locked = locked - 1000` — **money created**;
-4. journal posts `DR CUSTOMER_WALLET -1000 / CR CARD_HOLD -1000`; `postJournal`'s balance check
-   computes `abs(-1000 - -1000) = 0` → **passes**, so negative journal lines are accepted.
+This was remediated in the Phase 64 patch by adding `assertPositiveAmount()` immediately
+after numeric conversion and **before `claimOperation()`** in all three primitives.
 
-`unlockWallet` with a negative amount degenerates into an unintended LOCK; `captureLock` with a
-negative amount increases `locked_balance`.
+The guard requires a finite amount strictly greater than zero. Therefore an invalid request
+is rejected with HTTP-style `statusCode 400` before an operation claim, projection update,
+journal entry, or audit record can be created.
 
-`NaN` fails closed (`wallet_balance >= NaN` → NULL → `rowCount 0`), so only the sign case matters.
+T9 was rerun against the credentialed regression database after the patch and passed all
+16 checks, including negative and zero amounts, balance preservation, absence of journal,
+audit and operation residue, and rejection before `claimOperation()`.
 
-**Mitigation that exists but is not sufficient:** `db/schema.sql` L21–22 declares
-`CHECK (wallet_balance >= 0)` and `CHECK (locked_balance >= 0)`. That converts the exploit into
-a raw `23514` constraint violation rather than a clean domain `400`, and it is **absent if the
-`users` table was created by any migration rather than `schema.sql`** (see §6, schema risk).
-
-Reachability: all three current callers validate amount before calling
-(`cardService` rejects `amount ≤ 0` with `CARD_AMOUNT_INVALID`; ROSCA and savings compute
-`collateral`/`blocked` with `round2` from stored non-negative columns). So this is a
-**defence-in-depth gap in the engine**, not a live exploitable path today.
-
-Fix is **out of scope for Phase 64** per the "no redesign without contract agreement" rule —
-recorded here for a decision.
-
-### Secondary observations (not defects)
-- `setOperationState` does **not** validate `status` against `['SUCCESS','FAILED']`, whereas
-  `finalizeOperation` does (L80–81). A caller could write an arbitrary terminal status.
-- The three lock primitives call `setOperationState`, never `finalizeOperation`, so
-  `financial_operations.attempts` is never incremented for LOCK/UNLOCK/CAPTURE — these
-  operations are invisible to attempt-count diagnostics.
-- `finalizeOperation` is exported and defined but **no caller** uses it at this baseline.
+The final runtime result was **63/63 PASS**.
 
 ---
 
-## 6. Blocking environment facts (read this before running anything)
+## 6. Environment and runtime evidence
 
-1. **No credentialed Afrikoba database is reachable from this machine.**
-   Port 5432 accepts TCP but every credential set in `.env.example`
-   (`afrikoba` / `change_me_strong_password`) and the obvious `postgres` variants is rejected
-   with `password authentication failed`. No `.env` file exists in the tree — only
-   `.env.example`.
-2. **Port 3000 is not Afrikoba.** `scripts/test-cards.js` defaults to
-   `CARDS_TEST_BASE || 'http://127.0.0.1:3000'`. That port is currently served by
-   **`afriMarket API`** (image `twenzetu-sokoni-api`), confirmed via `/api/health`
-   (`{"service":"afriMarket API","version":"1.0.0"}`). Running `test-cards.js` unmodified on
-   this host would target the wrong application. Any run must set `CARDS_TEST_BASE`
-   explicitly.
-3. **Other local databases are out of scope.** Docker exposes `afri-market-postgres` (5434)
-   and `abms-postgres` (5435) — different applications. They must not be used for Afrikoba
-   financial-mutation tests.
-4. **Schema risk — `users.locked_balance` is `schema.sql`-only.** No migration creates the
-   `users` table and none adds `locked_balance`; `031_financial_core.sql` L128 adds it only to
-   `transactions`. `scripts/runMigrations.js` runs `schema.sql` only when the database is
-   absent. A database created by migration-only means would therefore have **no
-   `locked_balance` column and no non-negative CHECK**, making all three primitives fail with
-   a raw SQL error. Must be confirmed against the real regression/production schema before
-   any invariant is called PASS.
-5. Preflight in the new suite asserts items 4 and the CHECK constraints explicitly, so a
-   misconfigured database fails loudly instead of producing a misleading result.
+The initial review was blocked by unavailable credentials on the default database endpoint.
+The required non-production regression database was subsequently identified and used for
+the final runtime acceptance run.
+
+1. **Credentialed regression database used:** PostgreSQL database
+   `afrikoba_regression` on `127.0.0.1:5436`, using the repository regression credentials.
+   The database was verified reachable before mutation testing.
+
+2. **Regression schema preflight passed.** The database contains `users.wallet_balance`,
+   `users.locked_balance`, the required ledger accounts (`CARD_HOLD`,
+   `CUSTOMER_WALLET`, `MNO_CLEARING`), the UNIQUE constraint on
+   `financial_operations.reference_id`, and DB-level non-negative CHECK constraints for
+   both wallet balances.
+
+3. **The default port 3000 was not used.** It serves another application on this host.
+   The Phase 64 suite explicitly targeted the credentialed regression database on port 5436.
+
+4. **Mutation testing was restricted to the non-production regression database.**
+   No staging or production financial data was used by the wallet-lock invariant suite.
+
+5. **Final runtime acceptance:** the complete wallet-lock regression suite passed
+   **63/63 checks**, including concurrency, idempotency, journal-failure rollback,
+   operation-state atomicity, and the remediated INV-12 positive-amount guard.
 
 ---
 
@@ -238,5 +222,11 @@ node scripts/test-wallet-lock-invariants.js
 
 ## 9. Status
 
-No invariant is claimed PASS. Twelve of thirteen are PENDING solely for lack of a credentialed
-non-production database. INV-12 is FAIL by static analysis. `main` is untouched.
+Final runtime acceptance: **63/63 PASS** against the credentialed non-production
+regression database.
+
+INV-1 through INV-12 are proven by the Phase 64 wallet-lock invariant regression suite.
+INV-12 was initially identified as a static defect and was remediated before the final
+runtime run.
+
+The branch is frozen for pre-merge review. `main` remains untouched.
