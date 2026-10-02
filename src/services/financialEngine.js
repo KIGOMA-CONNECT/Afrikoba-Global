@@ -905,6 +905,7 @@ module.exports = {
   unlockWallet,
   captureLock,
   claimOperation,
+  setOperationState,
   auditBalance,
   recordException,
   accountIdByCode,
