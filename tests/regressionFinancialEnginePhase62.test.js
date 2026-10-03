@@ -130,6 +130,64 @@ run('#A5 Phase 62 remains generic; no TX224 special case', () => {
   assert.ok(!/TX224/.test(src), 'TX224-specific workaround detected');
 });
 
+
+// A6 — all financial-engine amount-bearing operations must reject non-positive/non-finite amounts
+// before claimOperation(), so invalid requests cannot create operation/journal/audit residue.
+run('#A6 positive-amount guard is present and enforced before operation claims', () => {
+  const helperStart = src.indexOf('function assertPositiveAmount');
+  assert.ok(helperStart >= 0, 'assertPositiveAmount helper not found');
+
+  const helperEnd = src.indexOf('\n}', helperStart);
+  const helper = src.slice(helperStart, helperEnd >= 0 ? helperEnd + 2 : helperStart + 500);
+
+  assert.ok(
+    helper.includes('Number.isFinite(amountN)'),
+    'positive-amount guard must reject non-finite amounts'
+  );
+
+  assert.ok(
+    /amountN\s*<=\s*0/.test(helper),
+    'positive-amount guard must reject zero and negative amounts'
+  );
+
+  const operations = [
+    'postDeposit',
+    'holdFunds',
+    'releaseHold',
+    'captureHold',
+    'transfer',
+    'creditWallet',
+    'debitWallet',
+    'internalTransfer',
+    'walletToGroup',
+    'groupToWallet',
+    'lockWallet',
+    'unlockWallet',
+    'captureLock',
+  ];
+
+  for (const operation of operations) {
+    const start = src.indexOf(`async function ${operation}`);
+    assert.ok(start >= 0, `${operation} function not found`);
+
+    const end = src.indexOf('\nasync function ', start + 10);
+    const fn = src.slice(start, end > start ? end : src.length);
+
+    assert.ok(
+      fn.includes(`assertPositiveAmount(amountN, '${operation}')`),
+      `${operation} must call assertPositiveAmount`
+    );
+
+    const guardPos = fn.indexOf(`assertPositiveAmount(amountN, '${operation}')`);
+    const claimPos = fn.indexOf('claimOperation(');
+
+    assert.ok(
+      claimPos < 0 || guardPos < claimPos,
+      `${operation} must validate amount before claimOperation`
+    );
+  }
+});
+
 console.log(out.join('\n'));
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

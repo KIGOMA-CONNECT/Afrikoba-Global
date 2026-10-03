@@ -174,6 +174,7 @@ async function postDeposit({ userId, amount, commission, reference, externalTxId
     await client.query('BEGIN');
 
     const amountN = Number(amount);
+    assertPositiveAmount(amountN, 'postDeposit');
     const commissionN = Number(commission || 0);
 
     // Hard idempotency: claim the reference atomically. A retried reference
@@ -250,6 +251,7 @@ async function holdFunds({ userId, amount, accountCode = 'CUSTOMER_WALLET', refe
     await client.query('BEGIN');
 
     const amountN = Number(amount);
+    assertPositiveAmount(amountN, 'holdFunds');
 
     const op = await claimOperation({
       client, operationType: 'HOLD', reference, userId, amount: amountN,
@@ -319,6 +321,7 @@ async function releaseHold({ userId, amount, accountCode = 'CUSTOMER_WALLET', re
     await client.query('BEGIN');
 
     const amountN = Number(amount);
+    assertPositiveAmount(amountN, 'releaseHold');
 
     const op = await claimOperation({
       client, operationType: 'RELEASE', reference, userId, amount: amountN,
@@ -383,6 +386,7 @@ async function captureHold({ userId, amount, accountCode = 'CUSTOMER_WALLET', re
     await client.query('BEGIN');
 
     const amountN = Number(amount);
+    assertPositiveAmount(amountN, 'captureHold');
 
     const op = await claimOperation({
       client, operationType: 'CAPTURE', reference, userId, amount: amountN,
@@ -442,6 +446,7 @@ async function transfer({ fromUserId, toUserId, amount, reference, description =
     await client.query('BEGIN');
 
     const amountN = Number(amount);
+    assertPositiveAmount(amountN, 'transfer');
 
     const op = await claimOperation({
       client, operationType: 'TRANSFER', reference, userId: fromUserId, amount: amountN,
@@ -547,7 +552,7 @@ async function recordException({ type, reference, transactionId, detail = {} }) 
  */
 async function creditWallet({ client, userId, amount, reference, fromAccount = 'SUSPENSE', description = 'Wallet credit', actor = 'engine:credit', productType = null, productRef = null }) {
   const amountN = Number(amount);
-  if (!(amountN > 0)) throw new Error('Invalid amount for credit');
+  assertPositiveAmount(amountN, 'creditWallet');
   const op = await claimOperation({ client, operationType: 'CREDIT', reference, userId, amount: amountN });
   if (!op.claimed) return { dedup: true, reference };
 
@@ -585,7 +590,7 @@ async function creditWallet({ client, userId, amount, reference, fromAccount = '
  */
 async function debitWallet({ client, userId, amount, reference, toAccount = 'PLATFORM_FEES', description = 'Wallet debit', actor = 'engine:debit', productType = null, productRef = null }) {
   const amountN = Number(amount);
-  if (!(amountN > 0)) throw new Error('Invalid amount for debit');
+  assertPositiveAmount(amountN, 'debitWallet');
   const op = await claimOperation({ client, operationType: 'DEBIT', reference, userId, amount: amountN });
   if (!op.claimed) return { dedup: true, reference };
 
@@ -628,6 +633,7 @@ async function debitWallet({ client, userId, amount, reference, toAccount = 'PLA
  */
 async function internalTransfer({ client, fromUserId, toUserId, amount, reference, description = 'Internal transfer', actor = 'engine:transfer', productType = null, productRef = null }) {
   const amountN = Number(amount);
+  assertPositiveAmount(amountN, 'internalTransfer');
   const op = await claimOperation({ client, operationType: 'TRANSFER', reference, userId: fromUserId, amount: amountN });
   if (!op.claimed) return { dedup: true, reference };
 
@@ -689,6 +695,7 @@ async function internalTransfer({ client, fromUserId, toUserId, amount, referenc
  */
 async function walletToGroup({ client, userId, groupId, groupAccount = 'VICOBA_GROUP', groupSql, amount, reference, description = 'Wallet to group', actor = 'engine:walletToGroup', productType = null, productRef = null }) {
   const amountN = Number(amount);
+  assertPositiveAmount(amountN, 'walletToGroup');
   const op = await claimOperation({ client, operationType: 'WALLET_TO_GROUP', reference, userId, amount: amountN });
   if (!op.claimed) return { dedup: true, reference };
 
@@ -734,6 +741,7 @@ async function walletToGroup({ client, userId, groupId, groupAccount = 'VICOBA_G
  */
 async function groupToWallet({ client, userId, groupId, groupAccount = 'VICOBA_GROUP', groupSql, amount, reference, description = 'Group to wallet', actor = 'engine:groupToWallet', productType = null, productRef = null }) {
   const amountN = Number(amount);
+  assertPositiveAmount(amountN, 'groupToWallet');
   const op = await claimOperation({ client, operationType: 'GROUP_TO_WALLET', reference, userId, amount: amountN });
   if (!op.claimed) return { dedup: true, reference };
 

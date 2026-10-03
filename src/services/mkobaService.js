@@ -289,14 +289,51 @@ async function approveProfitDistribution(distributionId, approverUserId) {
       throw Object.assign(new Error('Usambazaji wa faida tayari umeshachakatwa.'), { statusCode: 400 });
     }
 
+    // Lock the operational group-wallet projection before checking or paying out.
+    // This serializes profit payouts with other group-wallet debits.
+    const groupRes = await client.query(
+      'SELECT group_wallet_balance FROM vicoba_groups WHERE id = $1 FOR UPDATE',
+      [dist.group_id]
+    );
+    if (groupRes.rows.length === 0) {
+      throw Object.assign(new Error('Kikundi hakipatikani.'), { statusCode: 404 });
+    }
+
+    const groupWalletBalance = Number(groupRes.rows[0].group_wallet_balance);
+
+    // Only unpaid rows are payable. This also protects against duplicate payment
+    // if a legacy/manual state contains a PENDING distribution with paid rows.
     const payouts = await client.query(
-      'SELECT * FROM vicoba_profit_payouts WHERE distribution_id = $1',
+      'SELECT * FROM vicoba_profit_payouts WHERE distribution_id = $1 AND paid = FALSE',
       [distributionId]
     );
 
+    const totalPayable = payouts.rows.reduce(
+      (sum, payout) => sum + Number(payout.dividend_amount),
+      0
+    );
+
+    if (groupWalletBalance < totalPayable) {
+      throw Object.assign(
+        new Error('Salio la kikundi halitoshi kwa malipo ya mgawanyo huu.'),
+        { statusCode: 400 }
+      );
+    }
+
     for (const payout of payouts.rows) {
       const referenceId = generateReference('PD');
-      await fin.groupToWallet({ client, userId: payout.user_id, groupId: dist.group_id, groupAccount: 'VICOBA_GROUP', amount: Number(payout.dividend_amount), reference: `${referenceId}:GW`, description: 'VICOBA Profit Payout', productType: 'VICOBA', productRef: String(dist.group_id) });
+      await fin.groupToWallet({
+        client,
+        userId: payout.user_id,
+        groupId: dist.group_id,
+        groupAccount: 'VICOBA_GROUP',
+        groupSql: 'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance - $1 WHERE id = $2',
+        amount: Number(payout.dividend_amount),
+        reference: `${referenceId}:GW`,
+        description: 'VICOBA Profit Payout',
+        productType: 'VICOBA',
+        productRef: String(dist.group_id)
+      });
 
       await client.query(
         `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
