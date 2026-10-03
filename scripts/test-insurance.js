@@ -188,7 +188,7 @@ function nowSuffix() { return String(Date.now()).slice(-6); }
   await expect(renew.status === 200 && renew.data.success === true, 'Renew own policy → success', `status=${renew.status}`);
   const afterRenew = await policyNextDue(holder.data.user.id, policyId);
   await expect(afterRenew.premium === 10000, 'premium_paid 5000 → 10000', String(afterRenew.premium));
-  await expect(afterRenew.next !== beforeRenew.next && afterRenew.next > beforeRenew.next, 'next_premium_date advanced +1 month', `${beforeRenew.next} → ${afterRenew.next}`);
+  await expect(afterRenew.next !== beforeRenew.next && new Date(afterRenew.next).getTime() > new Date(beforeRenew.next).getTime(), 'next_premium_date advanced +1 month', `${beforeRenew.next} → ${afterRenew.next}`);
   const balAfterRenew = await balance(holder.data.user.id);
   await expect(balAfterRenew === 90000, 'Wallet debited another 5000 (95000 → 90000)', String(balAfterRenew));
   const renTx = await pool.query(
