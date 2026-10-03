@@ -180,6 +180,34 @@ async function approveLoan(approverUserId, loanId, approvedAmount) {
       [loanId]
     );
     const loan = loanRes.rows[0];
+    const referenceId = `VICOBA:LOAN:${loanId}:DISBURSE`;
+
+    // Idempotent retry after a committed approval.
+    if (loan.status === 'DISBURSED') {
+      const existingTx = await client.query(
+        `SELECT wallet_amount
+         FROM transactions
+         WHERE reference_id = $1
+         LIMIT 1`,
+        [referenceId]
+      );
+
+      await client.query('ROLLBACK');
+
+      if (existingTx.rows.length === 1) {
+        return {
+          success: true,
+          referenceId,
+          amount: Number(existingTx.rows[0].wallet_amount),
+          message: 'Mkopo tayari umetolewa kwenye wallet ya mwombaji.',
+        };
+      }
+
+      throw Object.assign(new Error('Mkopo tayari umetolewa lakini kumbukumbu ya muamala haikupatikana.'), {
+        statusCode: 409,
+      });
+    }
+
     if (loan.status !== 'PENDING') {
       throw Object.assign(new Error('Ombi hili tayari limechakatwa.'), { statusCode: 400 });
     }
@@ -187,8 +215,15 @@ async function approveLoan(approverUserId, loanId, approvedAmount) {
       throw Object.assign(new Error('Ombi bado halijaidhinishwa na Mwenyekiti.'), { statusCode: 400 });
     }
 
-    const finalAmount = approvedAmount || loan.requested_amount;
-    if (finalAmount > loan.requested_amount) {
+    const finalAmount = approvedAmount == null
+      ? Number(loan.requested_amount)
+      : Number(approvedAmount);
+
+    if (!Number.isFinite(finalAmount) || finalAmount <= 0) {
+      throw Object.assign(new Error('Kiasi cha mkopo lazima kiwe kikubwa kuliko 0.'), { statusCode: 400 });
+    }
+
+    if (finalAmount > Number(loan.requested_amount)) {
       throw Object.assign(new Error('Kiasi kilichoidhinishwa hakizidi kilichoombwa.'), { statusCode: 400 });
     }
 
@@ -199,7 +234,6 @@ async function approveLoan(approverUserId, loanId, approvedAmount) {
       [finalAmount, approverUserId, loanId]
     );
 
-    const referenceId = generateReference('VL');
     await client.query(
       `INSERT INTO transactions
         (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
@@ -207,7 +241,41 @@ async function approveLoan(approverUserId, loanId, approvedAmount) {
       [referenceId, ctx.applicant_id, finalAmount, JSON.stringify({ group_id: loan.group_id, loan_id: loanId })]
     );
 
-    await fin.groupToWallet({ client, userId: ctx.applicant_id, groupId: loan.group_id, groupAccount: 'VICOBA_GROUP', groupSql: 'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance - $1 WHERE id = $2', amount: finalAmount, reference: `${referenceId}:GW`, description: 'VICOBA Loan Disbursement', productType: 'VICOBA', productRef: String(loan.group_id) });
+    const groupDebit = await client.query(
+      `UPDATE vicoba_groups
+       SET group_wallet_balance = group_wallet_balance - $1
+       WHERE id = $2
+         AND group_wallet_balance >= $1`,
+      [finalAmount, loan.group_id]
+    );
+
+    if (groupDebit.rowCount !== 1) {
+      throw Object.assign(
+        new Error('Salio la kikundi halitoshi kutoa mkopo au kikundi hakijapatikana.'),
+        { statusCode: 400 }
+      );
+    }
+
+    await fin.creditWallet({
+      client,
+      userId: ctx.applicant_id,
+      amount: finalAmount,
+      reference: `${referenceId}:GW`,
+      fromAccount: 'VICOBA_GROUP',
+      description: 'VICOBA Loan Disbursement',
+      productType: 'VICOBA',
+      productRef: String(loan.group_id),
+    });
+
+    await generateLoanSchedule(
+      loanId,
+      loan.group_id,
+      finalAmount,
+      loan.interest_rate,
+      loan.repayment_months,
+      client
+    );
+
     await client.query(
       'UPDATE vicoba_loan_requests SET status = $1, updated_at = NOW() WHERE id = $2',
       ['DISBURSED', loanId]
@@ -220,13 +288,10 @@ async function approveLoan(approverUserId, loanId, approvedAmount) {
       payload: { groupId: loan.group_id, applicantUserId: loan.applicant_user_id, amount: finalAmount, referenceId },
       reference: `VICOBA:LOAN:${loanId}`,
       tx: client,
-    }).catch(() => {});
+    });
 
     await client.query('COMMIT');
     await logAudit({ eventType: 'VICOBA_LOAN', action: 'APPROVE', entityType: 'VICOBA_LOAN', userId: approverUserId, entityId: loanId, referenceId, amount: finalAmount, afterData: { group_id: loan.group_id, applicant: loan.applicant_user_id } });
-
-    // Generate repayment schedule after commit
-    await generateLoanSchedule(loanId, loan.group_id, finalAmount, loan.interest_rate, loan.repayment_months);
 
     const msg = `Habari ${ctx.full_name}, mkopo wako wa ${formatMoney(finalAmount)} umetolewa kwenye wallet yako. Asante ${ctx.group_name}.`;
     await sendSMS(ctx.phone_number, msg);
@@ -1012,10 +1077,14 @@ async function getSocialFundDetails(groupId) {
 // LOAN REPAYMENT
 // ==========================================
 
-async function generateLoanSchedule(loanId, groupId, amount, interestRate, repaymentMonths) {
-  const client = await pool.connect();
+async function generateLoanSchedule(loanId, groupId, amount, interestRate, repaymentMonths, client = null) {
+  const txClient = client || await pool.connect();
+  const ownsTransaction = !client;
+
   try {
-    await client.query('BEGIN');
+    if (ownsTransaction) {
+      await txClient.query('BEGIN');
+    }
     const totalWithInterest = amount * (1 + (interestRate / 100));
     const monthlyPrincipal = amount / repaymentMonths;
     const monthlyInterest = (amount * interestRate / 100) / repaymentMonths;
@@ -1026,7 +1095,7 @@ async function generateLoanSchedule(loanId, groupId, amount, interestRate, repay
       const dueDate = new Date(today);
       dueDate.setMonth(dueDate.getMonth() + i);
 
-      await client.query(
+      await txClient.query(
         `INSERT INTO vicoba_loan_schedules (loan_id, group_id, installment_number, due_date, principal_amount, interest_amount, total_amount)
          VALUES ($1, $2, $3, $4, $5, $6, $7)`,
         [loanId, groupId, i, dueDate.toISOString().split('T')[0], monthlyPrincipal.toFixed(2), monthlyInterest.toFixed(2), monthlyTotal.toFixed(2)]
@@ -1035,22 +1104,40 @@ async function generateLoanSchedule(loanId, groupId, amount, interestRate, repay
 
     const firstDue = new Date(today);
     firstDue.setMonth(firstDue.getMonth() + 1);
-    await client.query(
+    await txClient.query(
       `UPDATE vicoba_loan_requests SET outstanding_balance = $1, next_due_date = $2 WHERE id = $3`,
       [totalWithInterest.toFixed(2), firstDue.toISOString().split('T')[0], loanId]
     );
 
-    await client.query('COMMIT');
+    if (ownsTransaction) {
+      await txClient.query('COMMIT');
+    }
   } catch (error) {
-    await client.query('ROLLBACK').catch(() => {});
+    if (ownsTransaction) {
+      await txClient.query('ROLLBACK').catch(() => {});
+    }
     throw error;
   } finally {
-    client.release();
+    if (ownsTransaction) {
+      txClient.release();
+    }
   }
 }
 
-async function repayLoan(userId, loanId, amount, note) {
-  const amountNum = parseFloat(amount);
+async function repayLoan(userId, loanId, amount, note, idempotencyKey = null) {
+  const amountNum = Number(amount);
+
+  if (!Number.isFinite(amountNum) || amountNum <= 0) {
+    throw Object.assign(new Error('Kiasi cha malipo lazima kiwe kikubwa kuliko 0.'), { statusCode: 400 });
+  }
+
+  if (idempotencyKey != null) {
+    idempotencyKey = String(idempotencyKey).trim();
+    if (!/^[A-Za-z0-9._:-]{1,32}$/.test(idempotencyKey)) {
+      throw Object.assign(new Error('Idempotency key si sahihi.'), { statusCode: 400 });
+    }
+  }
+
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -1063,6 +1150,44 @@ async function repayLoan(userId, loanId, amount, note) {
       throw Object.assign(new Error('Mkopo haupo au si wako.'), { statusCode: 404 });
     }
     const loan = loanRes.rows[0];
+
+    const referenceId = idempotencyKey
+      ? `VLR-${loanId}-${idempotencyKey}`
+      : generateReference('LR');
+
+    if (idempotencyKey) {
+      const existingRepayment = await client.query(
+        `SELECT amount, reference_id
+         FROM vicoba_loan_repayments
+         WHERE reference_id = $1
+         LIMIT 1`,
+        [referenceId]
+      );
+
+      if (existingRepayment.rows.length === 1) {
+        const existingAmount = Number(existingRepayment.rows[0].amount);
+
+        if (existingAmount !== amountNum) {
+          await client.query('ROLLBACK');
+
+          throw Object.assign(
+            new Error('Idempotency key tayari ilitumika kwa kiasi tofauti.'),
+            { statusCode: 409 }
+          );
+        }
+
+        await client.query('ROLLBACK');
+
+        return {
+          success: true,
+          referenceId,
+          amount: existingAmount,
+          dedup: true,
+          message: 'Malipo haya tayari yalipokelewa.',
+        };
+      }
+    }
+
     if (loan.status !== 'DISBURSED') {
       throw Object.assign(new Error('Mkopo haujaondolewa au tayari umelipwa.'), { statusCode: 400 });
     }
@@ -1097,9 +1222,19 @@ async function repayLoan(userId, loanId, amount, note) {
       penaltyAmount = Math.round(penaltyAmount * 100) / 100;
     }
 
+    if (amountNum > Number(loan.outstanding_balance)) {
+      throw Object.assign(new Error('Kiasi cha malipo kinazidi salio la mkopo.'), { statusCode: 400 });
+    }
+
+    const remainingInstallmentBalance =
+      Number(schedule.total_amount) - Number(schedule.paid_amount);
+
+    if (amountNum > remainingInstallmentBalance) {
+      throw Object.assign(new Error('Kiasi cha malipo kinazidi salio la awamu hii.'), { statusCode: 400 });
+    }
+
     const totalDeduct = amountNum + penaltyAmount;
 
-    const referenceId = generateReference('LR');
     await fin.walletToGroup({ client, userId, groupId: loan.group_id, groupAccount: 'VICOBA_GROUP', groupSql: 'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance + $1 WHERE id = $2', amount: amountNum, reference: `${referenceId}:WG`, description: 'VICOBA Loan Repayment', productType: 'VICOBA', productRef: String(loan.group_id) });
     if (penaltyAmount > 0) {
       await fin.debitWallet({ client, userId, amount: penaltyAmount, reference: `${referenceId}:DR`, toAccount: 'PLATFORM_FEES', description: 'VICOBA Late Loan Penalty' });
