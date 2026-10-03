@@ -133,6 +133,7 @@ const vicoba = {
   repayLoan: z.object({
     amount: POSITIVE_NUM,
     note: z.string().max(255).optional().nullable(),
+    idempotencyKey: z.string().min(1).max(32).regex(/^[A-Za-z0-9._:-]+$/).optional(),
   }),
   withdrawal: z.object({
     amount: POSITIVE_NUM,

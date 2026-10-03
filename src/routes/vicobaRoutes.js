@@ -341,8 +341,14 @@ router.get('/groups/:groupId/social-fund', async (req, res, next) => {
 // Repay loan installment
 router.post('/loans/:loanId/repay', validate(schemas.vicoba.repayLoan), async (req, res, next) => {
   try {
-    const { amount, note } = req.body;
-    const result = await vicobaService.repayLoan(req.user.id, parseInt(req.params.loanId, 10), amount, note);
+    const { amount, note, idempotencyKey } = req.body;
+    const result = await vicobaService.repayLoan(
+      req.user.id,
+      parseInt(req.params.loanId, 10),
+      amount,
+      note,
+      idempotencyKey
+    );
     return res.json(result);
   } catch (error) {
     next(error);
