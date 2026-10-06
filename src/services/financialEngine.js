@@ -718,7 +718,23 @@ async function walletToGroup({ client, userId, groupId, groupAccount = 'VICOBA_G
     throw Object.assign(new Error('Salio lako halitoshi.'), { statusCode: 400 });
   }
   if (groupSql) {
-    await client.query(groupSql, [amountN, groupId]);
+    const creditedGroup = await client.query(
+      groupSql,
+      [amountN, groupId]
+    );
+
+    if (creditedGroup.rowCount !== 1) {
+      await setOperationState({
+        client,
+        reference,
+        status: 'FAILED'
+      });
+
+      throw Object.assign(
+        new Error('Group destination account haipo.'),
+        { statusCode: 400 }
+      );
+    }
   }
 
   await postJournal({
@@ -753,7 +769,23 @@ async function groupToWallet({ client, userId, groupId, groupAccount = 'VICOBA_G
   const before = Number(rows[0].wallet_balance);
 
   if (groupSql) {
-    await client.query(groupSql, [amountN, groupId]);
+    const debitedGroup = await client.query(
+      groupSql,
+      [amountN, groupId]
+    );
+
+    if (debitedGroup.rowCount !== 1) {
+      await setOperationState({
+        client,
+        reference,
+        status: 'FAILED'
+      });
+
+      throw Object.assign(
+        new Error('Salio la group halitoshi au source account haipo.'),
+        { statusCode: 400 }
+      );
+    }
   }
   // Projection update FIRST, journal second.
   const credited = await client.query(`UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2`, [amountN, userId]);

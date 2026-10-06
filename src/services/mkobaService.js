@@ -327,7 +327,7 @@ async function approveProfitDistribution(distributionId, approverUserId) {
         userId: payout.user_id,
         groupId: dist.group_id,
         groupAccount: 'VICOBA_GROUP',
-        groupSql: 'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance - $1 WHERE id = $2',
+        groupSql: 'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance - $1 WHERE id = $2 AND group_wallet_balance >= $1',
         amount: Number(payout.dividend_amount),
         reference: `${referenceId}:GW`,
         description: 'VICOBA Profit Payout',
@@ -516,7 +516,7 @@ async function approveTransfer(approverUserId, transferId, { approved, note }) {
     }
 
     if (transfer.recipient_type === 'MEMBER' && transfer.recipient_user_id) {
-      await fin.groupToWallet({ client, userId: transfer.recipient_user_id, groupId: transfer.group_id, groupAccount: 'VICOBA_GROUP', groupSql: 'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance - $1 WHERE id = $2', amount: transfer.amount, reference: `${transfer.reference_id}:GW`, description: 'VICOBA Fund Transfer to Member', productType: 'VICOBA', productRef: String(transfer.group_id) });
+      await fin.groupToWallet({ client, userId: transfer.recipient_user_id, groupId: transfer.group_id, groupAccount: 'VICOBA_GROUP', groupSql: 'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance - $1 WHERE id = $2 AND group_wallet_balance >= $1', amount: transfer.amount, reference: `${transfer.reference_id}:GW`, description: 'VICOBA Fund Transfer to Member', productType: 'VICOBA', productRef: String(transfer.group_id) });
 
       const recipient = await client.query('SELECT full_name, phone_number FROM users WHERE id = $1', [transfer.recipient_user_id]);
       const refId = generateReference('TW');
@@ -531,6 +531,18 @@ async function approveTransfer(approverUserId, transferId, { approved, note }) {
         await sendSMS(recipient.rows[0].phone_number, `Habari ${recipient.rows[0].full_name}, umepokea TSh ${formatMoney(transfer.amount)} kutoka kikundi.`);
       }
     } else {
+      const debitedGroup = await client.query(
+        'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance - $1 WHERE id = $2 AND group_wallet_balance >= $1',
+        [transfer.amount, transfer.group_id]
+      );
+
+      if (debitedGroup.rowCount !== 1) {
+        throw Object.assign(
+          new Error('Salio la kikundi halitoshi au source account haipo.'),
+          { statusCode: 400 }
+        );
+      }
+
       await fin.postJournal({
         client,
         lines: [
@@ -540,10 +552,6 @@ async function approveTransfer(approverUserId, transferId, { approved, note }) {
         referenceId: `${transfer.reference_id}:GW`,
         description: 'VICOBA Fund Transfer (external)',
       });
-      await client.query(
-        'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance - $1 WHERE id = $2',
-        [transfer.amount, transfer.group_id]
-      );
     }
 
     await client.query(
