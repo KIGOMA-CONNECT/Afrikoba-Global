@@ -261,7 +261,15 @@ async function payInstallmentCore({ client, saccosId, loan, installmentId, cfg, 
   const op = await fin.claimOperation({ client, operationType: 'DEBIT', reference: ref, userId: payer, amount: amountN });
   if (!op.claimed) throw createAppError('SACCOS_LOAN_INSTALLMENT_ALREADY_PAID');
 
-  const before = Number((await client.query('SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE', [payer])).rows[0].wallet_balance);
+  const walletRow = await client.query(
+    'SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE',
+    [payer]
+  );
+  if (!walletRow.rows.length) {
+    throw Object.assign(new Error('Mtumiaji hajapatikana.'), { statusCode: 404 });
+  }
+
+  const before = Number(walletRow.rows[0].wallet_balance);
   if (before < amountN) throw createAppError('WALLET_INSUFFICIENT_FUNDS');
 
   const lines = [
@@ -275,7 +283,13 @@ async function payInstallmentCore({ client, saccosId, loan, installmentId, cfg, 
     lines,
     referenceId: ref, description: `Awamu ya mkopo SACCOS #${saccosId}`, postedBy: 'saccos:credit:installment:pay',
   });
-  await client.query('UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2', [amountN, payer]);
+  const debited = await client.query(
+    'UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2 AND wallet_balance >= $1',
+    [amountN, payer]
+  );
+  if (debited.rowCount !== 1) {
+    throw createAppError('WALLET_INSUFFICIENT_FUNDS');
+  }
   await client.query(
     `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
      VALUES ($1, $2, $3, 0, $3, 'SUCCESS', 'SACCOS_LOAN_INSTALLMENT_PAYMENT', $4)`,
