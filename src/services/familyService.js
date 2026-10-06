@@ -93,7 +93,12 @@ async function familyContribute(walletId, userId, amount) {
     );
     await client.query('COMMIT');
     return { success: true, amount: amountNum, message: 'Umependekeza kwenye Familia Wallet.' };
-  } finally { client.release(); }
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 async function familySpend(walletId, userId, amount, description) {
@@ -109,8 +114,19 @@ async function familySpend(walletId, userId, amount, description) {
   try {
     await client.query('BEGIN');
     const w = await client.query('SELECT balance FROM family_wallets WHERE id = $1 FOR UPDATE', [walletId]);
-    if (Number(w.rows[0].balance) < amountNum) throw Object.assign(new Error('Salio la familia halitoshi.'), { statusCode: 400 });
-    await client.query('UPDATE family_wallets SET balance = balance - $1 WHERE id = $2', [amountNum, walletId]);
+    if (!w.rows.length) {
+      throw Object.assign(new Error('Familia wallet haipo.'), { statusCode: 404 });
+    }
+    if (Number(w.rows[0].balance) < amountNum) {
+      throw Object.assign(new Error('Salio la familia halitoshi.'), { statusCode: 400 });
+    }
+    const debited = await client.query(
+      'UPDATE family_wallets SET balance = balance - $1 WHERE id = $2 AND balance >= $1',
+      [amountNum, walletId]
+    );
+    if (debited.rowCount !== 1) {
+      throw Object.assign(new Error('Salio la familia halitoshi au wallet haipo.'), { statusCode: 400 });
+    }
     await fin.postJournal({
       client,
       lines: [
@@ -140,15 +156,13 @@ async function familyTransfer(walletId, userId, toPhone, amount) {
   const member = await pool.query("SELECT * FROM family_wallet_members WHERE wallet_id = $1 AND user_id = $2 AND status = 'ACTIVE'", [walletId, userId]);
   if (!member.rows.length) throw Object.assign(new Error('Sio mwanachama hai.'), { statusCode: 403 });
   if (!member.rows[0].can_spend) throw Object.assign(new Error('Huna ruhusa ya kutuma.'), { statusCode: 403 });
-  const w = await pool.query('SELECT balance FROM family_wallets WHERE id = $1 FOR UPDATE', [walletId]);
-  if (Number(w.rows[0].balance) < amountNum) throw Object.assign(new Error('Salio la familia halitoshi.'), { statusCode: 400 });
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     const to = await client.query('SELECT id, wallet_balance, full_name, phone_number FROM users WHERE phone_number = $1 FOR UPDATE', [toPhone.trim()]);
     if (!to.rows.length) throw Object.assign(new Error('Mpokeaji hajapatikana.'), { statusCode: 404 });
     const ftRef = generateReference('FT');
-    await fin.groupToWallet({ client, userId: to.rows[0].id, groupId: walletId, groupAccount: 'FAMILY_WALLET', groupSql: 'UPDATE family_wallets SET balance = balance - $1 WHERE id = $2', amount: amountNum, reference: ftRef, description: `Tuma kwa ${toPhone}`, productType: 'FAMILY', productRef: String(walletId) });
+    await fin.groupToWallet({ client, userId: to.rows[0].id, groupId: walletId, groupAccount: 'FAMILY_WALLET', groupSql: 'UPDATE family_wallets SET balance = balance - $1 WHERE id = $2 AND balance >= $1', amount: amountNum, reference: ftRef, description: `Tuma kwa ${toPhone}`, productType: 'FAMILY', productRef: String(walletId) });
     await client.query(
       `INSERT INTO family_wallet_transactions (wallet_id, actor_user_id, counterparty_user_id, amount, type, description) VALUES ($1,$2,$3,$4,'TRANSFER_OUT',$5)`,
       [walletId, userId, to.rows[0].id, amountNum, `Tuma kwa ${toPhone}`]
@@ -156,7 +170,12 @@ async function familyTransfer(walletId, userId, toPhone, amount) {
     await client.query('COMMIT');
     await sendSMS(to.rows[0].phone_number, `Umepokea TZS ${formatMoney(amountNum)} kutoka Familia Wallet.`).catch(() => {});
     return { success: true, amount: amountNum, message: 'Fedha zimetumwa kutoka Familia Wallet.' };
-  } finally { client.release(); }
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 async function removeMember(walletId, ownerId, memberUserId) {

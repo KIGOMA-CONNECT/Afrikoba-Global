@@ -181,7 +181,7 @@ async function autoDetectWorkingDbConfig() {
 
 autoDetectWorkingDbConfig().catch((err) => logger.error('DB_SELF_HEAL_CRASH', err.message));
 
-setInterval(() => {
+const dbPoolStatsInterval = setInterval(() => {
   if (currentPool && typeof currentPool.totalCount !== 'undefined') {
     logger.info('DB_POOL_STATS', 'Current stats', {
       total: currentPool.totalCount,
@@ -191,6 +191,8 @@ setInterval(() => {
     });
   }
 }, 60000);
+
+dbPoolStatsInterval.unref();
 
 function safeRelease(client, origRelease, err) {
   if (!err) {

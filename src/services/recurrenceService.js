@@ -52,15 +52,44 @@ async function runAutoSavings(payload) {
     if (!user) throw new Error('User not found');
     if (Number(user.wallet_balance) < amount) throw new Error('Insufficient balance for auto-savings');
     const reference = `SAV-${Date.now()}`;
-    const op = await fin.claimOperation ? fin.claimOperation({ client, operationType: 'DEBIT', reference, userId, amount })
-      : { claimed: true };
-    if (op.claimed === false) { await client.query('ROLLBACK').catch(() => {}); return { skipped: true, reason: 'dup' }; }
-    await client.query(`UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id=$2`, [amount, userId]);
-    await fin.postJournal ? fin.postJournal({ client, lines: [
-      { accountCode: 'CUSTOMER_WALLET', direction: 'DR', amount },
-      { accountCode: 'SAVINGS_LEDGER', direction: 'CR', amount },
-    ], referenceId: reference, description: payload.description || 'Auto-savings', postedBy: 'recurrence:auto-savings' })
-      : null;
+    const op = await fin.claimOperation({
+      client,
+      operationType: 'DEBIT',
+      reference,
+      userId,
+      amount,
+    });
+    if (op.claimed === false) {
+      await client.query('ROLLBACK').catch(() => {});
+      return { skipped: true, reason: 'dup' };
+    }
+    const debited = await client.query(
+      `UPDATE users
+          SET wallet_balance = wallet_balance - $1
+        WHERE id = $2
+          AND wallet_balance >= $1`,
+      [amount, userId]
+    );
+    if (debited.rowCount !== 1) {
+      throw new Error('Insufficient balance for auto-savings');
+    }
+    await fin.postJournal({
+      client,
+      lines: [
+        { accountCode: 'CUSTOMER_WALLET', direction: 'DR', amount },
+        { accountCode: 'SAVINGS_LEDGER', direction: 'CR', amount },
+      ],
+      referenceId: reference,
+      description: payload.description || 'Auto-savings',
+      postedBy: 'recurrence:auto-savings',
+    });
+
+    await fin.setOperationState({
+      client,
+      reference,
+      status: 'SUCCESS',
+    });
+
     await client.query('COMMIT');
     return { saved: amount, reference };
   } catch (err) {
