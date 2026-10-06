@@ -777,7 +777,7 @@ async function executeEventWithdrawal({ eventId, withdrawalId, mode, amount, use
       userId: toUserId,
       groupId: eventId,
       groupAccount: modeUp === 'SAVINGS' ? 'EVENT_SAVINGS' : 'EVENT_POOL',
-      groupSql: `UPDATE social_events SET ${col} = ${col} - $1 WHERE id = $2`,
+      groupSql: `UPDATE social_events SET ${col} = ${col} - $1 WHERE id = $2 AND ${col} >= $1`,
       amount: amountN,
       reference,
       description: `Uondoaji wa ${modeUp} kutoka tukio #${eventId}`,

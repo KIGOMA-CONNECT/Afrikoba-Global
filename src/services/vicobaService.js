@@ -327,10 +327,14 @@ async function chargeMaintenanceFee(groupId) {
       referenceId: `MF:${groupId}`,
       description: 'VICOBA Maintenance Fee',
     });
-    await client.query(
-      'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance - $1 WHERE id = $2',
+    const debited = await client.query(
+      'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance - $1 WHERE id = $2 AND group_wallet_balance >= $1',
       [group.monthly_maintenance_fee, groupId]
     );
+
+    if (debited.rowCount !== 1) {
+      throw new Error('Salio la kikundi halitoshi kulipia ada ya huduma.');
+    }
     await client.query(
       `UPDATE company_revenue SET total_maintenance_fees = total_maintenance_fees + $1, updated_at = NOW()
        WHERE id = 1`,
@@ -976,7 +980,7 @@ async function approveSocialFundDisbursement(actorUserId, requestId, approvedAmo
       [finalAmount, actorUserId, requestId]
     );
     const referenceId = generateReference('SD');
-    await fin.groupToWallet({ client, userId: request.requester_id, groupId: request.fund_id, groupAccount: 'VICOBA_GROUP', groupSql: 'UPDATE vicoba_social_fund SET total_balance = total_balance - $1, total_disbursed = total_disbursed + $1 WHERE id = $2', amount: finalAmount, reference: `${referenceId}:GW`, description: 'VICOBA Social Fund Disbursement', productType: 'VICOBA', productRef: String(request.fund_id) });
+    await fin.groupToWallet({ client, userId: request.requester_id, groupId: request.fund_id, groupAccount: 'VICOBA_GROUP', groupSql: 'UPDATE vicoba_social_fund SET total_balance = total_balance - $1, total_disbursed = total_disbursed + $1 WHERE id = $2 AND total_balance >= $1', amount: finalAmount, reference: `${referenceId}:GW`, description: 'VICOBA Social Fund Disbursement', productType: 'VICOBA', productRef: String(request.fund_id) });
 
     await client.query(
       `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
@@ -1443,7 +1447,7 @@ async function approveWithdrawal(actorUserId, withdrawalId, { approved, note }) 
 
     await fin.groupToWallet({
       client, userId: cur.user_id, groupId: cur.group_id, groupAccount: 'VICOBA_GROUP',
-      groupSql: 'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance - $1 WHERE id = $2',
+      groupSql: 'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance - $1 WHERE id = $2 AND group_wallet_balance >= $1',
       amount: Number(cur.amount), reference: `${cur.reference_id}:GW`, description: 'VICOBA Group Withdrawal',
       productType: 'VICOBA', productRef: String(cur.group_id),
     });
@@ -1456,12 +1460,22 @@ async function approveWithdrawal(actorUserId, withdrawalId, { approved, note }) 
        JSON.stringify({ group_id: cur.group_id, withdrawal_id: withdrawalId, via: 'SIGNATURE_2OF2' })]
     );
 
-    await client.query(
-      `UPDATE vicoba_members SET contribution_balance = contribution_balance - $1,
-         share_capital = GREATEST(0, share_capital - $1)
-       WHERE group_id = $2 AND user_id = $3`,
+    const memberProjection = await client.query(
+      `UPDATE vicoba_members
+       SET contribution_balance = contribution_balance - $1,
+           share_capital = GREATEST(0, share_capital - $1)
+       WHERE group_id = $2
+         AND user_id = $3
+         AND contribution_balance >= $1`,
       [Number(cur.amount), cur.group_id, cur.user_id]
     );
+
+    if (memberProjection.rowCount !== 1) {
+      throw Object.assign(
+        new Error('Salio la mwanachama halitoshi kwa uondoaji huu au rekodi haipo.'),
+        { statusCode: 400 }
+      );
+    }
 
     await client.query(
       `UPDATE vicoba_withdrawals SET status = 'DISBURSED', disbursed_at = NOW() WHERE id = $1`,
