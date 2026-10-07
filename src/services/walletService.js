@@ -13,6 +13,13 @@ const logger = require('../utils/logger');
  * - totalCharged = W + F inaenda AzamPay USSD Push
  */
 async function initiateDeposit(userId, amount, provider) {
+  if (!config.azampay.enabled) {
+    throw Object.assign(
+      new Error('Deposit kupitia MNO imezimwa kwa sasa.'),
+      { statusCode: 503, code: 'AZAMPAY_DISABLED' }
+    );
+  }
+
   if (parseFloat(amount) < 1000) {
     throw Object.assign(new Error('Kiasi kidogo cha deposit ni TZS 1,000.'), { statusCode: 400 });
   }
@@ -264,6 +271,13 @@ async function transferWallet(fromUserId, toPhoneNumber, amount, note) {
  * dangerous timeout-based refund that could double-credit a customer.
  */
 async function withdrawToMno(userId, amount, provider) {
+  if (!config.azampay.enabled) {
+    throw Object.assign(
+      new Error('Withdrawal kwenda MNO imezimwa kwa sasa.'),
+      { statusCode: 503, code: 'AZAMPAY_DISABLED' }
+    );
+  }
+
   const amountNum = parseFloat(amount);
   if (!amountNum || amountNum < 1000) {
     throw Object.assign(new Error('Kiasi kidogo cha withdrawal ni TZS 1,000.'), { statusCode: 400 });

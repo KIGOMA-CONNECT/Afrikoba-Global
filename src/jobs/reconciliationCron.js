@@ -1,4 +1,5 @@
 const pool = require('../config/db');
+const config = require('../config');
 const { queryTransactionStatus } = require('../services/azampayService');
 const { sendSMS } = require('../services/smsService');
 const { formatMoney } = require('../utils/helpers');
@@ -187,6 +188,15 @@ async function settleWithdrawal(tx) {
 }
 
 async function reconcilePendingDeposits() {
+  if (!config.azampay.enabled) {
+    logger.info('RECON', 'AzamPay disabled; provider reconciliation skipped.');
+    return {
+      checkedDeposits: 0,
+      processedWithdrawals: [],
+      providerDisabled: true,
+    };
+  }
+
   let checkedDeposits = 0;
   let processedWithdrawals = [];
 

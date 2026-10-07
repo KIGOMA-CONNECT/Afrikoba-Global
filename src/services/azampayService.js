@@ -11,10 +11,20 @@ const AUTH_URL = config.azampay.env === 'production'
   ? 'https://authenticator.azampay.co.tz/AppAuthentication/Token'
   : 'https://authenticator-sandbox.azampay.co.tz/AppAuthentication/Token';
 
+function assertAzamPayEnabled() {
+  if (!config.azampay.enabled) {
+    throw Object.assign(
+      new Error('AzamPay haijawezeshwa kwa sasa.'),
+      { statusCode: 503, code: 'AZAMPAY_DISABLED' }
+    );
+  }
+}
+
 let cachedToken = null;
 let tokenExpiry = 0;
 
 async function getAzamPayToken() {
+  assertAzamPayEnabled();
   if (cachedToken && Date.now() < tokenExpiry) {
     return cachedToken;
   }
@@ -42,6 +52,7 @@ async function getAzamPayToken() {
  * @param {string} provider - Mpesa | Tigo | Airtel | Halopesa
  */
 async function triggerMnoCheckout(phoneNumber, amount, referenceId, provider) {
+  assertAzamPayEnabled();
   try {
     const token = await getAzamPayToken();
     const accountNumber = toLocalFormat(phoneNumber);
@@ -76,6 +87,7 @@ async function triggerMnoCheckout(phoneNumber, amount, referenceId, provider) {
  * @param {string} referenceId - externalId tulilotuma
  */
 async function queryTransactionStatus(referenceId) {
+  assertAzamPayEnabled();
   try {
     const token = await getAzamPayToken();
     const response = await axios.post(
@@ -107,6 +119,7 @@ async function queryTransactionStatus(referenceId) {
  * @param {string} provider
  */
 async function triggerPayout(phoneNumber, amount, referenceId, provider) {
+  assertAzamPayEnabled();
   try {
     const token = await getAzamPayToken();
     const payload = {
