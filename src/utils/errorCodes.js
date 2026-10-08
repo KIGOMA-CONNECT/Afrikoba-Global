@@ -167,6 +167,28 @@ const ERROR_CODES = {
   SACCOS_GOV_VOTE_INVALID:         { status: 400, message: 'Chaguo la kura halikubaliki.' },
   SACCOS_GOV_VOTE_ALREADY:         { status: 400, message: 'Umekwisha piga kura kwenye azimio hili.' },
 
+  // G1 governance authorization boundary (403/404)
+  GOV_GROUP_REQUIRED:        { status: 403, message: 'Ombi haliambatishwa na kikundi; onyesha kikundi chako.' },
+  GOV_GROUP_NOT_FOUND:       { status: 404, message: 'Kikundi hakipatikani.' },
+  GOV_NOT_A_MEMBER:          { status: 403, message: 'Huna uanachama wa kikundi hiki.' },
+  GOV_GROUP_INACTIVE:        { status: 403, message: 'Kikundi hiki hakifanyi kazi (kimesimamishwa kimefungwa).' },
+  GOV_ROLE_FORBIDDEN:        { status: 403, message: 'Jukumu lako haliruhusu hatua hii ndani ya kikundi.' },
+  GOV_GROUP_TYPE_UNSUPPORTED: { status: 403, message: 'Aina hii ya kikundi haijaungwa mkono kwa ruhusa hii.' },
+  GOV_AUTHZ_UNREGISTERED:    { status: 403, message: 'Huna ruhusa ya hatua hii.' },
+
+  // G2 resource-to-group binding (403/404)
+  //
+  // A resource that does not exist and a resource that belongs to another group
+  // are reported with the SAME status AND the same code, so a group id cannot be
+  // probed by watching the response. The real reason is never rendered: it is
+  // carried on `err.internalCode` and written to the warn log instead.
+  // GOV_RESOURCE_UNREGISTERED is deliberately distinct: it fires when the request
+  // itself is not described by the binding table (a wiring gap), which leaks
+  // nothing about any resource.
+  GOV_RESOURCE_NOT_FOUND:    { status: 404, message: 'Rasilimali haijapatikana.' },
+  GOV_RESOURCE_UNREGISTERED: { status: 403, message: 'Huna ruhusa ya hatua hii.' },
+  GOV_EXECUTION_RESOLUTION_MISMATCH: { status: 403, message: 'Muunganisho wa execution na azimio si sahihi; hatua imezimwa.' },
+
   // SACCOS meetings (400/403/404)
   SACCOS_MEETING_NOT_FOUND:           { status: 404, message: 'Mkutano haujapatikana.' },
   SACCOS_MEETING_TITLE:               { status: 400, message: 'Jina la mkutano linahitajika.' },

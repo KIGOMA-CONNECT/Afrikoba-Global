@@ -8,6 +8,10 @@
  * isolation 404, platform ADMIN oversight, audit trail.
  * Config saccos.config.governance {allowMemberVoting,
  * quorumPercent, decisionThresholdPercent, votingDays}. Suite 49.
+ * Section 8 pins the intentional G1/G3 authorization ordering:
+ * outsider + non-ACTIVE SACCOS + vote -> 404 SACCOS_NOT_FOUND
+ * (previously 400 SACCOS_SHARES_NOT_ACTIVE), while the service
+ * lifecycle check for real members is preserved. 31 checks.
  * ============================================================ */
 const BASE = process.env.SACCOS_TEST_BASE || 'http://127.0.0.1:3000';
 const pool = require('../src/config/db');
@@ -204,7 +208,8 @@ async function main() {
 
   const adminTok = await makeAdmin(await register(phone(5007), 'O Uongozi'));
   const adminList = await api('GET', `/api/saccos/${orgId}/governance/resolutions`, adminTok);
-  await expect(adminTok && adminList.status === 200 && adminList.data.result.resolutions.length >= 5, 'platform ADMIN lists all S1 resolutions');
+  await expect(adminTok && adminList.status === 403 && adminList.data.code === 'SACCOS_NOT_MEMBER',
+    'platform ADMIN cannot list S1 resolutions -> 403 SACCOS_NOT_MEMBER (G3 decision 2, option (a): no SACCOS:READ override)', JSON.stringify(adminList.data));
   const adminSummary = await api('GET', `/api/saccos/${orgId}/governance/summary`, adminTok);
   await expect(adminSummary.status === 200 && adminSummary.data.result.passed >= 1 && adminSummary.data.result.rejected >= 1
     && adminSummary.data.result.votes >= 6, 'platform ADMIN reads governance summary');
@@ -217,6 +222,37 @@ async function main() {
 
   const audit = await pool.query(`SELECT DISTINCT action FROM audit_logs WHERE action LIKE 'SACCOS_GOV%'`);
   await expect(audit.rows.length >= 4, 'audit trail has governance actions');
+
+  // ---------- 8. Authorization ordering (G1/G3, intentional) ----------
+  await section('Authorization ordering (G1/G3 intentional)');
+  // Regression documentation: before G1/G3 an OUTSIDER voting on a non-ACTIVE
+  // SACCOS reached the service first and got 400 SACCOS_SHARES_NOT_ACTIVE —
+  // a lifecycle hint leaked to a caller who was never authorized. The
+  // governance layers now answer visibility BEFORE lifecycle, so the outsider
+  // is denied 404 SACCOS_NOT_FOUND before the handler runs. The service's own
+  // lifecycle check is NOT removed: a real member still gets 400.
+  const ord = await api('POST', '/api/v1/saccos', ownerTok, { name: 'Mpangilio ' + suffix });
+  const ordId = ord.data.result.saccos.id;
+  await api('POST', `/api/saccos/${ordId}/activate`, ownerTok);
+  const ordRes = (await api('POST', `/api/saccos/${ordId}/governance/resolutions`, ownerTok,
+    { title: 'Agizo la mpangilio' })).data.result.id;
+  await api('POST', `/api/saccos/${ordId}/governance/resolutions/${ordRes}/open`, ownerTok);
+  await pool.query(`UPDATE saccos SET status = 'SUSPENDED', updated_at = NOW() WHERE id = $1`, [ordId]);
+
+  const outReg = await register(phone(5009), 'Mgeni Wa Mpangilio');
+  const outVote = await api('POST', `/api/saccos/${ordId}/governance/resolutions/${ordRes}/vote`,
+    outReg.data.token, { choice: 'FOR' });
+  await expect(outVote.status === 404 && outVote.data.code === 'SACCOS_NOT_FOUND',
+    'outsider + non-ACTIVE SACCOS + vote -> 404 SACCOS_NOT_FOUND (was 400 SACCOS_SHARES_NOT_ACTIVE; intentional ordering)',
+    JSON.stringify(outVote.data));
+  const outVotes = await pool.query('SELECT count(*)::int AS c FROM saccos_resolution_votes WHERE resolution_id = $1', [ordRes]);
+  await expect(outVotes.rows[0].c === 0, 'denial before handler: zero vote rows written');
+
+  const ordOwnerVote = await api('POST', `/api/saccos/${ordId}/governance/resolutions/${ordRes}/vote`,
+    ownerTok, { choice: 'FOR' });
+  await expect(ordOwnerVote.status === 400 && ordOwnerVote.data.code === 'SACCOS_SHARES_NOT_ACTIVE',
+    'member + non-ACTIVE SACCOS + vote -> 400 SACCOS_SHARES_NOT_ACTIVE (service lifecycle check preserved)',
+    JSON.stringify(ordOwnerVote.data));
 
   console.log(`\nSACCOS GOVERNANCE: ${passed} passed, ${failed} failed`);
   if (failed) {

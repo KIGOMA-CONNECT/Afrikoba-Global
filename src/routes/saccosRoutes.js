@@ -1,5 +1,13 @@
 const express = require('express');
-const { authRequired, requireRoles } = require('../middleware/auth');
+const { authRequired } = require('../middleware/auth');
+const {
+  CAPABILITIES: CAP,
+  SACCOS_GOVERNING_ROLES,
+  authorizeGroupContext,
+} = require('../services/governanceAuthorizationService');
+const resourceBinding = require('../services/governanceResourceBindingService');
+const { matchRouteParams, patternMatches } = resourceBinding;
+const logger = require('../utils/logger');
 const saccos = require('../services/saccosService');
 const shares = require('../services/saccosSharesService');
 const savings = require('../services/saccosSavingsService');
@@ -20,6 +28,248 @@ const standingOrders = require('../services/saccosStandingOrderService');
 const treasury = require('../services/saccosTreasuryService');
 
 const router = express.Router();
+
+// ============ G3 — SACCOS GOVERNANCE SURFACE CONSOLIDATION ============
+//
+// This router carries a second governance surface alongside /api/v1/governance:
+//
+//   /:id/governance/*   8 routes   resolutions + rollup summary
+//   /:id/meetings/*     9 routes   meeting lifecycle, attendance, minutes
+//
+// Both halves of the same invariant now run here instead of only deep inside
+// the services:
+//   G1  "may THIS user act on THIS SACCOS with THIS capability?"
+//   G2  "which SACCOS owns THIS resolution / meeting / member?"
+//
+// Layers run ONLY for paths inside the surface. The other 122 endpoints in this
+// file keep their inline `authRequired` and their own service-level checks
+// untouched — they are a separate backlog.
+//
+// Order (every denial happens before the handler, so no denial can leave a
+// partial mutation behind):
+//   1 g3Authenticate      surface paths authenticate here; the inline
+//                         authRequired on each route still runs afterwards,
+//                         which is deliberate — double auth is cheap and
+//                         strictly safer than a missed one
+//   2 g3CapabilityLayer   ROUTE_SACCOS_AUTHZ. No entry => 403, fail closed
+//   3 g3BindingLayer      ROUTE_SACCOS_RESOURCES. No entry => 403, fail closed
+//
+// Decisions that shape this block:
+//   * The group context comes from the server-controlled `:id` path segment,
+//     never from body/query — a client cannot choose which SACCOS it is being
+//     authorized as, and every group claim it does send must agree with it.
+//   * GOVERN mutations run `assertActiveRole(OWNER, BOARD)` FIRST. Without it
+//     G1 alone would turn an outsider's write from 403 SACCOS_NOT_MEMBER into
+//     404 (assertVisible runs first there), and would let a platform ADMIN
+//     through on the documented SACCOS:GOVERN override that the services have
+//     never allowed for writes. Decision 3: G3 does not migrate the error
+//     contract.
+//   * `GET /:id/governance/summary` maps to plain GOVERN with NO pre-check.
+//     That is the single place the SACCOS:GOVERN platform-admin override
+//     applies, and it is what the existing oversight test pins.
+//   * Service-level assert*/requireActiveMember checks stay in place as
+//     defense in depth. This layer is not a replacement for them.
+
+const G3_GROUP_TYPE = 'SACCO';
+const G3_SURFACE = /^\/[^/]+\/(?:governance|meetings)(?:\/|$)/;
+
+function inG3Surface(path) {
+  return G3_SURFACE.test(typeof path === 'string' ? path : '/');
+}
+
+/**
+ * The authorization matrix for the surface: [method, path, capability, adminPreCheck].
+ *
+ * `adminPreCheck` (4th element) means "run assertActiveRole(OWNER, BOARD)
+ * before the capability check" — see the decision note above. It is present on
+ * every GOVERN route that must keep denying platform ADMIN and outsiders with
+ * 403, which is every GOVERN route except the oversight summary.
+ */
+const ROUTE_SACCOS_AUTHZ = [
+  ['POST', '/:id/governance/resolutions', CAP.GOVERN, true],
+  ['GET', '/:id/governance/resolutions', CAP.READ],
+  ['GET', '/:id/governance/resolutions/:resolutionId', CAP.READ],
+  ['POST', '/:id/governance/resolutions/:resolutionId/open', CAP.GOVERN, true],
+  ['POST', '/:id/governance/resolutions/:resolutionId/vote', CAP.VOTE],
+  ['POST', '/:id/governance/resolutions/:resolutionId/close', CAP.GOVERN, true],
+  ['POST', '/:id/governance/resolutions/:resolutionId/cancel', CAP.GOVERN, true],
+  ['GET', '/:id/governance/summary', CAP.GOVERN],
+  ['POST', '/:id/meetings', CAP.GOVERN, true],
+  ['GET', '/:id/meetings', CAP.READ],
+  ['GET', '/:id/meetings/summary', CAP.GOVERN, true],
+  ['GET', '/:id/meetings/:meetingId', CAP.READ],
+  ['POST', '/:id/meetings/:meetingId/open', CAP.GOVERN, true],
+  ['POST', '/:id/meetings/:meetingId/checkin', CAP.WRITE],
+  ['POST', '/:id/meetings/:meetingId/attendance', CAP.GOVERN, true],
+  ['POST', '/:id/meetings/:meetingId/close', CAP.GOVERN, true],
+  ['POST', '/:id/meetings/:meetingId/minutes', CAP.GOVERN, true],
+];
+
+const SACCOS_P = (type, key) => ({ from: 'path', keys: [key], type });
+const SACCOS_B = (type, keys) => ({ from: 'body', keys, type });
+
+/**
+ * The resource matrix for the surface: [method, path, descriptors].
+ *
+ * Mirrors ROUTE_SACCOS_AUTHZ in the same order, so a route missing from either
+ * table cannot reach its handler. Every id below is resolved by
+ * governanceResourceBindingService against the row's own `saccos_id`, which is
+ * the composite `saccos_id + resource_id` binding the services already did —
+ * hoisted here so it happens before the handler rather than inside it.
+ *
+ * `GET /:id/meetings/summary` must stay above `GET /:id/meetings/:meetingId`:
+ * both are three segments, and the first match wins.
+ */
+const ROUTE_SACCOS_RESOURCES = [
+  ['POST', '/:id/governance/resolutions', []],
+  ['GET', '/:id/governance/resolutions', []],
+  ['GET', '/:id/governance/resolutions/:resolutionId', [SACCOS_P('SACCOS_RESOLUTION', 'resolutionId')]],
+  ['POST', '/:id/governance/resolutions/:resolutionId/open', [SACCOS_P('SACCOS_RESOLUTION', 'resolutionId')]],
+  ['POST', '/:id/governance/resolutions/:resolutionId/vote', [SACCOS_P('SACCOS_RESOLUTION', 'resolutionId')]],
+  ['POST', '/:id/governance/resolutions/:resolutionId/close', [SACCOS_P('SACCOS_RESOLUTION', 'resolutionId')]],
+  ['POST', '/:id/governance/resolutions/:resolutionId/cancel', [SACCOS_P('SACCOS_RESOLUTION', 'resolutionId')]],
+  ['GET', '/:id/governance/summary', []],
+  ['POST', '/:id/meetings', []],
+  ['GET', '/:id/meetings', []],
+  ['GET', '/:id/meetings/summary', []],
+  ['GET', '/:id/meetings/:meetingId', [SACCOS_P('SACCOS_MEETING', 'meetingId')]],
+  ['POST', '/:id/meetings/:meetingId/open', [SACCOS_P('SACCOS_MEETING', 'meetingId')]],
+  ['POST', '/:id/meetings/:meetingId/checkin', [SACCOS_P('SACCOS_MEETING', 'meetingId')]],
+  ['POST', '/:id/meetings/:meetingId/attendance', [
+    SACCOS_P('SACCOS_MEETING', 'meetingId'),
+    SACCOS_B('SACCOS_MEMBER', ['memberId', 'member_id']),
+  ]],
+  ['POST', '/:id/meetings/:meetingId/close', [SACCOS_P('SACCOS_MEETING', 'meetingId')]],
+  ['POST', '/:id/meetings/:meetingId/minutes', [SACCOS_P('SACCOS_MEETING', 'meetingId')]],
+];
+
+function denyUnregistered(res, code) {
+  return res.status(403).json({ success: false, code, message: 'Huna ruhusa ya hatua hii.' });
+}
+
+function denyAppError(res, err) {
+  return res.status(err.statusCode).json({
+    success: false,
+    code: err.code,
+    message: err.message,
+    ...(err.details ? { details: err.details } : {}),
+  });
+}
+
+// ---- layer 1: authentication for the surface only ------------------------
+function g3Authenticate(req, res, next) {
+  if (!inG3Surface(req.path)) return next();
+  return authRequired(req, res, next);
+}
+
+// ---- layer 2: capability -> role, fail closed ----------------------------
+async function g3CapabilityLayer(req, res, next) {
+  if (!inG3Surface(req.path)) return next();
+  const method = req.method.toUpperCase();
+  const path = req.path || '/';
+  try {
+    const hit = ROUTE_SACCOS_AUTHZ.find(([m, p]) => m === method && patternMatches(p, path));
+    if (!hit) return denyUnregistered(res, 'GOV_AUTHZ_UNREGISTERED');
+
+    const params = matchRouteParams(hit[1], path) || {};
+    const groupId = Number(params.id);
+    if (!Number.isSafeInteger(groupId) || groupId <= 0) return denyUnregistered(res, 'GOV_AUTHZ_UNREGISTERED');
+
+    // Defense-contract pre-check: must run BEFORE authorizeGroupContext so the
+    // pre-existing 403 codes for writes are preserved (see decision note).
+    if (hit[3] === true) {
+      await saccos.assertActiveRole(req.user.id, groupId, SACCOS_GOVERNING_ROLES);
+    }
+
+    req.governance = await authorizeGroupContext({
+      userId: req.user.id,
+      userRole: req.user.role,
+      groupType: G3_GROUP_TYPE,
+      groupId,
+      capability: hit[2],
+    });
+    return next();
+  } catch (err) {
+    if (err && err.statusCode && err.code) {
+      logger.warn('SACCOS_GOV_AUTHZ_DENIED', `method=${method} path=${path} code=${err.code} user=${req.user ? req.user.id : 'anon'}`);
+      return denyAppError(res, err);
+    }
+    return next(err);
+  }
+}
+
+// ---- layer 3: resource -> SACCOS binding, runs before every handler ------
+async function g3BindingLayer(req, res, next) {
+  if (!inG3Surface(req.path)) return next();
+  const method = req.method.toUpperCase();
+  const path = req.path || '/';
+  const hit = ROUTE_SACCOS_RESOURCES.find(([m, p]) => m === method && patternMatches(p, path));
+  if (!hit) return denyUnregistered(res, 'GOV_RESOURCE_UNREGISTERED');
+
+  try {
+    // One request, one SACCOS: a group id/type or a saccos_id anywhere else in
+    // the request must agree with the `:id` the context was built from.
+    resourceBinding.assertRequestGroupConsistent(req.governance, req, {
+      idKeys: ['saccos_id', 'saccosId'],
+    });
+
+    const pathParams = matchRouteParams(hit[1], path) || {};
+    for (const descriptor of hit[2]) {
+      const source = descriptor.from === 'path'
+        ? pathParams
+        : descriptor.from === 'query' ? req.query : (req.body || {});
+
+      let value = null;
+      let present = false;
+      for (const key of descriptor.keys) {
+        const candidate = source[key];
+        if (candidate !== undefined && candidate !== null && candidate !== '') {
+          value = candidate;
+          present = true;
+          break;
+        }
+      }
+
+      let recordType = null;
+      let recordTypePresent = false;
+      if (descriptor.via) {
+        for (const key of descriptor.via) {
+          const candidate = source[key];
+          if (candidate !== undefined && candidate !== null && candidate !== '') {
+            recordType = candidate;
+            recordTypePresent = true;
+            break;
+          }
+        }
+      }
+
+      if (descriptor.via && present !== recordTypePresent) {
+        throw resourceBinding.denyMissingResourceParam(descriptor.type, `incomplete ${descriptor.from} pair`);
+      }
+      if (!present) {
+        if (descriptor.optional) continue;
+        throw resourceBinding.denyMissingResourceParam(descriptor.type, `${descriptor.from} required`);
+      }
+
+      // Deliberately sequential: each descriptor settles before the next is
+      // considered, and none may run after next().
+      // eslint-disable-next-line no-await-in-loop
+      await resourceBinding.assertResourceInContext(descriptor.type, value, req.governance, { recordType });
+    }
+
+    return next();
+  } catch (err) {
+    if (err && err.statusCode && err.code) {
+      logger.warn('SACCOS_GOV_BIND_DENIED_HTTP', `method=${method} path=${path} code=${err.code} user=${req.user ? req.user.id : 'anon'}`);
+      return denyAppError(res, err);
+    }
+    return next(err);
+  }
+}
+
+router.use(g3Authenticate);
+router.use(g3CapabilityLayer);
+router.use(g3BindingLayer);
 
 router.post('/', authRequired, async (req, res, next) => {
   try {
@@ -42,7 +292,11 @@ router.get('/:id', authRequired, async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-router.post('/:id/activate', authRequired, requireRoles('MJUMBE', 'MWENYEKITI', 'KATIBU', 'MWEKAHAZINA', 'ADMIN'), async (req, res, next) => {
+// G3: the HTTP `requireRoles(MJUMBE, ...)` guard that used to sit here checked
+// the PLATFORM role, which defaults to MJUMBE for every registered user and so
+// admitted anyone. The real authorization is `activateSaccos -> assertActiveRole(['OWNER'])`
+// inside the service, and it is unchanged (defense in depth, decision 4).
+router.post('/:id/activate', authRequired, async (req, res, next) => {
   try {
     const org = await saccos.activateSaccos(req.user.id, Number(req.params.id));
     res.json({ success: true, result: org });
@@ -1004,5 +1258,14 @@ router.get('/:id/treasury/history', authRequired, async (req, res, next) => {
     res.json({ success: true, result: out });
   } catch (e) { next(e); }
 });
+
+// Exposed for tests: the G3 matrices must stay in exact 1:1 correspondence with
+// the governance surface declared above (a route with no entry is unreachable,
+// an entry with no route is dead), and the two tables must mirror each other in
+// the same order. `inG3Surface` is exported so a test can prove the surface
+// contains those 17 routes and nothing else.
+router.ROUTE_SACCOS_AUTHZ = ROUTE_SACCOS_AUTHZ;
+router.ROUTE_SACCOS_RESOURCES = ROUTE_SACCOS_RESOURCES;
+router.inG3Surface = inG3Surface;
 
 module.exports = router;
