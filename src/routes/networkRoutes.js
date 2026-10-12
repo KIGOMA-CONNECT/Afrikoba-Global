@@ -48,7 +48,7 @@ router.post('/agents/settlement', authRequired, async (req, res, next) => {
   try {
     const agent = await networkService.getAgentByUser(req.user.id);
     if (!agent) throw Object.assign(new Error('Sio wakala.'), { statusCode: 403 });
-    res.json({ success: true, result: await networkService.agentSettlement(agent.id, req.body.amount, req.body.type) });
+    res.json({ success: true, result: await networkService.agentSettlement(agent.id, req.body.amount, req.body.type, req.user.id) });
   } catch (e) { next(e); }
 });
 router.get('/agents/dashboard', authRequired, async (req, res, next) => {

@@ -122,10 +122,19 @@ async function postJournal({ client, lines, transactionId = null, referenceId, d
   const groupId = referenceId || generateReference('JE');
   let dr = 0, cr = 0;
   for (const line of lines) {
-    if (line.direction === 'DR') dr += Number(line.amount);
-    else cr += Number(line.amount);
+    const amt = normalizeAmount(line.amount);
+    if (!Number.isFinite(amt) || amt <= 0) {
+      span.end('ERROR', { referenceId, amount: line.amount });
+      throw new Error(`Financial Engine: invalid journal amount ${line.amount}`);
+    }
+    if (line.direction !== 'DR' && line.direction !== 'CR') {
+      span.end('ERROR', { referenceId, direction: line.direction });
+      throw new Error(`Financial Engine: invalid journal direction ${line.direction}`);
+    }
+    if (line.direction === 'DR') dr += amt;
+    else cr += amt;
   }
-  if (Math.abs(dr - cr) > 0.000001) {
+  if (!Number.isFinite(dr) || !Number.isFinite(cr) || Math.abs(dr - cr) > 0.000001) {
     span.end('ERROR', { referenceId, dr, cr });
     throw new Error(`Financial Engine: unbalanced posting DR=${dr} CR=${cr}`);
   }
@@ -173,9 +182,12 @@ async function postDeposit({ userId, amount, commission, reference, externalTxId
   try {
     await client.query('BEGIN');
 
-    const amountN = Number(amount);
+    const amountN = normalizeAmount(amount);
     assertPositiveAmount(amountN, 'postDeposit');
-    const commissionN = Number(commission || 0);
+    const commissionN = commission === undefined || commission === null
+      ? 0
+      : normalizeAmount(commission);
+    assertNonNegativeAmount(commissionN, 'postDeposit.commission');
 
     // Hard idempotency: claim the reference atomically. A retried reference
     // returns nothing to post and is reported as a duplicate.
@@ -250,7 +262,7 @@ async function holdFunds({ userId, amount, accountCode = 'CUSTOMER_WALLET', refe
   try {
     await client.query('BEGIN');
 
-    const amountN = Number(amount);
+    const amountN = normalizeAmount(amount);
     assertPositiveAmount(amountN, 'holdFunds');
 
     const op = await claimOperation({
@@ -320,7 +332,7 @@ async function releaseHold({ userId, amount, accountCode = 'CUSTOMER_WALLET', re
   try {
     await client.query('BEGIN');
 
-    const amountN = Number(amount);
+    const amountN = normalizeAmount(amount);
     assertPositiveAmount(amountN, 'releaseHold');
 
     const op = await claimOperation({
@@ -385,7 +397,7 @@ async function captureHold({ userId, amount, accountCode = 'CUSTOMER_WALLET', re
   try {
     await client.query('BEGIN');
 
-    const amountN = Number(amount);
+    const amountN = normalizeAmount(amount);
     assertPositiveAmount(amountN, 'captureHold');
 
     const op = await claimOperation({
@@ -445,7 +457,7 @@ async function transfer({ fromUserId, toUserId, amount, reference, description =
   try {
     await client.query('BEGIN');
 
-    const amountN = Number(amount);
+    const amountN = normalizeAmount(amount);
     assertPositiveAmount(amountN, 'transfer');
 
     const op = await claimOperation({
@@ -551,7 +563,7 @@ async function recordException({ type, reference, transactionId, detail = {} }) 
  *   DR <fromAccount>   CR CUSTOMER_WALLET
  */
 async function creditWallet({ client, userId, amount, reference, fromAccount = 'SUSPENSE', description = 'Wallet credit', actor = 'engine:credit', productType = null, productRef = null }) {
-  const amountN = Number(amount);
+  const amountN = normalizeAmount(amount);
   assertPositiveAmount(amountN, 'creditWallet');
   const op = await claimOperation({ client, operationType: 'CREDIT', reference, userId, amount: amountN });
   if (!op.claimed) return { dedup: true, reference };
@@ -589,7 +601,7 @@ async function creditWallet({ client, userId, amount, reference, fromAccount = '
  *   DR CUSTOMER_WALLET   CR <toAccount>
  */
 async function debitWallet({ client, userId, amount, reference, toAccount = 'PLATFORM_FEES', description = 'Wallet debit', actor = 'engine:debit', productType = null, productRef = null }) {
-  const amountN = Number(amount);
+  const amountN = normalizeAmount(amount);
   assertPositiveAmount(amountN, 'debitWallet');
   const op = await claimOperation({ client, operationType: 'DEBIT', reference, userId, amount: amountN });
   if (!op.claimed) return { dedup: true, reference };
@@ -632,7 +644,7 @@ async function debitWallet({ client, userId, amount, reference, toAccount = 'PLA
  *   DR CUSTOMER_WALLET (from)   CR CUSTOMER_WALLET (to)
  */
 async function internalTransfer({ client, fromUserId, toUserId, amount, reference, description = 'Internal transfer', actor = 'engine:transfer', productType = null, productRef = null }) {
-  const amountN = Number(amount);
+  const amountN = normalizeAmount(amount);
   assertPositiveAmount(amountN, 'internalTransfer');
   const op = await claimOperation({ client, operationType: 'TRANSFER', reference, userId: fromUserId, amount: amountN });
   if (!op.claimed) return { dedup: true, reference };
@@ -694,7 +706,7 @@ async function internalTransfer({ client, fromUserId, toUserId, amount, referenc
  *   DR CUSTOMER_WALLET   CR <groupAccountCode>   [+ users -X, group +Y]
  */
 async function walletToGroup({ client, userId, groupId, groupAccount = 'VICOBA_GROUP', groupSql, amount, reference, description = 'Wallet to group', actor = 'engine:walletToGroup', productType = null, productRef = null }) {
-  const amountN = Number(amount);
+  const amountN = normalizeAmount(amount);
   assertPositiveAmount(amountN, 'walletToGroup');
   const op = await claimOperation({ client, operationType: 'WALLET_TO_GROUP', reference, userId, amount: amountN });
   if (!op.claimed) return { dedup: true, reference };
@@ -740,7 +752,7 @@ async function walletToGroup({ client, userId, groupId, groupAccount = 'VICOBA_G
  *   DR <groupAccountCode>   CR CUSTOMER_WALLET   [+ group -Y, users +X]
  */
 async function groupToWallet({ client, userId, groupId, groupAccount = 'VICOBA_GROUP', groupSql, amount, reference, description = 'Group to wallet', actor = 'engine:groupToWallet', productType = null, productRef = null }) {
-  const amountN = Number(amount);
+  const amountN = normalizeAmount(amount);
   assertPositiveAmount(amountN, 'groupToWallet');
   const op = await claimOperation({ client, operationType: 'GROUP_TO_WALLET', reference, userId, amount: amountN });
   if (!op.claimed) return { dedup: true, reference };
@@ -753,7 +765,10 @@ async function groupToWallet({ client, userId, groupId, groupAccount = 'VICOBA_G
   const before = Number(rows[0].wallet_balance);
 
   if (groupSql) {
-    await client.query(groupSql, [amountN, groupId]);
+    const groupDebit = await client.query(groupSql, [amountN, groupId]);
+    if (groupDebit.rowCount !== 1) {
+      throw Object.assign(new Error('Group debit failed'), { statusCode: 409 });
+    }
   }
   // Projection update FIRST, journal second.
   const credited = await client.query(`UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2`, [amountN, userId]);
@@ -777,6 +792,30 @@ async function groupToWallet({ client, userId, groupId, groupAccount = 'VICOBA_G
 }
 
 /**
+ * Coerce a caller-supplied amount/rate to a finite number. Numbers, numeric
+ * strings and valueOf-able numerics pass through; booleans, arrays, plain
+ * objects, null and undefined are rejected as NaN so the sign/finiteness
+ * guards fail closed instead of silently coercing `true` -> 1 or `[5]` -> 5.
+ */
+function normalizeAmount(value) {
+  if (typeof value === 'number') return value;
+  if (typeof value === 'bigint') return Number(value);
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed === '' ? NaN : Number(trimmed);
+  }
+  if (value && typeof value === 'object' && typeof value.valueOf === 'function') {
+    const v = value.valueOf();
+    if (typeof v === 'number') return v;
+    if (typeof v === 'string') {
+      const trimmed = v.trim();
+      return trimmed === '' ? NaN : Number(trimmed);
+    }
+  }
+  return NaN;
+}
+
+/**
  * INV-12: a balance mover may only be driven by a strictly positive, finite
  * amount. Rejecting here - before claimOperation - guarantees an invalid
  * request leaves no operation, journal or audit residue at all.
@@ -792,12 +831,21 @@ function assertPositiveAmount(amountN, fnName) {
   }
 }
 
+function assertNonNegativeAmount(amountN, fnName) {
+  if (!Number.isFinite(amountN) || amountN < 0) {
+    throw Object.assign(
+      new Error(`Kiasi kimekatizwa: ${fnName} inahitaji kiasi kikubwa au sawa na 0.`),
+      { statusCode: 400 }
+    );
+  }
+}
+
 /**
  * LOCK available funds (available -> locked). In-transaction hold.
  *   DR <sourceAccount>   CR CARD_HOLD
  */
 async function lockWallet({ client, userId, amount, reference, sourceAccount = 'CUSTOMER_WALLET', description = 'Lock funds', actor = 'engine:lock' }) {
-  const amountN = Number(amount);
+  const amountN = normalizeAmount(amount);
   assertPositiveAmount(amountN, 'lockWallet');
   const op = await claimOperation({ client, operationType: 'LOCK', reference, userId, amount: amountN });
   if (!op.claimed) return { dedup: true, reference };
@@ -841,7 +889,7 @@ async function lockWallet({ client, userId, amount, reference, sourceAccount = '
  *   DR CARD_HOLD   CR <sourceAccount>
  */
 async function unlockWallet({ client, userId, amount, reference, sourceAccount = 'CUSTOMER_WALLET', description = 'Unlock funds', actor = 'engine:unlock' }) {
-  const amountN = Number(amount);
+  const amountN = normalizeAmount(amount);
   assertPositiveAmount(amountN, 'unlockWallet');
   const op = await claimOperation({ client, operationType: 'UNLOCK', reference, userId, amount: amountN });
   if (!op.claimed) return { dedup: true, reference };
@@ -883,7 +931,7 @@ async function unlockWallet({ client, userId, amount, reference, sourceAccount =
  *   DR CARD_HOLD   CR <toAccount>
  */
 async function captureLock({ client, userId, amount, reference, toAccount = 'MNO_CLEARING', description = 'Capture locked funds', actor = 'engine:captureLock' }) {
-  const amountN = Number(amount);
+  const amountN = normalizeAmount(amount);
   assertPositiveAmount(amountN, 'captureLock');
   const op = await claimOperation({ client, operationType: 'CAPTURE', reference, userId, amount: amountN });
   if (!op.claimed) return { dedup: true, reference };

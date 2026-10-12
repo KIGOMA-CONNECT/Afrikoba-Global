@@ -186,6 +186,230 @@ async function main() {
   const summaryMember = await api('GET', `/api/saccos/${orgId}/loans/installments/summary`, m1.tok);
   await expect(summaryMember.status === 403, 'member reading summary -> 403');
 
+
+  // ---------- 6b. Concurrent same-installment payment ----------
+  await section('Concurrent same-installment payment');
+
+  const concurrentWalletBefore = Number((await pool.query(
+    `SELECT wallet_balance
+       FROM users
+      WHERE id = $1`,
+    [m1.userId]
+  )).rows[0].wallet_balance);
+
+  const concurrentLoan = await api(
+    'POST',
+    `/api/saccos/${orgId}/loans/apply`,
+    m1.tok,
+    { amount: 20000, termMonths: 2, purpose: 'Concurrent installment test' }
+  );
+
+  await expect(
+    concurrentLoan.status === 201,
+    'concurrent-test loan application created',
+    JSON.stringify(concurrentLoan.data)
+  );
+
+  const concurrentApplicationId = concurrentLoan.data.result.id;
+
+  const concurrentApproved = await api(
+    'POST',
+    `/api/saccos/${orgId}/loans/applications/${concurrentApplicationId}/approve`,
+    ownerTok
+  );
+
+  await expect(
+    concurrentApproved.status === 200 &&
+      concurrentApproved.data.success === true &&
+      concurrentApproved.data.result.decision === 'APPROVE',
+    'concurrent-test loan approved',
+    JSON.stringify(concurrentApproved.data)
+  );
+
+  // Resolve the canonical loan from the application, rather than assuming
+  // the approval response contains a loan object.
+  const concurrentLoanDb = await pool.query(
+    `SELECT id, status, amount_outstanding
+       FROM saccos_loans
+      WHERE application_id = $1`,
+    [concurrentApplicationId]
+  );
+
+  await expect(
+    concurrentLoanDb.rows.length === 1,
+    'concurrent-test loan exists exactly once',
+    JSON.stringify(concurrentLoanDb.rows)
+  );
+
+  const concurrentLoanRow = concurrentLoanDb.rows[0];
+
+  await expect(
+    concurrentLoanRow &&
+      concurrentLoanRow.status === 'ACTIVE' &&
+      Number(concurrentLoanRow.amount_outstanding) === 20400,
+    'concurrent-test loan ACTIVE with outstanding 20400',
+    JSON.stringify(concurrentLoanRow)
+  );
+
+  // Approval auto-disburses 20000, so establish the actual payment-race
+  // starting balance rather than assuming a hard-coded wallet balance.
+  const concurrentWalletAtRace = Number((await pool.query(
+    `SELECT wallet_balance
+       FROM users
+      WHERE id = $1`,
+    [m1.userId]
+  )).rows[0].wallet_balance);
+
+  await expect(
+    concurrentWalletAtRace === concurrentWalletBefore + 20000,
+    'concurrent-test loan disbursement credited wallet by 20000'
+  );
+
+  const concurrentSchedule = await api(
+    'GET',
+    `/api/saccos/${orgId}/loans/${concurrentLoanRow.id}/installments`,
+    m1.tok
+  );
+
+  const concurrentInstallment =
+    concurrentSchedule.data.result.installments[0];
+
+  await expect(
+    concurrentSchedule.status === 200 &&
+      concurrentInstallment &&
+      concurrentInstallment.status === 'PENDING' &&
+      Number(concurrentInstallment.total) === 10200,
+    'concurrent-test first installment is PENDING at 10200',
+    JSON.stringify(concurrentSchedule.data)
+  );
+
+  const concurrentPath =
+    `/api/saccos/${orgId}/loans/${concurrentLoanRow.id}/installments/${concurrentInstallment.id}/pay`;
+
+  // Two genuinely concurrent HTTP requests against the same installment.
+  const [concurrentA, concurrentB] = await Promise.all([
+    api('POST', concurrentPath, m1.tok),
+    api('POST', concurrentPath, m1.tok),
+  ]);
+
+  const concurrentResults = [concurrentA, concurrentB];
+
+  const successfulPayments = concurrentResults.filter(
+    (r) => r.status === 200
+  );
+
+  const duplicatePayments = concurrentResults.filter(
+    (r) =>
+      r.status === 400 &&
+      r.data &&
+      r.data.code === 'SACCOS_LOAN_INSTALLMENT_ALREADY_PAID'
+  );
+
+  await expect(
+    successfulPayments.length === 1,
+    'concurrent same-installment payment has exactly one success',
+    JSON.stringify(concurrentResults)
+  );
+
+  await expect(
+    duplicatePayments.length === 1,
+    'concurrent loser receives ALREADY_PAID',
+    JSON.stringify(concurrentResults)
+  );
+
+  const successfulReference =
+    successfulPayments[0] &&
+    successfulPayments[0].data &&
+    successfulPayments[0].data.result &&
+    successfulPayments[0].data.result.reference;
+
+  await expect(
+    typeof successfulReference === 'string' &&
+      successfulReference.startsWith('REPI-'),
+    'successful concurrent payment returns REPI reference',
+    JSON.stringify(successfulPayments[0])
+  );
+
+  const concurrentDb = await pool.query(
+    `SELECT
+       (SELECT COUNT(*)::int
+          FROM saccos_loan_installments
+         WHERE id = $1
+           AND status = 'PAID') AS paid_installment,
+       (SELECT COUNT(*)::int
+          FROM saccos_loan_repayments
+         WHERE loan_id = $2) AS repayments,
+       (SELECT COUNT(*)::int
+          FROM transactions
+         WHERE type = 'SACCOS_LOAN_INSTALLMENT_PAYMENT'
+           AND user_id = $3
+           AND meta->>'loanId' = $2::text) AS transactions
+    `,
+    [concurrentInstallment.id, concurrentLoanRow.id, m1.userId]
+  );
+
+  const concurrentOperation = successfulReference
+    ? await pool.query(
+        `SELECT COUNT(*)::int AS count
+           FROM financial_operations
+          WHERE reference_id = $1
+            AND operation_type = 'DEBIT'
+            AND status = 'SUCCESS'`,
+        [successfulReference]
+      )
+    : { rows: [{ count: 0 }] };
+
+  const concurrentLoanAfter = await pool.query(
+    `SELECT amount_outstanding, status
+       FROM saccos_loans
+      WHERE id = $1`,
+    [concurrentLoanRow.id]
+  );
+
+  const concurrentWalletAfter = Number((await pool.query(
+    `SELECT wallet_balance
+       FROM users
+      WHERE id = $1`,
+    [m1.userId]
+  )).rows[0].wallet_balance);
+
+  await expect(
+    concurrentDb.rows[0].paid_installment === 1,
+    'concurrent race leaves exactly one PAID installment'
+  );
+
+  await expect(
+    concurrentDb.rows[0].repayments === 1,
+    'concurrent race creates exactly one repayment'
+  );
+
+  await expect(
+    concurrentDb.rows[0].transactions === 1,
+    'concurrent race creates exactly one installment transaction'
+  );
+
+  await expect(
+    concurrentOperation.rows[0].count === 1,
+    'concurrent race creates exactly one successful debit operation'
+  );
+
+  await expect(
+    Number(concurrentLoanAfter.rows[0].amount_outstanding) === 10200 &&
+      concurrentLoanAfter.rows[0].status === 'ACTIVE',
+    'concurrent race reduces outstanding exactly once to 10200',
+    JSON.stringify(concurrentLoanAfter.rows[0])
+  );
+
+  await expect(
+    concurrentWalletAfter === concurrentWalletAtRace - 10200,
+    'concurrent race debits wallet exactly once',
+    JSON.stringify({
+      before: concurrentWalletAtRace,
+      after: concurrentWalletAfter,
+      delta: concurrentWalletAfter - concurrentWalletAtRace,
+    })
+  );
+
   // ---------- 7. RBAC + isolation ----------
   await section('RBAC + cross-entity isolation');
   const rbac = await api('GET', `/api/saccos/${orgId}/loans/${loanRow.id}/installments`, m2.tok);

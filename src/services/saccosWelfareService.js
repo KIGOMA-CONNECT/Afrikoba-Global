@@ -86,7 +86,10 @@ async function createScheme(actorId, saccosId, { name, contribution, payout }) {
   const contrib = Number(contribution);
   const pay = Number(payout);
   if (!clean) throw createAppError('SACCOS_WELFARE_SCHEME_AMOUNT');
-  if (!(contrib > 0) || !(pay > 0)) throw createAppError('SACCOS_WELFARE_SCHEME_AMOUNT');
+  if (!Number.isFinite(contrib) || contrib <= 0 ||
+      !Number.isFinite(pay) || pay <= 0) {
+    throw createAppError('SACCOS_WELFARE_SCHEME_AMOUNT');
+  }
 
   const client = await pool.connect();
   try {
@@ -124,44 +127,90 @@ async function listSchemes(actorId, saccosId) {
 }
 
 /** ACTIVE member joins a scheme by contributing (once per scheme, WLC-*). */
-async function contribute(actorId, saccosId, { schemeId, amount }) {
+async function contribute(
+  actorId,
+  saccosId,
+  {
+    schemeId,
+    amount,
+    client: callerClient = null,
+    reference = null,
+  }
+) {
   const membership = await requireActiveMember(actorId, saccosId);
   const scheme = await fetchScheme(saccosId, schemeId);
   if (scheme.status !== 'ACTIVE') throw createAppError('SACCOS_WELFARE_SCHEME_ARCHIVED');
-  const value = round2(Number(amount));
-  if (!(value > 0)) throw createAppError('SACCOS_WELFARE_CONTRIBUTION_LOW');
-  if (value < Number(scheme.contribution)) throw createAppError('SACCOS_WELFARE_CONTRIBUTION_LOW');
 
-  const ref = newRef('WLC');
-  const client = await pool.connect();
+  const rawValue = Number(amount);
+  if (!Number.isFinite(rawValue) || rawValue <= 0) {
+    throw createAppError('SACCOS_WELFARE_CONTRIBUTION_LOW');
+  }
+  const value = round2(rawValue);
+  if (!Number.isFinite(value) || value <= 0) {
+    throw createAppError('SACCOS_WELFARE_CONTRIBUTION_LOW');
+  }
+  if (value < Number(scheme.contribution)) {
+    throw createAppError('SACCOS_WELFARE_CONTRIBUTION_LOW');
+  }
+
+  const ref = reference || newRef('WLC');
+  const client = callerClient || await pool.connect();
+  const ownsTransaction = !callerClient;
+
   try {
-    await client.query('BEGIN');
+    if (ownsTransaction) await client.query('BEGIN');
+
     await ensureFundAccount(client, saccosId);
+
     const dup = await client.query(
       'SELECT id FROM saccos_welfare_contributions WHERE scheme_id = $1 AND member_id = $2 FOR UPDATE',
       [schemeId, membership.id]
     );
     if (dup.rows.length) throw createAppError('SACCOS_WELFARE_ALREADY_JOINED');
-    const wallet = await client.query('SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE', [actorId]);
-    if (Number(wallet.rows[0].wallet_balance) < value) throw createAppError('WALLET_INSUFFICIENT_FUNDS');
+
+    const wallet = await client.query(
+      'SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE',
+      [actorId]
+    );
+    if (!wallet.rows.length || Number(wallet.rows[0].wallet_balance) < value) {
+      throw createAppError('WALLET_INSUFFICIENT_FUNDS');
+    }
+
     await fin.debitWallet({
-      client, userId: actorId, amount: value, reference: ref,
+      client,
+      userId: actorId,
+      amount: value,
+      reference: ref,
       toAccount: welfareFundCode(saccosId),
-      description: `Mchango ustawi SACCOS #${saccosId}`, actor: 'saccos:welfare:contribute',
+      description: `Mchango ustawi SACCOS #${saccosId}`,
+      actor: 'saccos:welfare:contribute',
     });
+
     await client.query(
-      `INSERT INTO saccos_welfare_contributions (saccos_id, scheme_id, member_id, reference_id, amount)
+      `INSERT INTO saccos_welfare_contributions
+         (saccos_id, scheme_id, member_id, reference_id, amount)
        VALUES ($1, $2, $3, $4, $5)`,
       [saccosId, schemeId, membership.id, ref, value]
     );
-    await client.query('COMMIT');
-    await logAudit(actorId, 'SACCOS_WELFARE_CONTRIBUTION', { referenceId: saccosId, details: { schemeId, amount: value, reference: ref } }).catch(() => {});
-    return { reference: ref, schemeId, amount: value, contributed: true };
+
+    if (ownsTransaction) await client.query('COMMIT');
+
+    await logAudit(actorId, 'SACCOS_WELFARE_CONTRIBUTION', {
+      referenceId: saccosId,
+      details: { schemeId, amount: value, reference: ref },
+    }).catch(() => {});
+
+    return {
+      reference: ref,
+      schemeId,
+      amount: value,
+      contributed: true,
+    };
   } catch (e) {
-    await client.query('ROLLBACK').catch(() => {});
+    if (ownsTransaction) await client.query('ROLLBACK').catch(() => {});
     throw e;
   } finally {
-    client.release();
+    if (ownsTransaction) client.release();
   }
 }
 
@@ -170,11 +219,18 @@ async function submitClaim(actorId, saccosId, { schemeId, event, details, amount
   const membership = await requireActiveMember(actorId, saccosId);
   const scheme = await fetchScheme(saccosId, schemeId);
   if (scheme.status !== 'ACTIVE') throw createAppError('SACCOS_WELFARE_SCHEME_ARCHIVED');
-  const value = round2(Number(amount));
+  const rawValue = Number(amount);
+  const payout = Number(scheme.payout);
   const cleanEvent = (event || '').trim();
-  if (!cleanEvent) throw createAppError('SACCOS_WELFARE_CLAIM_AMOUNT');
-  if (!(value > 0)) throw createAppError('SACCOS_WELFARE_CLAIM_AMOUNT');
-  if (value > Number(scheme.payout)) throw createAppError('SACCOS_WELFARE_CLAIM_AMOUNT');
+  if (!cleanEvent ||
+      !Number.isFinite(rawValue) || rawValue <= 0 ||
+      !Number.isFinite(payout) || payout <= 0) {
+    throw createAppError('SACCOS_WELFARE_CLAIM_AMOUNT');
+  }
+  const value = round2(rawValue);
+  if (!Number.isFinite(value) || value <= 0 || value > payout) {
+    throw createAppError('SACCOS_WELFARE_CLAIM_AMOUNT');
+  }
   const joined = await pool.query('SELECT 1 FROM saccos_welfare_contributions WHERE scheme_id = $1 AND member_id = $2', [schemeId, membership.id]);
   if (!joined.rows.length) throw createAppError('SACCOS_WELFARE_SCHEME_ARCHIVED');
   const active = await pool.query(

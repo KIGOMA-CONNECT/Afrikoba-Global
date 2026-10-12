@@ -23,12 +23,15 @@ const { logAudit } = require('./auditService');
 const saccosCore = require('./saccosService');
 const savings = require('./saccosSavingsService');
 const funds = require('./saccosFundsService');
-const welfare = require('./saccosWelfareService');
 const credit = require('./saccosCreditService');
+const welfare = require('./saccosWelfareService');
 
-const VALID_TYPES = ['SAVINGS_DEPOSIT', 'FUND_CONTRIBUTION', 'WELFARE_CONTRIBUTION', 'LOAN_REPAYMENT'];
-const round2 = (n) => Math.round(Number(n) * 100) / 100;
-
+const VALID_TYPES = [
+  'SAVINGS_DEPOSIT',
+  'FUND_CONTRIBUTION',
+  'WELFARE_CONTRIBUTION',
+  'LOAN_REPAYMENT',
+];
 function newRef(prefix) {
   return prefix + '-' + crypto.randomBytes(5).toString('hex').toUpperCase();
 }
@@ -132,117 +135,269 @@ async function deactivateOrder(actorId, saccosId, orderId) {
   if (order.status !== 'ACTIVE') throw createAppError('SACCOS_STANDING_ORDER_STATE');
   if (order.member_id !== membership.id && !governing) throw createAppError('SACCOS_RBAC');
   const r = await pool.query(
-    `UPDATE saccos_standing_orders SET status = 'DEACTIVATED', deactivated_at = NOW() WHERE id = $1 RETURNING *`,
-    [orderId]
+    `UPDATE saccos_standing_orders
+        SET status = 'DEACTIVATED', deactivated_at = NOW()
+      WHERE id = $1 AND saccos_id = $2 AND status = 'ACTIVE'
+      RETURNING *`,
+    [orderId, saccosId]
   );
+  if (!r.rows.length) throw createAppError('SACCOS_STANDING_ORDER_STATE');
+
   await logAudit(actorId, 'SACCOS_STANDING_ORDER_DEACTIVATED', {
     referenceId: saccosId, details: { orderId, reference: order.reference_id },
   }).catch(() => {});
   return { ...r.rows[0], amount: Number(r.rows[0].amount) };
 }
 
-/** Execute one standing order against its live target flow. Throws on failure. */
-async function executeOrder(client, order) {
+/**
+ * Deterministic reference for one standing-order occurrence.
+ *
+ * The occurrence date is supplied by PostgreSQL CURRENT_DATE so the
+ * idempotency key follows the database/business date rather than the
+ * Node.js process timezone.
+ */
+function occurrenceReference(order, occurrenceDate) {
+  return `SOR-${order.id}-${String(occurrenceDate).replace(/-/g, '')}`;
+}
+
+/** Execute one standing order against its live target flow using the caller's transaction. */
+async function executeOrder(client, order, reference) {
   const member = await client.query(
-    'SELECT user_id FROM saccos_members WHERE id = $1', [order.member_id]
+    'SELECT user_id FROM saccos_members WHERE id = $1 FOR UPDATE',
+    [order.member_id]
   );
   if (!member.rows.length) throw new Error('member not found');
+
   const userId = member.rows[0].user_id;
+  const amount = Number(order.amount);
 
   if (order.target_type === 'SAVINGS_DEPOSIT') {
-    return savings.deposit(userId, order.saccos_id, { amount: Number(order.amount) });
+    const result = await savings.deposit(userId, order.saccos_id, {
+      amount,
+      client,
+      reference,
+    });
+    return { userId, result };
   }
+
   if (order.target_type === 'FUND_CONTRIBUTION') {
-    return funds.contributeFund(userId, order.saccos_id, order.target_id, Number(order.amount));
+    const result = await funds.contributeFund(
+      userId,
+      order.saccos_id,
+      order.target_id,
+      amount,
+      { client, reference }
+    );
+    return { userId, result };
   }
+
   if (order.target_type === 'WELFARE_CONTRIBUTION') {
-    return welfare.contribute(userId, order.saccos_id, { schemeId: order.target_id, amount: Number(order.amount) });
+    const result = await welfare.contribute(
+      userId,
+      order.saccos_id,
+      {
+        schemeId: order.target_id,
+        amount,
+        client,
+        reference,
+      }
+    );
+    return { userId, result };
   }
+
   if (order.target_type === 'LOAN_REPAYMENT') {
-    return credit.repayLoan(userId, order.saccos_id, order.target_id, { amount: Number(order.amount) });
+    const result = await credit.repayLoan(
+      userId,
+      order.saccos_id,
+      order.target_id,
+      { amount, client, reference }
+    );
+    return { userId, result };
   }
-  throw new Error('unknown target type');
+
+  throw createAppError('SACCOS_STANDING_ORDER_TYPE');
 }
 
 /** Advance the schedule one month on the order's day-of-month. */
 function nextRunDate(order) {
-  const ref = order.next_run_at ? new Date(order.next_run_at) : new Date();
-  const d = new Date(ref.getFullYear(), ref.getMonth() + 1, Math.min(Number(order.day_of_month) || 1, 28));
+  if (order.next_run_at) {
+    const ref = new Date(order.next_run_at);
+    const d = new Date(
+      ref.getUTCFullYear(),
+      ref.getUTCMonth() + 1,
+      Math.min(Number(order.day_of_month) || 1, 28)
+    );
+    return d.toISOString().slice(0, 10);
+  }
+
+  const now = new Date();
+  const d = new Date(
+    now.getUTCFullYear(),
+    now.getUTCMonth() + 1,
+    Math.min(Number(order.day_of_month) || 1, 28)
+  );
   return d.toISOString().slice(0, 10);
 }
 
-/** Book a run result on an order row (inside the caller's transaction). */
-async function recordRun(client, order, outcome, errorMessage) {
-  if (outcome === 'SUCCESS') {
-    await client.query(
-      `UPDATE saccos_standing_orders
-          SET total_runs = total_runs + 1, success_runs = success_runs + 1,
-              fail_runs = 0, last_error = NULL, last_run_at = NOW(), next_run_at = $2
-        WHERE id = $1`,
-      [order.id, nextRunDate(order)]
-    );
-  } else {
-    const failRuns = Number(order.fail_runs) + 1;
-    const deactivate = failRuns >= 3;
-    await client.query(
-      `UPDATE saccos_standing_orders
-          SET total_runs = total_runs + 1, fail_runs = $2, last_error = $3,
-              last_run_at = NOW(), status = CASE WHEN $4 THEN 'DEACTIVATED' ELSE status END,
-              deactivated_at = CASE WHEN $4 THEN NOW() ELSE deactivated_at END
-        WHERE id = $1`,
-      [order.id, failRuns, String(errorMessage).slice(0, 300), deactivate]
-    );
+/** Book a successful run on an order row inside the caller's transaction. */
+async function recordSuccess(client, order) {
+  const r = await client.query(
+    `UPDATE saccos_standing_orders
+        SET total_runs = total_runs + 1,
+            success_runs = success_runs + 1,
+            fail_runs = 0,
+            last_error = NULL,
+            last_run_at = NOW(),
+            next_run_at = $2
+      WHERE id = $1
+        AND status = 'ACTIVE'
+      RETURNING *`,
+    [order.id, nextRunDate(order)]
+  );
+
+  if (!r.rows.length) {
+    throw createAppError('SACCOS_STANDING_ORDER_STATE');
   }
+
+  return r.rows[0];
 }
 
-/** Run all due orders for one SACCOS. Returns executed/succeeded/failed counts. */
-async function runDueForSaccos(saccosId) {
-  const due = await pool.query(
-    `SELECT * FROM saccos_standing_orders
-      WHERE saccos_id = $1 AND status = 'ACTIVE'
-        AND (next_run_at IS NULL OR next_run_at <= CURRENT_DATE)
-      ORDER BY id`,
-    [saccosId]
+/**
+ * Book a failed run after the financial savepoint has been rolled back.
+ *
+ * The row is already locked by the outer transaction, and fail_runs is
+ * incremented in SQL rather than calculated from the stale SELECT value.
+ */
+async function recordFailure(client, order, errorMessage) {
+  const r = await client.query(
+    `UPDATE saccos_standing_orders
+        SET total_runs = total_runs + 1,
+            fail_runs = fail_runs + 1,
+            last_error = $2,
+            last_run_at = NOW(),
+            status = CASE
+              WHEN fail_runs + 1 >= 3 THEN 'DEACTIVATED'
+              ELSE status
+            END,
+            deactivated_at = CASE
+              WHEN fail_runs + 1 >= 3 THEN NOW()
+              ELSE deactivated_at
+            END
+      WHERE id = $1
+      RETURNING *`,
+    [order.id, String(errorMessage || 'Standing order failed').slice(0, 300)]
   );
+
+  if (!r.rows.length) {
+    throw createAppError('SACCOS_STANDING_ORDER_NOT_FOUND');
+  }
+
+  return r.rows[0];
+}
+
+/**
+ * Claim and execute due orders one at a time.
+ *
+ * FOR UPDATE SKIP LOCKED makes concurrent cron/manual runners safe:
+ * a second worker skips an order already claimed by another transaction.
+ *
+ * The financial operation runs behind a SAVEPOINT. If it fails, only the
+ * financial work is rolled back; the outer transaction remains alive so the
+ * failure counter and retry/deactivation state can be committed atomically.
+ */
+async function runDueForSaccos(saccosId) {
   let executed = 0;
   let succeeded = 0;
   let failed = 0;
-  for (const order of due.rows) {
+  const processedIds = new Set();
+
+  while (true) {
     const client = await pool.connect();
+    let order = null;
+    let outcome = null;
+    let errorMessage = null;
+
     try {
       await client.query('BEGIN');
-      await executeOrder(client, order);
-      await recordRun(client, order, 'SUCCESS');
-      await logAudit(order.member_id, 'SACCOS_STANDING_ORDER_RUN', {
-        referenceId: saccosId,
-        details: { orderId: order.id, reference: order.reference_id, targetType: order.target_type, amount: Number(order.amount), outcome: 'SUCCESS' },
-      }).catch(() => {});
+
+      const due = await client.query(
+        `SELECT *, CURRENT_DATE::text AS occurrence_date
+           FROM saccos_standing_orders
+          WHERE saccos_id = $1
+            AND status = 'ACTIVE'
+            AND (next_run_at IS NULL OR next_run_at <= CURRENT_DATE)
+            AND NOT (id = ANY($2::int[]))
+          ORDER BY id
+          FOR UPDATE SKIP LOCKED
+          LIMIT 1`,
+        [saccosId, Array.from(processedIds)]
+      );
+
+      if (!due.rows.length) {
+        await client.query('COMMIT');
+        break;
+      }
+
+      order = due.rows[0];
+      processedIds.add(order.id);
+      const reference = occurrenceReference(order, order.occurrence_date);
+
+      await client.query('SAVEPOINT standing_order_execution');
+
+      let execution = null;
+
+      try {
+        execution = await executeOrder(client, order, reference);
+        await client.query('RELEASE SAVEPOINT standing_order_execution');
+
+        await recordSuccess(client, order);
+
+        outcome = 'SUCCESS';
+        executed += 1;
+        succeeded += 1;
+      } catch (e) {
+        errorMessage = String(e && e.message ? e.message : e).slice(0, 300);
+
+        await client.query(
+          'ROLLBACK TO SAVEPOINT standing_order_execution'
+        );
+
+        await recordFailure(client, order, errorMessage);
+
+        outcome = 'FAILURE';
+        executed += 1;
+        failed += 1;
+      }
+
       await client.query('COMMIT');
-      executed += 1;
-      succeeded += 1;
+
+      await logAudit(execution?.userId || null, 'SACCOS_STANDING_ORDER_RUN', {
+        referenceId: saccosId,
+        details: {
+          orderId: order.id,
+          reference: order.reference_id,
+          occurrenceReference: reference,
+          targetType: order.target_type,
+          amount: Number(order.amount),
+          outcome,
+          error: errorMessage,
+        },
+      }).catch(() => {});
     } catch (e) {
       await client.query('ROLLBACK').catch(() => {});
-      failed += 1;
-      executed += 1;
-      const client2 = await pool.connect();
-      try {
-        await client2.query('BEGIN');
-        await recordRun(client2, order, 'FAILURE', e.message);
-        await logAudit(order.member_id, 'SACCOS_STANDING_ORDER_RUN', {
-          referenceId: saccosId,
-          details: { orderId: order.id, reference: order.reference_id, targetType: order.target_type, outcome: 'FAILURE', error: String(e.message).slice(0, 300) },
-        }).catch(() => {});
-        await client2.query('COMMIT');
-      } catch (e2) {
-        await client2.query('ROLLBACK').catch(() => {});
-      } finally {
-        client2.release();
-      }
+
+      /*
+       * A database/control-plane failure is not counted as a financial
+       * standing-order failure because recordFailure() itself may not have
+       * committed. Surface it to the caller rather than fabricating state.
+       */
+      throw e;
     } finally {
       client.release();
     }
   }
-  return { saccosId, due: due.rows.length, executed, succeeded, failed };
+
+  return { saccosId, executed, succeeded, failed };
 }
 
 /** API trigger: run all due standing orders for an entity (OWNER/BOARD only). */

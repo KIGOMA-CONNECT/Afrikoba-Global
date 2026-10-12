@@ -917,7 +917,16 @@ async function contributeSocialFund(groupId, userId, month) {
 }
 
 async function requestSocialFundDisbursement(groupId, userId, { reasonType, reasonDetail, requestedAmount }) {
-  const amount = parseFloat(requestedAmount);
+  const rawAmount = requestedAmount;
+  const amountText = typeof rawAmount === 'string' ? rawAmount.trim() : '';
+  const amount = typeof rawAmount === 'number'
+    ? rawAmount
+    : (amountText !== '' && /^(?:\d+(?:\.\d*)?|\.\d+)$/.test(amountText)
+      ? Number(amountText)
+      : NaN);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    throw Object.assign(new Error('Kiasi cha ombi lazima kiwe chanya na halali.'), { statusCode: 400 });
+  }
   const fundRes = await pool.query('SELECT * FROM vicoba_social_fund WHERE group_id = $1', [groupId]);
   if (fundRes.rows.length === 0) {
     throw Object.assign(new Error('Familia ya kijamii haipo.'), { statusCode: 404 });
@@ -961,8 +970,13 @@ async function approveSocialFundDisbursement(actorUserId, requestId, approvedAmo
       throw Object.assign(new Error('Mwenyekiti au Mwekahazina pekee anaweza kuthibitisha.'), { statusCode: 403 });
     }
 
-    const finalAmount = approvedAmount || request.requested_amount;
-    if (finalAmount > request.requested_amount) {
+    const finalAmount = approvedAmount == null
+      ? Number(request.requested_amount)
+      : Number(approvedAmount);
+    if (!Number.isFinite(finalAmount) || finalAmount <= 0) {
+      throw Object.assign(new Error('Kiasi kilichoidhinishwa lazima kiwe chanya na halali.'), { statusCode: 400 });
+    }
+    if (finalAmount > Number(request.requested_amount)) {
       throw Object.assign(new Error('Kiasi kilichoidhinishwa hakizidi kilichoombwa.'), { statusCode: 400 });
     }
     if (finalAmount > request.total_balance) {
@@ -976,7 +990,7 @@ async function approveSocialFundDisbursement(actorUserId, requestId, approvedAmo
       [finalAmount, actorUserId, requestId]
     );
     const referenceId = generateReference('SD');
-    await fin.groupToWallet({ client, userId: request.requester_id, groupId: request.fund_id, groupAccount: 'VICOBA_GROUP', groupSql: 'UPDATE vicoba_social_fund SET total_balance = total_balance - $1, total_disbursed = total_disbursed + $1 WHERE id = $2', amount: finalAmount, reference: `${referenceId}:GW`, description: 'VICOBA Social Fund Disbursement', productType: 'VICOBA', productRef: String(request.fund_id) });
+    await fin.groupToWallet({ client, userId: request.requester_id, groupId: request.fund_id, groupAccount: 'VICOBA_GROUP', groupSql: 'UPDATE vicoba_social_fund SET total_balance = total_balance - $1, total_disbursed = total_disbursed + $1 WHERE id = $2 AND total_balance >= $1', amount: finalAmount, reference: `${referenceId}:GW`, description: 'VICOBA Social Fund Disbursement', productType: 'VICOBA', productRef: String(request.fund_id) });
 
     await client.query(
       `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
@@ -1443,7 +1457,7 @@ async function approveWithdrawal(actorUserId, withdrawalId, { approved, note }) 
 
     await fin.groupToWallet({
       client, userId: cur.user_id, groupId: cur.group_id, groupAccount: 'VICOBA_GROUP',
-      groupSql: 'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance - $1 WHERE id = $2',
+      groupSql: 'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance - $1 WHERE id = $2 AND group_wallet_balance >= $1',
       amount: Number(cur.amount), reference: `${cur.reference_id}:GW`, description: 'VICOBA Group Withdrawal',
       productType: 'VICOBA', productRef: String(cur.group_id),
     });

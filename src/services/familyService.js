@@ -9,6 +9,34 @@ const logger = require('../utils/logger');
 const fin = require('../services/financialEngine');
 
 // ====================================================================
+// Validate currency amounts stored in NUMERIC(15,2) balances.
+function parseCurrencyAmount(amount) {
+  const invalid = () => Object.assign(
+    new Error('Kiasi si sahihi. Tumia kiasi chanya chenye hadi desimali mbili.'),
+    { statusCode: 400 }
+  );
+
+  if (
+    typeof amount === 'boolean' ||
+    amount === null ||
+    amount === undefined
+  ) {
+    throw invalid();
+  }
+
+  if (typeof amount === 'string') {
+    const value = amount.trim();
+    if (!/^(?:\d+)(?:\.\d{1,2})?$/.test(value)) throw invalid();
+  } else if (typeof amount !== 'number' || !Number.isFinite(amount)) {
+    throw invalid();
+  }
+
+  const amountNum = Number(amount);
+  if (!Number.isFinite(amountNum) || amountNum <= 0) throw invalid();
+
+  return amountNum;
+}
+
 // G1: FAMILY / SHARED WALLETS
 // ====================================================================
 
@@ -77,7 +105,7 @@ async function getFamilyWallet(walletId, userId) {
 
 async function familyContribute(walletId, userId, amount) {
   const amountNum = Number(amount);
-  if (!amountNum || amountNum <= 0) throw Object.assign(new Error('Kiasi si sahihi.'), { statusCode: 400 });
+  if (!Number.isFinite(amountNum) || amountNum <= 0) throw Object.assign(new Error('Kiasi si sahihi.'), { statusCode: 400 });
   const member = await pool.query("SELECT * FROM family_wallet_members WHERE wallet_id = $1 AND user_id = $2 AND status = 'ACTIVE'", [walletId, userId]);
   if (!member.rows.length) throw Object.assign(new Error('Sio mwanachama hai.'), { statusCode: 403 });
   const client = await pool.connect();
@@ -98,7 +126,7 @@ async function familyContribute(walletId, userId, amount) {
 
 async function familySpend(walletId, userId, amount, description) {
   const amountNum = Number(amount);
-  if (!amountNum || amountNum <= 0) throw Object.assign(new Error('Kiasi si sahihi.'), { statusCode: 400 });
+  if (!Number.isFinite(amountNum) || amountNum <= 0) throw Object.assign(new Error('Kiasi si sahihi.'), { statusCode: 400 });
   const member = await pool.query("SELECT * FROM family_wallet_members WHERE wallet_id = $1 AND user_id = $2 AND status = 'ACTIVE'", [walletId, userId]);
   if (!member.rows.length) throw Object.assign(new Error('Sio mwanachama hai.'), { statusCode: 403 });
   if (!member.rows[0].can_spend) throw Object.assign(new Error('Huna ruhusa ya kutumia.'), { statusCode: 403 });
@@ -136,27 +164,74 @@ async function familySpend(walletId, userId, amount, description) {
 
 async function familyTransfer(walletId, userId, toPhone, amount) {
   const amountNum = Number(amount);
-  if (!amountNum || amountNum <= 0) throw Object.assign(new Error('Kiasi si sahihi.'), { statusCode: 400 });
-  const member = await pool.query("SELECT * FROM family_wallet_members WHERE wallet_id = $1 AND user_id = $2 AND status = 'ACTIVE'", [walletId, userId]);
+  if (!Number.isFinite(amountNum) || amountNum <= 0) throw Object.assign(new Error('Kiasi si sahihi.'), { statusCode: 400 });
+
+  const member = await pool.query(
+    "SELECT * FROM family_wallet_members WHERE wallet_id = $1 AND user_id = $2 AND status = 'ACTIVE'",
+    [walletId, userId]
+  );
   if (!member.rows.length) throw Object.assign(new Error('Sio mwanachama hai.'), { statusCode: 403 });
   if (!member.rows[0].can_spend) throw Object.assign(new Error('Huna ruhusa ya kutuma.'), { statusCode: 403 });
-  const w = await pool.query('SELECT balance FROM family_wallets WHERE id = $1 FOR UPDATE', [walletId]);
-  if (Number(w.rows[0].balance) < amountNum) throw Object.assign(new Error('Salio la familia halitoshi.'), { statusCode: 400 });
+
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const to = await client.query('SELECT id, wallet_balance, full_name, phone_number FROM users WHERE phone_number = $1 FOR UPDATE', [toPhone.trim()]);
+
+    const w = await client.query(
+      'SELECT balance FROM family_wallets WHERE id = $1 FOR UPDATE',
+      [walletId]
+    );
+    if (!w.rows.length) throw Object.assign(new Error('Familia Wallet haipatikani.'), { statusCode: 404 });
+    if (Number(w.rows[0].balance) < amountNum) {
+      throw Object.assign(new Error('Salio la familia halitoshi.'), { statusCode: 400 });
+    }
+
+    const to = await client.query(
+      'SELECT id, wallet_balance, full_name, phone_number FROM users WHERE phone_number = $1 FOR UPDATE',
+      [toPhone.trim()]
+    );
     if (!to.rows.length) throw Object.assign(new Error('Mpokeaji hajapatikana.'), { statusCode: 404 });
+
     const ftRef = generateReference('FT');
-    await fin.groupToWallet({ client, userId: to.rows[0].id, groupId: walletId, groupAccount: 'FAMILY_WALLET', groupSql: 'UPDATE family_wallets SET balance = balance - $1 WHERE id = $2', amount: amountNum, reference: ftRef, description: `Tuma kwa ${toPhone}`, productType: 'FAMILY', productRef: String(walletId) });
+
+    await fin.groupToWallet({
+      client,
+      userId: to.rows[0].id,
+      groupId: walletId,
+      groupAccount: 'FAMILY_WALLET',
+      groupSql: 'UPDATE family_wallets SET balance = balance - $1 WHERE id = $2 AND balance >= $1',
+      amount: amountNum,
+      reference: ftRef,
+      description: `Tuma kwa ${toPhone}`,
+      productType: 'FAMILY',
+      productRef: String(walletId)
+    });
+
     await client.query(
-      `INSERT INTO family_wallet_transactions (wallet_id, actor_user_id, counterparty_user_id, amount, type, description) VALUES ($1,$2,$3,$4,'TRANSFER_OUT',$5)`,
+      `INSERT INTO family_wallet_transactions
+       (wallet_id, actor_user_id, counterparty_user_id, amount, type, description)
+       VALUES ($1,$2,$3,$4,'TRANSFER_OUT',$5)`,
       [walletId, userId, to.rows[0].id, amountNum, `Tuma kwa ${toPhone}`]
     );
+
     await client.query('COMMIT');
-    await sendSMS(to.rows[0].phone_number, `Umepokea TZS ${formatMoney(amountNum)} kutoka Familia Wallet.`).catch(() => {});
-    return { success: true, amount: amountNum, message: 'Fedha zimetumwa kutoka Familia Wallet.' };
-  } finally { client.release(); }
+
+    await sendSMS(
+      to.rows[0].phone_number,
+      `Umepokea TZS ${formatMoney(amountNum)} kutoka Familia Wallet.`
+    ).catch(() => {});
+
+    return {
+      success: true,
+      amount: amountNum,
+      message: 'Fedha zimetumwa kutoka Familia Wallet.'
+    };
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 async function removeMember(walletId, ownerId, memberUserId) {
@@ -177,15 +252,24 @@ async function getBalances(userId) {
 }
 
 async function topUpCurrency(userId, currency, amount) {
-  const amountNum = Number(amount);
-  if (!amountNum || amountNum <= 0) throw Object.assign(new Error('Kiasi si sahihi.'), { statusCode: 400 });
-  const rate = await getFxRate(currency);
-  const tzsCost = amountNum * Number(rate);
+  const amountNum = parseCurrencyAmount(amount);
+  const rate = Number(await getFxRate(currency));
+  if (!Number.isFinite(rate) || rate <= 0) {
+    throw Object.assign(new Error('Kiwango cha ubadilishaji si sahihi.'), { statusCode: 400 });
+  }
+  const tzsCost = Number((amountNum * rate).toFixed(2));
+  if (!Number.isFinite(tzsCost) || tzsCost <= 0) {
+    throw Object.assign(new Error('Gharama ya ubadilishaji si sahihi.'), { statusCode: 400 });
+  }
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     const u = await client.query('SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE', [userId]);
-    if (Number(u.rows[0].wallet_balance) < tzsCost) throw Object.assign(new Error(`Salio la TZS halitoshi (unahitaji ${formatMoney(tzsCost)}).`), { statusCode: 400 });
+    const tzsBalance = Number(u.rows[0]?.wallet_balance);
+    if (!Number.isFinite(tzsBalance) || tzsBalance < 0) {
+      throw Object.assign(new Error('Salio la TZS si sahihi.'), { statusCode: 400 });
+    }
+    if (tzsBalance < tzsCost) throw Object.assign(new Error(`Salio la TZS halitoshi (unahitaji ${formatMoney(tzsCost)}).`), { statusCode: 400 });
     const ctRef = generateReference('CT');
     await fin.debitWallet({ client, userId, amount: tzsCost, reference: ctRef, toAccount: 'PLATFORM_FEES', description: 'Currency top-up' });
     await client.query(
@@ -211,16 +295,26 @@ async function getFxRate(currency) {
 }
 
 async function convertCurrency(userId, from, to, amount) {
-  const amountNum = Number(amount);
-  if (!amountNum || amountNum <= 0) throw Object.assign(new Error('Kiasi si sahihi.'), { statusCode: 400 });
+  const amountNum = parseCurrencyAmount(amount);
   const rateData = await currencyService.getExchangeRate(from, to);
   if (!rateData) throw Object.assign(new Error('Kiwango cha ubadilishaji hakipatikani.'), { statusCode: 400 });
-  const converted = amountNum * rateData.rate;
+  const rateNum = Number(rateData.rate);
+  if (!Number.isFinite(rateNum) || rateNum <= 0) {
+    throw Object.assign(new Error('Kiwango cha ubadilishaji si sahihi.'), { statusCode: 400 });
+  }
+  const converted = Number((amountNum * rateNum).toFixed(2));
+  if (!Number.isFinite(converted) || converted <= 0) {
+    throw Object.assign(new Error('Kiasi kilichobadilishwa si sahihi.'), { statusCode: 400 });
+  }
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     const b = await client.query('SELECT balance FROM user_balances WHERE user_id = $1 AND currency_code = $2 FOR UPDATE', [userId, from]);
-    if (!b.rows.length || Number(b.rows[0].balance) < amountNum) throw Object.assign(new Error(`Salio la ${from} halitoshi.`), { statusCode: 400 });
+    const fromBalance = Number(b.rows[0]?.balance);
+    if (!Number.isFinite(fromBalance) || fromBalance < 0) {
+      throw Object.assign(new Error(`Salio la ${from} si sahihi.`), { statusCode: 400 });
+    }
+    if (fromBalance < amountNum) throw Object.assign(new Error(`Salio la ${from} halitoshi.`), { statusCode: 400 });
     await client.query('UPDATE user_balances SET balance = balance - $1 WHERE user_id = $2 AND currency_code = $3', [amountNum, userId, from]);
     await client.query(
       `INSERT INTO user_balances (user_id, currency_code, balance) VALUES ($1,$2,$3)
@@ -230,7 +324,7 @@ async function convertCurrency(userId, from, to, amount) {
     await client.query(
       `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, currency_code, fx_rate, fx_base_currency, status, type, meta)
        VALUES ($1, $2, $3, 0, $3, $4, $5, $6, 'SUCCESS', 'CURRENCY_CONVERT', $7)`,
-      [generateReference(), userId, amountNum, from, rateData.rate, 'TZS', JSON.stringify({ to, converted: Number(converted.toFixed(2)), rateSource: rateData.source })]
+      [generateReference(), userId, amountNum, from, rateNum, 'TZS', JSON.stringify({ to, converted, rateSource: rateData.source })]
     );
     await client.query('COMMIT');
     return { success: true, from, to, converted: Number(converted.toFixed(2)), message: `Imebadilishwa kuwa ${converted.toFixed(2)} ${to}.` };
@@ -241,13 +335,16 @@ async function convertCurrency(userId, from, to, amount) {
 }
 
 async function transferForeign(userId, toPhone, currency, amount) {
-  const amountNum = Number(amount);
-  if (!amountNum || amountNum <= 0) throw Object.assign(new Error('Kiasi si sahihi.'), { statusCode: 400 });
+  const amountNum = parseCurrencyAmount(amount);
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     const b = await client.query('SELECT balance FROM user_balances WHERE user_id = $1 AND currency_code = $2 FOR UPDATE', [userId, currency]);
-    if (!b.rows.length || Number(b.rows[0].balance) < amountNum) throw Object.assign(new Error(`Salio la ${currency} halitoshi.`), { statusCode: 400 });
+    const sourceBalance = Number(b.rows[0]?.balance);
+    if (!Number.isFinite(sourceBalance) || sourceBalance < 0) {
+      throw Object.assign(new Error(`Salio la ${currency} si sahihi.`), { statusCode: 400 });
+    }
+    if (sourceBalance < amountNum) throw Object.assign(new Error(`Salio la ${currency} halitoshi.`), { statusCode: 400 });
     const to = await client.query('SELECT id FROM users WHERE phone_number = $1', [toPhone.trim()]);
     if (!to.rows.length) throw Object.assign(new Error('Mpokeaji hajapatikana.'), { statusCode: 404 });
     await client.query('UPDATE user_balances SET balance = balance - $1 WHERE user_id = $2 AND currency_code = $3', [amountNum, userId, currency]);

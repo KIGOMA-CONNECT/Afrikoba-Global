@@ -138,6 +138,10 @@ const ERROR_CODES = {
   SACCOS_SAVINGS_INSUFFICIENT:    { status: 400, message: 'Akiba haitoshi kwa uondoaji huu.' },
   SACCOS_SAVINGS_WITHDRAWAL_NOT_FOUND: { status: 404, message: 'Ombi la uondoaji halijapatikana.' },
   SACCOS_SAVINGS_DECIDED:         { status: 400, message: 'Ombi hili la uondoaji tayari limeamuliwa.' },
+  SACCOS_SAVINGS_REFERENCE_CONFLICT: {
+    status: 409,
+    message: 'Reference ya amana tayari inatumika kwa muamala tofauti.',
+  },
 
   // SACCOS credit (400/403/404)
   SACCOS_LOAN_AMOUNT_INVALID:      { status: 400, message: 'Kiasi cha mkopo hakikubaliki.' },
@@ -154,6 +158,10 @@ const ERROR_CODES = {
   SACCOS_LOAN_NOT_DISBURSABLE:     { status: 400, message: 'Mkopo huu hauwezi kutolewa (haliko PENDING).' },
   SACCOS_LOAN_ALREADY_CLOSED:      { status: 400, message: 'Mkopo huu tayari umekamilika.' },
   SACCOS_LOAN_REPAY_EXCEEDS:       { status: 400, message: 'Kiasi cha rejesho kinazidi deni lililobaki.' },
+  SACCOS_LOAN_REPAYMENT_REFERENCE_CONFLICT: {
+    status: 409,
+    message: 'Reference ya rejesho tayari inatumika kwa muamala tofauti.',
+  },
 
   // SACCOS loan installments (400/404)
   SACCOS_LOAN_INSTALLMENT_NOT_FOUND: { status: 404, message: 'Awamu ya malipo haijapatikana.' },
@@ -264,6 +272,10 @@ const ERROR_CODES = {
   SACCOS_FUND_SAME:          { status: 400, message: 'Huwezi kuhamisha hazina kwenda yenyewe.' },
   SACCOS_FUND_AMOUNT:        { status: 400, message: 'Kiasi cha hazina lazima kiwe chanya.' },
   SACCOS_FUND_TARGET:        { status: 400, message: 'Kiasi cha lengo lazima kiwe kisicho hasi.' },
+  SACCOS_FUND_REFERENCE_CONFLICT: {
+    status: 409,
+    message: 'Reference ya mchango tayari inatumika kwa muamala tofauti.',
+  },
 
   // SACCOS loan-loss reserves (400/404)
   SACCOS_LLR_NOT_FOUND:      { status: 404, message: 'Utoaji wa akiba ya mkopo haujapatikana.' },

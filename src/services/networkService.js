@@ -7,6 +7,26 @@ const { logAudit } = require('./auditService');
 const logger = require('../utils/logger');
 const fin = require('../services/financialEngine');
 
+const MAX_AGENT_BALANCE = 9999999999999.99;
+
+function validateAgentAmount(amount) {
+  const raw = typeof amount === 'string' ? amount.trim() : String(amount);
+  const amountNum = Number(raw);
+
+  if (
+    !raw ||
+    !Number.isFinite(amountNum) ||
+    amountNum <= 0 ||
+    amountNum > MAX_AGENT_BALANCE ||
+    !/^\d+(?:\.\d{1,2})?$/.test(raw)
+  ) {
+    throw Object.assign(new Error('Kiasi si sahihi.'), { statusCode: 400 });
+  }
+
+  return amountNum;
+}
+
+
 // ====================================================================
 // F1: AGENT NETWORK (cash-in / cash-out agents)
 // ====================================================================
@@ -67,115 +87,358 @@ async function verifyAgent(agentId, adminId) {
 }
 
 async function agentCashIn(agentId, customerPhone, amount) {
-  const amountNum = Number(amount);
-  if (!amountNum || amountNum <= 0) throw Object.assign(new Error('Kiasi si sahihi.'), { statusCode: 400 });
-  const agentRes = await pool.query('SELECT * FROM agents WHERE id = $1 FOR UPDATE', [agentId]);
-  if (!agentRes.rows.length) throw Object.assign(new Error('Wakala hajapatikana.'), { statusCode: 404 });
-  const agent = agentRes.rows[0];
-  if (agent.status !== 'ACTIVE') throw Object.assign(new Error('Wakala haipo active.'), { statusCode: 400 });
-  if (Number(agent.balance) < amountNum) throw Object.assign(new Error('Wakala hana fedha za kutosha (float).'), { statusCode: 400 });
+  const amountNum = validateAgentAmount(amount);
 
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const custRes = await client.query('SELECT id, wallet_balance, full_name, phone_number FROM users WHERE phone_number = $1 FOR UPDATE', [customerPhone.trim()]);
+
+    const agentRes = await client.query(
+      'SELECT * FROM agents WHERE id = $1 FOR UPDATE',
+      [agentId]
+    );
+    if (!agentRes.rows.length) throw Object.assign(new Error('Wakala hajapatikana.'), { statusCode: 404 });
+    const agent = agentRes.rows[0];
+    if (agent.status !== 'ACTIVE') throw Object.assign(new Error('Wakala haipo active.'), { statusCode: 400 });
+    if (Number(agent.balance) < amountNum) throw Object.assign(new Error('Wakala hana fedha za kutosha (float).'), { statusCode: 400 });
+
+    const custRes = await client.query(
+      'SELECT id, wallet_balance, full_name, phone_number FROM users WHERE phone_number = $1 FOR UPDATE',
+      [customerPhone.trim()]
+    );
     if (!custRes.rows.length) throw Object.assign(new Error('Mteja hajapatikana.'), { statusCode: 404 });
     const cust = custRes.rows[0];
+
     const commission = (amountNum * Number(agent.commission_rate)) / 100;
     const reference = generateReference('CI');
+
     await client.query(
       `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
        VALUES ($1,$2,$3,0,$3,'SUCCESS','CASH_IN', $4)`,
       [reference, cust.id, amountNum, JSON.stringify({ agent_id: agentId, agent_code: agent.agent_code })]
     );
-    await fin.creditWallet({ client, userId: cust.id, amount: amountNum, reference, fromAccount: 'AGENT_BALANCE', description: 'Agent cash-in' });
-    await client.query('UPDATE agents SET balance = balance - $1 WHERE id = $2', [amountNum, agent.id]);
+
+    await fin.creditWallet({
+      client,
+      userId: cust.id,
+      amount: amountNum,
+      reference,
+      fromAccount: 'AGENT_BALANCE',
+      description: 'Agent cash-in'
+    });
+
+    const balanceUpdate = await client.query(
+      `UPDATE agents
+       SET balance = balance - $1
+       WHERE id = $2 AND balance >= $1
+       RETURNING balance`,
+      [amountNum, agent.id]
+    );
+    if (!balanceUpdate.rows.length) {
+      throw Object.assign(new Error('Wakala hana fedha za kutosha (float).'), { statusCode: 400 });
+    }
+
     await client.query(
       `INSERT INTO agent_transactions (agent_id, customer_phone, type, amount, commission, reference, status)
        VALUES ($1,$2,'CASH_IN',$3,$4,$5,'SUCCESS')`,
       [agentId, customerPhone, amountNum, commission, reference]
     );
+
     await client.query('COMMIT');
-    await sendSMS(cust.phone_number, `Umepokea TZS ${formatMoney(amountNum)} kwenye Pochi yako kupitia wakala ${agent.business_name}. Ref: ${reference}`).catch(() => {});
-    return { success: true, reference, amount: amountNum, commission, new_customer_balance: Number(cust.wallet_balance) + amountNum };
-  } finally { client.release(); }
+
+    await sendSMS(
+      cust.phone_number,
+      `Umepokea TZS ${formatMoney(amountNum)} kwenye Pochi yako kupitia wakala ${agent.business_name}. Ref: ${reference}`
+    ).catch(() => {});
+
+    return {
+      success: true,
+      reference,
+      amount: amountNum,
+      commission,
+      new_customer_balance: Number(cust.wallet_balance) + amountNum
+    };
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
 }
 
 async function agentCashOut(agentId, customerPhone, amount) {
-  const amountNum = Number(amount);
-  if (!amountNum || amountNum <= 0) throw Object.assign(new Error('Kiasi si sahihi.'), { statusCode: 400 });
-  const agentRes = await pool.query('SELECT * FROM agents WHERE id = $1 FOR UPDATE', [agentId]);
-  if (!agentRes.rows.length) throw Object.assign(new Error('Wakala hajapatikana.'), { statusCode: 404 });
-  const agent = agentRes.rows[0];
-  if (agent.status !== 'ACTIVE') throw Object.assign(new Error('Wakala haipo active.'), { statusCode: 400 });
+  const amountNum = validateAgentAmount(amount);
 
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const custRes = await client.query('SELECT id, wallet_balance, full_name, phone_number FROM users WHERE phone_number = $1 FOR UPDATE', [customerPhone.trim()]);
+
+    const agentRes = await client.query(
+      'SELECT * FROM agents WHERE id = $1 FOR UPDATE',
+      [agentId]
+    );
+    if (!agentRes.rows.length) throw Object.assign(new Error('Wakala hajapatikana.'), { statusCode: 404 });
+    const agent = agentRes.rows[0];
+    if (agent.status !== 'ACTIVE') throw Object.assign(new Error('Wakala haipo active.'), { statusCode: 400 });
+
+    const custRes = await client.query(
+      'SELECT id, wallet_balance, full_name, phone_number FROM users WHERE phone_number = $1 FOR UPDATE',
+      [customerPhone.trim()]
+    );
     if (!custRes.rows.length) throw Object.assign(new Error('Mteja hajapatikana.'), { statusCode: 404 });
     const cust = custRes.rows[0];
     if (Number(cust.wallet_balance) < amountNum) throw Object.assign(new Error('Salio la mteja halitoshi.'), { statusCode: 400 });
+
     const commission = (amountNum * Number(agent.commission_rate)) / 100;
     const reference = generateReference('CO');
+
     await client.query(
       `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
        VALUES ($1,$2,$3,0,$3,'SUCCESS','CASH_OUT', $4)`,
       [reference, cust.id, amountNum, JSON.stringify({ agent_id: agentId, agent_code: agent.agent_code })]
     );
-    await fin.debitWallet({ client, userId: cust.id, amount: amountNum, reference, toAccount: 'AGENT_BALANCE', description: 'Agent cash-out' });
-    await client.query('UPDATE agents SET balance = balance + $1 WHERE id = $2', [amountNum, agent.id]);
+
+    await fin.debitWallet({
+      client,
+      userId: cust.id,
+      amount: amountNum,
+      reference,
+      toAccount: 'AGENT_BALANCE',
+      description: 'Agent cash-out'
+    });
+
+    const agentBalanceUpdate = await client.query(
+      `UPDATE agents
+       SET balance = balance + $1::numeric
+       WHERE id = $2
+         AND balance <= $3::numeric - $1::numeric
+       RETURNING balance`,
+      [amountNum, agent.id, '9999999999999.99']
+    );
+    if (!agentBalanceUpdate.rows.length) {
+      throw Object.assign(
+        new Error('Salio la wakala limezidi kikomo kinachoruhusiwa.'),
+        { statusCode: 400 }
+      );
+    }
+
     await client.query(
       `INSERT INTO agent_transactions (agent_id, customer_phone, type, amount, commission, reference, status)
        VALUES ($1,$2,'CASH_OUT',$3,$4,$5,'SUCCESS')`,
       [agentId, customerPhone, amountNum, commission, reference]
     );
+
     await client.query('COMMIT');
-    await sendSMS(cust.phone_number, `Umetoa TZS ${formatMoney(amountNum)} kutoka Pochi yako kupitia wakala ${agent.business_name}. Ref: ${reference}`).catch(() => {});
-    return { success: true, reference, amount: amountNum, commission, new_customer_balance: Number(cust.wallet_balance) - amountNum };
-  } finally { client.release(); }
+
+    await sendSMS(
+      cust.phone_number,
+      `Umetoa TZS ${formatMoney(amountNum)} kutoka Pochi yako kupitia wakala ${agent.business_name}. Ref: ${reference}`
+    ).catch(() => {});
+
+    return {
+      success: true,
+      reference,
+      amount: amountNum,
+      commission,
+      new_customer_balance: Number(cust.wallet_balance) - amountNum
+    };
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
 }
 
-async function agentSettlement(agentId, amount, type) {
-  const amountNum = Number(amount);
-  if (!amountNum || amountNum <= 0) throw Object.assign(new Error('Kiasi si sahihi.'), { statusCode: 400 });
-  if (!['DEPOSIT', 'WITHDRAWAL'].includes(type)) throw Object.assign(new Error('Aina ya settlement si sahihi.'), { statusCode: 400 });
+async function agentSettlement(agentId, amount, type, requesterId) {
+  const amountNum = validateAgentAmount(amount);
+  if (!['DEPOSIT', 'WITHDRAWAL'].includes(type)) {
+    throw Object.assign(new Error('Aina ya settlement si sahihi.'), { statusCode: 400 });
+  }
+  const requester = Number(requesterId);
+  if (!Number.isSafeInteger(requester) || requester <= 0) {
+    throw Object.assign(new Error('Mtumiaji aliyeanzisha ombi hajathibitishwa.'), { statusCode: 400 });
+  }
+
   const reference = generateReference('AS');
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    if (type === 'DEPOSIT') {
-      await client.query('UPDATE agents SET balance = balance + $1 WHERE id = $2', [amountNum, agentId]);
+
+    const agent = await client.query(
+      'SELECT id FROM agents WHERE id = $1 FOR UPDATE',
+      [agentId]
+    );
+    if (!agent.rows.length) {
+      throw Object.assign(new Error('Wakala hajapatikana.'), { statusCode: 404 });
+    }
+
+    const settlement = await client.query(
+      `INSERT INTO agent_settlements (agent_id, amount, type, reference, status)
+       VALUES ($1,$2,$3,$4,'PENDING') RETURNING id`,
+      [agentId, amountNum, type, reference]
+    );
+    const settlementId = settlement.rows[0].id;
+
+    // The settlement row and Four-Eyes request are committed atomically.
+    // No balance mutation or journal entry occurs in this maker step.
+    const { request } = await require('./fourEyesService').initiateRequest({
+      actionCode: 'AGENT_SETTLEMENT',
+      requesterId: requester,
+      payload: {
+        settlementId,
+        agentId: Number(agentId),
+        amount: amountNum,
+        type,
+        reference
+      },
+      client
+    });
+
+    await client.query('COMMIT');
+    return {
+      success: true,
+      reference,
+      status: 'PENDING',
+      fourEyesRequestId: request.id
+    };
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+async function executeAgentSettlement(payload, approverId) {
+  const settlementId = Number(payload && payload.settlementId);
+  const reference = String(payload && payload.reference || '');
+  if (!Number.isSafeInteger(settlementId) || settlementId <= 0 || !reference) {
+    throw Object.assign(new Error('Taarifa za settlement hazijakamilika.'), { statusCode: 400 });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const result = await client.query(
+      `SELECT id, agent_id, amount, type, reference, status
+         FROM agent_settlements
+        WHERE id = $1
+        FOR UPDATE`,
+      [settlementId]
+    );
+    if (!result.rows.length) {
+      throw Object.assign(new Error('Ombi la settlement halijapatikana.'), { statusCode: 404 });
+    }
+
+    const settlement = result.rows[0];
+    if (settlement.reference !== reference ||
+        Number(settlement.agent_id) !== Number(payload.agentId) ||
+        String(settlement.type) !== String(payload.type) ||
+        Number(settlement.amount) !== Number(payload.amount)) {
+      throw Object.assign(new Error('Taarifa za ombi hazilingani na rekodi ya settlement.'), { statusCode: 409 });
+    }
+
+    // Four-Eyes retry after a successful financial commit must be harmless.
+    if (settlement.status === 'SETTLED') {
+      await client.query('COMMIT');
+      return { success: true, reference, status: 'SETTLED', duplicate: true };
+    }
+    if (settlement.status !== 'PENDING') {
+      throw Object.assign(new Error('Settlement hii haiwezi kutekelezwa katika hali yake ya sasa.'), { statusCode: 409 });
+    }
+
+    const amountNum = validateAgentAmount(settlement.amount);
+    const operationReference = `${reference}:STL`;
+    const claim = await fin.claimOperation({
+      client,
+      operationType: `AGENT_SETTLEMENT_${settlement.type}`,
+      reference: operationReference,
+      userId: Number(approverId),
+      amount: amountNum
+    });
+    if (!claim.claimed) {
+      throw Object.assign(new Error('Settlement ina financial operation iliyokwisha daiwa; inahitaji ukaguzi.'), { statusCode: 409 });
+    }
+
+    let balanceUpdate;
+    if (settlement.type === 'DEPOSIT') {
+      balanceUpdate = await client.query(
+        `UPDATE agents
+            SET balance = balance + $1::numeric
+          WHERE id = $2
+            AND balance <= $3::numeric - $1::numeric
+          RETURNING id`,
+        [amountNum, settlement.agent_id, '9999999999999.99']
+      );
+      if (!balanceUpdate.rows.length) {
+        throw Object.assign(new Error('Salio la wakala limezidi kikomo kinachoruhusiwa au wakala hajapatikana.'), { statusCode: 400 });
+      }
+
       await fin.postJournal({
         client,
         lines: [
           { accountCode: 'MNO_CLEARING', direction: 'DR', amount: amountNum },
           { accountCode: 'AGENT_BALANCE', direction: 'CR', amount: amountNum }
         ],
-        referenceId: `${reference}:STL`,
-        description: 'Agent settlement DEPOSIT'
+        referenceId: operationReference,
+        description: 'Approved agent settlement DEPOSIT'
       });
-    } else {
-      const a = await client.query('SELECT balance FROM agents WHERE id = $1 FOR UPDATE', [agentId]);
-      if (Number(a.rows[0].balance) < amountNum) throw Object.assign(new Error('Wakala hana balance ya kutosha.'), { statusCode: 400 });
-      await client.query('UPDATE agents SET balance = balance - $1 WHERE id = $2', [amountNum, agentId]);
+    } else if (settlement.type === 'WITHDRAWAL') {
+      balanceUpdate = await client.query(
+        `UPDATE agents
+            SET balance = balance - $1::numeric
+          WHERE id = $2
+            AND balance >= $1::numeric
+          RETURNING id`,
+        [amountNum, settlement.agent_id]
+      );
+      if (!balanceUpdate.rows.length) {
+        throw Object.assign(new Error('Wakala hana balance ya kutosha au hajapatikana.'), { statusCode: 400 });
+      }
+
       await fin.postJournal({
         client,
         lines: [
           { accountCode: 'AGENT_BALANCE', direction: 'DR', amount: amountNum },
           { accountCode: 'MNO_CLEARING', direction: 'CR', amount: amountNum }
         ],
-        referenceId: `${reference}:STL`,
-        description: 'Agent settlement WITHDRAWAL'
+        referenceId: operationReference,
+        description: 'Approved agent settlement WITHDRAWAL'
       });
+    } else {
+      throw Object.assign(new Error('Aina ya settlement si sahihi.'), { statusCode: 400 });
     }
-    await client.query(
-      `INSERT INTO agent_settlements (agent_id, amount, type, reference, status) VALUES ($1,$2,$3,$4,'PENDING') RETURNING *`,
-      [agentId, amountNum, type, reference]
+
+    const finalized = await fin.setOperationState({
+      client,
+      reference: operationReference,
+      status: 'SUCCESS'
+    });
+    if (!finalized.transitioned) {
+      throw new Error('Financial operation haikuweza kufungwa kwa SUCCESS.');
+    }
+
+    const updated = await client.query(
+      `UPDATE agent_settlements
+          SET status = 'SETTLED', settled_by = $2, settled_at = NOW()
+        WHERE id = $1 AND status = 'PENDING'
+        RETURNING id`,
+      [settlementId, approverId]
     );
+    if (!updated.rows.length) {
+      throw Object.assign(new Error('Settlement status imebadilika; transaction imekataliwa.'), { statusCode: 409 });
+    }
+
     await client.query('COMMIT');
-    return { success: true, reference };
-  } finally { client.release(); }
+    return { success: true, reference, status: 'SETTLED', duplicate: false };
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
 }
 
 async function agentDashboard(agentId) {
@@ -994,7 +1257,7 @@ async function getReferralStats(userId) {
 }
 
 module.exports = {
-  applyAgent, listAgents, getAgentByUser, getNearbyAgents, verifyAgent, agentCashIn, agentCashOut, agentSettlement, agentDashboard,
+  applyAgent, listAgents, getAgentByUser, getNearbyAgents, verifyAgent, agentCashIn, agentCashOut, agentSettlement, executeAgentSettlement, agentDashboard,
   createBulkBatch, getBulkBatch, processBulkBatch, listUserBatches,
   createScheduledPayment, listScheduledPayments, cancelScheduledPayment, processDueScheduledPayments,
   listCorridors, quoteRemittance, listQuotes, sendRemittance, pickupRemittance, cancelRemittance, expireStaleRemittances, getRemittanceHistory,

@@ -14,9 +14,9 @@ const replicaConfig = (() => {
   return {
     host,
     port: parseInt(process.env.DB_REPLICA_PORT || process.env.DB_PORT || '5432', 10),
-    user: process.env.DB_REPLICA_USER || process.env.DB_USER || 'postgres',
+    user: process.env.DB_REPLICA_USER || process.env.DB_USER || '',
     password: process.env.DB_REPLICA_PASSWORD || process.env.DB_PASSWORD || '',
-    database: process.env.DB_REPLICA_NAME || process.env.DB_NAME || 'afrikoba_global',
+    database: process.env.DB_REPLICA_NAME || process.env.DB_NAME || '',
     max: parseFloat(process.env.DB_REPLICA_MAX || '10'),
     idleTimeoutMillis: 30000,
     connectionTimeoutMillis: 3000,
@@ -24,6 +24,9 @@ const replicaConfig = (() => {
   };
 })();
 
+if (replicaConfig && (!replicaConfig.user || !replicaConfig.password || !replicaConfig.database)) {
+  throw new Error('Read replica requires explicit DB replica/user, password and database configuration.');
+}
 const replicaPool = replicaConfig ? new Pool(replicaConfig) : null;
 if (replicaPool) {
   replicaPool.on('error', () => {});

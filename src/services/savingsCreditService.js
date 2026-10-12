@@ -46,7 +46,7 @@ async function createSavingsGoal(userId, data) {
   const { name, target_amount, deadline, icon } = data;
   const target = Number(target_amount);
   if (!name) throw badge('Jina la lengo ni lazima.', 400);
-  if (!target || target <= 0) throw badge('Kikomo (target) ni lazima kiwe chanya.', 400);
+  if (!Number.isFinite(target) || target <= 0) throw badge('Kikomo (target) ni lazima kiwe chanya.', 400);
   const res = await pool.query(
     `INSERT INTO savings_goals (user_id, name, target_amount, deadline, icon)
      VALUES ($1,$2,$3,$4,$5) RETURNING *`,
@@ -67,30 +67,70 @@ async function listGoals(userId) {
 
 async function contributeGoal(userId, goalId, amount) {
   const amountNum = Number(amount);
-  if (!amountNum || amountNum <= 0) throw badge('Kiasi si sahihi.', 400);
-  const goal = await pool.query("SELECT * FROM savings_goals WHERE id = $1 AND user_id = $2 AND status = 'ACTIVE'", [goalId, userId]);
-  if (!goal.rows.length) throw badge('Lengo haipatikani au imekamilika.', 404);
-  const g = goal.rows[0];
+  if (!Number.isFinite(amountNum) || amountNum <= 0) throw badge('Kiasi si sahihi.', 400);
+
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    await fin.debitWallet({ client, userId, amount: amountNum, reference: generateReference('SCGOAL'), toAccount: 'SUSPENSE', description: 'Savings goal contribution' });
+
+    const goal = await client.query(
+      `SELECT *
+       FROM savings_goals
+       WHERE id = $1 AND user_id = $2 AND status = 'ACTIVE'
+       FOR UPDATE`,
+      [goalId, userId]
+    );
+    if (!goal.rows.length) throw badge('Lengo haipatikani au imekamilika.', 404);
+
+    const g = goal.rows[0];
+
+    await fin.debitWallet({
+      client,
+      userId,
+      amount: amountNum,
+      reference: generateReference('SCGOAL'),
+      toAccount: 'SUSPENSE',
+      description: 'Savings goal contribution'
+    });
+
     const newAmount = round2(Number(g.current_amount) + amountNum);
     const completed = newAmount >= Number(g.target_amount);
-    await client.query(
+
+    const updated = await client.query(
       `UPDATE savings_goals
-       SET current_amount = $1, status = CASE WHEN $2 THEN 'COMPLETED' ELSE status END,
-           is_completed = $2, completed_at = CASE WHEN $2 THEN NOW() ELSE completed_at END, updated_at = NOW()
-       WHERE id = $3`,
-      [newAmount, completed, goalId]
+       SET current_amount = $1,
+           status = CASE WHEN $2 THEN 'COMPLETED' ELSE status END,
+           is_completed = $2,
+           completed_at = CASE WHEN $2 THEN NOW() ELSE completed_at END,
+           updated_at = NOW()
+       WHERE id = $3 AND user_id = $4 AND status = 'ACTIVE'
+       RETURNING current_amount, status, is_completed`,
+      [newAmount, completed, goalId, userId]
     );
-    await logTx(client, userId, amountNum, 'SAVINGS_DEPOSIT', { feature: 'savings_goal', goal_id: goalId });
+
+    if (updated.rowCount !== 1) {
+      throw new Error('Savings goal imebadilika wakati wa contribution.');
+    }
+
+    await logTx(client, userId, amountNum, 'SAVINGS_DEPOSIT', {
+      feature: 'savings_goal',
+      goal_id: goalId
+    });
+
     await client.query('COMMIT');
-    return { success: true, goal_id: goalId, current_amount: newAmount, completed };
+
+    return {
+      success: true,
+      goal_id: goalId,
+      current_amount: Number(updated.rows[0].current_amount),
+      completed: updated.rows[0].is_completed
+    };
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
     throw err;
-  } finally { client.release(); }
+  } finally {
+    client.release();
+  }
 }
 
 // ====================================================================
@@ -101,7 +141,7 @@ async function createAutoSaveRule(userId, goalId, data) {
   const { frequency, amount } = data;
   const amountNum = Number(amount);
   if (!['DAILY', 'WEEKLY', 'MONTHLY'].includes(frequency)) throw badge('frequency isiyo sahihi.', 400);
-  if (!amountNum || amountNum <= 0) throw badge('Kiasi si sahihi.', 400);
+  if (!Number.isFinite(amountNum) || amountNum <= 0) throw badge('Kiasi si sahihi.', 400);
   const goal = await pool.query("SELECT id FROM savings_goals WHERE id = $1 AND user_id = $2 AND status = 'ACTIVE'", [goalId, userId]);
   if (!goal.rows.length) throw badge('Lengo haipatikani au imekamilika.', 404);
   const res = await pool.query(
@@ -113,45 +153,129 @@ async function createAutoSaveRule(userId, goalId, data) {
 }
 
 async function runAutoSave(userId) {
-  const rules = await pool.query(
-    `SELECT r.*, g.name, g.target_amount, g.current_amount
-     FROM auto_save_rules r JOIN savings_goals g ON g.id = r.goal_id
-     WHERE r.user_id = $1 AND r.is_active = TRUE AND g.status = 'ACTIVE' AND r.next_run_at <= NOW()`,
-    [userId]
-  );
-  if (!rules.rows.length) return { ran: 0, total: 0, skipped: 0, message: 'Hakuna auto-save iliyopo.' };
   const client = await pool.connect();
   let total = 0;
   let skipped = 0;
+  let ran = 0;
+
   try {
     await client.query('BEGIN');
-    for (const rule of rules.rows) {
+
+    const rules = await client.query(
+      `SELECT r.id
+       FROM auto_save_rules r
+       JOIN savings_goals g ON g.id = r.goal_id
+       WHERE r.user_id = $1
+         AND r.is_active = TRUE
+         AND g.status = 'ACTIVE'
+         AND r.next_run_at <= NOW()
+       ORDER BY r.id
+       FOR UPDATE OF r`,
+      [userId]
+    );
+
+    if (!rules.rows.length) {
+      await client.query('COMMIT');
+      return {
+        ran: 0,
+        total: 0,
+        skipped: 0,
+        message: 'Hakuna auto-save iliyopo.'
+      };
+    }
+
+    for (const candidate of rules.rows) {
+      const ruleRes = await client.query(
+        `SELECT r.*, g.name, g.target_amount, g.current_amount, g.status AS goal_status
+         FROM auto_save_rules r
+         JOIN savings_goals g ON g.id = r.goal_id
+         WHERE r.id = $1
+           AND r.user_id = $2
+           AND r.is_active = TRUE
+           AND r.next_run_at <= NOW()
+         FOR UPDATE OF r, g`,
+        [candidate.id, userId]
+      );
+
+      if (!ruleRes.rows.length) {
+        skipped += 1;
+        continue;
+      }
+
+      const rule = ruleRes.rows[0];
       const amountNum = Number(rule.amount);
-      const u = await client.query('SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE', [userId]);
-      if (Number(u.rows[0].wallet_balance) < amountNum) { skipped += 1; continue; }
-      await fin.debitWallet({ client, userId, amount: amountNum, reference: generateReference('SCAUTO'), toAccount: 'SUSPENSE', description: 'Auto-save contribution' });
+
+      const u = await client.query(
+        'SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE',
+        [userId]
+      );
+
+      if (!u.rows.length || Number(u.rows[0].wallet_balance) < amountNum) {
+        skipped += 1;
+        continue;
+      }
+
+      await fin.debitWallet({
+        client,
+        userId,
+        amount: amountNum,
+        reference: generateReference('SCAUTO'),
+        toAccount: 'SUSPENSE',
+        description: 'Auto-save contribution'
+      });
+
       const newAmount = round2(Number(rule.current_amount) + amountNum);
       const completed = newAmount >= Number(rule.target_amount);
-      await client.query(
+
+      const goalUpdate = await client.query(
         `UPDATE savings_goals
-         SET current_amount = $1, status = CASE WHEN $2 THEN 'COMPLETED' ELSE status END,
-             is_completed = $2, completed_at = CASE WHEN $2 THEN NOW() ELSE completed_at END, updated_at = NOW()
-         WHERE id = $3`,
-        [newAmount, completed, rule.goal_id]
+         SET current_amount = $1,
+             status = CASE WHEN $2 THEN 'COMPLETED' ELSE status END,
+             is_completed = $2,
+             completed_at = CASE WHEN $2 THEN NOW() ELSE completed_at END,
+             updated_at = NOW()
+         WHERE id = $3 AND user_id = $4 AND status = 'ACTIVE'
+         RETURNING current_amount`,
+        [newAmount, completed, rule.goal_id, userId]
       );
+
+      if (goalUpdate.rowCount !== 1) {
+        throw new Error('Savings goal imebadilika wakati wa auto-save.');
+      }
+
       await client.query(
-        `UPDATE auto_save_rules SET next_run_at = NOW() + ${intervalFor(rule.frequency)}, run_count = run_count + 1, updated_at = NOW() WHERE id = $1`,
+        `UPDATE auto_save_rules
+         SET next_run_at = NOW() + ${intervalFor(rule.frequency)},
+             run_count = run_count + 1,
+             updated_at = NOW()
+         WHERE id = $1 AND is_active = TRUE`,
         [rule.id]
       );
-      await logTx(client, userId, amountNum, 'SAVINGS_DEPOSIT', { feature: 'auto_save', rule_id: rule.id, goal_id: rule.goal_id });
+
+      await logTx(client, userId, amountNum, 'SAVINGS_DEPOSIT', {
+        feature: 'auto_save',
+        rule_id: rule.id,
+        goal_id: rule.goal_id
+      });
+
       total += amountNum;
+      ran += 1;
     }
+
     await client.query('COMMIT');
-    return { ran: rules.rows.length - skipped, total: round2(total), skipped, message: `Auto-save imetekelezwa (${formatMoney(total)}).` };
+
+    return {
+      ran,
+      total: round2(total),
+      skipped,
+      message: `Auto-save imetekelezwa (${formatMoney(total)}).`
+    };
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
     throw err;
-  } finally { client.release(); }
+  } finally {
+    client.release();
+  }
 }
 
 // ====================================================================
@@ -162,7 +286,7 @@ async function createFixedDeposit(userId, data) {
   const { amount, term_months } = data;
   const amountNum = Number(amount);
   const term = parseInt(term_months, 10);
-  if (!amountNum || amountNum <= 0) throw badge('Kiasi si sahihi.', 400);
+  if (!Number.isFinite(amountNum) || amountNum <= 0) throw badge('Kiasi si sahihi.', 400);
   if (!term || term < 1 || term > 24) throw badge('Muda (miezi) ni kati ya 1 na 24.', 400);
   const annualRate = Number(data.annual_rate) > 0 ? Number(data.annual_rate) : 10.0;
   const maturity = new Date();
@@ -345,7 +469,7 @@ async function applyMicroLoan(userId, data) {
   const { amount, term_months, interest_rate } = data;
   const amountNum = Number(amount);
   const term = parseInt(term_months, 10);
-  if (!amountNum || amountNum <= 0) throw badge('Kiasi si sahihi.', 400);
+  if (!Number.isFinite(amountNum) || amountNum <= 0) throw badge('Kiasi si sahihi.', 400);
   if (!term || term < 1 || term > 24) throw badge('Muda (miezi) ni kati ya 1 na 24.', 400);
   const { enforceHighValueKyc } = require('./kycDocumentService');
   const config = require('../config');

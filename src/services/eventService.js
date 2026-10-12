@@ -675,7 +675,7 @@ async function requestEventWithdrawal(actorId, eventId, { amount, mode, toUserId
   const modeUp = String(mode || 'FUNDRAISING').toUpperCase();
   if (!VALID_MODES.includes(modeUp)) throw badge('Njia ya uondoaji haijulikani.', 400);
   const amountN = Number(amount);
-  if (!(amountN > 0)) throw badge('Kiasi cha uondoaji ni lazima kiwe chanya.', 400);
+  if (!Number.isFinite(amountN) || amountN <= 0) throw badge('Kiasi cha uondoaji ni lazima kiwe chanya na halali.', 400);
   const recipient = toUserId != null ? Number(toUserId) : actorId;
 
   const poolCol = modeUp === 'SAVINGS' ? 'savings_amount' : 'collected_amount';
@@ -777,7 +777,7 @@ async function executeEventWithdrawal({ eventId, withdrawalId, mode, amount, use
       userId: toUserId,
       groupId: eventId,
       groupAccount: modeUp === 'SAVINGS' ? 'EVENT_SAVINGS' : 'EVENT_POOL',
-      groupSql: `UPDATE social_events SET ${col} = ${col} - $1 WHERE id = $2`,
+      groupSql: `UPDATE social_events SET ${col} = ${col} - $1 WHERE id = $2 AND ${col} >= $1`,
       amount: amountN,
       reference,
       description: `Uondoaji wa ${modeUp} kutoka tukio #${eventId}`,
