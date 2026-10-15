@@ -531,6 +531,18 @@ async function approveTransfer(approverUserId, transferId, { approved, note }) {
         await sendSMS(recipient.rows[0].phone_number, `Habari ${recipient.rows[0].full_name}, umepokea TSh ${formatMoney(transfer.amount)} kutoka kikundi.`);
       }
     } else {
+      const debitedGroup = await client.query(
+        'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance - $1 WHERE id = $2 AND group_wallet_balance >= $1',
+        [transfer.amount, transfer.group_id]
+      );
+
+      if (debitedGroup.rowCount !== 1) {
+        throw Object.assign(
+          new Error('Salio la kikundi halitoshi au source account haipo.'),
+          { statusCode: 400 }
+        );
+      }
+
       await fin.postJournal({
         client,
         lines: [
@@ -540,10 +552,6 @@ async function approveTransfer(approverUserId, transferId, { approved, note }) {
         referenceId: `${transfer.reference_id}:GW`,
         description: 'VICOBA Fund Transfer (external)',
       });
-      await client.query(
-        'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance - $1 WHERE id = $2',
-        [transfer.amount, transfer.group_id]
-      );
     }
 
     await client.query(

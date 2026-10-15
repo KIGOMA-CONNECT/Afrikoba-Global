@@ -108,8 +108,8 @@ console.log('PASS event and VICOBA withdrawal amount and balance guards');
 
 assert.equal(
   mkobaService.split('group_wallet_balance = group_wallet_balance - $1 WHERE id = $2 AND group_wallet_balance >= $1').length - 1,
-  2,
-  'both MKOBA debit paths must guard available balance'
+  3,
+  'all MKOBA debit paths must guard available balance (3 guarded paths)'
 );
 console.log('PASS both MKOBA debit balance guards');
 

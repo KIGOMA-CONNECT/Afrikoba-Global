@@ -121,7 +121,12 @@ async function familyContribute(walletId, userId, amount) {
     );
     await client.query('COMMIT');
     return { success: true, amount: amountNum, message: 'Umependekeza kwenye Familia Wallet.' };
-  } finally { client.release(); }
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 async function familySpend(walletId, userId, amount, description) {
@@ -137,8 +142,19 @@ async function familySpend(walletId, userId, amount, description) {
   try {
     await client.query('BEGIN');
     const w = await client.query('SELECT balance FROM family_wallets WHERE id = $1 FOR UPDATE', [walletId]);
-    if (Number(w.rows[0].balance) < amountNum) throw Object.assign(new Error('Salio la familia halitoshi.'), { statusCode: 400 });
-    await client.query('UPDATE family_wallets SET balance = balance - $1 WHERE id = $2', [amountNum, walletId]);
+    if (!w.rows.length) {
+      throw Object.assign(new Error('Familia wallet haipo.'), { statusCode: 404 });
+    }
+    if (Number(w.rows[0].balance) < amountNum) {
+      throw Object.assign(new Error('Salio la familia halitoshi.'), { statusCode: 400 });
+    }
+    const debited = await client.query(
+      'UPDATE family_wallets SET balance = balance - $1 WHERE id = $2 AND balance >= $1',
+      [amountNum, walletId]
+    );
+    if (debited.rowCount !== 1) {
+      throw Object.assign(new Error('Salio la familia halitoshi au wallet haipo.'), { statusCode: 400 });
+    }
     await fin.postJournal({
       client,
       lines: [

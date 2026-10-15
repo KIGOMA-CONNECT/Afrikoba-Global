@@ -38,3 +38,5 @@ server.err
 server.log
 _ci_fail*.log
 _ci_artifacts/
+
+.env.staging

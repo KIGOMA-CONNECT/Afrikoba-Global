@@ -141,7 +141,7 @@ pg.Client.prototype.query = function q(...args) {
 };
 
 
-setInterval(() => {
+const dbPoolStatsInterval = setInterval(() => {
   if (currentPool && typeof currentPool.totalCount !== 'undefined') {
     logger.info('DB_POOL_STATS', 'Current stats', {
       total: currentPool.totalCount,
@@ -151,6 +151,8 @@ setInterval(() => {
     });
   }
 }, 60000);
+
+dbPoolStatsInterval.unref();
 
 function safeRelease(client, origRelease, err) {
   if (!err) {

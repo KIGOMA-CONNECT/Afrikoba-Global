@@ -113,7 +113,15 @@ async function debitToSaccos({ client, userId, amount, reference, toAccounts, de
   const amountN = Number(amount);
   const op = await fin.claimOperation({ client, operationType: 'DEBIT', reference, userId, amount: amountN });
   if (!op.claimed) return { dedup: true, reference };
-  const before = Number((await client.query('SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE', [userId])).rows[0].wallet_balance);
+  const walletRow = await client.query(
+    'SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE',
+    [userId]
+  );
+  if (!walletRow.rows.length) {
+    throw Object.assign(new Error('Mtumiaji hajapatikana.'), { statusCode: 404 });
+  }
+
+  const before = Number(walletRow.rows[0].wallet_balance);
   if (before < amountN) throw createAppError('WALLET_INSUFFICIENT_FUNDS');
   await fin.postJournal({
     client,
@@ -123,7 +131,13 @@ async function debitToSaccos({ client, userId, amount, reference, toAccounts, de
     ],
     referenceId: reference, description, postedBy: actor,
   });
-  await client.query('UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2', [amountN, userId]);
+  const debited = await client.query(
+    'UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2 AND wallet_balance >= $1',
+    [amountN, userId]
+  );
+  if (debited.rowCount !== 1) {
+    throw createAppError('WALLET_INSUFFICIENT_FUNDS');
+  }
   await client.query(
     `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
      VALUES ($1, $2, $3, 0, $3, 'SUCCESS', $4, $5)`,

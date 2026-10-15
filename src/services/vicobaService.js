@@ -327,10 +327,14 @@ async function chargeMaintenanceFee(groupId) {
       referenceId: `MF:${groupId}`,
       description: 'VICOBA Maintenance Fee',
     });
-    await client.query(
-      'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance - $1 WHERE id = $2',
+    const debited = await client.query(
+      'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance - $1 WHERE id = $2 AND group_wallet_balance >= $1',
       [group.monthly_maintenance_fee, groupId]
     );
+
+    if (debited.rowCount !== 1) {
+      throw new Error('Salio la kikundi halitoshi kulipia ada ya huduma.');
+    }
     await client.query(
       `UPDATE company_revenue SET total_maintenance_fees = total_maintenance_fees + $1, updated_at = NOW()
        WHERE id = 1`,
@@ -1470,12 +1474,22 @@ async function approveWithdrawal(actorUserId, withdrawalId, { approved, note }) 
        JSON.stringify({ group_id: cur.group_id, withdrawal_id: withdrawalId, via: 'SIGNATURE_2OF2' })]
     );
 
-    await client.query(
-      `UPDATE vicoba_members SET contribution_balance = contribution_balance - $1,
-         share_capital = GREATEST(0, share_capital - $1)
-       WHERE group_id = $2 AND user_id = $3`,
+    const memberProjection = await client.query(
+      `UPDATE vicoba_members
+       SET contribution_balance = contribution_balance - $1,
+           share_capital = GREATEST(0, share_capital - $1)
+       WHERE group_id = $2
+         AND user_id = $3
+         AND contribution_balance >= $1`,
       [Number(cur.amount), cur.group_id, cur.user_id]
     );
+
+    if (memberProjection.rowCount !== 1) {
+      throw Object.assign(
+        new Error('Salio la mwanachama halitoshi kwa uondoaji huu au rekodi haipo.'),
+        { statusCode: 400 }
+      );
+    }
 
     await client.query(
       `UPDATE vicoba_withdrawals SET status = 'DISBURSED', disbursed_at = NOW() WHERE id = $1`,

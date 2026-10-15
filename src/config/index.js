@@ -31,6 +31,7 @@ const config = {
     },
   },
   azampay: {
+    enabled: process.env.AZAMPAY_ENABLED === 'true',
     appName: process.env.AZAMPAY_APP_NAME,
     clientId: process.env.AZAMPAY_CLIENT_ID,
     clientSecret: process.env.AZAMPAY_CLIENT_SECRET,
@@ -129,8 +130,10 @@ function validateConfig() {
   if (!smsBeemReady && !smsAtReady && !smsTwilioReady) {
     errors.push('Angalau SMS provider MOJA inahitajika kwa OTP: BEEM_API_KEY+BEEM_SECRET_KEY, au Africa\'s Talking (AT_API_KEY+AT_USERNAME), au Twilio (TWILIO_ACCOUNT_SID+TWILIO_AUTH_TOKEN+TWILIO_FROM)');
   }
-  if (!config.azampay.clientId || !config.azampay.clientSecret || config.azampay.env === 'sandbox') {
-    errors.push('AZAMPAY_CLIENT_ID, AZAMPAY_CLIENT_SECRET na AZAMPAY_ENV=production zinahitajika');
+  if (config.azampay.enabled) {
+    if (!config.azampay.clientId || !config.azampay.clientSecret || config.azampay.env !== 'production') {
+      errors.push('AZAMPAY_ENABLED=true inahitaji AZAMPAY_CLIENT_ID, AZAMPAY_CLIENT_SECRET na AZAMPAY_ENV=production');
+    }
   }
   if (!config.security.corsOrigins || config.security.corsOrigins.includes('*')) {
     errors.push('CORS_ORIGINS lazima uwe list halisi ya origins (sio "*")');
