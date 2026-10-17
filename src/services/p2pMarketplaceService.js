@@ -47,7 +47,19 @@ async function createListing(sellerUserId, data) {
       [sellerUserId, investmentId, sharesForSale, pricePerShare]
     );
 
-    await logAudit(sellerUserId, 'P2P_SECONDARY_LISTING_CREATED', `Listed ${sharesForSale} shares at ${pricePerShare}/share`);
+    await logAudit({
+      userId: sellerUserId,
+      eventType: 'P2P_SECONDARY_LISTING_CREATED',
+      entityType: 'P2P_SECONDARY_LISTING',
+      entityId: res.rows[0].id,
+      client,
+      details: {
+        investmentId,
+        projectId: investment.project_id,
+        sharesForSale: Number(sharesForSale),
+        pricePerShare: Number(pricePerShare),
+      },
+    });
     await client.query('COMMIT');
     return res.rows[0];
   } catch (e) {
@@ -75,66 +87,238 @@ async function listListings(filters = {}) {
 
 async function buyListing(buyerUserId, listingId) {
   const client = await pool.connect();
+
   try {
     await client.query('BEGIN');
 
+    // 1. Lock the listing and its seller investment.
     const listingRes = await client.query(
-      `SELECT l.*, i.project_id 
+      `SELECT l.*, i.project_id
        FROM p2p_secondary_listings l
        JOIN investments i ON i.id = l.investment_id
-       WHERE l.id = $1 AND l.status = 'ACTIVE' FOR UPDATE`,
+       WHERE l.id = $1
+         AND l.status = 'ACTIVE'
+       FOR UPDATE`,
       [listingId]
     );
+
     const listing = listingRes.rows[0];
-    if (!listing) throw new Error('Listing not active or found.');
-    if (listing.seller_user_id === buyerUserId) throw new Error('Cannot buy your own listing.');
 
-    const totalCost = Number(listing.shares_for_sale) * Number(listing.price_per_share);
+    if (!listing) {
+      throw new Error('Listing not active or found.');
+    }
 
-    // Verify buyer funds
-    const buyerRes = await client.query('SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE', [buyerUserId]);
-    if (Number(buyerRes.rows[0].wallet_balance) < totalCost) throw new Error('Insufficient wallet balance.');
+    if (Number(listing.seller_user_id) === Number(buyerUserId)) {
+      throw new Error('Cannot buy your own listing.');
+    }
 
-    const ref = generateReference('SEC');
+    const sharesForSale = Number(listing.shares_for_sale);
+    const pricePerShare = Number(listing.price_per_share);
+    const totalCost = sharesForSale * pricePerShare;
 
-    // 1. Financial Transfer
-    await fin.debitWallet({ client, userId: buyerUserId, amount: totalCost, reference: ref, toAccount: 'SUSPENSE', description: `Secondary market buy #${listingId}` });
-    await fin.creditWallet({ client, userId: listing.seller_user_id, amount: totalCost, reference: ref, fromAccount: 'SUSPENSE', description: `Secondary market sell #${listingId}` });
+    if (!Number.isFinite(sharesForSale) || sharesForSale <= 0) {
+      throw new Error('Invalid listing shares.');
+    }
 
-    // 2. Transfer Share Ownership
-    // Reduce seller shares
-    await client.query(
-      `UPDATE investments SET shares_bought = shares_bought - $1, total_amount = total_amount - ($1 * (total_amount/shares_bought))
-       WHERE id = $2`,
-      [listing.shares_for_sale, listing.investment_id]
+    if (!Number.isFinite(pricePerShare) || pricePerShare <= 0) {
+      throw new Error('Invalid listing price.');
+    }
+
+    if (!Number.isFinite(totalCost) || totalCost <= 0) {
+      throw new Error('Invalid listing total cost.');
+    }
+
+    // 2. Lock buyer wallet.
+    const buyerRes = await client.query(
+      `SELECT id, wallet_balance
+       FROM users
+       WHERE id = $1
+       FOR UPDATE`,
+      [buyerUserId]
     );
 
-    // Add/Update buyer shares
+    if (buyerRes.rows.length === 0) {
+      throw new Error('Buyer not found.');
+    }
+
+    const buyerBalance = Number(buyerRes.rows[0].wallet_balance);
+
+    if (!Number.isFinite(buyerBalance) || buyerBalance < totalCost) {
+      throw new Error('Insufficient wallet balance.');
+    }
+
+    /*
+     * 3. Serialize buyer/project investment creation.
+     *
+     * There is intentionally no UNIQUE(project_id, investor_user_id)
+     * constraint on investments. The advisory transaction lock prevents
+     * two concurrent secondary-market purchases for the same buyer/project
+     * from both observing "no existing investment" and inserting duplicates.
+     */
+    await client.query(
+      `SELECT pg_advisory_xact_lock(
+         hashtextextended($1::text, 0)
+       )`,
+      [`P2P-INVESTMENT:${listing.project_id}:${buyerUserId}`]
+    );
+
+    // 4. Lock the buyer's existing investment, if any.
     const existingBuyerInv = await client.query(
-      `SELECT id FROM investments WHERE project_id = $1 AND investor_user_id = $2`,
+      `SELECT id, shares_bought, total_amount, status
+       FROM investments
+       WHERE project_id = $1
+         AND investor_user_id = $2
+       ORDER BY id
+       LIMIT 1
+       FOR UPDATE`,
       [listing.project_id, buyerUserId]
     );
 
+    // 5. Re-lock seller investment explicitly and fail closed on ownership
+    //    and available shares. This makes the settlement invariant explicit.
+    const sellerInvRes = await client.query(
+      `SELECT id, investor_user_id, shares_bought, total_amount
+       FROM investments
+       WHERE id = $1
+       FOR UPDATE`,
+      [listing.investment_id]
+    );
+
+    const sellerInvestment = sellerInvRes.rows[0];
+
+    if (!sellerInvestment) {
+      throw new Error('Seller investment not found.');
+    }
+
+    if (Number(sellerInvestment.investor_user_id) !== Number(listing.seller_user_id)) {
+      throw new Error('Seller investment ownership mismatch.');
+    }
+
+    const sellerShares = Number(sellerInvestment.shares_bought);
+
+    if (!Number.isFinite(sellerShares) || sellerShares < sharesForSale) {
+      throw new Error('Insufficient seller shares.');
+    }
+
+    // 6. Use independent idempotency references for the two financial legs.
+    const settlementRef = generateReference('SEC');
+    const debitRef = `${settlementRef}:DEBIT`;
+    const creditRef = `${settlementRef}:CREDIT`;
+
+    await fin.debitWallet({
+      client,
+      userId: buyerUserId,
+      amount: totalCost,
+      reference: debitRef,
+      toAccount: 'SUSPENSE',
+      description: `Secondary market buy #${listingId}`,
+      productType: 'P2P_SECONDARY',
+      productRef: String(listingId),
+    });
+
+    await fin.creditWallet({
+      client,
+      userId: listing.seller_user_id,
+      amount: totalCost,
+      reference: creditRef,
+      fromAccount: 'SUSPENSE',
+      description: `Secondary market sell #${listingId}`,
+      productType: 'P2P_SECONDARY',
+      productRef: String(listingId),
+    });
+
+    // 7. Reduce seller shares. Fail closed if the invariant changed.
+    const sellerUpdate = await client.query(
+      `UPDATE investments
+       SET shares_bought = shares_bought - $1,
+           total_amount = total_amount - ($1 * (total_amount / shares_bought))
+       WHERE id = $2
+         AND investor_user_id = $3
+         AND shares_bought >= $1`,
+      [sharesForSale, listing.investment_id, listing.seller_user_id]
+    );
+
+    if (sellerUpdate.rowCount !== 1) {
+      throw new Error('Seller investment could not be settled safely.');
+    }
+
+    // 8. Add/update buyer investment.
     if (existingBuyerInv.rows.length > 0) {
+      const buyerInvestment = existingBuyerInv.rows[0];
+
+      if (buyerInvestment.status === 'CLOSED') {
+        throw new Error('Buyer investment is closed.');
+      }
+
       await client.query(
-        `UPDATE investments SET shares_bought = shares_bought + $1, total_amount = total_amount + $2
+        `UPDATE investments
+         SET shares_bought = shares_bought + $1,
+             total_amount = total_amount + $2,
+             status = 'ACTIVE'
          WHERE id = $3`,
-        [listing.shares_for_sale, totalCost, existingBuyerInv.rows[0].id]
+        [sharesForSale, totalCost, buyerInvestment.id]
       );
     } else {
       await client.query(
-        `INSERT INTO investments (project_id, investor_user_id, shares_bought, total_amount, status)
+        `INSERT INTO investments
+           (project_id, investor_user_id, shares_bought, total_amount, status)
          VALUES ($1, $2, $3, $4, 'ACTIVE')`,
-        [listing.project_id, buyerUserId, listing.shares_for_sale, totalCost]
+        [listing.project_id, buyerUserId, sharesForSale, totalCost]
       );
     }
 
-    // 3. Mark Listing SOLD
-    await client.query(`UPDATE p2p_secondary_listings SET status = 'SOLD', updated_at = NOW() WHERE id = $1`, [listingId]);
+    // 9. Mark listing SOLD and verify the state transition.
+    const soldRes = await client.query(
+      `UPDATE p2p_secondary_listings
+       SET status = 'SOLD',
+           updated_at = NOW()
+       WHERE id = $1
+         AND status = 'ACTIVE'`,
+      [listingId]
+    );
 
-    await logAudit(buyerUserId, 'P2P_SECONDARY_BUY', `Bought ${listing.shares_for_sale} shares from listing #${listingId}`);
+    if (soldRes.rowCount !== 1) {
+      throw new Error('Secondary listing could not be finalized.');
+    }
+
+    /*
+     * 10. Audit the completed settlement using the same transaction client.
+     * writeAudit() itself is non-throwing, so the settlement must not rely
+     * on it for transaction failure semantics.
+     */
+    await client.query(
+      `INSERT INTO audit_logs
+         (user_id, action, entity_type, entity_id, meta)
+       VALUES ($1, $2, $3, $4, $5::jsonb)`,
+      [
+        buyerUserId,
+        'P2P_SECONDARY_BUY',
+        'P2P_SECONDARY_LISTING',
+        listingId,
+        JSON.stringify({
+          listingId,
+          projectId: listing.project_id,
+          investmentId: listing.investment_id,
+          sellerUserId: listing.seller_user_id,
+          buyerUserId,
+          shares: sharesForSale,
+          pricePerShare,
+          totalCost,
+          settlementRef,
+          debitRef,
+          creditRef,
+        }),
+      ]
+    );
+
     await client.query('COMMIT');
-    return { success: true, ref };
+
+    return {
+      success: true,
+      ref: settlementRef,
+      debitRef,
+      creditRef,
+    };
   } catch (e) {
     await client.query('ROLLBACK');
     throw e;

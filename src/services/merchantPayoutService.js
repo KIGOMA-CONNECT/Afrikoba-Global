@@ -97,17 +97,25 @@ async function adminSetConnectedStatus(adminId, accountId, status) {
 /** Merchant: request a settlement. Reserves the balance immediately. */
 async function requestPayout(userId, { amount }) {
   const amountN = Number(amount);
-  if (!(amountN > 0)) throw badge('Kiasi batili.', 400);
+  if (!Number.isFinite(amountN) || amountN <= 0) throw badge('Kiasi batili.', 400);
   const merchant = await merchantForUser(userId);
   const account = await getConnectedAccountByMerchant(merchant.id);
   if (!account) throw badge('Unganisha akaunti ya payout (MNO/Bank) kwanza.', 404);
   if (account.status !== 'ACTIVE') throw badge('Akaunti ya payout haijaamilishwa na admin.', 409);
-  if (amountN > Number(account.balance)) {
-    throw badge(`Kiasi kinazidi salio linalopatikana (${Number(account.balance).toFixed(2)}).`, 400);
+  const availableBalance = Number(account.balance);
+  if (!Number.isFinite(availableBalance) || availableBalance < 0) {
+    throw badge('Salio la payout si sahihi.', 409);
+  }
+  if (amountN > availableBalance) {
+    throw badge(`Kiasi kinazidi salio linalopatikana (${availableBalance.toFixed(2)}).`, 400);
   }
   const feePercent = 1.0;
   const feeAmount = Math.round(amountN * feePercent) / 100;
   const netAmount = amountN - feeAmount;
+  if (!Number.isFinite(feeAmount) || feeAmount < 0 ||
+      !Number.isFinite(netAmount) || netAmount <= 0) {
+    throw badge('Hesabu ya ada ya payout si sahihi.', 400);
+  }
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -184,7 +192,27 @@ async function adminExecutePayout(adminId, payoutId) {
     }
 
     const ref = p.payout_reference;
-    const op = await fin.claimOperation({ client, operationType: 'MERCHANT_PAYOUT', reference: ref, userId: p.merchant_id, amount: Number(p.gross_amount) });
+
+    // financial_operations.user_id references users(id), not merchants(id).
+    // Resolve and lock the merchant owner before claiming the payout operation.
+    const merchantUser = (
+      await client.query(
+        'SELECT user_id FROM merchants WHERE id = $1 FOR UPDATE',
+        [p.merchant_id]
+      )
+    ).rows[0];
+
+    if (!merchantUser || !merchantUser.user_id) {
+      throw badge('Merchant hana owner user halali.', 409);
+    }
+
+    const op = await fin.claimOperation({
+      client,
+      operationType: 'MERCHANT_PAYOUT',
+      reference: ref,
+      userId: merchantUser.user_id,
+      amount: Number(p.gross_amount),
+    });
     if (!op.claimed) throw badge('Payout hii imeshatengenezwa (duplicate).', 409);
 
     await fin.postJournal({
@@ -199,8 +227,7 @@ async function adminExecutePayout(adminId, payoutId) {
       postedBy: `admin:${adminId}`,
     });
 
-    const merchantUser = (await client.query('SELECT user_id FROM merchants WHERE id = $1', [p.merchant_id])).rows[0];
-    if (merchantUser && merchantUser.user_id) {
+    if (merchantUser.user_id) {
       await client.query(
         `INSERT INTO transactions (user_id, type, total_charged, wallet_amount, commission, status, reference_id, meta)
          VALUES ($1, 'MERCHANT_PAYOUT', $2, $3, $4, 'SUCCESS', $5, $6::jsonb)`,
@@ -215,6 +242,17 @@ async function adminExecutePayout(adminId, payoutId) {
        WHERE id = $3`,
       [adminId, ref, payoutId]
     );
+
+    const opState = await fin.setOperationState({
+      client,
+      reference: ref,
+      status: 'SUCCESS',
+    });
+
+    if (!opState.transitioned) {
+      throw new Error(`MERCHANT_PAYOUT operation haikufinalize: ${ref}`);
+    }
+
     const { enqueueOutbox } = require('./outboxService');
     await enqueueOutbox({
       eventType: 'MERCHANT_PAYOUT_EXECUTED',
@@ -240,12 +278,101 @@ async function adminExecutePayout(adminId, payoutId) {
  * Returns { credited, account } — credited=false when the merchant has no
  * ACTIVE connected account (caller keeps the legacy path).
  */
-async function creditMerchantProceeds({ client, merchantId, amount, reference, description }) {
-  const account = (await client.query(
-    'SELECT * FROM connected_merchant_accounts WHERE merchant_id = $1 AND status = \'ACTIVE\' FOR UPDATE', [merchantId]
-  )).rows[0];
-  if (!account) return { credited: false, account: null };
+async function creditMerchantProceeds({
+  client,
+  payerId,
+  merchantId,
+  amount,
+  reference,
+  description,
+}) {
   const amountN = Number(amount);
+
+  if (!Number.isFinite(amountN) || amountN <= 0) {
+    throw new Error('Kiasi lazima kiwe chanya.');
+  }
+
+  const accountRes = await client.query(
+    `SELECT *
+       FROM connected_merchant_accounts
+      WHERE merchant_id = $1
+        AND status = 'ACTIVE'
+      FOR UPDATE`,
+    [merchantId]
+  );
+
+  const account = accountRes.rows[0];
+
+  if (!account) {
+    return { credited: false, account: null };
+  }
+
+  const payerRes = await client.query(
+    `SELECT id, wallet_balance
+       FROM users
+      WHERE id = $1
+      FOR UPDATE`,
+    [payerId]
+  );
+
+  if (!payerRes.rows.length) {
+    throw new Error('Mlipaji hajapatikana.');
+  }
+
+  const payerBefore = Number(payerRes.rows[0].wallet_balance);
+
+  if (payerBefore < amountN) {
+    throw Object.assign(
+      new Error('Salio lako halitoshi.'),
+      { statusCode: 400 }
+    );
+  }
+
+  const op = await fin.claimOperation({
+    client,
+    operationType: 'MERCHANT_PAYMENT',
+    reference,
+    userId: payerId,
+    amount: amountN,
+  });
+
+  if (!op.claimed) {
+    return { credited: true, account, dedup: true };
+  }
+
+  const debited = await client.query(
+    `UPDATE users
+        SET wallet_balance = wallet_balance - $1
+      WHERE id = $2
+        AND wallet_balance >= $1`,
+    [amountN, payerId]
+  );
+
+  if (debited.rowCount !== 1) {
+    await fin.setOperationState({
+      client,
+      reference,
+      status: 'FAILED',
+    });
+
+    throw Object.assign(
+      new Error('Salio lako halitoshi.'),
+      { statusCode: 400 }
+    );
+  }
+
+  const credited = await client.query(
+    `UPDATE connected_merchant_accounts
+        SET balance = balance + $1,
+            updated_at = NOW()
+      WHERE id = $2`,
+    [amountN, account.id]
+  );
+
+  if (credited.rowCount !== 1) {
+    throw new Error('Akaunti ya merchant haijapatikana.');
+  }
+
   await fin.postJournal({
     client,
     lines: [
@@ -256,11 +383,30 @@ async function creditMerchantProceeds({ client, merchantId, amount, reference, d
     description: description || `Merchant proceeds credit #${merchantId}`,
     postedBy: 'engine:merchant:pay',
   });
-  await client.query(
-    `UPDATE connected_merchant_accounts SET balance = balance + $1, updated_at = NOW() WHERE id = $2`,
-    [amountN, account.id]
-  );
-  return { credited: true, account };
+
+  await fin.setOperationState({
+    client,
+    reference,
+    status: 'SUCCESS',
+  });
+
+  await fin.auditBalance({
+    client,
+    accountKind: 'USER_BALANCE',
+    accountId: payerId,
+    operation: 'merchant_payment_debit',
+    amount: amountN,
+    balanceBefore: payerBefore,
+    balanceAfter: payerBefore - amountN,
+    reference,
+    actor: 'engine:merchant:pay',
+  });
+
+  return {
+    credited: true,
+    account,
+    dedup: false,
+  };
 }
 
 module.exports = {

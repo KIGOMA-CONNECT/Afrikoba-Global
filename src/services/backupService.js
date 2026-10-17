@@ -3,15 +3,14 @@
  * Automated backups with verification and retention.
  */
 
-const { execSync } = require('child_process');
+const { execFileSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const logger = require('../utils/logger');
 
 const BACKUP_DIR = path.resolve(process.cwd(), 'backups');
 const RETENTION_DAYS = parseInt(process.env.BACKUP_RETENTION_DAYS || '30', 10);
-const PSQL_PATH = process.env.PSQL_PATH || '"C:\\Program Files\\PostgreSQL\\18\\bin\\psql.exe"';
-const PGDUMP_PATH = process.env.PGDUMP_PATH || '"C:\\Program Files\\PostgreSQL\\18\\bin\\pg_dump.exe"';
+const PGDUMP_PATH = process.env.PGDUMP_PATH || 'pg_dump';
 
 // Ensure backup directory exists
 if (!fs.existsSync(BACKUP_DIR)) {
@@ -24,29 +23,65 @@ if (!fs.existsSync(BACKUP_DIR)) {
 function createBackup() {
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
   const backupFile = path.join(BACKUP_DIR, `afrikoba_backup_${timestamp}.sql`);
+  let backupAttempted = false;
 
   try {
     logger.info('BACKUP', 'Starting database backup...');
 
-    const dbUrl = process.env.DATABASE_URL || 'postgresql://postgres:Mwambola%404307@localhost:5432/afrikoba_global';
+    const dbConfig = {
+      host: process.env.DB_HOST,
+      port: process.env.DB_PORT || '5432',
+      user: process.env.DB_USER,
+      password: process.env.DB_PASSWORD,
+      database: process.env.DB_NAME,
+    };
 
-    execSync(`${PGDUMP_PATH} "${dbUrl}" > "${backupFile}"`, {
-      timeout: 300000, // 5 minutes
-      stdio: 'pipe',
+    const missingConfig = Object.entries(dbConfig)
+      .filter(([key, value]) => key !== 'port' && !value)
+      .map(([key]) => key);
+
+    if (missingConfig.length) {
+      throw new Error(`Backup configuration missing: ${missingConfig.join(', ')}`);
+    }
+
+    if (fs.existsSync(backupFile)) {
+      throw new Error('Backup file already exists; refusing to overwrite it.');
+    }
+
+    backupAttempted = true;
+    execFileSync(PGDUMP_PATH, [
+      '-h', dbConfig.host,
+      '-p', dbConfig.port,
+      '-U', dbConfig.user,
+      '-d', dbConfig.database,
+      '--no-owner',
+      '--no-privileges',
+      '--format=plain',
+      '-f', backupFile,
+    ], {
+      timeout: 300000,
+      env: { ...process.env, PGPASSWORD: dbConfig.password },
+      stdio: ['ignore', 'ignore', 'pipe'],
     });
 
     const stats = fs.statSync(backupFile);
     const sizeMB = (stats.size / (1024 * 1024)).toFixed(2);
 
-    logger.info('BACKUP', `Backup created: ${backupFile} (${sizeMB} MB)`);
-
-    // Verify backup has content
     if (stats.size < 1000) {
       throw new Error('Backup file too small - likely empty');
     }
 
+    logger.info('BACKUP', `Backup created: ${backupFile} (${sizeMB} MB)`);
     return { success: true, file: backupFile, size: stats.size };
   } catch (err) {
+    if (backupAttempted) {
+      try {
+        if (fs.existsSync(backupFile)) fs.unlinkSync(backupFile);
+      } catch (cleanupErr) {
+        logger.error('BACKUP', 'Failed to remove incomplete backup file.');
+      }
+    }
+
     logger.error('BACKUP', `Backup failed: ${err.message}`);
     return { success: false, error: err.message };
   }
@@ -62,19 +97,26 @@ function verifyBackup(backupFile) {
     }
 
     const content = fs.readFileSync(backupFile, 'utf8');
-
-    // Check for essential SQL statements
-    const hasTables = content.includes('CREATE TABLE');
-    const hasData = content.includes('COPY');
-    const hasIndexes = content.includes('CREATE INDEX');
+    const size = fs.statSync(backupFile).size;
+    const hasHeader = /^-- PostgreSQL database dump/m.test(content);
+    const hasDumpVersion = /^-- Dumped by pg_dump version /m.test(content);
+    const hasFooter = /-- PostgreSQL database dump complete\s*$/.test(content.trimEnd());
+    const hasTables = /\bCREATE TABLE\b/i.test(content);
+    const hasData = /^\s*COPY\b/m.test(content);
+    const hasIndexes = /\bCREATE INDEX\b/i.test(content);
+    const valid = size > 0 && hasHeader && hasDumpVersion && hasFooter;
 
     return {
-      valid: hasTables && (hasData || hasIndexes),
+      valid,
+      hasHeader,
+      hasDumpVersion,
+      hasFooter,
       hasTables,
       hasData,
       hasIndexes,
       lines: content.split('\n').length,
-      size: fs.statSync(backupFile).size,
+      size,
+      ...(!valid ? { error: 'Missing PostgreSQL plain-dump markers or empty file' } : {}),
     };
   } catch (err) {
     return { valid: false, error: err.message };

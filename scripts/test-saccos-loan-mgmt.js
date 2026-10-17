@@ -31,6 +31,7 @@
  * ============================================================ */
 const BASE = process.env.SACCOS_TEST_BASE || 'http://127.0.0.1:3000';
 const pool = require('../src/config/db');
+const credit = require('../src/services/saccosCreditService');
 
 let passed = 0, failed = 0;
 const failures = [];
@@ -130,6 +131,9 @@ async function main() {
   async function member(pn, fullName) {
     const reg = await register(phone(pn), fullName);
     const inv = await api('POST', `/api/saccos/${orgId}/members`, ownerTok, { phoneNumber: phone(pn) });
+    if (!inv.data || !inv.data.result || !inv.data.result.id) {
+      throw new Error(`member(${pn}, ${fullName}) invitation failed: ${JSON.stringify(inv)}`);
+    }
     const mid = inv.data.result.id;
     await api('POST', `/api/saccos/${orgId}/members/${mid}/accept`, reg.data.token);
     return { tok: reg.data.token, userId: reg.data.user.id, memberId: mid };
@@ -391,20 +395,444 @@ async function main() {
     && Math.abs(recvBalance + recvExpected) < 0.01,
     `net reserves 0 + receivable reconciles to ${recvExpected} (remaining principal; balance=${recvBalance})`);
   const repayBlocked = await api('POST', `/api/saccos/${orgId}/loans/${loan4.id}/repay`, m1.tok, { amount: 1000 });
-  await expect(repayBlocked.status === 400 && repayBlocked.data.code === 'SACCOS_LOAN_WRITTEN_OFF', 'repay WRITTEN_OFF loan -> 400 WRITTEN_OFF');
+  await expect(
+    repayBlocked.status === 400 && repayBlocked.data.code === 'SACCOS_LOAN_WRITTEN_OFF',
+    'repay WRITTEN_OFF loan -> 400 WRITTEN_OFF',
+    JSON.stringify({
+      status: repayBlocked.status,
+      data: repayBlocked.data,
+      loan4Id: loan4.id,
+    })
+  );
   const llrSum = await api('GET', `/api/saccos/${orgId}/loan-loss/summary`, ownerTok);
   await expect(llrSum.status === 200 && llrSum.data.result.utilized === 1, 'loan-loss summary reports 1 UTILIZED');
   const woList = await api('GET', `/api/saccos/${orgId}/loans/write-offs`, ownerTok);
   await expect(woList.status === 200 && woList.data.result.length === 1 && woList.data.result[0].loan_reference, 'write-off list has Loan4 reference');
+
+  // ---------- 6b. Repayment idempotency + reference collision ----------
+  await section('Repayment idempotency + reference collision');
+
+  // Dedicated Loan5 keeps this test independent from Loan1-4 lifecycle tests.
+  const idempApp = await api(
+    'POST',
+    `/api/saccos/${orgId}/loans/apply`,
+    m1.tok,
+    { amount: 10000, termMonths: 3, purpose: 'Idempotency test' }
+  );
+  await expect(
+    idempApp.status === 201,
+    'm1 creates dedicated Loan5 application',
+    JSON.stringify(idempApp.data)
+  );
+
+  const idempAppId = idempApp.data.result.id;
+  const idempApproval = await api(
+    'POST',
+    `/api/saccos/${orgId}/loans/applications/${idempAppId}/approve`,
+    ownerTok
+  );
+  await expect(
+    idempApproval.status === 200,
+    'dedicated Loan5 approved and disbursed',
+    JSON.stringify(idempApproval.data)
+  );
+
+  const loan5 = (
+    await pool.query(
+      `SELECT id, status, amount_outstanding
+         FROM saccos_loans
+        WHERE application_id = $1`,
+      [idempAppId]
+    )
+  ).rows[0];
+
+  await expect(
+    loan5 && loan5.status === 'ACTIVE' && Number(loan5.amount_outstanding) > 0,
+    'Loan5 is ACTIVE with positive outstanding',
+    JSON.stringify(loan5)
+  );
+
+  const idempAmount = 3000;
+  const idempReference = `REP-IDEM-${suffix}`;
+
+  const walletBeforeIdemp = await walletOf(m1.userId);
+  const outstandingBeforeIdemp = Number(
+    (
+      await pool.query(
+        `SELECT amount_outstanding
+           FROM saccos_loans
+          WHERE id = $1`,
+        [loan5.id]
+      )
+    ).rows[0].amount_outstanding
+  );
+
+  const firstRepayment = await credit.repayLoan(
+    m1.userId,
+    orgId,
+    loan5.id,
+    {
+      amount: idempAmount,
+      reference: idempReference,
+    }
+  );
+
+  await expect(
+    firstRepayment
+      && firstRepayment.reference === idempReference
+      && firstRepayment.dedup !== true
+      && Number(firstRepayment.amount) === idempAmount,
+    'first repayment with reference succeeds',
+    JSON.stringify(firstRepayment)
+  );
+
+  const walletAfterFirstIdemp = await walletOf(m1.userId);
+  const outstandingAfterFirstIdemp = Number(
+    (
+      await pool.query(
+        `SELECT amount_outstanding
+           FROM saccos_loans
+          WHERE id = $1`,
+        [loan5.id]
+      )
+    ).rows[0].amount_outstanding
+  );
+
+  const secondRepayment = await credit.repayLoan(
+    m1.userId,
+    orgId,
+    loan5.id,
+    {
+      amount: idempAmount,
+      reference: idempReference,
+    }
+  );
+
+  await expect(
+    secondRepayment
+      && secondRepayment.dedup === true
+      && secondRepayment.reference === idempReference
+      && Number(secondRepayment.amount) === idempAmount,
+    'same reference + same amount returns DEDUP',
+    JSON.stringify(secondRepayment)
+  );
+
+  const walletAfterSecondIdemp = await walletOf(m1.userId);
+  const outstandingAfterSecondIdemp = Number(
+    (
+      await pool.query(
+        `SELECT amount_outstanding
+           FROM saccos_loans
+          WHERE id = $1`,
+        [loan5.id]
+      )
+    ).rows[0].amount_outstanding
+  );
+
+  const repaymentRows = await pool.query(
+    `SELECT id, amount, principal_part, interest_part, status
+       FROM saccos_loan_repayments
+      WHERE reference_id = $1`,
+    [idempReference]
+  );
+
+  const operationRows = await pool.query(
+    `SELECT id, reference_id, operation_type, user_id, amount, status, attempts
+       FROM financial_operations
+      WHERE reference_id = $1`,
+    [idempReference]
+  );
+
+  const transactionRows = await pool.query(
+    `SELECT id, reference_id, user_id, wallet_amount, status, type
+       FROM transactions
+      WHERE reference_id = $1`,
+    [idempReference]
+  );
+
+  await expect(
+    Math.abs(walletAfterFirstIdemp - (walletBeforeIdemp - idempAmount)) < 0.01
+      && Math.abs(walletAfterSecondIdemp - walletAfterFirstIdemp) < 0.01
+      && Math.abs(
+        outstandingAfterFirstIdemp -
+          (outstandingBeforeIdemp - idempAmount)
+      ) < 0.01
+      && Math.abs(outstandingAfterSecondIdemp - outstandingAfterFirstIdemp) < 0.01
+      && repaymentRows.rows.length === 1
+      && Number(repaymentRows.rows[0].amount) === idempAmount
+      && repaymentRows.rows[0].status === 'APPROVED'
+      && operationRows.rows.length === 1
+      && operationRows.rows[0].operation_type === 'DEBIT'
+      && Number(operationRows.rows[0].user_id) === Number(m1.userId)
+      && Number(operationRows.rows[0].amount) === idempAmount
+      && operationRows.rows[0].status === 'SUCCESS'
+      && operationRows.rows[0].attempts === 1
+      && transactionRows.rows.length === 1
+      && Number(transactionRows.rows[0].user_id) === Number(m1.userId)
+      && Number(transactionRows.rows[0].wallet_amount) === idempAmount
+      && transactionRows.rows[0].status === 'SUCCESS',
+    'idempotent retry creates exactly one financial effect',
+    JSON.stringify({
+      walletBefore: walletBeforeIdemp,
+      walletAfterFirst: walletAfterFirstIdemp,
+      walletAfterSecond: walletAfterSecondIdemp,
+      outstandingBefore: outstandingBeforeIdemp,
+      outstandingAfterFirst: outstandingAfterFirstIdemp,
+      outstandingAfterSecond: outstandingAfterSecondIdemp,
+      repayments: repaymentRows.rows,
+      operations: operationRows.rows,
+      transactions: transactionRows.rows,
+    })
+  );
+
+  let collisionError = null;
+
+  try {
+    await credit.repayLoan(
+      m1.userId,
+      orgId,
+      loan5.id,
+      {
+        amount: idempAmount + 1,
+        reference: idempReference,
+      }
+    );
+  } catch (e) {
+    collisionError = e;
+  }
+
+  const walletAfterCollision = await walletOf(m1.userId);
+  const outstandingAfterCollision = Number(
+    (
+      await pool.query(
+        `SELECT amount_outstanding
+           FROM saccos_loans
+          WHERE id = $1`,
+        [loan5.id]
+      )
+    ).rows[0].amount_outstanding
+  );
+
+  const repaymentRowsAfterCollision = await pool.query(
+    `SELECT COUNT(*)::int AS count
+       FROM saccos_loan_repayments
+      WHERE reference_id = $1`,
+    [idempReference]
+  );
+
+  const operationRowsAfterCollision = await pool.query(
+    `SELECT COUNT(*)::int AS count
+       FROM financial_operations
+      WHERE reference_id = $1`,
+    [idempReference]
+  );
+
+  const transactionRowsAfterCollision = await pool.query(
+    `SELECT COUNT(*)::int AS count
+       FROM transactions
+      WHERE reference_id = $1`,
+    [idempReference]
+  );
+
+  await expect(
+    collisionError
+      && collisionError.code === 'SACCOS_LOAN_REPAYMENT_REFERENCE_CONFLICT'
+      && collisionError.statusCode === 409,
+    'same reference + different amount -> 409 REFERENCE_CONFLICT',
+    JSON.stringify({
+      code: collisionError && collisionError.code,
+      statusCode: collisionError && collisionError.statusCode,
+      message: collisionError && collisionError.message,
+    })
+  );
+
+  await expect(
+    Math.abs(walletAfterCollision - walletAfterSecondIdemp) < 0.01
+      && Math.abs(outstandingAfterCollision - outstandingAfterSecondIdemp) < 0.01
+      && repaymentRowsAfterCollision.rows[0].count === 1
+      && operationRowsAfterCollision.rows[0].count === 1
+      && transactionRowsAfterCollision.rows[0].count === 1,
+    'reference collision causes no financial mutation',
+    JSON.stringify({
+      walletAfterSecond: walletAfterSecondIdemp,
+      walletAfterCollision,
+      outstandingAfterSecond: outstandingAfterSecondIdemp,
+      outstandingAfterCollision,
+      repayments: repaymentRowsAfterCollision.rows[0].count,
+      operations: operationRowsAfterCollision.rows[0].count,
+      transactions: transactionRowsAfterCollision.rows[0].count,
+    })
+  );
+
+  // ---------- 6c. Concurrent repayment idempotency ----------
+  await section('Concurrent repayment idempotency');
+
+  const concApp = await api(
+    'POST',
+    `/api/saccos/${orgId}/loans/apply`,
+    m1.tok,
+    { amount: 10000, termMonths: 3, purpose: 'Concurrent repayment test' }
+  );
+  await expect(
+    concApp.status === 201 && concApp.data?.result?.id,
+    'm1 creates dedicated concurrent-repayment loan',
+    JSON.stringify(concApp.data)
+  );
+
+  if (concApp.status !== 201 || !concApp.data?.result?.id) {
+    throw new Error(`Concurrent repayment fixture creation failed: ${JSON.stringify(concApp.data)}`);
+  }
+
+  const concAppId = concApp.data.result.id;
+  const concApproval = await api(
+    'POST',
+    `/api/saccos/${orgId}/loans/applications/${concAppId}/approve`,
+    ownerTok
+  );
+  await expect(
+    concApproval.status === 200,
+    'concurrent-repayment loan approved and disbursed',
+    JSON.stringify(concApproval.data)
+  );
+
+  const loan6 = (
+    await pool.query(
+      `SELECT id, status, amount_outstanding
+         FROM saccos_loans
+        WHERE application_id = $1`,
+      [concAppId]
+    )
+  ).rows[0];
+
+  await expect(
+    loan6 && loan6.status === 'ACTIVE' && Number(loan6.amount_outstanding) > 0,
+    'Loan6 is ACTIVE with positive outstanding',
+    JSON.stringify(loan6)
+  );
+
+  if (!loan6 || loan6.status !== 'ACTIVE' || Number(loan6.amount_outstanding) <= 0) {
+    throw new Error(`Concurrent repayment loan fixture invalid: ${JSON.stringify(loan6)}`);
+  }
+
+  const concurrentAmount = 3000;
+  const loanConcurrentReference = `REP-CONC-${suffix}`;
+  const walletBeforeConcurrent = await walletOf(m1.userId);
+  const outstandingBeforeConcurrent = Number(loan6.amount_outstanding);
+  const testWallet = Math.max(walletBeforeConcurrent, concurrentAmount + 1000);
+
+  try {
+    await fundWallet(m1.userId, testWallet);
+
+    const concurrentCalls = await Promise.allSettled([
+      credit.repayLoan(m1.userId, orgId, loan6.id, {
+        amount: concurrentAmount,
+        reference: loanConcurrentReference,
+      }),
+      credit.repayLoan(m1.userId, orgId, loan6.id, {
+        amount: concurrentAmount,
+        reference: loanConcurrentReference,
+      }),
+    ]);
+
+    const fulfilled = concurrentCalls
+      .filter((r) => r.status === 'fulfilled')
+      .map((r) => r.value);
+
+    const rejected = concurrentCalls
+      .filter((r) => r.status === 'rejected')
+      .map((r) => ({
+        name: r.reason?.name,
+        code: r.reason?.code,
+        statusCode: r.reason?.statusCode,
+        message: r.reason?.message,
+      }));
+
+    const normalResults = fulfilled.filter((r) => r && r.dedup !== true);
+    const dedupResults = fulfilled.filter((r) => r && r.dedup === true);
+
+    await expect(
+      rejected.length === 0
+        && normalResults.length === 1
+        && dedupResults.length === 1
+        && normalResults[0].reference === loanConcurrentReference
+        && dedupResults[0].reference === loanConcurrentReference
+        && Number(normalResults[0].amount) === concurrentAmount
+        && Number(dedupResults[0].amount) === concurrentAmount,
+      'concurrent same-reference repayment has exactly one effect and one DEDUP',
+      JSON.stringify({ fulfilled, rejected })
+    );
+
+    const concurrentRepayments = await pool.query(
+      `SELECT COUNT(*)::int AS count, COALESCE(SUM(amount), 0)::numeric AS amount
+         FROM saccos_loan_repayments
+        WHERE reference_id = $1`,
+      [loanConcurrentReference]
+    );
+
+    const concurrentOperations = await pool.query(
+      `SELECT COUNT(*)::int AS count
+         FROM financial_operations
+        WHERE reference_id = $1
+          AND operation_type = 'DEBIT'
+          AND status = 'SUCCESS'`,
+      [loanConcurrentReference]
+    );
+
+    const concurrentTransactions = await pool.query(
+      `SELECT COUNT(*)::int AS count, COALESCE(SUM(wallet_amount), 0)::numeric AS amount
+         FROM transactions
+        WHERE reference_id = $1
+          AND type = 'SACCOS_LOAN_REPAYMENT'
+          AND status = 'SUCCESS'`,
+      [loanConcurrentReference]
+    );
+
+    const concurrentLoan = await pool.query(
+      `SELECT amount_outstanding
+         FROM saccos_loans
+        WHERE id = $1
+          AND saccos_id = $2`,
+      [loan6.id, orgId]
+    );
+
+    const walletAfterConcurrent = await walletOf(m1.userId);
+    const outstandingAfterConcurrent = Number(
+      concurrentLoan.rows[0].amount_outstanding
+    );
+
+    await expect(
+      concurrentRepayments.rows[0].count === 1
+        && Number(concurrentRepayments.rows[0].amount) === concurrentAmount
+        && concurrentOperations.rows[0].count === 1
+        && concurrentTransactions.rows[0].count === 1
+        && Number(concurrentTransactions.rows[0].amount) === concurrentAmount
+        && Math.abs(
+          walletAfterConcurrent - (testWallet - concurrentAmount)
+        ) < 0.01
+        && Math.abs(
+          outstandingAfterConcurrent -
+            (outstandingBeforeConcurrent - concurrentAmount)
+        ) < 0.01,
+      'concurrent repayment produces exactly one wallet, loan, operation and transaction effect',
+      JSON.stringify({
+        repayments: concurrentRepayments.rows,
+        operations: concurrentOperations.rows,
+        transactions: concurrentTransactions.rows,
+        walletBefore: testWallet,
+        walletAfter: walletAfterConcurrent,
+        outstandingBefore: outstandingBeforeConcurrent,
+        outstandingAfter: outstandingAfterConcurrent,
+      })
+    );
+  } finally {
+    await fundWallet(m1.userId, walletBeforeConcurrent);
+  }
 
   // ---------- 7. Standing orders ----------
   await section('Standing orders: monthly recurring contributions');
   const fund = await api('POST', `/api/saccos/${orgId}/funds`, ownerTok, { code: 'MAENDELEO', name: 'Maendeleo', targetAmount: 1000000 });
   await expect(fund.status === 201, 'owner creates fund MAENDELEO');
   const fundId = fund.data.result.id;
-  const scheme = await api('POST', `/api/saccos/${orgId}/welfare/schemes`, ownerTok, { name: 'Matibabu', contribution: 20000, payout: 50000 });
-  await expect(scheme.status === 201, 'owner creates welfare scheme (contribution 20000)');
-  const schemeId = scheme.data.result.id;
   await fundWallet(m1.userId, 900000);
   await fundWallet(m2.userId, 900000);
   await fundWallet(m4.userId, 900000);
@@ -446,12 +874,35 @@ async function main() {
   await expect(run3.status === 200 && run3.data.result.succeeded === 1, 'run executes fund order');
   await expect(await ledgerBalance(`SACCOS${orgId}_FUND_MAENDELEO`) === 25000, 'fund balance 25000 from standing order');
 
-  const so4 = await api('POST', `/api/saccos/${orgId}/standing-orders`, m4.tok, { targetType: 'WELFARE_CONTRIBUTION', targetId: schemeId, amount: 20000, dayOfMonth: 20 });
+  const scheme = await api('POST', `/api/saccos/${orgId}/welfare/schemes`, ownerTok, {
+    name: 'Matibabu',
+    contribution: 20000,
+    payout: 50000,
+  });
+  await expect(scheme.status === 201, 'owner creates welfare scheme (contribution 20000)');
+  const schemeId = scheme.data.result.id;
+
+  const so4 = await api('POST', `/api/saccos/${orgId}/standing-orders`, m4.tok, {
+    targetType: 'WELFARE_CONTRIBUTION',
+    targetId: schemeId,
+    amount: 20000,
+    dayOfMonth: 20,
+  });
   await expect(so4.status === 201, 'm4 creates welfare-contribution order');
+
   const run4 = await api('POST', `/api/saccos/${orgId}/standing-orders/run`, ownerTok);
-  await expect(run4.status === 200 && run4.data.result.succeeded === 1, 'run executes welfare order');
+  await expect(
+    run4.status === 200 &&
+    run4.data.result.succeeded === 1,
+    'run executes welfare order'
+  );
+
   const schemes4 = await api('GET', `/api/saccos/${orgId}/welfare/schemes`, m4.tok);
-  await expect(schemes4.data.result[0].joined === true, 'm4 joined the welfare scheme via standing order');
+  await expect(
+    schemes4.status === 200 &&
+    schemes4.data.result.some((row) => Number(row.id) === Number(schemeId) && row.joined === true),
+    'm4 joined the welfare scheme via standing order'
+  );
 
   const so5 = await api('POST', `/api/saccos/${orgId}/standing-orders`, m1.tok, { targetType: 'LOAN_REPAYMENT', targetId: loan1.id, amount: 15000, dayOfMonth: 3 });
   await expect(so5.status === 201, 'm1 creates loan-repayment order for Loan1');
@@ -464,17 +915,151 @@ async function main() {
   const badTarget = await api('POST', `/api/saccos/${orgId}/standing-orders`, m1.tok, { targetType: 'FUND_CONTRIBUTION', targetId: fundId + 9999, amount: 1000, dayOfMonth: 5 });
   await expect(badTarget.status === 400 && badTarget.data.code === 'SACCOS_STANDING_ORDER_TARGET', 'unknown fund -> 400 TARGET');
 
-  // failure x3 deactivates
+  // failure x3 deactivates; failed financial work must be fully rolled back
   const so6 = await api('POST', `/api/saccos/${orgId}/standing-orders`, m3.tok, { targetType: 'SAVINGS_DEPOSIT', amount: 20000, dayOfMonth: 25 });
+  await expect(so6.status === 201, 'm3 creates insufficient-funds savings order for rollback test');
   const so6Id = so6.data.result.id;
-  await api('POST', `/api/saccos/${orgId}/standing-orders/run`, ownerTok);
-  await api('POST', `/api/saccos/${orgId}/standing-orders/run`, ownerTok);
+  const m3WalletBefore = Number((await pool.query(
+    `SELECT wallet_balance FROM users WHERE id = $1`,
+    [m3.userId]
+  )).rows[0].wallet_balance);
+  const occurrenceDate = (await pool.query(`SELECT CURRENT_DATE::text AS d`)).rows[0].d;
+  const occurrenceReference = `SOR-${so6Id}-${occurrenceDate.replace(/-/g, '')}`;
+  const opBefore = await pool.query(
+    `SELECT id, status, attempts FROM financial_operations WHERE reference_id = $1`,
+    [occurrenceReference]
+  );
+  await expect(opBefore.rows.length === 0, 'failed occurrence has no pre-existing financial operation');
+
+  const run6a = await api('POST', `/api/saccos/${orgId}/standing-orders/run`, ownerTok);
+  await expect(run6a.status === 200 && run6a.data.result.failed === 1, 'first failed run observed');
+
+  const afterFail1Wallet = Number((await pool.query(
+    `SELECT wallet_balance FROM users WHERE id = $1`,
+    [m3.userId]
+  )).rows[0].wallet_balance);
+  const afterFail1Op = await pool.query(
+    `SELECT id, status, attempts FROM financial_operations WHERE reference_id = $1`,
+    [occurrenceReference]
+  );
+  const afterFail1Order = await pool.query(
+    `SELECT status, fail_runs, total_runs FROM saccos_standing_orders WHERE id = $1`,
+    [so6Id]
+  );
+  await expect(afterFail1Wallet === m3WalletBefore
+    && afterFail1Op.rows.length === 0
+    && afterFail1Order.rows[0].fail_runs === 1
+    && afterFail1Order.rows[0].total_runs === 1,
+    'first failed run rolls back wallet and financial operation', JSON.stringify({
+      walletBefore: m3WalletBefore,
+      walletAfter: afterFail1Wallet,
+      financialOperationRows: afterFail1Op.rows.length,
+      order: afterFail1Order.rows[0],
+    }));
+
+  const run6b = await api('POST', `/api/saccos/${orgId}/standing-orders/run`, ownerTok);
+  await expect(run6b.status === 200 && run6b.data.result.failed === 1, 'second failed run observed');
+
   const run6c = await api('POST', `/api/saccos/${orgId}/standing-orders/run`, ownerTok);
   await expect(run6c.status === 200 && run6c.data.result.failed === 1, 'third failed run observed');
-  const so6Row = await pool.query(`SELECT status, fail_runs, total_runs, last_error FROM saccos_standing_orders WHERE id = $1`, [so6Id]);
-  await expect(so6Row.rows[0].status === 'DEACTIVATED' && so6Row.rows[0].fail_runs === 3
-    && so6Row.rows[0].total_runs === 3 && !!so6Row.rows[0].last_error,
-    'order DEACTIVATED after 3 consecutive failures', JSON.stringify(so6Row.rows[0]));
+
+  const m3WalletAfter = Number((await pool.query(
+    `SELECT wallet_balance FROM users WHERE id = $1`,
+    [m3.userId]
+  )).rows[0].wallet_balance);
+  const finalOp = await pool.query(
+    `SELECT id, status, attempts FROM financial_operations WHERE reference_id = $1`,
+    [occurrenceReference]
+  );
+  const so6Row = await pool.query(
+    `SELECT status, fail_runs, total_runs, last_error FROM saccos_standing_orders WHERE id = $1`,
+    [so6Id]
+  );
+  await expect(m3WalletAfter === m3WalletBefore
+    && finalOp.rows.length === 0
+    && so6Row.rows[0].status === 'DEACTIVATED'
+    && so6Row.rows[0].fail_runs === 3
+    && so6Row.rows[0].total_runs === 3
+    && !!so6Row.rows[0].last_error,
+    'three failed runs preserve wallet, leave no financial operation, then DEACTIVATE',
+    JSON.stringify({
+      walletBefore: m3WalletBefore,
+      walletAfter: m3WalletAfter,
+      financialOperationRows: finalOp.rows.length,
+      order: so6Row.rows[0],
+    }));
+
+  // concurrent runners: exactly one worker may execute the same due occurrence
+  const so7 = await api('POST', `/api/saccos/${orgId}/standing-orders`, m4.tok, {
+    targetType: 'SAVINGS_DEPOSIT',
+    amount: 40000,
+    dayOfMonth: 26,
+  });
+  await expect(so7.status === 201, 'm4 creates concurrency-test savings order');
+  const so7Id = so7.data.result.id;
+  const m4WalletBefore = Number((await pool.query(
+    `SELECT wallet_balance FROM users WHERE id = $1`,
+    [m4.userId]
+  )).rows[0].wallet_balance);
+  const m4SavingsBefore = await savingsBalance(orgId, m4.memberId);
+  const concurrentDate = (await pool.query(`SELECT CURRENT_DATE::text AS d`)).rows[0].d;
+  const concurrentReference = `SOR-${so7Id}-${concurrentDate.replace(/-/g, '')}`;
+
+  const [concurrentRunA, concurrentRunB] = await Promise.all([
+    api('POST', `/api/saccos/${orgId}/standing-orders/run`, ownerTok),
+    api('POST', `/api/saccos/${orgId}/standing-orders/run`, ownerTok),
+  ]);
+
+  await expect(
+    concurrentRunA.status === 200 && concurrentRunB.status === 200
+      && concurrentRunA.data.result.executed + concurrentRunB.data.result.executed === 1
+      && concurrentRunA.data.result.succeeded + concurrentRunB.data.result.succeeded === 1
+      && concurrentRunA.data.result.failed + concurrentRunB.data.result.failed === 0,
+    'concurrent runners execute the same due occurrence exactly once',
+    JSON.stringify({
+      runA: concurrentRunA.data,
+      runB: concurrentRunB.data,
+    })
+  );
+
+  const m4WalletAfter = Number((await pool.query(
+    `SELECT wallet_balance FROM users WHERE id = $1`,
+    [m4.userId]
+  )).rows[0].wallet_balance);
+  const m4SavingsAfter = await savingsBalance(orgId, m4.memberId);
+  const so7Row = await pool.query(
+    `SELECT status, total_runs, success_runs, fail_runs, next_run_at
+       FROM saccos_standing_orders
+      WHERE id = $1`,
+    [so7Id]
+  );
+  const so7Ops = await pool.query(
+    `SELECT id, reference_id, status, attempts
+       FROM financial_operations
+      WHERE reference_id = $1`,
+    [concurrentReference]
+  );
+
+  await expect(
+    m4WalletAfter === m4WalletBefore - 40000
+      && m4SavingsAfter === m4SavingsBefore + 40000
+      && so7Row.rows[0].total_runs === 1
+      && so7Row.rows[0].success_runs === 1
+      && so7Row.rows[0].fail_runs === 0
+      && so7Row.rows[0].next_run_at !== null
+      && so7Ops.rows.length === 1
+      && so7Ops.rows[0].status === 'SUCCESS'
+      && so7Ops.rows[0].attempts === 1,
+    'concurrent execution produces one wallet debit, one savings credit, and one financial operation',
+    JSON.stringify({
+      walletBefore: m4WalletBefore,
+      walletAfter: m4WalletAfter,
+      savingsBefore: m4SavingsBefore,
+      savingsAfter: m4SavingsAfter,
+      order: so7Row.rows[0],
+      operations: so7Ops.rows,
+    })
+  );
 
   const deact = await api('POST', `/api/saccos/${orgId}/standing-orders/${so6Id}/deactivate`, m1.tok);
   await expect(deact.status === 400 && deact.data.code === 'SACCOS_STANDING_ORDER_STATE', 'deactivate already-deactivated order -> 400 STATE');
@@ -484,15 +1069,27 @@ async function main() {
   await expect(mineOrders.status === 200 && mineOrders.data.result.length >= 3 && mineOrders.data.result.every((o) => o.member_id === m1.memberId),
     'm1 lists own orders (3+ rows)');
   const allOrders = await api('GET', `/api/saccos/${orgId}/standing-orders`, ownerTok);
-  await expect(allOrders.status === 200 && allOrders.data.result.length === 6 && allOrders.data.result[0].full_name, 'owner lists all 6 orders with names');
+  await expect(
+    allOrders.status === 200 &&
+    allOrders.data.result.length === 7 &&
+    allOrders.data.result.every((o) => o.full_name),
+    'owner lists all 7 standing orders with names',
+    JSON.stringify(allOrders.data)
+  );
   const membRun = await api('POST', `/api/saccos/${orgId}/standing-orders/run`, m1.tok);
   await expect(membRun.status === 403 && membRun.data.code === 'SACCOS_RBAC', 'member manual run -> 403 RBAC');
 
   // ---------- 8. Isolation + audit ----------
   await section('Isolation + audit');
   const s2Owner = await register(phone(9306), 'Shirika la Pili');
+  if (!s2Owner.data || !s2Owner.data.token) {
+    throw new Error(`s2 owner registration failed: ${JSON.stringify(s2Owner)}`);
+  }
   const s2Tok = s2Owner.data.token;
   const s2 = await api('POST', '/api/v1/saccos', s2Tok, { name: 'Pili Jukumu ' + suffix });
+  if (!s2.data || !s2.data.result || !s2.data.result.saccos) {
+    throw new Error(`s2 SACCOS creation failed: ${JSON.stringify(s2)}`);
+  }
   const s2Id = s2.data.result.saccos.id;
   await api('POST', `/api/saccos/${s2Id}/activate`, s2Tok);
   const crossFund = await api('POST', `/api/saccos/${s2Id}/funds`, s2Tok, { code: 'PILII', name: 'Pili Hazina', targetAmount: 100 });

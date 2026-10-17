@@ -30,10 +30,22 @@ async function createInvoice(userId, { customerName, customerPhone, lineItems, a
 
   let amountNum = parseFloat(amount);
   if (lineItems && Array.isArray(lineItems) && lineItems.length > 0) {
-    const computed = lineItems.reduce((sum, it) => sum + (Number(it.quantity || 1) * Number(it.unit_price || 0)), 0);
-    if (!amountNum || amountNum <= 0) amountNum = computed;
+    const normalizedItems = lineItems.map((item) => {
+      const quantity = Number(item.quantity || 1);
+      const unitPrice = Number(item.unit_price || 0);
+      if (!Number.isFinite(quantity) || quantity <= 0 ||
+          !Number.isFinite(unitPrice) || unitPrice < 0) {
+        throw invoiceError('Quantity au unit price ya line item si sahihi.', 400);
+      }
+      return quantity * unitPrice;
+    });
+    const computed = normalizedItems.reduce((sum, value) => sum + value, 0);
+    if (!Number.isFinite(computed) || computed <= 0) {
+      throw invoiceError('Jumla ya line items si sahihi.', 400);
+    }
+    if (!Number.isFinite(amountNum) || amountNum <= 0) amountNum = computed;
   }
-  if (!amountNum || amountNum <= 0) {
+  if (!Number.isFinite(amountNum) || amountNum <= 0) {
     throw invoiceError('Kiasi kinahitajika (au vivezalisha line items).', 400);
   }
 
@@ -95,46 +107,115 @@ async function cancelInvoice(userId, invoiceId) {
 }
 
 async function payInvoice(payerId, code, amount) {
-  const invoice = await getInvoiceByCode(code);
+  const client = await pool.connect();
 
-  if (invoice.status === 'PAID') {
+  try {
+    await client.query('BEGIN');
+
+    const invoiceRes = await client.query(
+      `SELECT *
+         FROM merchant_invoices
+        WHERE code = $1
+        FOR UPDATE`,
+      [code]
+    );
+
+    if (invoiceRes.rows.length === 0) {
+      throw invoiceError('Invoice haipatikani.', 404);
+    }
+
+    const invoice = invoiceRes.rows[0];
+
+    if (invoice.status === 'PAID') {
+      await client.query('COMMIT');
+
+      return {
+        success: true,
+        paid: true,
+        alreadyPaid: true,
+        invoice: invoice.code,
+        reference: invoice.transaction_reference,
+        amount: Number(invoice.amount),
+      };
+    }
+
+    if (invoice.status !== 'ISSUED') {
+      throw invoiceError('Invoice imefutwa.', 400);
+    }
+
+    if (invoice.expires_at && new Date(invoice.expires_at) < new Date()) {
+      throw invoiceError('Invoice imeisha muda wake.', 400);
+    }
+
+    const requested = amount
+      ? parseFloat(amount)
+      : Number(invoice.amount);
+
+    if (!Number.isFinite(requested) || requested <= 0) {
+      throw invoiceError('Kiasi si sahihi.', 400);
+    }
+
+    if (requested > Number(invoice.amount)) {
+      throw invoiceError('Kiasi kikubwa kuliko invoice.', 400);
+    }
+
+    const reference = `INVOICE-PAY:${invoice.id}:${payerId}`;
+
+    const payment = await merchantService.payMerchant(
+      payerId,
+      invoice.merchant_id,
+      requested,
+      `Invoice ${invoice.code}`,
+      { client, reference }
+    );
+
+    const updated = await client.query(
+      `UPDATE merchant_invoices
+          SET status = 'PAID',
+              paid_at = NOW(),
+              paid_by = $1,
+              transaction_reference = $2
+        WHERE id = $3
+          AND status = 'ISSUED'
+        RETURNING id`,
+      [payerId, payment.reference, invoice.id]
+    );
+
+    if (updated.rows.length !== 1) {
+      throw new Error(
+        `Invoice ${invoice.code} haikuweza kuwekwa PAID baada ya payment.`
+      );
+    }
+
+    await logAudit({
+      eventType: 'INVOICE',
+      action: 'PAY',
+      entityType: 'MERCHANT_INVOICE',
+      entityId: invoice.id,
+      userId: payerId,
+      referenceId: payment.reference,
+      amount: requested,
+      client,
+      afterData: {
+        invoice: invoice.code,
+        merchant_id: invoice.merchant_id,
+      },
+    });
+
+    await client.query('COMMIT');
+
     return {
-      success: true, paid: true, alreadyPaid: true,
-      invoice: invoice.code, reference: invoice.transaction_reference, amount: Number(invoice.amount),
+      success: true,
+      paid: true,
+      invoice: invoice.code,
+      reference: payment.reference,
+      amount: requested,
     };
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
   }
-  if (invoice.status !== 'ISSUED') {
-    throw invoiceError('Invoice imefutwa.', 400);
-  }
-  if (invoice.expires_at && new Date(invoice.expires_at) < new Date()) {
-    throw invoiceError('Invoice imeisha muda wake.', 400);
-  }
-
-  const requested = amount ? parseFloat(amount) : Number(invoice.amount);
-  if (requested <= 0) {
-    throw invoiceError('Kiasi si sahihi.', 400);
-  }
-  if (requested > Number(invoice.amount)) {
-    throw invoiceError('Kiasi kikubwa kuliko invoice.', 400);
-  }
-
-  const payment = await merchantService.payMerchant(payerId, invoice.merchant_id, requested, `Invoice ${invoice.code}`);
-
-  await pool.query(
-    `UPDATE merchant_invoices
-     SET status = 'PAID', paid_at = NOW(), paid_by = $1, transaction_reference = $2
-     WHERE id = $3 AND status = 'ISSUED'
-     RETURNING id`,
-    [payerId, payment.reference, invoice.id]
-  );
-
-  await logAudit({
-    eventType: 'INVOICE', action: 'PAY', entityType: 'MERCHANT_INVOICE', entityId: invoice.id,
-    userId: payerId, referenceId: payment.reference, amount: requested,
-    afterData: { invoice: invoice.code, merchant_id: invoice.merchant_id },
-  });
-
-  return { success: true, paid: true, invoice: invoice.code, reference: payment.reference, amount: requested };
 }
-
 module.exports = { createInvoice, listInvoices, getInvoiceByCode, cancelInvoice, payInvoice };

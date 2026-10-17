@@ -77,8 +77,12 @@ async function requireActiveMember(actorId, saccosId) {
   return membership;
 }
 
-async function fetchLoan(saccosId, loanId) {
-  const r = await pool.query('SELECT * FROM saccos_loans WHERE id = $1 AND saccos_id = $2', [loanId, saccosId]);
+async function fetchLoan(saccosId, loanId, client = pool) {
+  const r = await client.query(
+    'SELECT * FROM saccos_loans WHERE id = $1 AND saccos_id = $2' +
+      (client === pool ? '' : ' FOR UPDATE'),
+    [loanId, saccosId]
+  );
   if (!r.rows.length) throw createAppError('SACCOS_LOAN_NOT_FOUND');
   return r.rows[0];
 }
@@ -98,10 +102,24 @@ async function loanOwner(client, saccosId, loanMemberId) {
  * rounding so parts sum exactly to principal and total interest.
  */
 function buildScheduleParts(principal, totalRepayable, term) {
-  const principalN = round2(principal);
-  const totalN = round2(totalRepayable);
+  const principalInput = Number(principal);
+  const totalInput = Number(totalRepayable);
+  const termInput = Number(term);
+  if (!Number.isFinite(principalInput) || principalInput <= 0 ||
+      !Number.isFinite(totalInput) || totalInput < principalInput ||
+      !Number.isFinite(termInput) || !Number.isInteger(termInput) || termInput < 1) {
+    throw createAppError('SACCOS_LOAN_AMOUNT_INVALID');
+  }
+
+  const principalN = round2(principalInput);
+  const totalN = round2(totalInput);
   const interestTotal = round2(totalN - principalN);
-  const terms = Math.max(1, Math.floor(Number(term)));
+  const terms = termInput;
+  if (!Number.isFinite(principalN) || principalN <= 0 ||
+      !Number.isFinite(totalN) || totalN < principalN ||
+      !Number.isFinite(interestTotal) || interestTotal < 0) {
+    throw createAppError('SACCOS_LOAN_AMOUNT_INVALID');
+  }
   const basePr = Math.floor((principalN / terms) * 100) / 100;
   const baseInt = Math.floor((interestTotal / terms) * 100) / 100;
   const parts = [];
@@ -115,6 +133,19 @@ function buildScheduleParts(principal, totalRepayable, term) {
     prSum = round2(prSum + pr);
     intSum = round2(intSum + int);
   }
+
+  const validParts = parts.every((part) =>
+    Number.isFinite(part.principalPart) && part.principalPart >= 0 &&
+    Number.isFinite(part.interestPart) && part.interestPart >= 0 &&
+    Number.isFinite(part.total) && part.total > 0
+  );
+  if (!validParts ||
+      !Number.isFinite(prSum) || !Number.isFinite(intSum) ||
+      Math.abs(prSum - principalN) > 0.01 ||
+      Math.abs(intSum - interestTotal) > 0.01) {
+    throw createAppError('SACCOS_LOAN_AMOUNT_INVALID');
+  }
+
   return parts;
 }
 
@@ -151,9 +182,10 @@ async function ensureSchedule(client, saccosId, loan) {
   return rows;
 }
 
-async function fetchInstallment(q, saccosId, loanId, installmentId) {
+async function fetchInstallment(q, saccosId, loanId, installmentId, forUpdate = false) {
   const r = await q.query(
-    'SELECT * FROM saccos_loan_installments WHERE id = $1 AND saccos_id = $2 AND loan_id = $3',
+    'SELECT * FROM saccos_loan_installments WHERE id = $1 AND saccos_id = $2 AND loan_id = $3' +
+      (forUpdate ? ' FOR UPDATE' : ''),
     [installmentId, saccosId, loanId]
   );
   if (!r.rows.length) throw createAppError('SACCOS_LOAN_INSTALLMENT_NOT_FOUND');
@@ -238,12 +270,21 @@ async function listInstallments(actorId, saccosId, loanId) {
  *  Refactored (increment 17) into a shared core that can be called by
  *  the guarantor-pay path without its own RBAC/txn wrappers. */
 async function payInstallmentCore({ client, saccosId, loan, installmentId, cfg, payerUserId, repaymentMemberId }) {
-  const owner = await loanOwner(client, saccosId, loan.member_id);
+  // The core is shared by normal payments and guarantor/workout payments.
+  // Always refresh and lock the loan inside the caller's transaction so
+  // no stale loan snapshot can drive the repayment.
+  const lockedLoan = await fetchLoan(saccosId, loan.id, client);
+
+  if (lockedLoan.status === 'CLOSED') throw createAppError('SACCOS_LOAN_ALREADY_CLOSED');
+  if (lockedLoan.status === 'WRITTEN_OFF') throw createAppError('SACCOS_LOAN_WRITTEN_OFF');
+  if (Number(lockedLoan.amount_outstanding) <= 0) throw createAppError('SACCOS_LOAN_ALREADY_CLOSED');
+
+  const owner = await loanOwner(client, saccosId, lockedLoan.member_id);
   const payer = payerUserId || owner.user_id;
   const repMember = repaymentMemberId || owner.member_id;
 
-  await markOverdue(client, saccosId, loan, cfg);
-  const inst = await fetchInstallment(client, saccosId, loan.id, installmentId);
+  await markOverdue(client, saccosId, lockedLoan, cfg);
+  const inst = await fetchInstallment(client, saccosId, lockedLoan.id, installmentId, true);
   if (inst.status === 'PAID') throw createAppError('SACCOS_LOAN_INSTALLMENT_ALREADY_PAID');
   if (inst.status === 'CANCELLED') throw createAppError('SACCOS_LOAN_INSTALLMENT_NOT_FOUND');
   const earlier = await client.query(
@@ -251,18 +292,38 @@ async function payInstallmentCore({ client, saccosId, loan, installmentId, cfg, 
       WHERE loan_id = $1 AND installment_no < $2
         AND status NOT IN ('PAID', 'CANCELLED')
       LIMIT 1`,
-    [loan.id, inst.installment_no]
+    [lockedLoan.id, inst.installment_no]
   );
   if (earlier.rows.length) throw createAppError('SACCOS_LOAN_INSTALLMENT_ORDER');
 
-  const lateFee = inst.status === 'OVERDUE' ? round2(Number(inst.late_fee)) : 0;
-  const amountN = round2(Number(inst.total) + lateFee);
+  const installmentTotal = Number(inst.total);
+  const lateFeeInput = inst.status === 'OVERDUE' ? Number(inst.late_fee) : 0;
+  if (!Number.isFinite(installmentTotal) || installmentTotal <= 0 ||
+      !Number.isFinite(lateFeeInput) || lateFeeInput < 0) {
+    throw createAppError('SACCOS_LOAN_AMOUNT_INVALID');
+  }
+  const lateFee = round2(lateFeeInput);
+  const amountN = round2(installmentTotal + lateFee);
+  if (!Number.isFinite(lateFee) || lateFee < 0 ||
+      !Number.isFinite(amountN) || amountN <= 0) {
+    throw createAppError('SACCOS_LOAN_AMOUNT_INVALID');
+  }
   const ref = 'REPI-' + crypto.randomBytes(5).toString('hex').toUpperCase();
   const op = await fin.claimOperation({ client, operationType: 'DEBIT', reference: ref, userId: payer, amount: amountN });
   if (!op.claimed) throw createAppError('SACCOS_LOAN_INSTALLMENT_ALREADY_PAID');
 
-  const before = Number((await client.query('SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE', [payer])).rows[0].wallet_balance);
-  if (before < amountN) throw createAppError('WALLET_INSUFFICIENT_FUNDS');
+  const walletRow = await client.query(
+    'SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE',
+    [payer]
+  );
+  if (!walletRow.rows.length) {
+    throw Object.assign(new Error('Mtumiaji hajapatikana.'), { statusCode: 404 });
+  }
+
+  const before = Number(walletRow.rows[0].wallet_balance);
+  if (!Number.isFinite(before) || before < amountN) {
+    throw createAppError('WALLET_INSUFFICIENT_FUNDS');
+  }
 
   const lines = [
     { accountCode: 'CUSTOMER_WALLET', direction: 'DR', amount: amountN },
@@ -275,16 +336,22 @@ async function payInstallmentCore({ client, saccosId, loan, installmentId, cfg, 
     lines,
     referenceId: ref, description: `Awamu ya mkopo SACCOS #${saccosId}`, postedBy: 'saccos:credit:installment:pay',
   });
-  await client.query('UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2', [amountN, payer]);
+  const debited = await client.query(
+    'UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2 AND wallet_balance >= $1',
+    [amountN, payer]
+  );
+  if (debited.rowCount !== 1) {
+    throw createAppError('WALLET_INSUFFICIENT_FUNDS');
+  }
   await client.query(
     `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
      VALUES ($1, $2, $3, 0, $3, 'SUCCESS', 'SACCOS_LOAN_INSTALLMENT_PAYMENT', $4)`,
-    [ref, payer, amountN, JSON.stringify({ saccosId, loanId: loan.id, installmentId, lateFee })]
+    [ref, payer, amountN, JSON.stringify({ saccosId, loanId: lockedLoan.id, installmentId, lateFee })]
   );
   await client.query(
     `INSERT INTO saccos_loan_repayments (saccos_id, loan_id, member_id, reference_id, amount, principal_part, interest_part, status)
      VALUES ($1, $2, $3, $4, $5, $6, $7, 'APPROVED')`,
-    [saccosId, loan.id, repMember, ref, amountN, round2(inst.principal_part), round2(inst.interest_part)]
+    [saccosId, lockedLoan.id, repMember, ref, amountN, round2(inst.principal_part), round2(inst.interest_part)]
   );
   await client.query(
     `UPDATE saccos_loan_installments SET status = 'PAID', paid_at = NOW(), reference_id = $1 WHERE id = $2`,
@@ -297,13 +364,23 @@ async function payInstallmentCore({ client, saccosId, loan, installmentId, cfg, 
             repaid_at = CASE WHEN (amount_outstanding - $1::numeric) <= 0 THEN NOW() ELSE repaid_at END
       WHERE id = $2
       RETURNING amount_outstanding`,
-    [round2(inst.total), loan.id]
+    [round2(inst.total), lockedLoan.id]
   );
   const outstanding = round2(Number(cur.rows[0].amount_outstanding));
-  if (outstanding <= 0 && loan.application_id) {
-    await client.query(`UPDATE saccos_loan_applications SET status = 'REPAID', repaid_at = NOW() WHERE id = $1`, [loan.application_id]);
-    await credit.releaseGuaranteesForLoan(client, saccosId, loan.id);
+  if (outstanding <= 0 && lockedLoan.application_id) {
+    await client.query(`UPDATE saccos_loan_applications SET status = 'REPAID', repaid_at = NOW() WHERE id = $1`, [lockedLoan.application_id]);
+    await credit.releaseGuaranteesForLoan(client, saccosId, lockedLoan.id);
   }
+
+  const opState = await fin.setOperationState({
+    client,
+    reference: ref,
+    status: 'SUCCESS',
+  });
+  if (!opState.transitioned) {
+    throw new Error(`SACCOS_LOAN_INSTALLMENT_PAYMENT operation haikufinalize: ${ref}`);
+  }
+
   return {
     reference: ref, installmentId: inst.id, installmentNo: inst.installment_no,
     amount: amountN, lateFee, principalPart: round2(inst.principal_part), interestPart: round2(inst.interest_part),
@@ -319,11 +396,11 @@ async function payInstallment(actorId, saccosId, loanId, installmentId) {
     await client.query('BEGIN');
     await credit.ensureCreditAccounts(client, saccosId);
     await ensureLateFeeAccount(client, saccosId);
-    const loan = await fetchLoan(saccosId, loanId);
-    if (loan.status === 'CLOSED') throw createAppError('SACCOS_LOAN_ALREADY_CLOSED');
-    if (loan.status === 'WRITTEN_OFF') throw createAppError('SACCOS_LOAN_WRITTEN_OFF');
+    // Core performs the authoritative FOR UPDATE loan lock.
+    // Read here only for RBAC; core refreshes the same row before mutation.
+    const loan = await fetchLoan(saccosId, loanId, client);
     if (loan.member_id !== membership.id && !governing) throw createAppError('SACCOS_RBAC');
-    if (Number(loan.amount_outstanding) <= 0) throw createAppError('SACCOS_LOAN_ALREADY_CLOSED');
+
     const cfg = await arrearsConfig(client, saccosId);
     const res = await payInstallmentCore({ client, saccosId, loan, installmentId, cfg });
     await client.query('COMMIT');

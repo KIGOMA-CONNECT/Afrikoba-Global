@@ -11,6 +11,7 @@
  * ============================================================ */
 const BASE = process.env.SACCOS_TEST_BASE || 'http://127.0.0.1:3000';
 const pool = require('../src/config/db');
+const savingsService = require('../src/services/saccosSavingsService');
 const crypto = require('crypto');
 
 let passed = 0;
@@ -247,6 +248,183 @@ async function main() {
 
   const s2Sum = await api('GET', `/api/saccos/${s2Id}/savings/summary`, o2Tok);
   await expect(Number(s2Sum.data.result.balance) === 6000, 'org2 summary balance 6000');
+
+  // ---------- 3b. Deposit reference integrity / idempotency ----------
+  await section('Deposit reference integrity');
+
+  {
+    const explicitRef = 'SAV-RETRY-' + crypto.randomBytes(5).toString('hex').toUpperCase();
+
+    const retry1 = await savingsService.deposit(mReg.data.user.id, orgId, {
+      amount: 1500,
+      reference: explicitRef,
+    });
+
+    await expect(
+      retry1.reference === explicitRef &&
+      retry1.accountNo &&
+      retry1.balance === 2000,
+      'explicit savings reference accepted'
+    );
+
+    const walletAfterFirst = await wallet(mReg.data.user.id);
+
+    const retry2 = await savingsService.deposit(mReg.data.user.id, orgId, {
+      amount: 1500,
+      reference: explicitRef,
+    });
+
+    await expect(
+      retry2.dedup === true &&
+      retry2.reference === explicitRef &&
+      retry2.amount === 1500,
+      'same reference + same amount -> dedup'
+    );
+
+    await expect(
+      (await wallet(mReg.data.user.id)) === walletAfterFirst,
+      'valid retry causes no second wallet debit'
+    );
+
+    const movement = await pool.query(
+      `SELECT COUNT(*)::int AS n
+         FROM saccos_savings_movements
+        WHERE reference_id = $1`,
+      [explicitRef]
+    );
+    await expect(
+      movement.rows[0].n === 1,
+      'valid retry leaves exactly one savings movement'
+    );
+
+    const op = await pool.query(
+      `SELECT COUNT(*)::int AS n, MIN(status) AS status,
+              MIN(operation_type) AS operation_type,
+              MIN(user_id) AS user_id,
+              MIN(amount) AS amount
+         FROM financial_operations
+        WHERE reference_id = $1`,
+      [explicitRef]
+    );
+    await expect(
+      op.rows[0].n === 1 &&
+      op.rows[0].status === 'SUCCESS' &&
+      op.rows[0].operation_type === 'DEBIT' &&
+      Number(op.rows[0].user_id) === Number(mReg.data.user.id) &&
+      Number(op.rows[0].amount) === 1500,
+      'valid retry leaves exactly one SUCCESS DEBIT operation'
+    );
+
+    const retryTxn = await pool.query(
+      `SELECT COUNT(*)::int AS n
+         FROM transactions
+        WHERE reference_id = $1
+          AND type = 'SACCOS_SAVINGS_DEPOSIT'
+          AND status = 'SUCCESS'`,
+      [explicitRef]
+    );
+    await expect(
+      retryTxn.rows[0].n === 1,
+      'valid retry leaves exactly one savings transaction'
+    );
+
+    let conflictCode = null;
+    let conflictStatus = null;
+    try {
+      await savingsService.deposit(mReg.data.user.id, orgId, {
+        amount: 1600,
+        reference: explicitRef,
+      });
+    } catch (e) {
+      conflictCode = e.code;
+      conflictStatus = e.statusCode || e.status;
+    }
+
+    await expect(
+      conflictCode === 'SACCOS_SAVINGS_REFERENCE_CONFLICT' &&
+      Number(conflictStatus) === 409,
+      'same reference + different amount -> 409 REFERENCE_CONFLICT'
+    );
+
+    const walletAfterConflict = await wallet(mReg.data.user.id);
+    const movementAfterConflict = await pool.query(
+      `SELECT COUNT(*)::int AS n, MIN(amount) AS amount
+         FROM saccos_savings_movements
+        WHERE reference_id = $1`,
+      [explicitRef]
+    );
+    const txnAfterConflict = await pool.query(
+      `SELECT COUNT(*)::int AS n
+         FROM transactions
+        WHERE reference_id = $1`,
+      [explicitRef]
+    );
+    const opAfterConflict = await pool.query(
+      `SELECT COUNT(*)::int AS n, MIN(amount) AS amount
+         FROM financial_operations
+        WHERE reference_id = $1`,
+      [explicitRef]
+    );
+
+    await expect(
+      walletAfterConflict === walletAfterFirst &&
+      movementAfterConflict.rows[0].n === 1 &&
+      Number(movementAfterConflict.rows[0].amount) === 1500 &&
+      txnAfterConflict.rows[0].n === 1 &&
+      opAfterConflict.rows[0].n === 1 &&
+      Number(opAfterConflict.rows[0].amount) === 1500,
+      'reference collision causes no financial/domain mutation'
+    );
+
+    // Fail-closed check: create an inconsistent movement with no financial operation.
+    const badRef = 'SAV-BAD-' + crypto.randomBytes(5).toString('hex').toUpperCase();
+    const account = await pool.query(
+      `SELECT id FROM saccos_savings_accounts
+        WHERE saccos_id = $1 AND member_id = (
+          SELECT id FROM saccos_members WHERE user_id = $2 AND saccos_id = $1
+        )
+        LIMIT 1`,
+      [orgId, mReg.data.user.id]
+    );
+    const member = await pool.query(
+      `SELECT id FROM saccos_members WHERE saccos_id = $1 AND user_id = $2`,
+      [orgId, mReg.data.user.id]
+    );
+
+    await expect(
+      account.rows.length === 1 && member.rows.length === 1,
+      'savings account/member available for fail-closed setup'
+    );
+
+    await pool.query(
+      `INSERT INTO saccos_savings_movements
+       (saccos_id, member_id, account_id, reference_id, type, amount, status)
+       VALUES ($1, $2, $3, $4, 'DEPOSIT', 1700, 'APPROVED')`,
+      [orgId, member.rows[0].id, account.rows[0].id, badRef]
+    );
+
+    let inconsistentFailed = false;
+    try {
+      await savingsService.deposit(mReg.data.user.id, orgId, {
+        amount: 1700,
+        reference: badRef,
+      });
+    } catch (e) {
+      inconsistentFailed =
+        String(e.message || '').includes('Inconsistent financial state');
+    }
+
+    await expect(
+      inconsistentFailed,
+      'movement without valid financial operation -> fail closed'
+    );
+
+    await pool.query(
+      `DELETE FROM saccos_savings_movements WHERE reference_id = $1`,
+      [badRef]
+    );
+  }
+
 
   // ---------- 6. Isolation + oversight ----------
   await section('Isolation + oversight');

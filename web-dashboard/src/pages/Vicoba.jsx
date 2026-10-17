@@ -179,7 +179,7 @@ export default function Vicoba() {
   };
 
   const loadMeetingDetails = (mid, keepExpanded) => {
-    api.get(`/governance/meetings/${mid}`).then((r) => {
+    api.get(`/governance/meetings/${mid}`, { params: { group_id: selected ? selected.id : undefined, group_type: 'VICOBA' } }).then((r) => {
       const sorted = (r.data.agenda || []).sort((a, b) => (a.position || 0) - (b.position || 0));
       setExpandedAgenda(sorted);
       setExpandedProposals(r.data.proposals || []);
@@ -208,7 +208,7 @@ export default function Vicoba() {
 
   const castVote = async (pid, choice) => {
     try {
-      const res = await api.post(`/governance/proposals/${pid}/vote`, { choice });
+      const res = await api.post(`/governance/proposals/${pid}/vote`, { choice, groupId: selected ? selected.id : undefined, groupType: 'VICOBA' });
       if (res.data.tally) setTallyMap((m) => ({ ...m, [pid]: res.data.tally }));
       if (res.data && res.data.tally === undefined && res.data.result) setTallyMap((m) => ({ ...m, [pid]: res.data.result.tally }));
       if (selected) loadGov(selected.id);
@@ -254,7 +254,8 @@ export default function Vicoba() {
     if (!selected || !agendaForm.title) return;
     try {
       await api.post(`/governance/meetings/${mid}/agenda`, {
-        position: expandedAgenda.length + 1, title: agendaForm.title, description: agendaForm.description || undefined
+        position: expandedAgenda.length + 1, title: agendaForm.title, description: agendaForm.description || undefined,
+        groupId: selected ? selected.id : undefined, groupType: 'VICOBA'
       });
       show('ok', t('gov.agenda_added'));
       setAgendaForm({ title: '', description: '' });
@@ -265,7 +266,7 @@ export default function Vicoba() {
   const genMinutes = async (mid) => {
     setGovBusy(true);
     try {
-      const res = await api.post(`/governance/meetings/${mid}/ai-minutes`, { transcript: transcriptMap[mid] || '' });
+      const res = await api.post(`/governance/meetings/${mid}/ai-minutes`, { transcript: transcriptMap[mid] || '', groupId: selected ? selected.id : undefined, groupType: 'VICOBA' });
       show('ok', t('gov.minutes_generated'));
       if (selected) loadGov(selected.id);
       loadAgenda(mid);
@@ -303,14 +304,14 @@ export default function Vicoba() {
 
   const govRsvp = async (mid, status) => {
     try {
-      await api.post(`/governance/meetings/${mid}/rsvp`, { status });
+      await api.post(`/governance/meetings/${mid}/rsvp`, { status, groupId: selected ? selected.id : undefined, groupType: 'VICOBA' });
       if (selected) loadGov(selected.id);
     } catch (err) { show('err', err.response?.data?.message || t('vicoba.error')); }
   };
 
   const govAttended = async (mid) => {
     try {
-      await api.post(`/governance/meetings/${mid}/attended`, {});
+      await api.post(`/governance/meetings/${mid}/attended`, { groupId: selected ? selected.id : undefined, groupType: 'VICOBA' });
       if (selected) loadGov(selected.id);
     } catch (err) { show('err', err.response?.data?.message || t('vicoba.error')); }
   };

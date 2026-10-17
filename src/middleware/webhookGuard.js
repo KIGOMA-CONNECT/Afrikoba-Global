@@ -48,9 +48,7 @@ function verifyWebhookSecurity(req, res, next) {
   }
 
   if (config.nodeEnv === 'production' && config.webhook.allowedIps.length > 0) {
-    const clientIp = (req.headers['x-forwarded-for'] || '').split(',')[0].trim()
-      || req.socket.remoteAddress
-      || req.ip;
+    const clientIp = req.ip || req.socket.remoteAddress;
     const normalized = String(clientIp).replace(/^::ffff:/, '');
     if (!config.webhook.allowedIps.some((entry) => isIpAllowed(normalized, entry))) {
       logger.warn('WEBHOOK', `IP haijulikani ilijaribu callback: ${normalized}`);

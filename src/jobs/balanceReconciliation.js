@@ -90,7 +90,9 @@ async function journalBalance(client, accountCode) {
 
 async function expectedBalance(client, accountCode, projection) {
   const r = await client.query(projection.sql);
-  return Number(r.rows[0].v || 0);
+  const raw = r.rows[0] ? r.rows[0].v : null;
+  if (raw === null || raw === undefined) return 0;
+  return Number(raw);
 }
 
 /**
@@ -129,21 +131,24 @@ async function runBalanceReconciliation(runType = 'DAILY') {
            JSON.stringify({ reason: 'projection_source_unavailable', error: e.message })]
         );
         totalChecked += 1; totalMissing += 1;
-        aggregateDifference += Math.abs(journalBal);
+        aggregateDifference += Number.isFinite(Number(journalBal)) ? Math.abs(Number(journalBal)) : 1;
         continue;
       }
 
-      const diff = journalBal - expectedBal;
+      const jb = Number(journalBal), eb = Number(expectedBal), df = jb - eb;
+      const finite = Number.isFinite(jb) && Number.isFinite(eb) && Number.isFinite(df);
       let state;
-      if (Math.abs(journalBal) < 0.000001 && Math.abs(expectedBal) < 0.000001) state = 'MATCHED';
-      else if (Math.abs(diff) > 0.01) state = 'AMOUNT_MISMATCH';
+      if (!finite) state = 'AMOUNT_MISMATCH';
+      else if (Math.abs(jb) < 0.000001 && Math.abs(eb) < 0.000001) state = 'MATCHED';
+      else if (Math.abs(df) > 0.01) state = 'AMOUNT_MISMATCH';
       else state = 'MATCHED';
 
       await client.query(
         `INSERT INTO reconciliation_line_items
            (run_id, account_code, balance_name, state, journal_balance, expected_balance, difference, detail)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb)`,
-        [runId, accountCode, projection.label, state, journalBal, expectedBal, diff,
+        [runId, accountCode, projection.label, state, journalBal, expectedBal,
+         Number.isFinite(df) ? df : 0,
          JSON.stringify({ journalBalance: journalBal, expectedBalance: expectedBal })]
       );
 
@@ -151,7 +156,7 @@ async function runBalanceReconciliation(runType = 'DAILY') {
       if (state === 'MATCHED') totalMatched += 1;
       else if (state === 'MISSING') totalMissing += 1;
       else totalDiff += 1;
-      aggregateDifference += Math.abs(diff);
+        aggregateDifference += Number.isFinite(df) ? Math.abs(df) : 1;
 
       // Any real mismatch is also surfaced as an OPEN reconciliation exception.
       if (state === 'AMOUNT_MISMATCH') {
@@ -162,11 +167,11 @@ async function runBalanceReconciliation(runType = 'DAILY') {
           [`RECON-${accountCode}-${Date.now()}`,
            JSON.stringify({
              accountCode,
-             journalBalance: journalBal,
-             expectedBalance: expectedBal,
-             difference: diff,
-             runId,
-           })]
+              journalBalance: journalBal,
+              expectedBalance: expectedBal,
+              difference: df,
+              runId,
+            })]
         );
       }
     }
@@ -188,7 +193,7 @@ async function runBalanceReconciliation(runType = 'DAILY') {
 
     await client.query(
       `UPDATE reconciliation_runs
-       SET status = CASE WHEN $2 > 0 THEN 'COMPLETE_WITH_DIFF' ELSE 'COMPLETE' END,
+       SET status = CASE WHEN ($2::numeric) > 0 THEN 'COMPLETE_WITH_DIFF' ELSE 'COMPLETE' END,
            finished_at = NOW(),
            total_checked = $3, total_matched = $4, total_missing = $5, total_diff = $6,
            difference = $7

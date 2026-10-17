@@ -43,7 +43,7 @@ export default function Governance() {
 
   useEffect(() => {
     if (!activeChannel) return;
-    api.get(`/governance/channels/${activeChannel}/messages`).then((r) => setMessages(r.data.messages)).catch(() => setMessages([]));
+    api.get(`/governance/channels/${activeChannel}/messages`, { params: { group_id: groupId } }).then((r) => setMessages(r.data.messages)).catch(() => setMessages([]));
   }, [activeChannel]);
 
   const loadChannels = () => {
@@ -114,9 +114,9 @@ export default function Governance() {
     e.preventDefault();
     if (!activeChannel || !msgBody.trim()) return;
     try {
-      await api.post(`/governance/channels/${activeChannel}/messages`, { body: msgBody });
+      await api.post(`/governance/channels/${activeChannel}/messages`, { body: msgBody, group_id: groupId });
       setMsgBody('');
-      api.get(`/governance/channels/${activeChannel}/messages`).then((r) => setMessages(r.data.messages)).catch(() => {});
+      api.get(`/governance/channels/${activeChannel}/messages`, { params: { group_id: groupId } }).then((r) => setMessages(r.data.messages)).catch(() => {});
     } catch (err) { show(err.response?.data?.error || t('gov.error')); }
   };
 

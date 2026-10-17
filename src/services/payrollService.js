@@ -163,7 +163,10 @@ async function assertScheduleOwnership(scheduleId, userId) {
 // ═════════════════════════════════════════════════════════════════════════════
 
 async function runPayroll(scheduleId, { periodStart, periodEnd, approveImmediately = false }) {
-  const sched = (await pool.query('SELECT * FROM payroll_schedules WHERE id=$1', [scheduleId])).rows[0];
+  const sched = (await pool.query(
+    'SELECT * FROM payroll_schedules WHERE id=$1',
+    [scheduleId]
+  )).rows[0];
   if (!sched) throw badge('Ratiba haipatikani.', 404);
   if (sched.status !== 'ACTIVE') throw badge('Ratiba imesitishwa.', 400);
 
@@ -182,64 +185,126 @@ async function runPayroll(scheduleId, { periodStart, periodEnd, approveImmediate
     const gross = Number(e.base_amount) + bonus;
     const tax = e.taxable ? computeProgressiveTax(gross, brackets) : 0;
     const net = Math.round((gross - tax - deductions) * 100) / 100;
-    return { ...e, gross, bonus, deductions, tax, net,
-             employeeName: e.full_name || null, employeePhone: e.phone_number || null };
+    return {
+      ...e,
+      gross,
+      bonus,
+      deductions,
+      tax,
+      net,
+      employeeName: e.full_name || null,
+      employeePhone: e.phone_number || null
+    };
   });
 
-  const netTotal  = computed.reduce((s, c) => s + c.net, 0);
-  const taxTotal  = computed.reduce((s, c) => s + c.tax, 0);
+  const netTotal = computed.reduce((s, c) => s + c.net, 0);
+  const taxTotal = computed.reduce((s, c) => s + c.tax, 0);
   const grossTotal = computed.reduce((s, c) => s + c.gross, 0);
 
-  // Sanctions screening on every employee before the run is created (blocks only on CONFIRMED hits)
   const sanctions = require('./sanctionsService');
   for (const c of computed) {
     if (!c.user_id) continue;
     await sanctions.assertNotSanctioned('PAYROLL_ENTRY', c.user_id);
-    const hits = await sanctions.screenSubject({ type: 'PAYROLL_ENTRY', id: c.user_id, name: c.employeeName, phone: c.employeePhone });
+    const hits = await sanctions.screenSubject({
+      type: 'PAYROLL_ENTRY',
+      id: c.user_id,
+      name: c.employeeName,
+      phone: c.employeePhone
+    });
     if (hits.length) {
-      await sanctions.recordHits(hits, { subjectType: 'PAYROLL_ENTRY', subjectId: c.user_id, subjectName: c.employeeName, subjectPhone: c.employeePhone });
+      await sanctions.recordHits(hits, {
+        subjectType: 'PAYROLL_ENTRY',
+        subjectId: c.user_id,
+        subjectName: c.employeeName,
+        subjectPhone: c.employeePhone
+      });
     }
-  }
-
-  if (!sched.merchant_id) {
-    const wallet = (await pool.query('SELECT balance FROM treasury_wallets WHERE id=$1 FOR UPDATE', [sched.treasury_wallet_id])).rows[0];
-    if (!wallet || Number(wallet.balance) < netTotal)
-      throw badge('Salio la mkoba wa hazina halitoshi kwa malipo.', 400);
-  } else {
-    const acct = await pool.query('SELECT id, balance FROM connected_merchant_accounts WHERE merchant_id=$1 FOR UPDATE', [sched.merchant_id]);
-    if (!acct.rows[0] || Number(acct.rows[0].balance) < netTotal)
-      throw badge('Salio la biashara halitoshi kwa malipo.', 400);
   }
 
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+
+    if (!sched.merchant_id) {
+      const wallet = (await client.query(
+        'SELECT balance FROM treasury_wallets WHERE id=$1 FOR UPDATE',
+        [sched.treasury_wallet_id]
+      )).rows[0];
+
+      if (!wallet || Number(wallet.balance) < netTotal) {
+        throw badge('Salio la mkoba wa hazina halitoshi kwa malipo.', 400);
+      }
+    } else {
+      const acct = (await client.query(
+        'SELECT id, balance FROM connected_merchant_accounts WHERE merchant_id=$1 FOR UPDATE',
+        [sched.merchant_id]
+      )).rows[0];
+
+      if (!acct || Number(acct.balance) < netTotal) {
+        throw badge('Salio la biashara halitoshi kwa malipo.', 400);
+      }
+    }
+
     const run = (await client.query(
-      `INSERT INTO payroll_runs (schedule_id, treasury_wallet_id, merchant_id, funding_source,
-                                 period_start, period_end, status, total_amount, net_total, tax_total, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
-      [scheduleId, sched.treasury_wallet_id || null, sched.merchant_id || null,
-       sched.merchant_id ? 'MERCHANT' : 'TREASURY',
-       periodStart, endOfDay(periodEnd).split('T')[0],
-       approveImmediately ? 'APPROVED' : 'PENDING_APPROVAL',
-       grossTotal, netTotal, taxTotal, null]
+      `INSERT INTO payroll_runs
+       (schedule_id, treasury_wallet_id, merchant_id, funding_source,
+        period_start, period_end, status, total_amount, net_total, tax_total, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+       RETURNING *`,
+      [
+        scheduleId,
+        sched.treasury_wallet_id || null,
+        sched.merchant_id || null,
+        sched.merchant_id ? 'MERCHANT' : 'TREASURY',
+        periodStart,
+        endOfDay(periodEnd).split('T')[0],
+        approveImmediately ? 'APPROVED' : 'PENDING_APPROVAL',
+        grossTotal,
+        netTotal,
+        taxTotal,
+        null
+      ]
     )).rows[0];
 
     for (const c of computed) {
       await client.query(
-        `INSERT INTO payroll_payslips (run_id, user_id, base_amount, adjustments_total,
-                                       gross_amount, tax_amount, deductions_total, net_amount,
-                                       employee_name, employee_phone)
+        `INSERT INTO payroll_payslips
+         (run_id, user_id, base_amount, adjustments_total,
+          gross_amount, tax_amount, deductions_total, net_amount,
+          employee_name, employee_phone)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-        [run.id, c.user_id, c.base_amount, Number(c.bonus) - Number(c.deductions),
-         c.gross, c.tax, c.deductions, c.net, c.employeeName, c.employeePhone]
+        [
+          run.id,
+          c.user_id,
+          c.base_amount,
+          Number(c.bonus) - Number(c.deductions),
+          c.gross,
+          c.tax,
+          c.deductions,
+          c.net,
+          c.employeeName,
+          c.employeePhone
+        ]
       );
     }
 
     await client.query('COMMIT');
-    return { success: true, run,
-             payslips: computed.map(c => ({ user_id: c.user_id, net: c.net, tax: c.tax })) };
-  } catch (err) { await client.query('ROLLBACK').catch(() => {}); throw err; } finally { client.release(); }
+
+    return {
+      success: true,
+      run,
+      payslips: computed.map(c => ({
+        user_id: c.user_id,
+        net: c.net,
+        tax: c.tax
+      }))
+    };
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 
 function endOfDay(dateStr) {
@@ -247,79 +312,178 @@ function endOfDay(dateStr) {
 }
 
 async function approveAndPayRun(runId, approverId) {
-  const run = (await pool.query('SELECT * FROM payroll_runs WHERE id=$1', [runId])).rows[0];
+  const run = (await pool.query(
+    'SELECT * FROM payroll_runs WHERE id=$1',
+    [runId]
+  )).rows[0];
+
   if (!run) throw badge('Run haipatikani.', 404);
-  if (run.status !== 'PENDING_APPROVAL') throw badge('Run hii haiko kwenye hali ya kuidhinishwa.', 400);
-
-  const payslips = (await pool.query('SELECT * FROM payroll_payslips WHERE run_id=$1 ORDER BY id', [runId])).rows;
-  if (!payslips.length) throw badge('Hakuna payslip kwenye run hii.', 400);
-
-  if (run.funding_source === 'MERCHANT') {
-    const acct = (await pool.query(
-      'SELECT * FROM connected_merchant_accounts WHERE merchant_id=$1 FOR UPDATE', [run.merchant_id]
-    )).rows[0];
-    if (!acct || Number(acct.balance) < Number(run.net_total)) throw badge('Salio la biashara halitoshi.', 400);
-  } else {
-    const wallet = (await pool.query(
-      'SELECT balance FROM treasury_wallets WHERE id=$1 FOR UPDATE', [run.treasury_wallet_id]
-    )).rows[0];
-    if (!wallet || Number(wallet.balance) < Number(run.net_total)) throw badge('Salio la hazina halitoshi.', 400);
+  if (run.status !== 'PENDING_APPROVAL') {
+    throw badge('Run hii haiko kwenye hali ya kuidhinishwa.', 400);
   }
 
+  const payslips = (await pool.query(
+    'SELECT * FROM payroll_payslips WHERE run_id=$1 ORDER BY id',
+    [runId]
+  )).rows;
+
+  if (!payslips.length) throw badge('Hakuna payslip kwenye run hii.', 400);
+
   const results = [];
-  let failuresOnly = true;
 
   for (const ps of payslips) {
     const client = await pool.connect();
+
     try {
       await client.query('BEGIN');
+
+      const locked = (await client.query(
+        `SELECT *
+         FROM payroll_payslips
+         WHERE id=$1 AND run_id=$2
+         FOR UPDATE`,
+        [ps.id, runId]
+      )).rows[0];
+
+      if (!locked) {
+        throw badge('Payslip haipatikani.', 404);
+      }
+
+      if (locked.status !== 'PENDING') {
+        results.push({
+          user_id: locked.user_id,
+          net: locked.net_amount,
+          ledger_ref: locked.ledger_ref,
+          paid: locked.status === 'PAID',
+          skipped: true,
+          reason: `Payslip tayari iko kwenye hali ${locked.status}.`
+        });
+        await client.query('ROLLBACK');
+        continue;
+      }
+
       const ref = generateReference('PAY');
 
       if (run.funding_source === 'MERCHANT') {
-        await client.query(
+        const debit = await client.query(
           `UPDATE connected_merchant_accounts
            SET balance = balance - $1, updated_at = NOW()
-           WHERE id = (SELECT id FROM connected_merchant_accounts WHERE merchant_id=$2 FOR UPDATE) AND balance >= $1`,
-          [ps.net_amount, run.merchant_id]
+           WHERE merchant_id = $2
+             AND balance >= $1`,
+          [locked.net_amount, run.merchant_id]
         );
-        await fin.creditWallet({ client, userId: ps.user_id, amount: ps.net_amount, reference: ref,
-                                 fromAccount: 'MERCHANT_BALANCE',
-                                 description: `Merchant payroll ${run.id}`, actor: `payroll:run-${runId}` });
+
+        if (debit.rowCount !== 1) {
+          throw badge('Salio la biashara halitoshi.', 400);
+        }
+
+        await fin.creditWallet({
+          client,
+          userId: locked.user_id,
+          amount: locked.net_amount,
+          reference: ref,
+          fromAccount: 'MERCHANT_BALANCE',
+          description: `Merchant payroll ${run.id}`,
+          actor: `payroll:run-${runId}`
+        });
       } else {
-        await client.query('UPDATE treasury_wallets SET balance = balance - $1 WHERE id = $2',
-                           [ps.net_amount, run.treasury_wallet_id]);
-        await fin.creditWallet({ client, userId: ps.user_id, amount: ps.net_amount, reference: ref,
-                                 fromAccount: 'SUSPENSE',
-                                 description: `Payroll ${run.id}`, actor: `payroll:run-${runId}` });
+        const debit = await client.query(
+          `UPDATE treasury_wallets
+           SET balance = balance - $1
+           WHERE id = $2 AND balance >= $1`,
+          [locked.net_amount, run.treasury_wallet_id]
+        );
+
+        if (debit.rowCount !== 1) {
+          throw badge('Salio la hazina halitoshi.', 400);
+        }
+
+        await fin.creditWallet({
+          client,
+          userId: locked.user_id,
+          amount: locked.net_amount,
+          reference: ref,
+          fromAccount: 'SUSPENSE',
+          description: `Payroll ${run.id}`,
+          actor: `payroll:run-${runId}`
+        });
       }
 
-      await client.query(
+      const marked = await client.query(
         `UPDATE payroll_payslips
-         SET status='PAID', ledger_ref=$1, paid_at=NOW(), employee_name=COALESCE(employee_name,$2), employee_phone=COALESCE(employee_phone,$3)
-         WHERE id=$4`,
-        [ref, ps.employee_name || null, ps.employee_phone || null, ps.id]
+         SET status='PAID',
+             ledger_ref=$1,
+             paid_at=NOW(),
+             employee_name=COALESCE(employee_name,$2),
+             employee_phone=COALESCE(employee_phone,$3)
+         WHERE id=$4 AND run_id=$5 AND status='PENDING'`,
+        [
+          ref,
+          locked.employee_name || null,
+          locked.employee_phone || null,
+          locked.id,
+          runId
+        ]
       );
 
+      if (marked.rowCount !== 1) {
+        throw new Error('Payslip haikuwekwa PAID.');
+      }
+
       await client.query('COMMIT');
-      failuresOnly = false;
-      results.push({ user_id: ps.user_id, net: ps.net_amount, ledger_ref: ref, paid: true });
+
+      results.push({
+        user_id: locked.user_id,
+        net: locked.net_amount,
+        ledger_ref: ref,
+        paid: true
+      });
     } catch (err) {
       await client.query('ROLLBACK').catch(() => {});
-      results.push({ user_id: ps.user_id, net: ps.net_amount, paid: false, error: err.message });
-    } finally { client.release(); }
+      results.push({
+        user_id: ps.user_id,
+        net: ps.net_amount,
+        paid: false,
+        error: err.message
+      });
+    } finally {
+      client.release();
+    }
   }
 
-  const paidCount = results.filter(r => r.paid).length;
-  const status = paidCount === payslips.length ? 'PAID' : paidCount > 0 ? 'PARTIAL' : 'FAILED';
+  const finalPayslips = (await pool.query(
+    'SELECT status FROM payroll_payslips WHERE run_id=$1',
+    [runId]
+  )).rows;
 
-  await pool.query('UPDATE payroll_runs SET status=$1, approved_by=$2 WHERE id=$3',
-                   [status, approverId, runId]);
+  const paidCount = finalPayslips.filter(p => p.status === 'PAID').length;
+  const totalCount = finalPayslips.length;
+  const status =
+    paidCount === totalCount ? 'PAID' :
+    paidCount > 0 ? 'PARTIAL' :
+    'FAILED';
+
+  await pool.query(
+    `UPDATE payroll_runs
+     SET status=$1, approved_by=$2
+     WHERE id=$3`,
+    [status, approverId, runId]
+  );
 
   await logAudit({
-    eventType: 'PAYROLL_RUN', action: 'PAY', entityType: 'PAYROLL_RUN',
-    userId: approverId, referenceId: `PAYROLL-${runId}`,
+    eventType: 'PAYROLL_RUN',
+    action: 'PAY',
+    entityType: 'PAYROLL_RUN',
+    userId: approverId,
+    referenceId: `PAYROLL-${runId}`,
     amount: Number(run.net_total),
-    afterData: { run_id: runId, paid: paidCount, total: payslips.length, status, funding: run.funding_source }
+    afterData: {
+      run_id: runId,
+      paid: paidCount,
+      total: totalCount,
+      status,
+      funding: run.funding_source
+    }
   }).catch(() => {});
 
   return { success: true, status, results };

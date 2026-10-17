@@ -113,7 +113,15 @@ async function debitToSaccos({ client, userId, amount, reference, toAccounts, de
   const amountN = Number(amount);
   const op = await fin.claimOperation({ client, operationType: 'DEBIT', reference, userId, amount: amountN });
   if (!op.claimed) return { dedup: true, reference };
-  const before = Number((await client.query('SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE', [userId])).rows[0].wallet_balance);
+  const walletRow = await client.query(
+    'SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE',
+    [userId]
+  );
+  if (!walletRow.rows.length) {
+    throw Object.assign(new Error('Mtumiaji hajapatikana.'), { statusCode: 404 });
+  }
+
+  const before = Number(walletRow.rows[0].wallet_balance);
   if (before < amountN) throw createAppError('WALLET_INSUFFICIENT_FUNDS');
   await fin.postJournal({
     client,
@@ -123,12 +131,25 @@ async function debitToSaccos({ client, userId, amount, reference, toAccounts, de
     ],
     referenceId: reference, description, postedBy: actor,
   });
-  await client.query('UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2', [amountN, userId]);
+  const debited = await client.query(
+    'UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2 AND wallet_balance >= $1',
+    [amountN, userId]
+  );
+  if (debited.rowCount !== 1) {
+    throw createAppError('WALLET_INSUFFICIENT_FUNDS');
+  }
   await client.query(
     `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
      VALUES ($1, $2, $3, 0, $3, 'SUCCESS', $4, $5)`,
     [reference, userId, amountN, txnType, JSON.stringify({ description })]
   );
+
+  await fin.setOperationState({
+    client,
+    reference,
+    status: 'SUCCESS',
+  });
+
   return { success: true, reference, amount: amountN, balanceBefore: before, balanceAfter: before - amountN };
 }
 
@@ -151,8 +172,12 @@ async function fetchApplication(saccosId, applicationId) {
   return r.rows[0];
 }
 
-async function fetchLoan(saccosId, loanId) {
-  const r = await pool.query('SELECT * FROM saccos_loans WHERE id = $1 AND saccos_id = $2', [loanId, saccosId]);
+async function fetchLoan(saccosId, loanId, client = pool) {
+  const r = await client.query(
+    'SELECT * FROM saccos_loans WHERE id = $1 AND saccos_id = $2' +
+      (client === pool ? '' : ' FOR UPDATE'),
+    [loanId, saccosId]
+  );
   if (!r.rows.length) throw createAppError('SACCOS_LOAN_NOT_FOUND');
   return r.rows[0];
 }
@@ -707,27 +732,88 @@ async function disburseLoan(actorId, saccosId, loanId) {
   }
 }
 
-async function repayLoan(actorId, saccosId, loanId, { amount }) {
+async function repayLoan(actorId, saccosId, loanId, { amount, client: callerClient = null, reference = null }) {
   const value = Number(amount);
   if (!Number.isFinite(value) || value <= 0) throw createAppError('SACCOS_LOAN_AMOUNT_INVALID');
+
   const membership = await requireActiveMember(actorId, saccosId);
-  const loan = await fetchLoan(saccosId, loanId);
-  if (loan.status === 'CLOSED') throw createAppError('SACCOS_LOAN_ALREADY_CLOSED');
-  if (loan.status === 'WRITTEN_OFF') throw createAppError('SACCOS_LOAN_WRITTEN_OFF');
-  if (loan.member_id !== membership.id) throw createAppError('SACCOS_RBAC');
-  if (Number(loan.amount_outstanding) <= 0) throw createAppError('SACCOS_LOAN_ALREADY_CLOSED');
+  const ref = reference || newRef('REP');
+  const client = callerClient || await pool.connect();
+  const ownTransaction = !callerClient;
 
-  const { pay, principalPart, interestPart } = repaymentMath(
-    loan.principal, loan.interest_rate, loan.term_months, value
-  );
-  if (value > Number(loan.amount_outstanding)) throw createAppError('SACCOS_LOAN_REPAY_EXCEEDS');
-
-  const ref = newRef('REP');
-  const client = await pool.connect();
   try {
-    await client.query('BEGIN');
+    if (ownTransaction) await client.query('BEGIN');
+
+    /*
+     * Idempotency:
+     * A retry with the same reference must return the already-recorded
+     * repayment instead of re-applying the financial effect.
+     *
+     * This check intentionally happens before the loan CLOSED check because
+     * the original repayment may have closed the loan successfully.
+     */
+    const existingRepayment = await client.query(
+      `SELECT saccos_id, loan_id, member_id, reference_id,
+              amount, principal_part, interest_part, status
+         FROM saccos_loan_repayments
+        WHERE reference_id = $1
+        FOR UPDATE`,
+      [ref]
+    );
+
+    if (existingRepayment.rows.length) {
+      const existing = existingRepayment.rows[0];
+
+      if (
+        Number(existing.saccos_id) !== Number(saccosId) ||
+        Number(existing.loan_id) !== Number(loanId) ||
+        Number(existing.member_id) !== Number(membership.id) ||
+        Number(existing.amount) !== Number(value)
+      ) {
+        throw createAppError('SACCOS_LOAN_REPAYMENT_REFERENCE_CONFLICT');
+      }
+
+      if (existing.status !== 'APPROVED') {
+        throw createAppError('SACCOS_LOAN_ALREADY_CLOSED');
+      }
+
+      const currentLoan = await fetchLoan(saccosId, loanId, client);
+
+      if (ownTransaction) await client.query('COMMIT');
+
+      return {
+        reference: existing.reference_id,
+        amount: Number(existing.amount),
+        principalPart: Number(existing.principal_part),
+        interestPart: Number(existing.interest_part),
+        outstanding: Number(currentLoan.amount_outstanding),
+        closed: currentLoan.status === 'CLOSED' ||
+          Number(currentLoan.amount_outstanding) <= 0,
+        dedup: true,
+      };
+    }
+
+    /*
+     * Lock the current loan state before repayment math and wallet debit.
+     * Concurrent repayments for the same loan therefore serialize here.
+     */
+    const loan = await fetchLoan(saccosId, loanId, client);
+
+    if (loan.status === 'CLOSED') throw createAppError('SACCOS_LOAN_ALREADY_CLOSED');
+    if (loan.status === 'WRITTEN_OFF') throw createAppError('SACCOS_LOAN_WRITTEN_OFF');
+    if (loan.member_id !== membership.id) throw createAppError('SACCOS_RBAC');
+
+    const outstandingBefore = Number(loan.amount_outstanding);
+    if (outstandingBefore <= 0) throw createAppError('SACCOS_LOAN_ALREADY_CLOSED');
+    if (value > outstandingBefore) throw createAppError('SACCOS_LOAN_REPAY_EXCEEDS');
+
+    const { pay, principalPart, interestPart } = repaymentMath(
+      loan.principal, loan.interest_rate, loan.term_months, value
+    );
+
     await ensureCreditAccounts(client, saccosId);
-    await debitToSaccos({
+
+    const debitResult = await debitToSaccos({
       client, userId: actorId, amount: pay, reference: ref,
       toAccounts: [
         { code: loansReceivableCode(saccosId), amount: principalPart },
@@ -736,31 +822,121 @@ async function repayLoan(actorId, saccosId, loanId, { amount }) {
       description: `Rejesho la mkopo SACCOS #${saccosId}`, actor: 'saccos:credit:repay',
       txnType: 'SACCOS_LOAN_REPAYMENT',
     });
-    const outstanding = round2(Number(loan.amount_outstanding) - pay);
+
+    /*
+     * A financial operation can only be deduplicated here if the corresponding
+     * repayment row already exists. Otherwise the reference points to an
+     * incomplete/inconsistent financial state and must not mutate the loan.
+     */
+    if (debitResult.dedup) {
+      const existing = await client.query(
+        `SELECT saccos_id, loan_id, member_id, reference_id,
+                amount, principal_part, interest_part, status
+           FROM saccos_loan_repayments
+          WHERE reference_id = $1
+          FOR UPDATE`,
+        [ref]
+      );
+
+      if (!existing.rows.length) {
+        throw new Error(
+          `Financial operation ${ref} is already claimed but has no loan repayment record`
+        );
+      }
+
+      const repayment = existing.rows[0];
+
+      if (
+        Number(repayment.saccos_id) !== Number(saccosId) ||
+        Number(repayment.loan_id) !== Number(loanId) ||
+        Number(repayment.member_id) !== Number(membership.id) ||
+        Number(repayment.amount) !== Number(pay)
+      ) {
+        throw createAppError('SACCOS_LOAN_REPAYMENT_REFERENCE_CONFLICT');
+      }
+
+      const operation = await client.query(
+        `SELECT status, operation_type, user_id, amount
+           FROM financial_operations
+          WHERE reference_id = $1
+          FOR UPDATE`,
+        [ref]
+      );
+
+      if (!operation.rows.length ||
+          operation.rows[0].status !== 'SUCCESS' ||
+          operation.rows[0].operation_type !== 'DEBIT' ||
+          Number(operation.rows[0].user_id) !== Number(actorId) ||
+          Number(operation.rows[0].amount) !== Number(pay)) {
+        throw new Error(
+          `Inconsistent financial state for repayment reference ${ref}`
+        );
+      }
+
+      const currentLoan = await fetchLoan(saccosId, loanId, client);
+
+      if (ownTransaction) await client.query('COMMIT');
+
+      return {
+        reference: repayment.reference_id,
+        amount: Number(repayment.amount),
+        principalPart: Number(repayment.principal_part),
+        interestPart: Number(repayment.interest_part),
+        outstanding: Number(currentLoan.amount_outstanding),
+        closed: currentLoan.status === 'CLOSED' ||
+          Number(currentLoan.amount_outstanding) <= 0,
+        dedup: true,
+      };
+    }
+
+    const outstanding = round2(outstandingBefore - pay);
+
     await client.query(
-      `UPDATE saccos_loans SET amount_outstanding = $1::numeric, status = CASE WHEN $2::numeric <= 0 THEN 'CLOSED' ELSE status END, repaid_at = CASE WHEN $2::numeric <= 0 THEN NOW() ELSE repaid_at END WHERE id = $3`,
+      `UPDATE saccos_loans
+          SET amount_outstanding = $1::numeric,
+              status = CASE WHEN $2::numeric <= 0 THEN 'CLOSED' ELSE status END,
+              repaid_at = CASE WHEN $2::numeric <= 0 THEN NOW() ELSE repaid_at END
+        WHERE id = $3`,
       [outstanding, outstanding, loanId]
     );
+
     await client.query(
-      `INSERT INTO saccos_loan_repayments (saccos_id, loan_id, member_id, reference_id, amount, principal_part, interest_part, status)
+      `INSERT INTO saccos_loan_repayments
+         (saccos_id, loan_id, member_id, reference_id, amount, principal_part, interest_part, status)
        VALUES ($1, $2, $3, $4, $5, $6, $7, 'APPROVED')`,
       [saccosId, loanId, membership.id, ref, pay, principalPart, interestPart]
     );
+
     if (outstanding <= 0) {
-      await client.query(`UPDATE saccos_loan_applications SET status = 'REPAID', repaid_at = NOW() WHERE id = $1`, [loan.application_id]);
+      await client.query(
+        `UPDATE saccos_loan_applications
+            SET status = 'REPAID', repaid_at = NOW()
+          WHERE id = $1`,
+        [loan.application_id]
+      );
       await releaseGuaranteesForLoan(client, saccosId, loanId);
     }
-    await client.query('COMMIT');
-    await logAudit(actorId, 'SACCOS_LOAN_REPAYMENT', { referenceId: saccosId, details: { loanId, amount: pay } }).catch(() => {});
+
+    if (ownTransaction) await client.query('COMMIT');
+
+    if (ownTransaction) await logAudit(actorId, 'SACCOS_LOAN_REPAYMENT', {
+      referenceId: saccosId,
+      details: { loanId, amount: pay },
+    }).catch(() => {});
+
     return {
-      reference: ref, amount: pay, principalPart, interestPart,
-      outstanding, closed: outstanding <= 0,
+      reference: ref,
+      amount: pay,
+      principalPart,
+      interestPart,
+      outstanding,
+      closed: outstanding <= 0,
     };
   } catch (e) {
-    await client.query('ROLLBACK').catch(() => {});
+    if (ownTransaction) await client.query('ROLLBACK').catch(() => {});
     throw e;
   } finally {
-    client.release();
+    if (ownTransaction) client.release();
   }
 }
 

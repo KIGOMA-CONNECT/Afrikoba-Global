@@ -29,7 +29,14 @@ async function findDirectPair(from, to) {
      ORDER BY valid_from DESC LIMIT 1`,
     [from, to]
   );
-  return result.rows.length ? parseFloat(result.rows[0].rate) : null;
+  return result.rows.length ? toFinitePositiveRate(result.rows[0].rate) : null;
+}
+
+/** Parse a stored rate; reject NaN/Infinity/non-positive so a corrupt row
+ *  cannot silently poison a conversion with a non-finite rate. */
+function toFinitePositiveRate(rate) {
+  const n = parseFloat(rate);
+  return Number.isFinite(n) && n > 0 ? n : null;
 }
 
 /**
@@ -48,16 +55,35 @@ async function getExchangeRate(fromCurrency, toCurrency) {
   if (direct !== null) return { rate: direct, from, to, source: 'DIRECT' };
 
   const inverse = await findDirectPair(to, from);
-  if (inverse !== null && inverse !== 0) return { rate: 1 / inverse, from, to, source: 'INVERSE' };
+  if (inverse !== null && Number.isFinite(inverse) && inverse > 0) {
+    const inverseRate = 1 / inverse;
+    if (Number.isFinite(inverseRate) && inverseRate > 0) {
+      return { rate: inverseRate, from, to, source: 'INVERSE' };
+    }
+  }
 
-  const fromTzs = await findDirectPair(from, 'TZS') ?? (await findDirectPair('TZS', from));
-  const tzsTo = await findDirectPair('TZS', to) ?? (await findDirectPair(to, 'TZS'));
-  if (fromTzs !== null && tzsTo !== null) {
-    // from→TZS: direct if stored from→TZS, else 1/(TZS→from)
-    const f2t = findDirectPair(from, 'TZS') !== null ? fromTzs : 1 / fromTzs;
-    // TZS→to: direct if stored TZS→to, else 1/(to→TZS)
-    const t2o = findDirectPair('TZS', to) !== null ? tzsTo : 1 / tzsTo;
-    return { rate: f2t * t2o, from, to, source: 'TRIANGULATED' };
+  const directFromTzs = await findDirectPair(from, 'TZS');
+  const inverseTzsFrom = await findDirectPair('TZS', from);
+  const directTzsTo = await findDirectPair('TZS', to);
+  const inverseToTzs = await findDirectPair(to, 'TZS');
+
+  const fromTzs = directFromTzs ?? inverseTzsFrom;
+  const tzsTo = directTzsTo ?? inverseToTzs;
+
+  if (
+    fromTzs !== null && tzsTo !== null &&
+    Number.isFinite(fromTzs) && fromTzs > 0 &&
+    Number.isFinite(tzsTo) && tzsTo > 0
+  ) {
+    // from→TZS: direct if stored from→TZS, otherwise invert TZS→from.
+    const f2t = directFromTzs !== null ? fromTzs : 1 / fromTzs;
+    // TZS→to: direct if stored TZS→to, otherwise invert to→TZS.
+    const t2o = directTzsTo !== null ? tzsTo : 1 / tzsTo;
+    const triangulatedRate = f2t * t2o;
+
+    if (Number.isFinite(triangulatedRate) && triangulatedRate > 0) {
+      return { rate: triangulatedRate, from, to, source: 'TRIANGULATED' };
+    }
   }
 
   return null;
@@ -73,7 +99,19 @@ async function convert(amount, fromCurrency, toCurrency) {
   const to = String(toCurrency || '').toUpperCase();
 
   const rateData = await getExchangeRate(from, to);
-  if (!rateData) throw Object.assign(createAppError('FX_RATE_NOT_FOUND'), { _i18nVars: { from, to } });
+  if (!rateData || !Number.isFinite(rateData.rate) || rateData.rate <= 0) {
+    throw Object.assign(createAppError('FX_RATE_NOT_FOUND'), { _i18nVars: { from, to } });
+  }
+
+  const convertedRaw = amountNum * rateData.rate;
+  if (!Number.isFinite(convertedRaw)) {
+    throw createAppError('WALLET_INVALID_AMOUNT');
+  }
+
+  const convertedAmount = Number(convertedRaw.toFixed(2));
+  if (!Number.isFinite(convertedAmount) || convertedAmount <= 0) {
+    throw createAppError('WALLET_INVALID_AMOUNT');
+  }
 
   return {
     originalAmount: amountNum,
@@ -81,7 +119,7 @@ async function convert(amount, fromCurrency, toCurrency) {
     toCurrency: to,
     rate: rateData.rate,
     source: rateData.source,
-    convertedAmount: parseFloat((amountNum * rateData.rate).toFixed(2)),
+    convertedAmount,
   };
 }
 
@@ -107,21 +145,34 @@ async function updateRate(fromCurrency, toCurrency, rate, source = 'MANUAL') {
   await validateActiveCurrency(from);
   await validateActiveCurrency(to);
 
-  await pool.query(
-    `INSERT INTO exchange_rates (from_currency, to_currency, rate, source)
-     VALUES ($1, $2, $3, $4)
-     ON CONFLICT (from_currency, to_currency, valid_from)
-     DO UPDATE SET rate = $3, source = $4`,
-    [from, to, rateNum, source]
-  );
-  await pool.query(
-    `INSERT INTO exchange_rate_history (from_currency, to_currency, day, rate, source, sampled_at)
-     VALUES ($1, $2, $3, $4, NOW(), NOW())
-     ON CONFLICT (from_currency, to_currency, day)
-     DO UPDATE SET rate = EXCLUDED.rate, source = EXCLUDED.source`,
-    [from, to, rateNum, source]
-  );
-  return { success: true, from, to, rate: rateNum };
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    await client.query(
+      `INSERT INTO exchange_rates (from_currency, to_currency, rate, source)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (from_currency, to_currency, valid_from)
+       DO UPDATE SET rate = $3, source = $4`,
+      [from, to, rateNum, source]
+    );
+
+    await client.query(
+      `INSERT INTO exchange_rate_history (from_currency, to_currency, day, rate, source, sampled_at)
+       VALUES ($1, $2, $3, $4, $5, NOW())
+       ON CONFLICT (from_currency, to_currency, day)
+       DO UPDATE SET rate = EXCLUDED.rate, source = EXCLUDED.source`,
+      [from, to, new Date().toISOString().slice(0, 10), rateNum, source]
+    );
+
+    await client.query('COMMIT');
+    return { success: true, from, to, rate: rateNum };
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
 }
 
 /**
@@ -227,8 +278,10 @@ async function setUserCurrency(userId, currencyCode) {
  */
 async function getMyHoldings(userId) {
   const main = await pool.query('SELECT wallet_balance, locked_balance, currency_code FROM users WHERE id = $1', [userId]);
-  const tzs = Number(main.rows[0]?.wallet_balance || 0);
-  const tzsLocked = Number(main.rows[0]?.locked_balance || 0);
+  const tzsRaw = Number(main.rows[0]?.wallet_balance);
+  const tzsLockedRaw = Number(main.rows[0]?.locked_balance);
+  const tzs = Number.isFinite(tzsRaw) ? tzsRaw : 0;
+  const tzsLocked = Number.isFinite(tzsLockedRaw) ? tzsLockedRaw : 0;
 
   const balances = await pool.query(
     'SELECT currency_code, balance FROM user_balances WHERE user_id = $1 AND balance <> 0 ORDER BY currency_code',
@@ -244,8 +297,9 @@ async function getMyHoldings(userId) {
     } catch (e) {
       rate = null;
     }
-    const tzsValue = rate !== null ? Number((Number(row.balance) * rate).toFixed(2)) : null;
-    if (tzsValue !== null) tzsTotal += tzsValue;
+    const balNum = Number(row.balance);
+    const tzsValue = rate !== null && Number.isFinite(balNum) ? Number((balNum * rate).toFixed(2)) : null;
+    if (tzsValue !== null && Number.isFinite(tzsValue)) tzsTotal += tzsValue;
     currencies.push({ currency: row.currency_code, balance: Number(row.balance), rateToTzs: rate, tzsValue });
   }
 

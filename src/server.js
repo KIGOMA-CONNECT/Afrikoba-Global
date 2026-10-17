@@ -25,6 +25,7 @@ const { validateTokenPayload } = require('./middleware/jwtHardening');
 const { validateApiKey } = require('./middleware/apiKeyAuth');
 const { sqlInjectionGuard } = require('./middleware/sqlInjectionGuard');
 const { webhookReplayProtection, verifyWebhookHmac } = require('./middleware/webhookSecurity');
+const { verifyWebhookSecurity } = require('./middleware/webhookGuard');
 const { xssProtection } = require('./middleware/xssProtection');
 const { verifyCsrfToken } = require('./middleware/csrf');
 const { inputLengthGuard } = require('./middleware/inputLengthGuard');
@@ -334,7 +335,7 @@ for (const prefix of versionPrefixes) {
   app.use(`${prefix}/admin`, adminLimiter, adminRoutes);
   app.use(`${prefix}/ops`, adminLimiter, opsRoutes.audit);
   app.use(`${prefix}/ops`, adminLimiter, opsRoutes);
-  app.use(`${prefix}/payments`, webhookLimiter, webhookReplayProtection, verifyWebhookHmac, callbackRoutes);
+  app.use(`${prefix}/payments`, webhookLimiter, verifyWebhookSecurity, verifyWebhookHmac, webhookReplayProtection, callbackRoutes);
   app.use(`${prefix}/services`, serviceRoutes);
   app.use(`${prefix}/marketing`, marketingRoutes);
   app.use(`${prefix}/ussd`, webhookLimiter, ussdRoutes);

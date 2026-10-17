@@ -89,7 +89,7 @@ async function pendingSum(savingsId) {
   return Number(r.rows[0].p);
 }
 
-async function deposit(actorId, saccosId, { amount }) {
+async function deposit(actorId, saccosId, { amount, client: callerClient = null, reference = null }) {
   const value = Number(amount);
   if (!Number.isFinite(value) || value <= 0) throw createAppError('SACCOS_SAVINGS_AMOUNT_INVALID');
   const saccos = await fetchActiveOrg(actorId, saccosId);
@@ -98,17 +98,102 @@ async function deposit(actorId, saccosId, { amount }) {
   if (value < cfg.minDeposit) throw createAppError('SACCOS_SAVINGS_BELOW_MIN_DEPOSIT');
   if (cfg.maxDeposit !== null && value > cfg.maxDeposit) throw createAppError('SACCOS_SAVINGS_ABOVE_MAX_DEPOSIT');
 
-  const ref = newSolarRef('SAV');
-  const client = await pool.connect();
+  const ref = reference || newSolarRef('SAV');
+  const client = callerClient || await pool.connect();
+  const ownTransaction = !callerClient;
   try {
-    await client.query('BEGIN');
+    if (ownTransaction) await client.query('BEGIN');
     await ensureSavingsLiability(client, saccosId);
     const account = await ensureMemberAccount(client, saccosId, membership.id, cfg.savingsType);
-    await fin.debitWallet({
+    const existingMovement = await client.query(
+      `SELECT saccos_id, member_id, account_id, reference_id,
+              type, amount, status
+         FROM saccos_savings_movements
+        WHERE reference_id = $1
+        FOR UPDATE`,
+      [ref]
+    );
+
+    if (existingMovement.rows.length) {
+      const existing = existingMovement.rows[0];
+
+      if (
+        Number(existing.saccos_id) !== Number(saccosId) ||
+        Number(existing.member_id) !== Number(membership.id) ||
+        Number(existing.account_id) !== Number(account.id) ||
+        existing.type !== 'DEPOSIT' ||
+        Number(existing.amount) !== Number(value)
+      ) {
+        throw createAppError('SACCOS_SAVINGS_REFERENCE_CONFLICT');
+      }
+
+      if (existing.status !== 'APPROVED') {
+        throw createAppError('SACCOS_SAVINGS_REFERENCE_CONFLICT');
+      }
+
+      const operation = await client.query(
+        `SELECT status, operation_type, user_id, amount
+           FROM financial_operations
+          WHERE reference_id = $1
+          FOR UPDATE`,
+        [ref]
+      );
+
+      if (
+        operation.rows.length !== 1 ||
+        operation.rows[0].status !== 'SUCCESS' ||
+        operation.rows[0].operation_type !== 'DEBIT' ||
+        Number(operation.rows[0].user_id) !== Number(actorId) ||
+        Number(operation.rows[0].amount) !== Number(value)
+      ) {
+        throw new Error(
+          `Inconsistent financial state for savings deposit reference ${ref}`
+        );
+      }
+
+      if (ownTransaction) await client.query('COMMIT');
+
+      return {
+        dedup: true,
+        reference: ref,
+        amount: Number(existing.amount),
+        accountNo: account.account_no,
+        balance: Number(account.balance),
+      };
+    }
+
+    const debit = await fin.debitWallet({
       client, userId: actorId, amount: value, reference: ref,
       toAccount: savingsLiabilityCode(saccosId),
       description: `Amana ya akiba SACCOS #${saccosId}`, actor: 'saccos:savings:deposit',
     });
+
+    if (debit.dedup) {
+      const operation = await client.query(
+        `SELECT status, operation_type, user_id, amount
+           FROM financial_operations
+          WHERE reference_id = $1
+          FOR UPDATE`,
+        [ref]
+      );
+
+      if (
+        !operation.rows.length ||
+        operation.rows[0].status !== 'SUCCESS' ||
+        operation.rows[0].operation_type !== 'DEBIT' ||
+        Number(operation.rows[0].user_id) !== Number(actorId) ||
+        Number(operation.rows[0].amount) !== Number(value)
+      ) {
+        throw new Error(
+          `Inconsistent financial state for savings deposit reference ${ref}`
+        );
+      }
+
+      throw new Error(
+        `Financial operation ${ref} is already claimed but has no savings movement`
+      );
+    }
+
     await client.query(
       `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
        VALUES ($1, $2, $3, 0, $3, 'SUCCESS', 'SACCOS_SAVINGS_DEPOSIT', $4)`,
@@ -123,14 +208,14 @@ async function deposit(actorId, saccosId, { amount }) {
        VALUES ($1, $2, $3, $4, 'DEPOSIT', $5, 'APPROVED')`,
       [saccosId, membership.id, account.id, ref, value]
     );
-    await client.query('COMMIT');
-    await logAudit(actorId, 'SACCOS_SAVINGS_DEPOSIT', { referenceId: saccosId, details: { accountId: account.id, amount: value } }).catch(() => {});
+    if (ownTransaction) await client.query('COMMIT');
+    if (ownTransaction) await logAudit(actorId, 'SACCOS_SAVINGS_DEPOSIT', { referenceId: saccosId, details: { accountId: account.id, amount: value } }).catch(() => {});
     return { reference: ref, accountNo: account.account_no, balance: Number(account.balance) + value };
   } catch (e) {
-    await client.query('ROLLBACK').catch(() => {});
+    if (ownTransaction) await client.query('ROLLBACK').catch(() => {});
     throw e;
   } finally {
-    client.release();
+    if (ownTransaction) client.release();
   }
 }
 

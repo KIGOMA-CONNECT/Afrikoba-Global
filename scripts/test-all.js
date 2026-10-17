@@ -797,15 +797,148 @@ async function section(title) { console.log(`\n== ${title} ==`); }
   const agentList = await api('GET', '/api/network/agents', adminToken, null);
   await expect(agentList.status === 200 && agentList.data.agents.length >= 1, 'Admin lists agents');
 
-  const agId = applyAgent.data.agent ? applyAgent.data.agent.id : (agentList.data.agents[0] && agentList.data.agents[0].id);
+  const ownAgentResult = await pool.query(
+    'SELECT id FROM agents WHERE user_id = $1 ORDER BY id DESC LIMIT 1',
+    [agentUserId]
+  );
+  const agId = applyAgent.data.agent
+    ? applyAgent.data.agent.id
+    : (ownAgentResult.rows[0] && ownAgentResult.rows[0].id);
+
+  await expect(Number.isSafeInteger(Number(agId)) && Number(agId) > 0,
+    'Agent ID belongs to the agent created by this test',
+    `agentId=${agId}`);
+
   const verifyAgent = await api('POST', `/api/network/agents/${agId}/verify`, adminToken, {});
   await expect(verifyAgent.status === 200, 'Admin verifies agent');
 
   const nearby = await api('GET', `/api/network/agents/nearby?lat=-6.7924&lng=39.2083&radius=50`, areg.data.token, null);
   await expect(nearby.status === 200 && nearby.data.agents.length >= 1, 'Nearby agent found');
 
-  const settle = await api('POST', '/api/network/agents/settlement', areg.data.token, { amount: 100000, type: 'DEPOSIT' });
-  await expect(settle.status === 200 && settle.data.success, 'Agent settlement deposit (float)');
+  const balanceBeforeResult = await pool.query(
+    'SELECT balance::text AS balance FROM agents WHERE id = $1',
+    [agId]
+  );
+  const balanceBefore = Number(balanceBeforeResult.rows[0]?.balance);
+
+  await expect(
+    balanceBeforeResult.rows.length === 1 && Number.isFinite(balanceBefore),
+    'Read baseline balance for this agent',
+    JSON.stringify(balanceBeforeResult.rows)
+  );
+
+  const settle = await api('POST', '/api/network/agents/settlement', areg.data.token, {
+    amount: 100000,
+    type: 'DEPOSIT'
+  });
+  const settlementResult = settle.data && settle.data.result;
+  const settlementReference = settlementResult && settlementResult.reference;
+  const fourEyesRequestId = Number(settlementResult && settlementResult.fourEyesRequestId);
+
+  await expect(
+    settle.status === 200 &&
+    settle.data.success &&
+    settlementResult &&
+    settlementResult.status === 'PENDING' &&
+    Number.isSafeInteger(fourEyesRequestId) &&
+    fourEyesRequestId > 0 &&
+    typeof settlementReference === 'string' &&
+    settlementReference.length > 0,
+    'Agent settlement queued for Four-Eyes approval',
+    `${settle.status}: ${JSON.stringify(settle.data)}`
+  );
+
+  if (
+    settle.status === 200 &&
+    settle.data.success &&
+    settlementResult &&
+    Number.isSafeInteger(fourEyesRequestId) &&
+    fourEyesRequestId > 0 &&
+    typeof settlementReference === 'string' &&
+    settlementReference.length > 0 &&
+    balanceBeforeResult.rows.length === 1
+  ) {
+    const operationReference = `${settlementReference}:STL`;
+
+    const pendingChecks = await pool.query(
+      `SELECT
+         (SELECT status FROM agent_settlements
+           WHERE agent_id = $1 AND reference = $2) AS settlement_status,
+         (SELECT balance::text FROM agents WHERE id = $1) AS current_balance,
+         (SELECT COUNT(*)::int FROM journal_entries
+           WHERE reference_id = $3) AS journal_count,
+         (SELECT COUNT(*)::int FROM financial_operations
+           WHERE reference_id = $3) AS operation_count`,
+      [
+        agId,
+        settlementReference,
+        operationReference
+      ]
+    );
+
+    const pending = pendingChecks.rows[0];
+
+    await expect(
+      pending &&
+      pending.settlement_status === 'PENDING' &&
+      Number(pending.current_balance) === balanceBefore &&
+      pending.journal_count === 0 &&
+      pending.operation_count === 0,
+      'Pending settlement has no premature financial effects',
+      JSON.stringify(pending)
+    );
+
+    const approval = await api(
+      'POST',
+      `/api/admin/four-eyes/requests/${fourEyesRequestId}/approve`,
+      adminToken,
+      { note: 'Phase 68 settlement acceptance test' }
+    );
+
+    await expect(
+      approval.status === 200 &&
+      approval.data &&
+      approval.data.request &&
+      approval.data.request.status === 'EXECUTED',
+      'Four-Eyes approval executes agent settlement',
+      `${approval.status}: ${JSON.stringify(approval.data)}`
+    );
+
+    const finalChecks = await pool.query(
+      `SELECT
+         (SELECT status FROM agent_settlements
+           WHERE agent_id = $1 AND reference = $2) AS settlement_status,
+         (SELECT balance::text FROM agents WHERE id = $1) AS current_balance,
+         (SELECT COUNT(*)::int FROM journal_entries
+           WHERE reference_id = $3) AS journal_count,
+         (SELECT COUNT(*)::int FROM financial_operations
+           WHERE reference_id = $3) AS operation_count,
+         (SELECT status FROM financial_operations
+           WHERE reference_id = $3) AS operation_status`,
+      [
+        agId,
+        settlementReference,
+        operationReference
+      ]
+    );
+
+    const finalState = finalChecks.rows[0];
+
+    await expect(
+      finalState &&
+      finalState.settlement_status === 'SETTLED' &&
+      Number(finalState.current_balance) === balanceBefore + 100000 &&
+      finalState.journal_count === 2 &&
+      finalState.operation_count === 1 &&
+      finalState.operation_status === 'SUCCESS',
+      'Settlement posts balance and one balanced journal group exactly once',
+      JSON.stringify(finalState)
+    );
+  } else {
+    await expect(false,
+      'Settlement financial acceptance checks skipped because setup failed',
+      'Review the preceding agent/settlement test failures.');
+  }
 
   const custPhone = '255733' + nowSuffix();
   const creg = await register(custPhone, 'Customer Test');

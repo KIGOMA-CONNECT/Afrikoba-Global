@@ -11,6 +11,7 @@ const credit = require('../services/savingsCreditService');
 const business = require('../services/businessService');
 const circle = require('../services/lendingCircleService');
 const kilimo = require('../services/kilimoAgriService');
+const network = require('../services/networkService');
 
 router.use(authRequired, requireRoles('ADMIN'));
 
@@ -131,6 +132,10 @@ fe.registerExecutor('KILIMO_AGRI_LOAN_DISBURSE', async (payload, approverId) => 
   const loanId = num(payload.loanId);
   requireValue(loanId, 'loanId inahitajika.');
   return kilimo.disburseAgriLoan(approverId, loanId);
+});
+
+fe.registerExecutor('AGENT_SETTLEMENT', async (payload, approverId) => {
+  return network.executeAgentSettlement(payload, approverId);
 });
 
 // ===== Policies =====

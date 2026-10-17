@@ -15,6 +15,7 @@
  * ============================================================ */
 const BASE = process.env.SACCOS_TEST_BASE || 'http://127.0.0.1:3000';
 const pool = require('../src/config/db');
+const fundsService = require('../src/services/saccosFundsService');
 
 let passed = 0;
 let failed = 0;
@@ -155,6 +156,147 @@ async function main() {
   const mine = await api('GET', `/api/saccos/${orgId}/funds/contributions/mine`, m1Tok);
   await expect(mine.status === 200 && mine.data.result.length === 1 && mine.data.result[0].amount === 30000 && mine.data.result[0].code === 'EXPANSION',
     'm1 sees own contribution only');
+
+  // ---------- 4b. Contribution reference integrity ----------
+  await section('Contribution reference integrity');
+
+  const contributionReference = c1.data.result.reference_id;
+
+  const walletBeforeRetry = await pool.query(
+    'SELECT wallet_balance FROM users WHERE id = $1',
+    [m1.rows[0].id]
+  );
+
+  const retry = await fundsService.contributeFund(
+    m1.rows[0].id,
+    orgId,
+    fAId,
+    30000,
+    { reference: contributionReference }
+  );
+
+  const walletAfterRetry = await pool.query(
+    'SELECT wallet_balance FROM users WHERE id = $1',
+    [m1.rows[0].id]
+  );
+
+  const retryContribution = await pool.query(
+    `SELECT COUNT(*)::int AS count
+       FROM saccos_fund_contributions
+      WHERE reference_id = $1`,
+    [contributionReference]
+  );
+
+  const retryOperation = await pool.query(
+    `SELECT COUNT(*)::int AS count,
+            MIN(operation_type) AS operation_type,
+            MIN(status) AS status,
+            MIN(user_id) AS user_id,
+            MIN(amount) AS amount
+       FROM financial_operations
+      WHERE reference_id = $1`,
+    [contributionReference]
+  );
+
+  const retryTransaction = await pool.query(
+    `SELECT COUNT(*)::int AS count
+       FROM transactions
+      WHERE reference_id = $1`,
+    [contributionReference]
+  );
+
+  await expect(
+    retry.dedup === true &&
+      retry.reference === contributionReference &&
+      Number(retry.amount) === 30000,
+    'same reference + same contribution -> dedup',
+    JSON.stringify(retry)
+  );
+
+  await expect(
+    Math.abs(Number(walletAfterRetry.rows[0].wallet_balance) -
+      Number(walletBeforeRetry.rows[0].wallet_balance)) < 0.01 &&
+      retryContribution.rows[0].count === 1 &&
+      retryOperation.rows[0].count === 1 &&
+      retryOperation.rows[0].operation_type === 'DEBIT' &&
+      retryOperation.rows[0].status === 'SUCCESS' &&
+      Number(retryOperation.rows[0].user_id) === Number(m1.rows[0].id) &&
+      Number(retryOperation.rows[0].amount) === 30000 &&
+      retryTransaction.rows[0].count === 1,
+    'valid retry causes no duplicate financial/domain mutation',
+    JSON.stringify({
+      walletBefore: Number(walletBeforeRetry.rows[0].wallet_balance),
+      walletAfter: Number(walletAfterRetry.rows[0].wallet_balance),
+      contributions: retryContribution.rows[0].count,
+      operations: retryOperation.rows[0].count,
+      transactions: retryTransaction.rows[0].count,
+    })
+  );
+
+  const collision = await fundsService.contributeFund(
+    m1.rows[0].id,
+    orgId,
+    fAId,
+    29000,
+    { reference: contributionReference }
+  ).then(
+    () => null,
+    (e) => e
+  );
+
+  const walletAfterCollision = await pool.query(
+    'SELECT wallet_balance FROM users WHERE id = $1',
+    [m1.rows[0].id]
+  );
+
+  const collisionContribution = await pool.query(
+    `SELECT COUNT(*)::int AS count
+       FROM saccos_fund_contributions
+      WHERE reference_id = $1`,
+    [contributionReference]
+  );
+
+  const collisionOperation = await pool.query(
+    `SELECT COUNT(*)::int AS count
+       FROM financial_operations
+      WHERE reference_id = $1`,
+    [contributionReference]
+  );
+
+  const collisionTransaction = await pool.query(
+    `SELECT COUNT(*)::int AS count
+       FROM transactions
+      WHERE reference_id = $1`,
+    [contributionReference]
+  );
+
+  await expect(
+    collision &&
+      collision.code === 'SACCOS_FUND_REFERENCE_CONFLICT' &&
+      collision.statusCode === 409,
+    'same reference + different amount -> 409 REFERENCE_CONFLICT',
+    JSON.stringify({
+      code: collision && collision.code,
+      statusCode: collision && collision.statusCode,
+      message: collision && collision.message,
+    })
+  );
+
+  await expect(
+    Math.abs(Number(walletAfterCollision.rows[0].wallet_balance) -
+      Number(walletAfterRetry.rows[0].wallet_balance)) < 0.01 &&
+      collisionContribution.rows[0].count === 1 &&
+      collisionOperation.rows[0].count === 1 &&
+      collisionTransaction.rows[0].count === 1,
+    'reference collision causes no financial mutation',
+    JSON.stringify({
+      walletAfterRetry: Number(walletAfterRetry.rows[0].wallet_balance),
+      walletAfterCollision: Number(walletAfterCollision.rows[0].wallet_balance),
+      contributions: collisionContribution.rows[0].count,
+      operations: collisionOperation.rows[0].count,
+      transactions: collisionTransaction.rows[0].count,
+    })
+  );
 
   // ---------- 5. Transfers ----------
   await section('Transfers between funds');
