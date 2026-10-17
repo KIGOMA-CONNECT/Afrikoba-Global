@@ -258,21 +258,41 @@ async function section(title) { console.log(`\n== ${title} ==`); }
   });
   await expect(wbWrong.status === 401, 'Webhook secret mbaya inakataliwa (401)', `${wbWrong.status}`);
 
-  // Withdrawal + reconciliation refund
+  // Withdrawal + reconciliation refund (MODE-AWARE, provider enabled/disabled).
+  // Disabled (default CI): the product must refuse deterministically and MUST NOT
+  // touch money. Enabled (+ AzamPay mock): hold is placed and reconciliation
+  // settles strictly by gateway state (never by blind timeout).
+  const azampayOn = !!config.azampay.enabled;
   const wd = await api('POST', '/api/wallet/withdraw', regC.data.token, { amount: 5000, provider: 'Mpesa' });
-  await expect(wd.status === 200, 'Withdrawal inaanza (PENDING)', `${wd.status}`);
-  const afterWd = await balanceOf(regC.data.user.id);
-  await expect(afterWd.wallet === cAfter.wallet - 5000, 'Salio linaondolewa kwa withdrawal', `${afterWd.wallet}`);
+  if (!azampayOn) {
+    await expect(wd.status === 503 && wd.data.code === 'AZAMPAY_DISABLED',
+      'Withdrawal inakataliwa deterministic (AZAMPAY_DISABLED)', `${wd.status} ${JSON.stringify(wd.data)}`);
+    const afterWdOff = await balanceOf(regC.data.user.id);
+    await expect(afterWdOff.wallet === cAfter.wallet && afterWdOff.locked === cAfter.locked,
+      'Salio HALIATHIRIKA withdrawal ikiwa imezimwa (hakuna hold)', `wallet=${afterWdOff.wallet} locked=${afterWdOff.locked}`);
+    const reconOff = await reconcilePendingDeposits();
+    await expect(reconOff.providerDisabled === true && reconOff.processedWithdrawals.length === 0,
+      'Reconciliation HAIFANYI kazi provider ikiwa imezimwa', JSON.stringify(reconOff));
+    const afterReconOff = await balanceOf(regC.data.user.id);
+    await expect(afterReconOff.wallet === cAfter.wallet && afterReconOff.locked === cAfter.locked,
+      'Fedha hazipotei provider ikiwa imezimwa', `wallet=${afterReconOff.wallet} locked=${afterReconOff.locked}`);
+  } else {
+    await expect(wd.status === 200 && !!wd.data.referenceId,
+      'Withdrawal inaanza (PROCESSING)', `${wd.status} ${JSON.stringify(wd.data)}`);
+    const afterWd = await balanceOf(regC.data.user.id);
+    await expect(afterWd.wallet === cAfter.wallet - 5000 && afterWd.locked === cAfter.locked + 5000,
+      'Salio linaondolewa na hold inawekwa', `wallet=${afterWd.wallet} locked=${afterWd.locked}`);
 
-  await pool.query(`UPDATE transactions SET created_at = NOW() - INTERVAL '16 minutes' WHERE reference_id = $1`, [wd.data.referenceId]);
-  const recon = await reconcilePendingDeposits();
-  await expect(recon.processedWithdrawals.length >= 1, 'Reconciliation inachakata withdrawal iliyokwama', JSON.stringify(recon));
-  // v2 policy: withdrawal inatatuliwa tu kulingana na hali ya gateway.
-  // Matokeo: watumiaji hawawezi kukosa fedha - ama zimerudishwa (gateway
-  // FAILED -> refund) au zimesalia kwenye hold (gateway UNKNOWN/PENDING).
-  const afterRefund = await balanceOf(regC.data.user.id);
-  await expect(afterRefund.wallet === cAfter.wallet || afterRefund.wallet === afterWd.wallet,
-    'Fedha hazipotei kwenye withdrawal (refund au hold)', `ledger=${afterRefund.wallet} base=${cAfter.wallet} afterWd=${afterWd.wallet}`);
+    await pool.query(`UPDATE transactions SET created_at = NOW() - INTERVAL '16 minutes' WHERE reference_id = $1`, [wd.data.referenceId]);
+    const recon = await reconcilePendingDeposits();
+    await expect(recon.processedWithdrawals.length >= 1, 'Reconciliation inachakata withdrawal iliyokwama', JSON.stringify(recon));
+    // v2 policy: withdrawal inatatuliwa tu kulingana na hali ya gateway.
+    // Matokeo: watumiaji hawawezi kukosa fedha - ama zimerudishwa (gateway
+    // FAILED -> refund) au zimesalia kwenye hold (gateway UNKNOWN/PENDING).
+    const afterRefund = await balanceOf(regC.data.user.id);
+    await expect(afterRefund.wallet === cAfter.wallet || afterRefund.wallet === afterWd.wallet,
+      'Fedha hazipotei kwenye withdrawal (refund au hold)', `ledger=${afterRefund.wallet} base=${cAfter.wallet} afterWd=${afterWd.wallet}`);
+  }
 
   // ------------------------------------------------------------
   await section('4. VICOBA — kikundi, join-code, mialiko, hisa, mikopo, usalama');
