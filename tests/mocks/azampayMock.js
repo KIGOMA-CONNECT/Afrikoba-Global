@@ -27,7 +27,7 @@ const { URL } = require('url');
 const SCENARIO = String(process.env.AZAMPAY_MOCK_SCENARIO || 'SUCCESS').toUpperCase();
 const LOG_PATH = process.env.AZAMPAY_MOCK_LOG || '/tmp/azampay-mock-calls.jsonl';
 const MOCK_PORT = parseInt(process.env.AZAMPAY_MOCK_PORT || '45999', 10);
-const VALID = ['SUCCESS', 'FAILED', 'PENDING', 'UNKNOWN', 'TIMEOUT'];
+const VALID = ['SUCCESS', 'FAILED', 'PENDING', 'UNKNOWN', 'TIMEOUT', 'DISPATCH_FAIL'];
 const SHELL = process.env.AZAMPAY_MOCK_ROLE || 'unknown';
 
 if (!VALID.includes(SCENARIO)) {
@@ -80,13 +80,13 @@ const server = http.createServer((req, res) => {
       return send(res, 200, { transactionstatus: 'SUCCESS' });
     }
 
-    // USSD push / payout checkout.
+    // USSD push / payout checkout (dispatch). Decoupled from the query
+    // scenario: only DISPATCH_FAIL makes the gateway refuse the outbound
+    // request; all other scenarios accept the dispatch so the settlement
+    // scenario can be tested independently.
     if (/mno\/checkout/i.test(req.url)) {
-      if (SCENARIO === 'UNKNOWN') return send(res, 503, { message: 'mock checkout unavailable' });
-      if (SCENARIO === 'FAILED') return send(res, 200, { success: false, transactionstatus: 'FAILED', message: 'mock checkout failed' });
-      if (SCENARIO === 'TIMEOUT') {
-        setTimeout(() => { try { res.destroy(); } catch (e) {} }, 150);
-        return;
+      if (SCENARIO === 'DISPATCH_FAIL') {
+        return send(res, 200, { success: false, transactionstatus: 'FAILED', message: 'mock checkout rejected' });
       }
       return send(res, 200, { success: true, transactionstatus: 'PENDING', message: 'mock checkout accepted' });
     }
