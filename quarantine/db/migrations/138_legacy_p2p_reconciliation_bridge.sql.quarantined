@@ -1,0 +1,32 @@
+-- 138_legacy_p2p_reconciliation_bridge.sql
+-- Legacy P2P -> authoritative project reconciliation bridge (Phase).
+--
+-- RECONCILIATION-ONLY columns. NO new approval workflow, NO consultation fee,
+-- NO wallet/financial debit. The single-owner legacy bridge is enforced by a
+-- partial unique index so at most ONE investment_projects row may claim a given
+-- authoritative project.
+--
+-- Idempotency:
+--  * All statements are guarded with IF NOT EXISTS / ON CONFLICT helpers, so this
+--    migration is a byte-for-byte no-op if an environment already applied an
+--    identical bridge (e.g. the staging box where 138 is claimed to exist).
+
+ALTER TABLE investment_projects
+  ADD COLUMN IF NOT EXISTS authoritative_project_id BIGINT
+    REFERENCES projects(id);
+
+-- One authoritative project may be bridged from AT MOST ONE legacy record.
+-- Growing both directions at once from a bare FK is unsafe; a partial UNIQUE
+-- index is the repo's established seam for "exactly one bridge" (mirrors
+-- uq_suppliers_procurement_profile / claimOperation ON CONFLICT idioms).
+CREATE UNIQUE INDEX IF NOT EXISTS uq_investment_projects_authoritative_legacy
+  ON investment_projects (authoritative_project_id)
+  WHERE authoritative_project_id IS NOT NULL;
+
+-- Reconciliation identity for audit/idempotency across re-runs.
+ALTER TABLE project_agreements
+  ADD COLUMN IF NOT EXISTS legacy_project_id INTEGER;
+ALTER TABLE project_agreements
+  ADD COLUMN IF NOT EXISTS source_system VARCHAR(40) NOT NULL DEFAULT 'LEGACY_P2P';
+ALTER TABLE project_agreements
+  ADD COLUMN IF NOT EXISTS reconciliation_reference VARCHAR(64) UNIQUE;

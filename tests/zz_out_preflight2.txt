@@ -1,0 +1,104 @@
+
+===== financial_operations constraints/indexes =====
+  [p] financial_operations_pkey :: PRIMARY KEY (id)
+  [f] financial_operations_transaction_id_fkey :: FOREIGN KEY (transaction_id) REFERENCES transactions(id)
+  [f] financial_operations_user_id_fkey :: FOREIGN KEY (user_id) REFERENCES users(id)
+  [u] uq_financial_operation_ref :: UNIQUE (reference_id)
+  IDX financial_operations_pkey :: CREATE UNIQUE INDEX financial_operations_pkey ON public.financial_operations USING btree (id)
+  IDX idx_fin_op_type_status :: CREATE INDEX idx_fin_op_type_status ON public.financial_operations USING btree (operation_type, status, created_at)
+  IDX idx_fin_op_user :: CREATE INDEX idx_fin_op_user ON public.financial_operations USING btree (user_id)
+  IDX uq_financial_operation_ref :: CREATE UNIQUE INDEX uq_financial_operation_ref ON public.financial_operations USING btree (reference_id)
+  >> UNIQUE index on reference_id exists = true
+
+===== ledger_accounts schema + codes =====
+  id | integer | NO | d=nextval('ledger_accounts_id_seq'::regclass)
+  account_code | character varying(40) | NO
+  name | character varying(120) | NO
+  account_type | character varying(20) | NO
+  parent_id | integer | YES
+  currency_code | character varying(3) | YES | d='TZS'::character varying
+  is_system | boolean | YES | d=true
+  created_at | timestamp with time zone | YES | d=now()
+  chart_number | integer | YES
+  rows: 37
+    1 = CUSTOMER_WALLET [LIABILITY]
+    2 = MNO_CLEARING [ASSET]
+    3 = PLATFORM_FEES [REVENUE]
+    4 = COMMISSION [REVENUE]
+    5 = SUSPENSE [LIABILITY]
+    6 = CARD_HOLD [LIABILITY]
+    7 = FAMILY_WALLET [LIABILITY]
+    8 = VICOBA_GROUP [LIABILITY]
+    9 = ROSICA_POOL [LIABILITY]
+    10 = AGENT_BALANCE [LIABILITY]
+    11 = PARTNER_BALANCE [LIABILITY]
+    12 = REFERRAL_REWARD [EXPENSE]
+    13 = YIELD_LIABILITY [LIABILITY]
+    14 = INTEREST_INCOME [REVENUE]
+    15 = BUSINESS_WALLET [LIABILITY]
+    16 = MARKETPLACE_ESCROW [LIABILITY]
+    17 = MARKETPLACE_FINANCING [ASSET]
+    18 = FINANCE_INCOME [REVENUE]
+    19 = PROJECT_FUND [LIABILITY]
+    20 = PROJECT_REVENUE_RECEIVABLE [ASSET]
+    21 = EVENT_POOL [LIABILITY]
+    22 = EVENT_SAVINGS [LIABILITY]
+    23 = TREASURY [ASSET]
+    24 = MERCHANT_BALANCE [LIABILITY]
+    25 = GOVERNMENT_WHT [LIABILITY]
+    26 = REMITTANCE_CLEARING [ASSET]
+    27 = LENDING_POOL [LIABILITY]
+    28 = LENDING_INTEREST_INCOME [REVENUE]
+    29 = PROJECT_INVESTMENT_ACCOUNT [ASSET]
+    30 = PROJECT_REVENUE_ACCOUNT [ASSET]
+    31 = PROJECT_TAX_ACCOUNT [ASSET]
+    32 = PROJECT_RESERVE_ACCOUNT [ASSET]
+    33 = PROJECT_DEBT_SERVICE_ACCOUNT [ASSET]
+    34 = PROJECT_DIVIDEND_ACCOUNT [ASSET]
+    35 = PROJECT_OPERATING_ACCOUNT [ASSET]
+    36 = PROJECT_OWNER_RESIDUAL_ACCOUNT [ASSET]
+    37 = PROJECT_CONSULTATION_FEE [REVENUE]
+
+===== financial_audit_log schema =====
+  id | bigint | NO | d=nextval('financial_audit_log_id_seq'::regclass)
+  account_kind | character varying | NO
+  account_id | bigint | YES
+  operation | character varying | NO
+  amount | numeric | NO
+  balance_before | numeric | YES
+  balance_after | numeric | YES
+  reference_id | character varying | YES
+  actor | character varying | YES | d='engine'::character varying
+  created_at | timestamp with time zone | YES | d=now()
+
+===== journal_entries partitions =====
+  partitions: journal_entries_y2026m09, journal_entries_y2026m10, journal_entries_y2026m11, journal_entries_y2026m12, journal_entries_y2027m01, journal_entries_y2027m02, journal_entries_y2027m03, journal_entries_y2027m04, journal_entries_y2027m05, journal_entries_y2027m06, journal_entries_y2027m07, journal_entries_y2027m08, journal_entries_y2027m09
+  direction column present = true
+
+===== users constraints (for test-user insert) =====
+  chk_users_device_policy :: CHECK (((device_policy)::text = ANY ((ARRAY['PERMISSIVE'::character varying, 'TRUSTED_ONLY'::character varying])::text[])))
+  users_email_key :: UNIQUE (email)
+  users_locked_balance_check :: CHECK ((locked_balance >= (0)::numeric))
+  users_nida_number_key :: UNIQUE (nida_number)
+  users_phone_number_key :: UNIQUE (phone_number)
+  users_pkey :: PRIMARY KEY (id)
+  users_wallet_balance_check :: CHECK ((wallet_balance >= (0)::numeric))
+  user triggers: 
+    trg_users_updated :: CREATE TRIGGER trg_users_updated BEFORE UPDATE ON public.users FOR EACH ROW EXECUTE FUNCTION set_updated_at()
+
+===== company_revenue row id=1 (deposit dependency) =====
+  exists = true
+
+===== TRX/engine require smoke test =====
+  require OK in 204ms
+  exports: accountIdByCode, auditBalance, captureHold, captureLock, claimOperation, creditWallet, debitWallet, groupToWallet, holdFunds, internalTransfer, lockWallet, postDeposit, postJournal, recordException, releaseHold, transfer, unlockWallet, walletToGroup
+
+===== BASELINE COUNTS (before any test) =====
+  financial_operations = 0
+  journal_entries     = 0
+  wallet_ledger       = 0
+  financial_audit_log = 0
+  TX224/WD-3EC32D6D ops = 0
+  TX224 journal rows  = 0
+
+PREFLIGHT2 OK

@@ -1,0 +1,64 @@
+
+===== 4. WHICH FILE IS ACTUALLY UNDER TEST =====
+  require.resolve -> C:\Users\MAWENI RRH\OneDrive\Desktop\Afrikoba Group\src\services\financialEngine.js
+  expected path     -> C:\Users\MAWENI RRH\OneDrive\Desktop\Afrikoba Group\src\services\financialEngine.js
+  resolved === expected : true
+  size   = 39448 bytes
+  mtime  = 2026-09-27T07:48:58.215Z
+  sha256 = 1c5e80cdb199e4275086f1c928d0fc3814c818542e8abb0c530abe66391593cc
+  exports = accountIdByCode, auditBalance, captureHold, captureLock, claimOperation, creditWallet, debitWallet, groupToWallet, holdFunds, internalTransfer, lockWallet, postDeposit, postJournal, recordException, releaseHold, transfer, unlockWallet, walletToGroup
+  no duplicate/competing engine file: financialEngine.js
+
+===== POST-FIX CONTRACT INVENTORY (static, from the file above) =====
+  postDeposit      guards=0 rowCountChecks=1 SUCCESS=1 FAILED=2  UPDATE-then-JOURNAL
+  holdFunds        guards=1 rowCountChecks=1 SUCCESS=1 FAILED=1  UPDATE-then-JOURNAL
+  releaseHold      guards=1 rowCountChecks=1 SUCCESS=1 FAILED=1  UPDATE-then-JOURNAL
+  captureHold      guards=1 rowCountChecks=1 SUCCESS=1 FAILED=1  UPDATE-then-JOURNAL
+  transfer         guards=1 rowCountChecks=2 SUCCESS=1 FAILED=4  UPDATE-then-JOURNAL
+  creditWallet     guards=0 rowCountChecks=1 SUCCESS=1 FAILED=2  UPDATE-then-JOURNAL
+  debitWallet      guards=1 rowCountChecks=1 SUCCESS=1 FAILED=2  UPDATE-then-JOURNAL
+  internalTransfer guards=1 rowCountChecks=2 SUCCESS=1 FAILED=4  UPDATE-then-JOURNAL
+  walletToGroup    guards=1 rowCountChecks=1 SUCCESS=1 FAILED=2  UPDATE-then-JOURNAL
+  groupToWallet    guards=0 rowCountChecks=1 SUCCESS=1 FAILED=2  UPDATE-then-JOURNAL
+  lockWallet       guards=1 rowCountChecks=1 SUCCESS=1 FAILED=1  UPDATE-then-JOURNAL
+  unlockWallet     guards=1 rowCountChecks=1 SUCCESS=1 FAILED=1  UPDATE-then-JOURNAL
+  captureLock      guards=1 rowCountChecks=1 SUCCESS=1 FAILED=1  UPDATE-then-JOURNAL
+  "JOURNAL-then-UPDATE" lines above = functions still violating FIX B
+  functions with SUCCESS=0            = still able to end in NEW
+
+===== 3. TX224 / WD-3EC32D6D UNTOUCHED (live DB, read-only) =====
+  financial_operations.operation_type TX224 matches = 0
+  financial_operations.reference_id TX224 matches = 0
+  financial_operations.status TX224 matches = 0
+  financial_operations.last_error TX224 matches = 0
+  journal_entries.entry_group_id TX224 matches = 0
+  journal_entries.direction TX224 matches = 0
+  journal_entries.currency_code TX224 matches = 0
+  journal_entries.reference_id TX224 matches = 0
+  journal_entries.description TX224 matches = 0
+  journal_entries.posted_by TX224 matches = 0
+  journal_entries.product_type TX224 matches = 0
+  journal_entries.product_ref TX224 matches = 0
+  wallet_ledger.reference_id TX224 matches = 0
+  wallet_ledger.currency_code TX224 matches = 0
+  wallet_ledger.description TX224 matches = 0
+  wallet_ledger.product_type TX224 matches = 0
+  wallet_ledger.product_ref TX224 matches = 0
+  financial_audit_log.account_kind TX224 matches = 0
+  financial_audit_log.operation TX224 matches = 0
+  financial_audit_log.reference_id TX224 matches = 0
+  financial_audit_log.actor TX224 matches = 0
+  financial_anomalies.anomaly_type TX224 matches = 0
+  financial_anomalies.severity TX224 matches = 0
+  financial_anomalies.description TX224 matches = 0
+  literals TX224|WD-3EC32D6D in engine source = 0
+
+===== BASELINE STATE CARRIED OVER FROM THE PRE-FIX RUN (must NOT be altered) =====
+  {"ops":17,"je":34,"audit":27,"users":11,"dr":"3479997.0000","cr":"3479997.0000"}
+  pre-existing residue (journal for ops that never succeeded) = 2254998.0000 across 9 refs
+  >> This is the DEFECT BASELINE from the previous run. It is disclosed, NOT deleted and NOT netted into the new reconciliation verdict.
+
+===== CONTAINER / TARGET =====
+  {"db":"afrikoba_regression","usr":"afrikoba_r"} via host port 5436
+
+PRE-LIVE GATE COMPLETE

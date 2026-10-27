@@ -1,0 +1,53 @@
+READ-ONLY CONFIRMATION  (no mutation)
+
+===== 1. Journal groups whose operation did NOT complete successfully =====
+  op#1 HOLD L1AJI68K7 status=NEW = {"lines":2,"dr":"30000.0000","cr":"30000.0000","last_error":null}
+  op#5 HOLD L2AHJI68K7 status=NEW = {"lines":2,"dr":"25000.0000","cr":"25000.0000","last_error":null}
+  op#11 HOLD L3HJI68K7 status=NEW = {"lines":2,"dr":"20000.0000","cr":"20000.0000","last_error":null}
+  op#16 UNLOCK L4AJI68K7 status=FAILED = {"lines":2,"dr":"999999.0000","cr":"999999.0000","last_error":"insufficient locked_balance"}
+  op#19 UNLOCK L5FLJI68K7 status=FAILED = {"lines":2,"dr":"999999.0000","cr":"999999.0000","last_error":"insufficient locked_balance"}
+  op#20 CAPTURE L5CPJI68K7 status=NEW = {"lines":2,"dr":"10000.0000","cr":"10000.0000","last_error":null}
+  op#21 UNLOCK L6RTJI68K7 status=FAILED = {"lines":2,"dr":"60000.0000","cr":"60000.0000","last_error":"insufficient locked_balance"}
+  op#22 HOLD L6FHJI68K7 status=NEW = {"lines":2,"dr":"60000.0000","cr":"60000.0000","last_error":null}
+  op#28 HOLD L1RDJI7RLW status=NEW = {"lines":2,"dr":"50000.0000","cr":"50000.0000","last_error":null}
+  orphan group count = 9
+  TOTAL value posted to the ledger for operations that did not succeed = 2254998
+
+===== 2. Operations left in transient NEW state =====
+  op#1 HOLD L1AJI68K7 amount=30000.0000 status=NEW
+  op#5 HOLD L2AHJI68K7 amount=25000.0000 status=NEW
+  op#11 HOLD L3HJI68K7 amount=20000.0000 status=NEW
+  op#20 CAPTURE L5CPJI68K7 amount=10000.0000 status=NEW
+  op#22 HOLD L6FHJI68K7 amount=60000.0000 status=NEW
+  op#28 HOLD L1RDJI7RLW amount=50000.0000 status=NEW
+  NEW count = 6
+
+===== 3. CARD_HOLD ledger account vs users.locked_balance projection =====
+  CARD_HOLD credited (CR) = 325000.0000
+  CARD_HOLD debited  (DR) = 3154997.0000
+  CARD_HOLD net credit = -2829997
+  users.locked_balance projection = 230000.00
+  users.wallet_balance projection = 610000.00
+  RECONCILIATION GAP = -3059997
+  GAP equals the orphan ledger total? = NO
+
+===== 4. Global double-entry integrity (unchanged by the defect) =====
+  TOTAL DR = 3479997.0000
+  TOTAL CR = 3479997.0000
+  DIFFERENCE = 0
+  unbalanced entry groups = 0
+  single-sided entry groups = 0
+
+===== 5. Non-negativity backstop held throughout =====
+  test users with negative wallet/locked = 0
+  ALL users in DB with negative wallet/locked = 0
+
+===== 6. TX224 final safety verification =====
+  financial_operations rows referencing TX224 = 0
+  journal_entries rows referencing TX224 = 0
+  wallet_ledger rows referencing TX224 = 0
+  financial_audit_log rows referencing TX224 = 0
+ERROR error: column "reference" does not exist
+    at C:\Users\MAWENI RRH\OneDrive\Desktop\Afrikoba Group\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async C:\Users\MAWENI RRH\OneDrive\Desktop\Afrikoba Group\tests\zz_confirm.js:86:14

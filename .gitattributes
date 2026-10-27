@@ -1,0 +1,54 @@
+# Byte-exact reproducibility for the FROZEN financialEngine validation scope.
+#
+# -text disables git's CRLF<->LF end-of-line normalization for these paths, so the
+# committed blob is byte-identical to the working-tree file and to the SHA-256
+# values pinned in tests/zz_engine_freeze.sha256.
+#
+# Why this is required: with core.autocrlf=true and no override, git normalizes
+# staged content to LF. The staged blob then hashes DIFFERENTLY from the working
+# tree, so the freeze manifest cannot be verified from a fresh clone. Marking
+# these paths -text makes the freeze repo-native and clone-verifiable.
+#
+# This affects only the frozen validation scope. No other path's checkout behavior
+# is changed.
+
+# ---- frozen engine binary ----
+/src/services/financialEngine.js -text
+
+# ---- validation record + freeze manifest ----
+/VALIDATION_RECORD_financialEngine.md -text
+/tests/zz_engine_freeze.sha256 -text
+
+# ---- structural harness ----
+/tests/regressionFinancialEngine.test.js -text
+
+# ---- accepted post-fix evidence ----
+/tests/zz_out_prelive.txt -text
+/tests/zz_struct_out.txt -text
+/tests/zz_out_live_after_fix.txt -text
+/tests/zz_out_live_after_fix2.txt -text
+
+# ---- pre-fix historical baseline evidence (immutable) ----
+/tests/zz_out_preflight.txt -text
+/tests/zz_out_preflight2.txt -text
+/tests/zz_out_live.txt -text
+/tests/zz_out_t1r.txt -text
+/tests/zz_out_confirm.txt -text
+/tests/zz_out_confirm2.txt -text
+
+# ---- evidence runner scripts (reproducibility chain) ----
+/tests/zz_live_after_fix.js -text
+/tests/zz_live_after_fix2.js -text
+/tests/zz_prelive.js -text
+/tests/zz_preflight.js -text
+/tests/zz_preflight2.js -text
+/tests/zz_live_final.js -text
+/tests/zz_t1r.js -text
+/tests/zz_confirm.js -text
+/tests/zz_confirm2.js -text
+
+# The pre-fix evidence file below contains trailing whitespace inside its captured
+# output. That evidence is immutable and hash-pinned by the freeze manifest, so its
+# bytes must not be edited. Suppress the blank-at-eol warning for this path instead
+# of rewriting the frozen content.
+/tests/zz_out_preflight2.txt whitespace=-blank-at-eol

@@ -1,0 +1,138 @@
+===============================================================
+AFRIKOBA GLOBAL - Phase 60 BNPL loan book acceptance evidence
+collected: 2026-09-27T10:14:32Z
+server   : local node src/server.js, PORT=3001, DISABLE_CRON=true
+database : localhost:5432/afrikoba_global (dev instance on this host)
+token    : HS256 minted locally from .env JWT_SECRET for an EXISTING
+           active user (id=1 role=ADMIN, id=2 role=MJUMBE); av claim
+           matched to the users.auth_version column; unique jti.
+           No user rows were created or modified.
+strings  : /c/Users/MAWENI~1/AppData/Local/Temp/opencode/bnplbin/strings  <- host has no binutils; local shim used
+===============================================================
+
+### A. VERBATIM scripts/verify-bnpl.sh OUTPUT (unmodified script) ###
+   (two normalisations only, both lossless and made visible:
+    raw UTF-8 BOM bytes EF BB BF are shown as <U+FEFF>; lines that
+    legitimately end in a space are shown with [trailing-space])
+
+scripts/verify-bnpl.sh: line 1: <U+FEFF>#!/usr/bin/env: No such file or directory
+OK   anonymous -> HTTP 401 (want 401)
+OK   expert -> HTTP 200 (want 200)
+node:fs:441
+    return binding.readFileUtf8(path, stringToFlags(options.flag));
+                   ^
+
+Error: ENOENT: no such file or directory, open 'C:\tmp\bnpl.json'
+    at Object.readFileSync (node:fs:441:20)
+    at [eval]:1:32
+    at runScriptInThisContext (node:internal/vm:219:10)
+    at node:internal/process/execution:451:12
+    at [eval]-wrapper:6:24
+    at runScriptInContext (node:internal/process/execution:449:60)
+    at evalFunction (node:internal/process/execution:283:30)
+    at evalTypeScript (node:internal/process/execution:295:3)
+    at node:internal/main/eval_string:71:3 {
+  errno: -4058,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: 'C:\\tmp\\bnpl.json'
+}
+
+Node.js v24.15.0
+node:fs:441
+    return binding.readFileUtf8(path, stringToFlags(options.flag));
+                   ^
+
+Error: ENOENT: no such file or directory, open 'C:\tmp\bnpl.json'
+    at Object.readFileSync (node:fs:441:20)
+    at [eval]:1:32
+    at runScriptInThisContext (node:internal/vm:219:10)
+    at node:internal/process/execution:451:12
+    at [eval]-wrapper:6:24
+    at runScriptInContext (node:internal/process/execution:449:60)
+    at evalFunction (node:internal/process/execution:283:30)
+    at evalTypeScript (node:internal/process/execution:295:3)
+    at node:internal/main/eval_string:71:3 {
+  errno: -4058,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: 'C:\\tmp\\bnpl.json'
+}
+
+Node.js v24.15.0
+scripts/verify-bnpl.sh: line 52: [: : integer expected
+FAIL reference + BN- prefix present
+OK   12-month cohort present
+OK   documented term range 3-24 months present
+scripts/verify-bnpl.sh: line 55: [: : integer expected
+FAIL documented 15% per year fee present
+FAIL month cohort length = 12 (got 0)
+OK   CSV export -> HTTP 200 (want 200)
+OK   CSV banner: AFRIKOBA GLOBAL - BNPL LOAN BOOK
+OK   CSV header: Reference
+OK   CSV term row: 3-24
+OK   CSV fee row: 15
+OK   PDF export -> HTTP 200 (want 200)
+OK   PDF banner words present: AFRIKOBA GLOBAL BNPL LOAN BOOK
+OK   PDF term words: 3-24 + 15%
+
+ACCEPTANCE: FAIL
+
+harness exit code = 1   (0=PASS 1=FAIL 2=SKIPPED)
+
+### B. SUPPLEMENTARY PROBES (not in the harness) ###
+
+-- B1. all three endpoints, ADMIN token --
+   / -> 200
+   /export -> 200
+   /pdf -> 200
+
+-- B2. all three endpoints, MJUMBE (member) token: the 403 gate --
+      the harness header CLAIMS an owner-403 probe but has none --
+   / -> 403
+   /export -> 403
+   /pdf -> 403
+
+-- B3. anonymous --
+   / -> 401
+
+-- B4. the three probes the harness could not evaluate --
+      (harness writes /tmp/bnpl.json but native Windows node reads C:\tmp) --
+   reference = BNPL-1790504075544   /^BN(PL)?-/ = true
+   fee_rate_per_year_pct = 15%
+   months.length = 12  -> probe 6 wants 12
+
+   dataAvailability in response = false   <-- B2 defect
+   response keys = success, reference, generated_at, currency, terms, months, totals, health
+   months with ANY non-zero value = 0 / 12   <-- B4 defect
+   totals.disbursements = 0
+   totals.active_contracts = 0
+   health = CLEAN   <-- reported CLEAN while holding 0 records
+   first month = {"month":"Oct 2025","month_sw":"Oct 2025","disbursements":0,"repayments_received":0,"overdue":0,"active_contracts":0,"avg_ticket":0,"defaulted":0}
+
+-- B5. PDF structural analysis: is it a real PDF? --
+   size = 629 bytes
+   /Font resource present = 0   <-- B3 defect
+   BT (begin text)         = 0   <-- B3 defect
+   Tj (show text)          = 0   <-- B3 defect
+   declared startxref      = 240
+   ACTUAL offset of xref   = 467   <-- B3 defect
+   xref table byte rows (trailing space is real PDF format, marked):
+     xref
+     0 5
+     0000000000 65535 f[trailing-space]
+     0000000009 00000 n[trailing-space]
+     0000000058 00000 n[trailing-space]
+     0000000115 00000 n[trailing-space]
+     0000000240 00000 n[trailing-space]
+
+### C. ROLE CENSUS (the 'expert' persona does not exist in this DB) ###
+   BNPL_EXPERT_ROLES in src/services/bnplService.js = ['ADMIN','MODERATOR','EXPERT']
+   role distribution:
+     MJUMBE       total= 7476 active=7476
+     ADMIN        total=  373 active=373
+     OPS          total=   25 active=25
+     COMPLIANCE   total=   11 active=11
+     AGRONOMIST   total=    6 active=6
+     FIELD_PARTNER total=    4 active=4
+   EXPERT rows: 0
