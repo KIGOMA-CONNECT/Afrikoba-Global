@@ -1342,65 +1342,215 @@ async function getAiReview(projectId) {
  * already exists, the saved consultation is returned (no double charge).
  */
 async function payConsultationFee(projectId, userId, uniqueReference) {
+  // --- pre-transaction: existence only ---
   const p = await getProject(projectId);
-  if (Number(p.owner_user_id) !== Number(userId)) {
-    throw new ValidityError('Unaweza kulipa consultation fee kwa mradi wako tu.', 403);
+  if (!p) {
+    throw new ValidityError('Mradi haujapatikana.', 404);
   }
-  if (p.consultation_paid_at) return { already_paid: true, amount: Number(p.consultation_fee), paid_at: p.consultation_paid_at };
-
-  const fee = Number(p.consultation_fee) > 0 ? Number(p.consultation_fee) : 0;
-  if (fee <= 0) throw new ValidityError('Consultation fee kwa mradi huu haijawekwa.', 400);
 
   const client = await pool.connect();
+  let committed = false;
+  let auditPayload = null;
+  let result = null;
   try {
     await client.query('BEGIN');
-    const claim = await fin.claimOperation({
-      client,
-      operationType: 'PROJECT_CONSULTATION',
-      reference: uniqueReference,
-      userId,
-      amount: fee,
-    });
-    if (!claim) {
-      const existing = await client.query(
-        `SELECT * FROM project_consultations WHERE unique_reference = $1 ORDER BY id DESC LIMIT 1`,
-        [uniqueReference]
-      );
-      await client.query('COMMIT');
-      return { already_paid: true, consultation: existing.rows[0] };
+
+    // --- LOCK PROJECT ROW FIRST ---
+    const lockedRes = await client.query(
+      `SELECT id, owner_user_id, consultation_fee, consultation_paid_at, name
+         FROM projects WHERE id = $1 FOR UPDATE`,
+      [projectId]
+    );
+    if (lockedRes.rows.length === 0) {
+      throw new ValidityError('Mradi haujapatikana.', 404);
+    }
+    const L = lockedRes.rows[0];
+
+    // --- ada na umiliki chini ya lock ---
+    if (Number(L.owner_user_id) !== Number(userId)) {
+      throw new ValidityError('Unaweza kulipa consultation fee kwa mradi wako tu.', 403);
     }
 
-    await fin.debitWallet({
-      client,
-      userId,
-      amount: fee,
+    // --- LAYER A: project already paid (verified under lock) ---
+    // Checked BEFORE fee validation: a verified prior payment returns
+    // already_paid even if consultation_fee is now 0.
+    if (L.consultation_paid_at) {
+      // DB-side exact timestamp equality (transaction-scoped NOW()).
+      const consRes = await client.query(
+        `SELECT c.* FROM project_consultations c
+          WHERE c.project_id = $1
+            AND c.owner_user_id = $2
+            AND c.status = 'PAID'
+            AND c.paid_at IS NOT DISTINCT FROM
+                (SELECT p.consultation_paid_at FROM projects p WHERE p.id = $1)
+          ORDER BY c.id DESC LIMIT 1`,
+        [projectId, userId]
+      );
+      const consultation = consRes.rows[0] || null;
+
+      const consOk = !!consultation
+        && Number(consultation.project_id) === Number(projectId)
+        && Number(consultation.owner_user_id) === Number(userId)
+        && Number(consultation.amount) > 0
+        && !!consultation.paid_at;
+
+      // Operation verified via DB-side amount comparison.
+      let opOk = false;
+      if (consOk) {
+        const opRes = await client.query(
+          `SELECT 1 FROM financial_operations
+            WHERE reference_id = $1
+              AND operation_type = 'PROJECT_CONSULTATION'
+              AND user_id = $2
+              AND amount = $3
+              AND status = 'SUCCESS'`,
+          [consultation.unique_reference, userId, consultation.amount]
+        );
+        opOk = opRes.rows.length > 0;
+      }
+
+      if (consOk && opOk) {
+        await client.query('COMMIT');
+        committed = true;
+        result = {
+          already_paid: true,
+          amount: Number(consultation.amount),
+          paid_at: L.consultation_paid_at,
+          consultation,
+        };
+        return result;
+      }
+
+      // Inconsistent: paid_at set but evidence missing. No debit.
+      throw new ValidityError(
+        'Hali ya malipo ya consultation si sahihi (inconsistency). Wasiliana na msimamizi.',
+        409
+      );
+    }
+
+    // --- fee validation for NEW payments only ---
+    const fee = Number(L.consultation_fee) > 0 ? Number(L.consultation_fee) : 0;
+    if (fee <= 0) {
+      throw new ValidityError('Consultation fee kwa mradi huu haijawekwa.', 400);
+    }
+
+    // --- LAYER B: claim the (possibly new) reference ---
+    const claim = await fin.claimOperation({
+      client, operationType: 'PROJECT_CONSULTATION',
+      reference: uniqueReference, userId, amount: fee,
+    });
+
+    // ---- DUPLICATE PATH (claim.claimed === false) ----
+    if (!claim.claimed) {
+      // DB-side amount comparison.
+      const opRes = await client.query(
+        `SELECT 1 FROM financial_operations
+          WHERE reference_id = $1
+            AND operation_type = 'PROJECT_CONSULTATION'
+            AND user_id = $2
+            AND amount = $3
+            AND status = 'SUCCESS'`,
+        [uniqueReference, userId, fee]
+      );
+      const opOk = opRes.rows.length > 0;
+
+      const consRes = await client.query(
+        `SELECT * FROM project_consultations
+          WHERE unique_reference = $1 ORDER BY id DESC LIMIT 1`,
+        [uniqueReference]
+      );
+      const consultation = consRes.rows[0] || null;
+      const consOk = !!consultation
+        && Number(consultation.project_id) === Number(projectId)
+        && Number(consultation.owner_user_id) === Number(userId)
+        && Number(consultation.amount) === Number(fee)
+        && consultation.status === 'PAID';
+
+      if (opOk && consOk) {
+        await client.query('COMMIT');
+        committed = true;
+        result = { already_paid: true, consultation };
+        return result;
+      }
+
+      // Mismatch / NEW / FAILED / wrong type / missing consultation:
+      // No status mutation. 409. No auto-repair.
+      throw new ValidityError(
+        'Reference iliyopo haifanani na malipo ya consultation hii (operation mismatch).',
+        409
+      );
+    }
+
+    // ---- FIRST-PAYMENT PATH (claim.claimed === true) ----
+    const debitResult = await fin.debitWallet({
+      client, userId, amount: fee,
       reference: `${uniqueReference}-wallet`,
       toAccount: 'PROJECT_CONSULTATION_FEE',
-      description: `Consultation fee - ${p.name}`,
-      productType: 'PROJECT',
-      productRef: String(projectId),
+      description: `Consultation fee - ${L.name}`,
+      productType: 'PROJECT', productRef: String(projectId),
     });
+
+    const debitOk = !!debitResult
+      && debitResult.success === true
+      && !debitResult.dedup
+      && Number(debitResult.debited) === Number(fee);
+    if (!debitOk) {
+      throw new ValidityError('Malipo yameshindwa (debit not confirmed). Jaribu tena.', 409);
+    }
 
     const inserted = await client.query(
       `INSERT INTO project_consultations (project_id, owner_user_id, amount, unique_reference)
        VALUES ($1, $2, $3, $4) RETURNING *`,
       [projectId, userId, fee, uniqueReference]
     );
+
     await client.query(
       `UPDATE projects SET consultation_paid_at = NOW(), updated_at = NOW() WHERE id = $1`,
       [projectId]
     );
+
+    // SINGLE transition: setOperationState only.
+    const transition = await fin.setOperationState({
+      client, reference: uniqueReference, status: 'SUCCESS',
+    });
+    if (!transition.transitioned) {
+      throw new ValidityError('Malipo yameshindwa (operation transition). Jaribu tena.', 409);
+    }
+
     await client.query('COMMIT');
+    committed = true;
 
-    await logAudit({ eventType: 'CONSULTATION_FEE_PAID', action: 'CREATE', entityType: 'PROJECT_CONSULTATION', userId, entityId: inserted.rows[0].id, afterData: { project_id: projectId, amount: fee, reference: uniqueReference } });
+    auditPayload = { eventType: 'CONSULTATION_FEE_PAID', action: 'CREATE',
+      entityType: 'PROJECT_CONSULTATION', userId,
+      entityId: inserted.rows[0].id, referenceId: uniqueReference, amount: fee,
+      afterData: { project_id: projectId, amount: fee, reference: uniqueReference } };
 
-    return { already_paid: false, consultation: inserted.rows[0] };
+    result = { already_paid: false, consultation: inserted.rows[0] };
+    // fall through to post-commit audit + return
   } catch (err) {
-    await client.query('ROLLBACK');
+    if (!committed) {
+      await client.query('ROLLBACK').catch(() => {});
+    }
     throw err;
   } finally {
     client.release();
   }
+
+  // --- POST-COMMIT AUDIT (isolated) ---
+  if (auditPayload) {
+    try {
+      await logAudit(auditPayload);
+    } catch (auditErr) {
+      try {
+        require('../utils/logger').error(
+          'CONSULTATION_FEE_AUDIT',
+          String(auditErr && auditErr.message)
+        );
+      } catch (_) { /* swallow logger failure too */ }
+    }
+  }
+
+  return result;
 }
 
 async function listConsultations(projectId) {
