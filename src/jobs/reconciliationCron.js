@@ -109,6 +109,18 @@ async function settleDeposit(tx) {
   }
 }
 
+// One open exception per (reference, type). Recon runs every 5 minutes and
+// would otherwise add a duplicate row each pass for the same stuck withdrawal.
+async function recordExceptionOnce(exception) {
+  const { rows } = await pool.query(
+    `SELECT 1 FROM reconciliation_exceptions WHERE reference_id = $1 AND exception_type = $2 LIMIT 1`,
+    [exception.reference, exception.type]
+  );
+  if (rows.length) return false;
+  await fin.recordException(exception);
+  return true;
+}
+
 /**
  * Settle a single withdrawal. Own connection/transaction. Only gateway state
  * drives the outcome - never a blind timeout.
@@ -183,8 +195,10 @@ async function settleWithdrawal(tx) {
     // gateway PENDING/UNKNOWN -> DO NOT auto-refund. Surface as an exception.
     // A never-confirmed dispatch is UNDISPATCHED_WITHDRAWAL: operator decides
     // whether the payout was sent before any refund or re-dispatch.
+    // updated_at is touched so unresolved rows rotate out of the batch window.
+    await client.query(`UPDATE transactions SET updated_at = NOW() WHERE id = $1`, [tx.id]);
     await client.query('COMMIT');
-    await fin.recordException({
+    await recordExceptionOnce({
       type: dispatched ? 'STALE_WITHDRAWAL' : 'UNDISPATCHED_WITHDRAWAL',
       reference: tx.reference_id,
       transactionId: tx.id,
@@ -239,7 +253,7 @@ async function reconcilePendingDeposits() {
     const { rows: processingWithdrawals } = await wd.query(
       `SELECT * FROM transactions
        WHERE status = 'PROCESSING' AND type = 'WITHDRAWAL'
-       ORDER BY created_at ASC
+       ORDER BY updated_at ASC
        LIMIT 20`
     );
     processedWithdrawals = processingWithdrawals.map((r) => ({ id: r.id, reference_id: r.reference_id }));

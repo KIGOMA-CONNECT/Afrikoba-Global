@@ -120,6 +120,9 @@ async function queryTransactionStatus(referenceId) {
  */
 async function triggerPayout(phoneNumber, amount, referenceId, provider) {
   assertAzamPayEnabled();
+  if (!config.azampay.payoutContractVerified) {
+    return { success: false, ambiguous: false, message: 'PAYOUT_CONTRACT_UNVERIFIED' };
+  }
   let token;
   try {
     token = await getAzamPayToken();

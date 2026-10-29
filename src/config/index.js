@@ -36,6 +36,9 @@ const config = {
     clientId: process.env.AZAMPAY_CLIENT_ID,
     clientSecret: process.env.AZAMPAY_CLIENT_SECRET,
     env: process.env.AZAMPAY_ENV || 'sandbox',
+    // Withdrawals/payouts stay blocked until the payout contract is verified
+    // against official AzamPay docs (Phase 68 D1). Default: false.
+    payoutContractVerified: process.env.AZAMPAY_PAYOUT_CONTRACT_VERIFIED === 'true',
   },
   lending: {
     // Mikopo mikubwa (≥ threshold TZS) inahitaji KYC Level highValueKycLevel

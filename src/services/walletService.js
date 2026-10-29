@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const pool = require('../config/db');
 const config = require('../config');
 const { triggerMnoCheckout, triggerPayout } = require('./azampayService');
@@ -270,11 +271,27 @@ async function transferWallet(fromUserId, toPhoneNumber, amount, note) {
  * This removes the ambiguous "money disappeared into PENDING" state and the
  * dangerous timeout-based refund that could double-credit a customer.
  */
-async function withdrawToMno(userId, amount, provider) {
+function withdrawalReference(userId, idempotencyKey) {
+  const digest = crypto.createHash('sha256').update(`${userId}:${idempotencyKey}`).digest('hex');
+  // 35 chars: leaves room for the longest ledger suffix ("-RELEASE"/"-CAPTURE")
+  // within reference_id VARCHAR(50) on wallet_ledger and journal_entries.
+  return `WD-${digest.slice(0, 32).toUpperCase()}`;
+}
+
+async function withdrawToMno(userId, amount, provider, idempotencyKey = null) {
   if (!config.azampay.enabled) {
     throw Object.assign(
       new Error('Withdrawal kwenda MNO imezimwa kwa sasa.'),
       { statusCode: 503, code: 'AZAMPAY_DISABLED' }
+    );
+  }
+
+  // Fail closed until the AzamPay payout contract is verified against official
+  // docs (Phase 68 D1). Checked before any hold or transaction is created.
+  if (!config.azampay.payoutContractVerified) {
+    throw Object.assign(
+      new Error('Withdrawal kwenda MNO imezuiwa: payout contract haijathibitishwa.'),
+      { statusCode: 503, code: 'PAYOUT_CONTRACT_UNVERIFIED' }
     );
   }
 
@@ -283,7 +300,12 @@ async function withdrawToMno(userId, amount, provider) {
     throw Object.assign(new Error('Kiasi kidogo cha withdrawal ni TZS 1,000.'), { statusCode: 400 });
   }
 
-  const referenceId = generateReference('WD');
+  // With a client Idempotency-Key the reference is derived from (user, key), so a
+  // concurrent or repeated request hits the UNIQUE reference in holdFunds and
+  // cannot create a second hold or a second dispatch.
+  const referenceId = idempotencyKey
+    ? withdrawalReference(userId, idempotencyKey)
+    : generateReference('WD');
 
   try {
     const held = await fin.holdFunds({
@@ -295,7 +317,14 @@ async function withdrawToMno(userId, amount, provider) {
     });
 
     if (held.dedup) {
-      return { success: true, referenceId, message: 'Ombi hili tayari limepokelewa.', status: 'PENDING' };
+      const existing = await pool.query(
+        `SELECT status, failure_reason FROM transactions WHERE reference_id = $1`, [referenceId]
+      );
+      if (existing.rows.length && existing.rows[0].status === 'FAILED') {
+        return { success: false, referenceId, message: existing.rows[0].failure_reason || 'Withdrawal imeshindwa.', status: 'FAILED' };
+      }
+      const status = existing.rows.length ? existing.rows[0].status : 'PENDING';
+      return { success: true, referenceId, message: 'Ombi hili tayari limepokelewa.', status };
     }
 
     const client = await pool.connect();
