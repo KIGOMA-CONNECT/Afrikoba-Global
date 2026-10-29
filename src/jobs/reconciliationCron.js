@@ -122,6 +122,23 @@ async function settleWithdrawal(tx) {
       return { skipped: true };
     }
 
+    // D1: a withdrawal that was never dispatched must not be queried at the
+    // gateway (the gateway has no record of it). Surface it explicitly as
+    // UNDISPATCHED_WITHDRAWAL instead of masquerading as a gateway
+    // PENDING/UNKNOWN - so operators can tell "we never sent it" from
+    // "sent, provider undecided".
+    if (!fresh.rows[0].external_tx_id) {
+      await client.query('COMMIT');
+      await fin.recordException({
+        type: 'UNDISPATCHED_WITHDRAWAL',
+        reference: tx.reference_id,
+        transactionId: tx.id,
+        detail: { reason: 'no gateway dispatch recorded' },
+      });
+      logger.warn('RECON', `Withdrawal ${tx.reference_id} haikutumwa kwa gateway - exception UNDISPATCHED_WITHDRAWAL`);
+      return { undispatched: true };
+    }
+
     const gateway = await queryTransactionStatus(tx.reference_id);
 
     if (gateway.status === 'SUCCESS') {

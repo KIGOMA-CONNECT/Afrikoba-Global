@@ -1,6 +1,6 @@
 const pool = require('../config/db');
 const config = require('../config');
-const { triggerMnoCheckout } = require('./azampayService');
+const { triggerMnoCheckout, triggerPayout } = require('./azampayService');
 const { sendSMS } = require('./smsService');
 const { computeDepositAmounts, generateReference, formatMoney } = require('../utils/helpers');
 const { logAudit } = require('./auditService');
@@ -321,6 +321,40 @@ async function withdrawToMno(userId, amount, provider) {
         [txRes.rows[0].id, referenceId, userId, amountNum]
       );
       await client.query('COMMIT');
+
+      // D1: dispatch the payout to the gateway AFTER commit (mirrors
+      // initiateDeposit). If the gateway refuses the request, release the
+      // reservation and mark the transaction FAILED, so funds are never left
+      // locked for a payout that was never sent.
+      const payout = await triggerPayout(user.phone_number, amountNum, referenceId, provider);
+      const dispatchFailed = !payout.success || payout.data?.success === false;
+      if (dispatchFailed) {
+        const reason = payout.message || payout.data?.message || 'Gateway dispatch failed';
+        await fin.releaseHold({
+          userId,
+          amount: amountNum,
+          accountCode: 'CUSTOMER_WALLET',
+          reference: `${referenceId}-RELEASE`,
+          description: 'Withdrawal dispatch failed - funds returned',
+        });
+        await pool.query(
+          `UPDATE transactions SET status = 'FAILED', failure_reason = $1, updated_at = NOW()
+           WHERE reference_id = $2`,
+          [reason, referenceId]
+        );
+        await logAudit({ eventType: 'WITHDRAWAL', action: 'DISPATCH_FAILED', entityType: 'TRANSACTION', userId, referenceId, amount: amountNum, afterData: { status: 'FAILED', provider, error: reason } });
+        throw Object.assign(
+          new Error(reason),
+          { statusCode: 502, code: 'GATEWAY_DISPATCH_FAILED' }
+        );
+      }
+
+      // Mark dispatched so reconciliation can tell "never dispatched" apart
+      // from "gateway still PENDING" (see reconciliationCron.settleWithdrawal).
+      await pool.query(
+        `UPDATE transactions SET external_tx_id = $1, updated_at = NOW() WHERE reference_id = $2`,
+        [payout.data?.externalId || 'DISPATCHED', referenceId]
+      );
 
       await logAudit({ eventType: 'WITHDRAWAL', action: 'CREATE', entityType: 'TRANSACTION', userId, referenceId, amount: amountNum, afterData: { status: 'PROCESSING', provider } });
 
