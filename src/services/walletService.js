@@ -309,10 +309,10 @@ async function withdrawToMno(userId, amount, provider) {
       const txRes = await client.query(
         `INSERT INTO transactions
           (reference_id, user_id, wallet_amount, commission, total_charged, status, type,
-           available_balance, locked_balance)
-         VALUES ($1, $2, $3, 0, $3, 'PROCESSING', 'WITHDRAWAL', 0, $3)
+           available_balance, locked_balance, meta)
+         VALUES ($1, $2, $3, 0, $3, 'PROCESSING', 'WITHDRAWAL', 0, $3, $4)
          RETURNING id`,
-        [referenceId, userId, amountNum]
+        [referenceId, userId, amountNum, JSON.stringify({ dispatch: 'INTENT', provider })]
       );
 
       await client.query(
@@ -327,8 +327,25 @@ async function withdrawToMno(userId, amount, provider) {
       // reservation and mark the transaction FAILED, so funds are never left
       // locked for a payout that was never sent.
       const payout = await triggerPayout(user.phone_number, amountNum, referenceId, provider);
-      const dispatchFailed = !payout.success || payout.data?.success === false;
-      if (dispatchFailed) {
+      const accepted = payout.success && payout.data?.success !== false;
+      const refused = !accepted && !payout.ambiguous;
+
+      if (!accepted && !refused) {
+        // Timeout, network error or 5xx: the provider may already have accepted
+        // the payout. Keep the hold and PROCESSING; reconciliation decides from
+        // the gateway's record. Releasing here could double-credit the customer.
+        await pool.query(
+          `UPDATE transactions
+           SET meta = jsonb_set(COALESCE(meta, '{}'::jsonb), '{dispatch}', '"UNCERTAIN"'), updated_at = NOW()
+           WHERE reference_id = $1`,
+          [referenceId]
+        );
+        logger.warn('WALLET_WD', `Dispatch uncertain ref=${referenceId} - hold kept for reconciliation`);
+        await logAudit({ eventType: 'WITHDRAWAL', action: 'DISPATCH_UNCERTAIN', entityType: 'TRANSACTION', userId, referenceId, amount: amountNum, afterData: { status: 'PROCESSING', provider, error: payout.message } });
+        return { success: true, referenceId, message: 'Ombi la withdrawal limepokelewa.', status: 'PROCESSING' };
+      }
+
+      if (refused) {
         const reason = payout.message || payout.data?.message || 'Gateway dispatch failed';
         await fin.releaseHold({
           userId,
@@ -338,7 +355,10 @@ async function withdrawToMno(userId, amount, provider) {
           description: 'Withdrawal dispatch failed - funds returned',
         });
         await pool.query(
-          `UPDATE transactions SET status = 'FAILED', failure_reason = $1, updated_at = NOW()
+          `UPDATE transactions
+           SET status = 'FAILED', failure_reason = $1,
+               meta = jsonb_set(COALESCE(meta, '{}'::jsonb), '{dispatch}', '"REFUSED"'),
+               updated_at = NOW()
            WHERE reference_id = $2`,
           [reason, referenceId]
         );
@@ -349,10 +369,12 @@ async function withdrawToMno(userId, amount, provider) {
         );
       }
 
-      // Mark dispatched so reconciliation can tell "never dispatched" apart
-      // from "gateway still PENDING" (see reconciliationCron.settleWithdrawal).
       await pool.query(
-        `UPDATE transactions SET external_tx_id = $1, updated_at = NOW() WHERE reference_id = $2`,
+        `UPDATE transactions
+         SET external_tx_id = $1,
+             meta = jsonb_set(COALESCE(meta, '{}'::jsonb), '{dispatch}', '"ACCEPTED"'),
+             updated_at = NOW()
+         WHERE reference_id = $2`,
         [payout.data?.externalId || 'DISPATCHED', referenceId]
       );
 

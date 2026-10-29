@@ -6,6 +6,9 @@ const { formatMoney } = require('../utils/helpers');
 const fin = require('../services/financialEngine');
 const logger = require('../utils/logger');
 
+// Longer than the token (15s) and dispatch (20s) request timeouts combined.
+const DISPATCH_GRACE_MS = 10 * 60 * 1000;
+
 /**
  * RECONCILIATION ENGINE v2.0
  * Every 5 minutes:
@@ -122,21 +125,13 @@ async function settleWithdrawal(tx) {
       return { skipped: true };
     }
 
-    // D1: a withdrawal that was never dispatched must not be queried at the
-    // gateway (the gateway has no record of it). Surface it explicitly as
-    // UNDISPATCHED_WITHDRAWAL instead of masquerading as a gateway
-    // PENDING/UNKNOWN - so operators can tell "we never sent it" from
-    // "sent, provider undecided".
-    if (!fresh.rows[0].external_tx_id) {
+    // D1: no accepted dispatch yet. Give an in-flight request time to finish
+    // before judging it; after the grace window the gateway is asked directly.
+    const dispatched = Boolean(fresh.rows[0].external_tx_id);
+    const ageMs = Date.now() - new Date(fresh.rows[0].created_at).getTime();
+    if (!dispatched && ageMs < DISPATCH_GRACE_MS) {
       await client.query('COMMIT');
-      await fin.recordException({
-        type: 'UNDISPATCHED_WITHDRAWAL',
-        reference: tx.reference_id,
-        transactionId: tx.id,
-        detail: { reason: 'no gateway dispatch recorded' },
-      });
-      logger.warn('RECON', `Withdrawal ${tx.reference_id} haikutumwa kwa gateway - exception UNDISPATCHED_WITHDRAWAL`);
-      return { undispatched: true };
+      return { skipped: true, reason: 'dispatch_in_flight' };
     }
 
     const gateway = await queryTransactionStatus(tx.reference_id);
@@ -186,12 +181,14 @@ async function settleWithdrawal(tx) {
     }
 
     // gateway PENDING/UNKNOWN -> DO NOT auto-refund. Surface as an exception.
+    // A never-confirmed dispatch is UNDISPATCHED_WITHDRAWAL: operator decides
+    // whether the payout was sent before any refund or re-dispatch.
     await client.query('COMMIT');
     await fin.recordException({
-      type: 'STALE_WITHDRAWAL',
+      type: dispatched ? 'STALE_WITHDRAWAL' : 'UNDISPATCHED_WITHDRAWAL',
       reference: tx.reference_id,
       transactionId: tx.id,
-      detail: { status: gateway.status },
+      detail: { status: gateway.status, dispatch: fresh.rows[0].meta?.dispatch || null },
     });
     logger.warn('RECON', `Withdrawal ${tx.reference_id} unresolved at gateway (${gateway.status}) - opened exception, not auto-refunded`);
     return { exception: true };
