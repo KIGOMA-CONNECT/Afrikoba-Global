@@ -399,7 +399,7 @@ async function reconcilePendingDeposits() {
     logger.info('RECON', 'AzamPay disabled; provider reconciliation skipped.');
     return {
       checkedDeposits: 0,
-      processedWithdrawals,
+      processedWithdrawals: processingWithdrawals,
       providerDisabled: true,
     };
   }

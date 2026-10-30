@@ -240,10 +240,10 @@ async function section(title) { console.log(`\n== ${title} ==`); }
   const webhookData = await resWebhook.json();
   await expect(resWebhook.status === 200 && webhookData.success, 'Callback ya AzamPay inathibitisha deposit', `${resWebhook.status} ${JSON.stringify(webhookData)}`);
   const depAft = await balanceOf(regB.data.user.id);
-  await expect(depAft.wallet === depBef.wallet + 100000, 'Deposit inaongezwa kwenye wallet (wallet_amount)', `${depBef.wallet} → ${depAft.wallet}`);
+  await expect(depAft.wallet === depBef.wallet, 'Deposit inabaki PENDING (AzamPay disabled) - hakuna credit', `${depBef.wallet} → ${depAft.wallet}`);
 
   const revMid = await pool.query('SELECT total_commission FROM company_revenue WHERE id = 1');
-  await expect(Number(revMid.rows[0].total_commission) - Number(revBefore.rows[0].total_commission) === 1000, 'Commission 1% inaenda company_revenue');
+  await expect(Number(revMid.rows[0].total_commission) - Number(revBefore.rows[0].total_commission) === 0, 'Hakuna commission (deposit bado PENDING, AzamPay disabled)');
 
   const wbDup = await fetch(BASE + '/api/payments/azampay-callback', {
     method: 'POST', headers: hdr, body: whBody,

@@ -156,7 +156,16 @@ async function processDepositCallback({ utilityref, transactionstatus, reference
     return { success: true, duplicate: true, message: 'Muamala ulishapokelewa tayari.' };
   }
 
-  const gateway = await queryTransactionStatus(referenceId);
+  let gateway;
+  try {
+    gateway = await queryTransactionStatus(referenceId);
+  } catch (e) {
+    logger.warn('WALLET CALLBACK', `Gateway query unavailable for ${referenceId}: ${e.message}`);
+    await recordCallbackExceptionOnce('CALLBACK_UNVERIFIED', referenceId, pre.rows[0].id, {
+      claimedStatus, decision: 'UNVERIFIED', reason: 'gateway_unavailable',
+    });
+    return { success: true, pending: true, verified: false, message: 'Deposit inasubiri uthibitisho wa gateway.' };
+  }
   const verdict = classifyGatewayDeposit(gateway, {
     referenceId,
     expectedTotal: pre.rows[0].total_charged,
