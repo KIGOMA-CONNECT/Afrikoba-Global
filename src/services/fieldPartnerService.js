@@ -104,11 +104,14 @@ async function bindUser({ partnerId, userId }) {
 
 /**
  * Admin supplies the partner's lendable pool from SUSPENSE.
- * Idempotent on the supplied reference.
+ * Idempotent on the supplied reference: a replay returns `dedup: true` and
+ * moves no money. A missing reference is generated and returned so the caller
+ * can replay safely.
  */
 async function fundPartner({ partnerId, amount, reference }) {
   const amountN = Number(amount);
   if (!(amountN > 0)) throw createAppError('VALIDATION_ERROR', { field: 'amount' });
+  const ref = reference || generateReference('FPF');
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -116,13 +119,26 @@ async function fundPartner({ partnerId, amount, reference }) {
     if (!partner) throw createAppError('FIELD_PARTNER_NOT_FOUND');
     if (!partner.active) throw createAppError('FIELD_PARTNER_INACTIVE');
 
+    const op = await fin.claimOperation({
+      client,
+      operationType: 'FIELD_PARTNER_FUNDING',
+      reference: ref,
+      userId: partner.user_id || null,
+      amount: amountN,
+      validateShape: true,
+    });
+    if (!op.claimed) {
+      await client.query('ROLLBACK');
+      return { success: true, dedup: true, reference: ref, funded: 0, partnerId };
+    }
+
     await fin.postJournal({
       client,
       lines: [
         { accountCode: 'SUSPENSE', direction: 'DR', amount: amountN },
         { accountCode: 'PARTNER_BALANCE', direction: 'CR', amount: amountN },
       ],
-      referenceId: reference,
+      referenceId: ref,
       description: `Field partner funding: ${partner.name}`,
       postedBy: 'engine:field_partner_fund',
     });
@@ -131,8 +147,9 @@ async function fundPartner({ partnerId, amount, reference }) {
       `UPDATE field_partners SET available_balance = available_balance + $1, updated_at = NOW() WHERE id = $2`,
       [amountN, partnerId]
     );
+    await fin.setOperationState({ client, reference: ref, status: 'SUCCESS' });
     await client.query('COMMIT');
-    return { success: true, reference, funded: amountN, partnerId };
+    return { success: true, reference: ref, funded: amountN, partnerId };
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {});
     logger.error('FP_FUND', error.message, { partnerId });

@@ -6,6 +6,7 @@
 const crypto = require('crypto');
 const config = require('../config');
 const logger = require('../utils/logger');
+const { getRedis } = require('../config/redis');
 
 // Webhook IP whitelists (AzamPay, Beem Africa, etc.)
 const WEBHOOK_IP_WHITELIST = {
@@ -23,12 +24,10 @@ setInterval(() => {
   }
 }, CLEANUP_INTERVAL).unref();
 
+const REPLAY_TTL_SECONDS = 24 * 60 * 60;
+
 /**
  * H16: Verify webhook HMAC signature.
- * @param {string} body - Raw request body
- * @param {string} signature - Signature from header
- * @param {string} secret - Webhook secret
- * @returns {boolean}
  */
 function verifyWebhookSignature(body, signature, secret) {
   if (!signature || !secret) return false;
@@ -51,11 +50,37 @@ function verifyWebhookSignature(body, signature, secret) {
 /**
  * H16: Replay protection middleware.
  * Rejects webhooks with the same ID within 24 hours.
+ *
+ * Backing store: Redis when configured (multi-replica safe), otherwise an
+ * in-process Map. The state machine on the deposit/withdrawal rows remains
+ * the authoritative protection against double-credit; this layer only rejects
+ * obvious replays early.
  */
-function webhookReplayProtection(req, res, next) {
+async function webhookReplayProtection(req, res, next) {
   const webhookId = req.headers['x-webhook-id'] || req.headers['x-request-id'];
 
-  if (webhookId) {
+  if (!webhookId) return next();
+
+  try {
+    const redis = getRedis();
+    if (redis) {
+      try {
+        const key = `webhook:replay:${webhookId}`;
+        const ok = await redis.set(key, '1', 'NX', 'EX', REPLAY_TTL_SECONDS);
+        if (ok === null) {
+          logger.warn('SECURITY', `Webhook replay detected (redis): ${webhookId} from ${req.ip}`);
+          return res.status(409).json({
+            success: false,
+            message: 'Webhook imepokelewa tayari.',
+            code: 'WEBHOOK_DUPLICATE',
+          });
+        }
+        return next();
+      } catch (err) {
+        logger.warn('SECURITY', `Redis replay check failed, falling back to memory: ${err.message}`);
+      }
+    }
+
     if (processedWebhooks.has(webhookId)) {
       logger.warn('SECURITY', `Webhook replay detected: ${webhookId} from ${req.ip}`);
       return res.status(409).json({
@@ -65,15 +90,16 @@ function webhookReplayProtection(req, res, next) {
       });
     }
     processedWebhooks.set(webhookId, Date.now());
-  }
 
-  next();
+    next();
+  } catch (err) {
+    logger.error('SECURITY', `webhookReplayProtection failed: ${err.message}`);
+    next();
+  }
 }
 
 /**
  * H16: Webhook HMAC verification middleware.
- * - Signature inahitajika iwapo secret imesetwa (hapana bypass kwa kuondoa header).
- * - Verification inaenda kwenye RAW body halisi (req.rawBody).
  */
 function verifyWebhookHmac(req, res, next) {
   const secret = config.security?.webhookSecret || process.env.WEBHOOK_SECRET;
@@ -111,4 +137,5 @@ module.exports = {
   verifyWebhookSignature,
   webhookReplayProtection,
   verifyWebhookHmac,
+  WEBHOOK_IP_WHITELIST,
 };

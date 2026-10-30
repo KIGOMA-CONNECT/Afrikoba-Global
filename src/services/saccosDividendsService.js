@@ -157,7 +157,7 @@ async function distributeDividend(actorId, saccosId, runId) {
       const ref = payout.reference_id;
       const userBefore = await client.query(`SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE`, [payout.user_id]);
       const before = Number(userBefore.rows[0].wallet_balance);
-      const op = await fin.claimOperation({ client, operationType: 'SACCOS_DIVIDEND_PAYOUT', reference: ref, userId: payout.user_id, amount: amountN });
+      const op = await fin.claimOperation({ client, operationType: 'SACCOS_DIVIDEND_PAYOUT', reference: ref, userId: payout.user_id, amount: amountN , validateShape: true});
       if (!op.claimed) continue;
       await fin.postJournal({
         client,
@@ -169,6 +169,7 @@ async function distributeDividend(actorId, saccosId, runId) {
       });
       await client.query(`UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2`, [amountN, payout.user_id]);
       await fin.auditBalance({ client, accountKind: 'USER_BALANCE', accountId: payout.user_id, operation: 'dividend_payout', amount: amountN, balanceBefore: before, balanceAfter: before + amountN, reference: ref, actor: 'saccos-dividends' }).catch(() => {});
+      await fin.setOperationState({ client, reference: ref, status: 'SUCCESS' });
       await client.query(
         `UPDATE saccos_dividend_payouts SET status = 'PAID', paid_at = NOW() WHERE id = $1`,
         [payout.id]

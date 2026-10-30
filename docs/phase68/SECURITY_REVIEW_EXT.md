@@ -8,9 +8,9 @@ Status legend: **VERIFIED** (executed), **CONFIG** (read from the running enviro
 
 | # | Area | Severity | Status | Phase 68 state |
 |---|---|---|---|---|
-| S1 | Deposit callback trusts body status, gated by shared secret | High | REVIEW + CONFIG | OPEN (owner decision) |
+| S1 | Deposit callback trusts body status, gated by shared secret | High | REVIEW + CONFIG | **CLOSED (mitigated)** — callback now gateway-verified; auto-credit gated closed until the provider contract is verified. See `DEPOSIT_ATOMICITY.md`. |
 | S2 | AzamPay status query endpoint unverified | High | REVIEW | OPEN (provider blocker) |
-| S3 | `Idempotency-Key` middleware: no in-flight lock; cache lookup not scoped by user | Medium | REVIEW | Withdrawal path fixed, middleware OPEN |
+| S3 | `Idempotency-Key` middleware: no in-flight lock; cache lookup not scoped by user | Medium | REVIEW | **CLOSED (fixed)** — user-scoped keys + atomic DB claim; 10/10 tests. See `IDEMPOTENCY_HARDENING.md`. |
 | S4 | Webhook replay cache is in-memory and keyed on an optional header | Low | REVIEW | OPEN |
 | S5 | Public client IP path (`trust proxy = 1`) not mapped | Medium | UNVERIFIED | OPEN (topology) |
 | S6 | proxy-addr CVE-2026-90711 | Critical advisory | VERIFIED: not applicable to this config; fixed in installed tree | CLOSED for backend |
@@ -19,10 +19,21 @@ Status legend: **VERIFIED** (executed), **CONFIG** (read from the running enviro
 | S9 | No four-eyes on self-service wallet withdrawal | Owner decision | REVIEW | OPEN (owner) |
 | S10 | Withdrawal route authorization and controls | — | REVIEW + CONFIG | Present |
 | S11 | Audit logging on withdrawal paths | — | REVIEW | Present |
+| S12 | Non-AzamPay money-path integrity (funding, SACCOS redemption, ledger coverage) | High | VERIFIED | **PARTIAL (increments 1–2 fixed)** — funding, SACCOS redemption, ledger coverage and engine shape validation closed; 14/14 + 5/5 tests. See `MONEY_PATH_INTEGRITY.md`. |
 
 ## 2. Findings
 
 ### S1. Deposit callback credits on body status alone
+
+**Update 2026-10-30: CLOSED (mitigated).** The callback no longer decides the
+outcome from the body. `processDepositCallback` queries the gateway and
+classifies the answer; body and gateway disagreement leaves the deposit
+`PENDING` and records an exception. Because the status-query schema is still
+unverified (S2), auto-credit is gated closed by
+`AZAMPAY_STATUS_CONTRACT_VERIFIED` (default false). Deterministic tests:
+`tests/deposit-atomicity.phase68.test.js` (25/25) and
+`tests/deposit-verification.phase68.test.js` (35/35). Full record:
+`docs/phase68/DEPOSIT_ATOMICITY.md`. The original review text is kept below.
 
 - Route: `POST /payments/azampay-callback` (`src/routes/callbackRoutes.js`), mounted behind `verifyWebhookSecurity`, `verifyWebhookHmac`, `webhookReplayProtection` (`src/server.js:338`).
 - `processDepositCallback` (`src/services/walletService.js`) reads `utilityref` and `transactionstatus` from the body. If the status is `success` and the transaction is PENDING, it posts the deposit. It does not query the gateway first.
@@ -38,6 +49,28 @@ Status legend: **VERIFIED** (executed), **CONFIG** (read from the running enviro
 - The reconciliation code treats any response that is not SUCCESS or FAILED as PENDING/UNKNOWN, so a wrong endpoint fails safe (exceptions, no automatic money movement). It does not verify anything either.
 
 ### S3. Idempotency middleware
+
+**Update 2026-10-30: CLOSED (fixed).** `src/middleware/idempotent.js` now:
+
+- scopes every key to the authenticated user in memory, Redis and Postgres
+  (`u<userId>:<client key>`), so a key learned by another user cannot return the
+  first user's cached body;
+- claims the key atomically in Postgres (`INSERT ... ON CONFLICT DO NOTHING`)
+  before the handler runs, so concurrent duplicates execute once and the loser
+  receives `409 IDEMPOTENCY_IN_PROGRESS` with `Retry-After`;
+- caches only 2xx responses and releases the claim on a refusal or an aborted
+  request, so retries are not blocked by a cached error;
+- refuses a keyed request with no authenticated user
+  (`401 IDEMPOTENCY_REQUIRES_AUTH`).
+
+No schema change is required: the scoped key fits the existing `key_value`
+primary key, and an in-flight row uses `status_code = 0` with an ownership token
+in `response_body.claim`. A crashed request's claim is taken over only after its
+5-minute lease expires. Deterministic tests:
+`tests/idempotency.phase68.test.js` (10/10). Full record:
+`docs/phase68/IDEMPOTENCY_HARDENING.md`.
+
+The original review text is kept below.
 
 - `src/middleware/idempotent.js` checks Redis, then memory, then DB for a key, and only stores the response after it finishes. Two requests with the same key that arrive before the first finishes both execute.
 - The DB lookup `SELECT ... FROM idempotency_keys WHERE key_value = $1` is not scoped by `user_id`. A user who learns another user's key can receive that user's cached response body.
@@ -115,6 +148,30 @@ Rotation plan (for approval, not executed):
 
 - `logAudit` is called on withdrawal creation (`CREATE`), dispatch refusal (`DISPATCH_FAILED`), and dispatch uncertainty (`DISPATCH_UNCERTAIN`). The post-commit SMS failure is logged and not swallowed.
 - Reconciliation exceptions are written to `reconciliation_exceptions`. Duplicates per reference and type are now suppressed.
+
+### S12. Non-AzamPay money-path integrity (verified by execution)
+
+Increments 1 and 2 fixed and proved:
+
+- `fieldPartnerService.fundPartner` and `bapService.fundPartner` claim on a
+  reference (and accept/propose one) so replays cannot double-fund.
+- `saccosInvestmentsService.redeemInvestment` uses a deterministic reference,
+  claims inside the transaction, accepts `ACTIVE`/`MATURED`, and checks the
+  guarded `UPDATE` rowCount so concurrent redemptions cannot double-credit.
+- SACCOS dividend and exit payouts now finalize `financial_operations` to
+  `SUCCESS`.
+- Every direct `wallet_ledger` writer is transaction-scoped and engine-backed
+  (static parity + `reconciliation-coverage` suite); `balanceReconciliation`
+  flags `wallet_ledger` rows without a journal group as `LEDGER_ORPHAN`.
+- `claimOperation` supports opt-in shape validation. All engine primitives
+  reject a reused reference with a different operation type, user, amount or
+  transaction id with `OPERATION_SHAPE_MISMATCH` (409); the deposit path keeps
+  its richer `DEPOSIT_IDEMPOTENCY_CONFLICT` handling.
+
+Evidence: `tests/money-path-integrity.phase68.test.js` (14/14),
+`tests/reconciliation-coverage.phase68.test.js` (5/5). Residual candidates:
+opt-in shape validation for remaining service-level `claimOperation` callers and
+P2P/VICOBA/ROSCA/loans/escrow matrix coverage.
 
 ## 3. What this review does not establish
 

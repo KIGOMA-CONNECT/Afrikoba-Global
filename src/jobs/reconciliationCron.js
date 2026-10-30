@@ -1,6 +1,7 @@
 const pool = require('../config/db');
 const config = require('../config');
 const { queryTransactionStatus } = require('../services/azampayService');
+const { classifyGatewayDeposit } = require('../services/depositVerification');
 const { sendSMS } = require('../services/smsService');
 const { formatMoney } = require('../utils/helpers');
 const fin = require('../services/financialEngine');
@@ -31,78 +32,205 @@ const DISPATCH_GRACE_MS = 10 * 60 * 1000;
  * crucially, the earlier PENDING check is re-verified under a row lock.
  */
 async function settleDeposit(tx) {
+  // Query the gateway before acquiring a database row lock.
+  const gateway = await queryTransactionStatus(tx.reference_id);
+  const verdict = classifyGatewayDeposit(gateway, {
+    referenceId: tx.reference_id,
+    expectedTotal: tx.total_charged,
+    contractVerified: config.azampay.statusContractVerified,
+  });
+
   const client = await pool.connect();
+  let committed = false;
+
   try {
     await client.query('BEGIN');
-    // Row lock + re-check: if the async callback already moved this tx, skip.
-    const claim = await client.query(
-      `SELECT status FROM transactions WHERE id = $1 FOR UPDATE`, [tx.id]
+
+    const freshResult = await client.query(
+      `SELECT * FROM transactions WHERE id = $1 FOR UPDATE`,
+      [tx.id]
     );
-    if (claim.rows.length === 0 || claim.rows[0].status !== 'PENDING') {
+
+    if (
+      freshResult.rows.length === 0 ||
+      freshResult.rows[0].status !== 'PENDING'
+    ) {
       await client.query('COMMIT');
+      committed = true;
       return { skipped: true, reason: 'status_changed' };
     }
 
-    const gateway = await queryTransactionStatus(tx.reference_id);
+    const fresh = freshResult.rows[0];
 
-    if (gateway.status === 'SUCCESS') {
-      // Idempotent - financial engine guards on reference_id.
-      const posted = await fin.postDeposit({
-        userId: tx.user_id,
-        amount: tx.wallet_amount,
-        commission: tx.commission,
-        reference: tx.reference_id,
-        externalTxId: null,
-        description: 'Deposit confirmed (reconciliation)',
-      });
-      if (posted && posted.dedup) {
-        // Already posted (e.g. callback succeeded). Just mark SUCCESS.
-        await client.query(
-          `UPDATE transactions SET status = 'SUCCESS', updated_at = NOW() WHERE id = $1`,
-          [tx.id]
-        );
-        await client.query('COMMIT');
-        return { dedup: true };
-      }
-      await client.query(
-        `UPDATE transactions SET status = 'SUCCESS', external_tx_id = $1, updated_at = NOW() WHERE id = $2`,
-        [gateway.data?.externalId || null, tx.id]
-      );
-      const { rows } = await client.query(
-        'SELECT wallet_balance, phone_number, full_name FROM users WHERE id = $1', [tx.user_id]
-      );
-      const newBalance = rows[0].wallet_balance;
+    // Do not apply a gateway result to a changed transaction identity/amount.
+    if (
+      String(fresh.reference_id) !== String(tx.reference_id) ||
+      Math.abs(Number(fresh.total_charged) - Number(tx.total_charged)) >= 0.005
+    ) {
       await client.query('COMMIT');
-      const smsMsg = `Habari ${rows[0].full_name}, deposit yako ya ${formatMoney(tx.wallet_amount)} imethibitishwa (Reconciliation). Salio: ${formatMoney(newBalance)}. Ref: ${tx.reference_id}`;
-      await sendSMS(rows[0].phone_number, smsMsg).catch(() => {});
-      return { success: true };
+      committed = true;
+      return { skipped: true, reason: 'transaction_changed' };
     }
 
-    if (gateway.status === 'FAILED') {
+    if (verdict.decision === 'SUCCESS') {
+      // Serialize callback and reconciliation settlement for this reference.
       await client.query(
-        `UPDATE transactions SET status = 'FAILED', failure_reason = 'Failed at gateway (recon)', updated_at = NOW() WHERE id = $1`,
-        [tx.id]
+        'SELECT pg_advisory_xact_lock(0, hashtext($1))',
+        [fresh.reference_id]
       );
+
+      const posted = await fin.postDeposit({
+        client,
+        transactionId: fresh.id,
+        userId: fresh.user_id,
+        amount: fresh.wallet_amount,
+        commission: fresh.commission,
+        reference: fresh.reference_id,
+        externalTxId: gateway.data?.externalId || null,
+        description: 'Deposit confirmed (reconciliation)',
+      });
+
+      if (posted && posted.dedup && posted.verified !== true) {
+        const error = new Error(
+          `Unverified reconciliation deposit duplicate: ${fresh.reference_id}`
+        );
+        error.code = 'DEPOSIT_IDEMPOTENCY_CONFLICT';
+        throw error;
+      }
+
+      await client.query(
+        `INSERT INTO wallet_ledger
+           (transaction_id, reference_id, to_user_id, amount, description)
+         VALUES ($1, $2, $3, $4, 'Deposit confirmed (reconciliation)')
+         ON CONFLICT DO NOTHING`,
+        [fresh.id, fresh.reference_id, fresh.user_id, fresh.wallet_amount]
+      );
+
+      const ledgerResult = await client.query(
+        `SELECT transaction_id, reference_id, to_user_id, amount
+           FROM wallet_ledger
+          WHERE reference_id = $1
+          ORDER BY id
+          FOR UPDATE`,
+        [fresh.reference_id]
+      );
+
+      const { verifyWalletLedgerRows } = require('../services/depositVerification');
+      if (!verifyWalletLedgerRows(ledgerResult.rows, {
+        referenceId: fresh.reference_id,
+        transactionId: fresh.id,
+        userId: fresh.user_id,
+        amount: fresh.wallet_amount
+      })) {
+        const error = new Error(
+          `Reconciliation wallet-ledger conflict: ${fresh.reference_id}`
+        );
+        error.code = 'DEPOSIT_LEDGER_CONFLICT';
+        throw error;
+      }
+
+      const updated = await client.query(
+        `UPDATE transactions
+            SET status = 'SUCCESS', external_tx_id = $1, updated_at = NOW()
+          WHERE id = $2 AND status = 'PENDING'`,
+        [gateway.data?.externalId || null, fresh.id]
+      );
+
+      if (updated.rowCount !== 1) {
+        throw new Error(`Reconciliation status transition failed: ${fresh.reference_id}`);
+      }
+
+      const userResult = await client.query(
+        'SELECT wallet_balance, phone_number, full_name FROM users WHERE id = $1',
+        [fresh.user_id]
+      );
+      if (!userResult.rows.length) {
+        throw new Error(`Reconciliation user missing: ${fresh.user_id}`);
+      }
+
       await client.query('COMMIT');
+      committed = true;
+
+      const user = userResult.rows[0];
+      const smsMsg = `Habari ${user.full_name}, deposit yako ya ${formatMoney(fresh.wallet_amount)} imethibitishwa (Reconciliation). Salio: ${formatMoney(user.wallet_balance)}. Ref: ${fresh.reference_id}`;
+      await sendSMS(user.phone_number, smsMsg).catch((smsErr) =>
+        logger.error('RECON_DEPOSIT', `SMS failed: ${smsErr.message}`, { id: fresh.id })
+      );
+
+      return {
+        success: true,
+        dedup: Boolean(posted && posted.dedup)
+      };
+    }
+
+    if (verdict.decision === 'FAILED') {
+      const updated = await client.query(
+        `UPDATE transactions
+            SET status = 'FAILED',
+                failure_reason = 'Failed at gateway (recon)',
+                external_tx_id = $1,
+                updated_at = NOW()
+          WHERE id = $2 AND status = 'PENDING'`,
+        [gateway.data?.externalId || null, fresh.id]
+      );
+
+      if (updated.rowCount !== 1) {
+        throw new Error(`Reconciliation failure transition failed: ${fresh.reference_id}`);
+      }
+
+      await client.query('COMMIT');
+      committed = true;
       return { failed: true };
     }
 
-    // PENDING / UNKNOWN. Open an exception after 15 minutes but never resolve
-    // a deposit by guessing.
-    const ageMinutes = (new Date() - new Date(tx.created_at)) / (1000 * 60);
+    // PENDING / UNKNOWN / CONFLICT: never resolve by guessing.
+    const ageMinutes = (new Date() - new Date(fresh.created_at)) / (1000 * 60);
     await client.query('COMMIT');
+    committed = true;
+
+    if (verdict.reason === 'STATUS_CONTRACT_UNVERIFIED') {
+      await recordExceptionOnce({
+        type: 'DEPOSIT_CONTRACT_UNVERIFIED',
+        reference: fresh.reference_id,
+        transactionId: fresh.id,
+        detail: { reason: verdict.reason },
+      });
+      return { blocked: true };
+    }
+
+    if (verdict.decision === 'CONFLICT') {
+      await recordExceptionOnce({
+        type: 'DEPOSIT_GATEWAY_CONFLICT',
+        reference: fresh.reference_id,
+        transactionId: fresh.id,
+        detail: { reason: verdict.reason },
+      });
+      return { conflict: true };
+    }
+
     if (ageMinutes > 15) {
-      await fin.recordException({
+      await recordExceptionOnce({
         type: 'STALE_DEPOSIT',
-        reference: tx.reference_id,
-        transactionId: tx.id,
+        reference: fresh.reference_id,
+        transactionId: fresh.id,
         detail: { gatewayStatus: gateway.status, ageMinutes },
       });
     }
+
     return { unresolved: true };
   } catch (error) {
-    await client.query('ROLLBACK').catch(() => {});
+    if (!committed) {
+      await client.query('ROLLBACK').catch(() => {});
+    }
     logger.error('RECON_DEPOSIT', error.message, { id: tx.id });
+    await recordExceptionOnce({
+      type: 'DEPOSIT_SETTLEMENT_FAILED',
+      reference: tx.reference_id,
+      transactionId: tx.id,
+      detail: { message: error.message, code: error.code || null },
+    }).catch((recErr) =>
+      logger.error('RECON_DEPOSIT', `exception write failed: ${recErr.message}`, { id: tx.id })
+    );
     throw error;
   } finally {
     client.release();
@@ -112,13 +240,48 @@ async function settleDeposit(tx) {
 // One open exception per (reference, type). Recon runs every 5 minutes and
 // would otherwise add a duplicate row each pass for the same stuck withdrawal.
 async function recordExceptionOnce(exception) {
-  const { rows } = await pool.query(
-    `SELECT 1 FROM reconciliation_exceptions WHERE reference_id = $1 AND exception_type = $2 LIMIT 1`,
-    [exception.reference, exception.type]
-  );
-  if (rows.length) return false;
-  await fin.recordException(exception);
-  return true;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const reference = exception.reference || null;
+    const lockKey = `${reference || ''}:${exception.type}`;
+    await client.query(
+      'SELECT pg_advisory_xact_lock(0, hashtext($1))',
+      [lockKey]
+    );
+
+    const existing = await client.query(
+      `SELECT 1 FROM reconciliation_exceptions
+        WHERE reference_id IS NOT DISTINCT FROM $1
+          AND exception_type = $2
+        LIMIT 1`,
+      [reference, exception.type]
+    );
+    if (existing.rows.length) {
+      await client.query('COMMIT');
+      return false;
+    }
+
+    await client.query(
+      `INSERT INTO reconciliation_exceptions
+         (exception_type, reference_id, transaction_id, detail)
+       VALUES ($1, $2, $3, $4::jsonb)`,
+      [
+        exception.type,
+        reference,
+        exception.transactionId || null,
+        JSON.stringify(exception.detail || {}),
+      ]
+    );
+    await client.query('COMMIT');
+    logger.warn('RECON_EXCEPTION', `${exception.type} ${reference || ''} recorded`);
+    return true;
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 /**
@@ -232,7 +395,7 @@ async function reconcilePendingDeposits() {
   const dep = await pool.connect();
   try {
     const { rows: pending } = await dep.query(
-      `SELECT t.id, t.reference_id, t.wallet_amount, t.commission, t.user_id, t.created_at
+      `SELECT t.id, t.reference_id, t.wallet_amount, t.commission, t.total_charged, t.user_id, t.created_at
        FROM transactions t
        WHERE t.status = 'PENDING'
          AND t.type = 'DEPOSIT'
@@ -267,4 +430,4 @@ async function reconcilePendingDeposits() {
   return { checkedDeposits, processedWithdrawals };
 }
 
-module.exports = { reconcilePendingDeposits };
+module.exports = { reconcilePendingDeposits, settleDeposit };

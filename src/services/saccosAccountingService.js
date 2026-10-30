@@ -153,7 +153,7 @@ async function bookEntry(actorId, saccosId, { kind, amount, description, account
     await client.query('BEGIN');
     await ensureAccount(client, saccosId, debit);
     await ensureAccount(client, saccosId, credit);
-    const op = await fin.claimOperation({ client, operationType: 'SACCOS_ACCOUNTING_ENTRY', reference, userId: actorId, amount: amountN });
+    const op = await fin.claimOperation({ client, operationType: 'SACCOS_ACCOUNTING_ENTRY', reference, userId: actorId, amount: amountN , validateShape: true});
     if (!op.claimed) {
       await client.query('ROLLBACK');
       return { dedup: true, reference };

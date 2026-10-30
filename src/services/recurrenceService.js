@@ -58,6 +58,7 @@ async function runAutoSavings(payload) {
       reference,
       userId,
       amount,
+      validateShape: true,
     });
     if (op.claimed === false) {
       await client.query('ROLLBACK').catch(() => {});

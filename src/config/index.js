@@ -39,6 +39,10 @@ const config = {
     // Withdrawals/payouts stay blocked until the payout contract is verified
     // against official AzamPay docs (Phase 68 D1). Default: false.
     payoutContractVerified: process.env.AZAMPAY_PAYOUT_CONTRACT_VERIFIED === 'true',
+    // Deposits stay PENDING (never credited) until the transaction-status
+    // response contract is verified against official AzamPay docs
+    // (Phase 68 D1_PROVIDER_CONTRACT.md section 3). Default: false.
+    statusContractVerified: process.env.AZAMPAY_STATUS_CONTRACT_VERIFIED === 'true',
   },
   lending: {
     // Mikopo mikubwa (≥ threshold TZS) inahitaji KYC Level highValueKycLevel
@@ -87,6 +91,13 @@ const config = {
   },
   ussd: {
     secret: process.env.USSD_SECRET || '',
+  },
+  withdrawal: {
+    // Four-eyes on self-service withdrawal. Owner decision (S9). Default OFF.
+    // When enabled, withdrawals at or above `fourEyesThreshold` TZS require
+    // approval via the four-eyes service before funds are held/dispatched.
+    fourEyesEnabled: process.env.WITHDRAWAL_FOUR_EYES_ENABLED === 'true',
+    fourEyesThreshold: parseFloat(process.env.WITHDRAWAL_FOUR_EYES_THRESHOLD || '0'),
   },
   device: {
     defaultPolicy: process.env.DEVICE_DEFAULT_POLICY || 'PERMISSIVE',

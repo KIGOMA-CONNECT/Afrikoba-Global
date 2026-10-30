@@ -152,7 +152,7 @@ async function postCycle(actorId, saccosId, cycleId) {
     await client.query('BEGIN');
     await ensureAccounts(client, saccosId);
     const op = await fin.claimOperation({
-      client, operationType: 'SACCOS_SAVINGS_INTEREST', reference, userId: actorId, amount: total,
+      client, operationType: 'SACCOS_SAVINGS_INTEREST', reference, userId: actorId, amount: total, validateShape: true,
     });
     if (!op.claimed) {
       await client.query('ROLLBACK');
