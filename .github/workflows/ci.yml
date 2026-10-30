@@ -45,6 +45,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Debug checkout
+        run: |
+          echo "HEAD: $(git rev-parse HEAD)"
+          echo "walletService line 159:"
+          sed -n '159p' src/services/walletService.js
+          echo "recon line 402:"
+          sed -n '402p' src/jobs/reconciliationCron.js
+
       - uses: actions/setup-node@v7
         with:
           node-version: 22
