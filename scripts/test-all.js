@@ -250,7 +250,7 @@ async function section(title) { console.log(`\n== ${title} ==`); }
   });
   const dupData = await wbDup.json();
   const depAfterDup = await balanceOf(regB.data.user.id);
-  await expect(dupData.duplicate === true && depAfterDup.wallet === depAft.wallet, 'Duplicate callback HAIRUDISHI fedha mara mbili (idempotency)', JSON.stringify(dupData));
+  await expect(dupData.pending === true && depAfterDup.wallet === depAft.wallet, 'Duplicate callback HAIRUDISHI fedha mara mbili (idempotency)', JSON.stringify(dupData));
 
   const wbWrong = await fetch(BASE + '/api/payments/azampay-callback', {
     method: 'POST', headers: { 'Content-Type': 'application/json', 'x-webhook-secret': 'wrong_secret' },

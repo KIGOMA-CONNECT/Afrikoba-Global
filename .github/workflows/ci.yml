@@ -63,7 +63,7 @@ jobs:
 
       - name: Start server (rate limiting off)
         run: |
-          RATE_LIMIT_DISABLED=true DISABLE_CRON=true SACCOS_ENABLED=true node src/server.js > server.log 2>&1 &
+          RATE_LIMIT_DISABLED=true DISABLE_CRON=true SACCOS_ENABLED=true AZAMPAY_PAYOUT_CONTRACT_VERIFIED=true node src/server.js > server.log 2>&1 &
           echo $! > server.pid
           for i in $(seq 1 30); do
             if curl -sf http://localhost:3000/health > /dev/null; then echo "server up"; break; fi
