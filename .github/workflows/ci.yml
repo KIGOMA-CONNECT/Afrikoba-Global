@@ -44,6 +44,9 @@ jobs:
       USSD_SECRET: ci-ussd-secret
     steps:
       - uses: actions/checkout@v7
+        with:
+          clean: true
+          fetch-depth: 0
 
       - name: Debug checkout
         run: |
