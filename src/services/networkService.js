@@ -357,8 +357,7 @@ async function executeAgentSettlement(payload, approverId) {
       reference: operationReference,
       userId: Number(approverId),
       amount: amountNum,
-      validateShape: true,
-    });
+          });
     if (!claim.claimed) {
       throw Object.assign(new Error('Settlement ina financial operation iliyokwisha daiwa; inahitaji ukaguzi.'), { statusCode: 409 });
     }

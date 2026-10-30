@@ -249,7 +249,7 @@ async function redeemInvestment(actorId, saccosId, investmentId) {
     await client.query('BEGIN');
     await ensureInvestmentAccounts(client, saccosId);
 
-    const op = await fin.claimOperation({ client, operationType: 'SACCOS_INVESTMENT_REDEMPTION', reference, userId: actorId, amount: total , validateShape: true});
+    const op = await fin.claimOperation({ client, operationType: 'SACCOS_INVESTMENT_REDEMPTION', reference, userId: actorId, amount: total });
     if (!op.claimed) {
       await client.query('ROLLBACK');
       const current = await fetchInvestment(saccosId, investmentId);

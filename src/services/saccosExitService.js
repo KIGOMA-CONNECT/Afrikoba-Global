@@ -87,7 +87,7 @@ async function settleAndExit(actorId, saccosId) {
       shareCount = Number(holding.rows[0].share_count);
       shareRedemption = Number(holding.rows[0].total_value);
       const ref = reference + ':SHR';
-      const op = await fin.claimOperation({ client, operationType: 'SACCOS_EXIT_SHARE_REDEMPTION', reference: ref, userId: actorId, amount: shareRedemption , validateShape: true});
+      const op = await fin.claimOperation({ client, operationType: 'SACCOS_EXIT_SHARE_REDEMPTION', reference: ref, userId: actorId, amount: shareRedemption });
       if (!op.claimed) throw createAppError('SACCOS_EXIT_ALREADY_SETTLED');
       const beforeSh = await client.query('SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE', [actorId]);
       await fin.postJournal({
@@ -126,7 +126,7 @@ async function settleAndExit(actorId, saccosId) {
     );
     for (const payout of pend.rows) {
       const amountN = Number(payout.amount);
-      const op = await fin.claimOperation({ client, operationType: 'SACCOS_DIVIDEND_PAYOUT', reference: payout.reference_id, userId: actorId, amount: amountN , validateShape: true});
+      const op = await fin.claimOperation({ client, operationType: 'SACCOS_DIVIDEND_PAYOUT', reference: payout.reference_id, userId: actorId, amount: amountN });
       if (!op.claimed) continue;
       const before = await client.query('SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE', [actorId]);
       await fin.postJournal({

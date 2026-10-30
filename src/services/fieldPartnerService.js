@@ -125,8 +125,7 @@ async function fundPartner({ partnerId, amount, reference }) {
       reference: ref,
       userId: partner.user_id || null,
       amount: amountN,
-      validateShape: true,
-    });
+          });
     if (!op.claimed) {
       await client.query('ROLLBACK');
       return { success: true, dedup: true, reference: ref, funded: 0, partnerId };

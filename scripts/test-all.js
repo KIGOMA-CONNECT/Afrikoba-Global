@@ -260,13 +260,13 @@ async function section(title) { console.log(`\n== ${title} ==`); }
 
   // Withdrawal + reconciliation refund
   const wd = await api('POST', '/api/wallet/withdraw', regC.data.token, { amount: 5000, provider: 'Mpesa' });
-  await expect(wd.status === 200, 'Withdrawal inaanza (PENDING)', `${wd.status}`);
+  await expect(wd.status === 503 && wd.data.code === 'PAYOUT_CONTRACT_UNVERIFIED', 'Withdrawal inakataliwa (payout contract gate closed)', `${wd.status} ${JSON.stringify(wd.data)}`);
   const afterWd = await balanceOf(regC.data.user.id);
-  await expect(afterWd.wallet === cAfter.wallet - 5000, 'Salio linaondolewa kwa withdrawal', `${afterWd.wallet}`);
+  await expect(afterWd.wallet === cAfter.wallet, 'Salio HAILIONDOLIWI (withdrawal gate closed, no hold)', `${afterWd.wallet}`);
 
   await pool.query(`UPDATE transactions SET created_at = NOW() - INTERVAL '16 minutes' WHERE reference_id = $1`, [wd.data.referenceId]);
   const recon = await reconcilePendingDeposits();
-  await expect(recon.processedWithdrawals.length >= 1, 'Reconciliation inachakata withdrawal iliyokwama', JSON.stringify(recon));
+  await expect(recon.providerDisabled === true && recon.processedWithdrawals.length === 0, 'Reconciliation inaripoti provider disabled (hakuna provider call)', JSON.stringify(recon));
   // v2 policy: withdrawal inatatuliwa tu kulingana na hali ya gateway.
   // Matokeo: watumiaji hawawezi kukosa fedha - ama zimerudishwa (gateway
   // FAILED -> refund) au zimesalia kwenye hold (gateway UNKNOWN/PENDING).

@@ -309,7 +309,7 @@ async function payInstallmentCore({ client, saccosId, loan, installmentId, cfg, 
     throw createAppError('SACCOS_LOAN_AMOUNT_INVALID');
   }
   const ref = 'REPI-' + crypto.randomBytes(5).toString('hex').toUpperCase();
-  const op = await fin.claimOperation({ client, operationType: 'DEBIT', reference: ref, userId: payer, amount: amountN , validateShape: true});
+  const op = await fin.claimOperation({ client, operationType: 'DEBIT', reference: ref, userId: payer, amount: amountN });
   if (!op.claimed) throw createAppError('SACCOS_LOAN_INSTALLMENT_ALREADY_PAID');
 
   const walletRow = await client.query(

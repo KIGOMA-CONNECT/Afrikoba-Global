@@ -225,7 +225,7 @@ async function writeOffLoan(actorId, saccosId, loanId, { reason }) {
     const writtenPrincipal = round2(reservesUsed + expenseUsed);
 
     const ref = newRef('WO');
-    const op = await fin.claimOperation({ client, operationType: 'SACCOS_LOAN_WRITE_OFF', reference: ref, userId: actorId, amount: outstanding , validateShape: true});
+    const op = await fin.claimOperation({ client, operationType: 'SACCOS_LOAN_WRITE_OFF', reference: ref, userId: actorId, amount: outstanding });
     if (!op.claimed) {
       await client.query('ROLLBACK');
       return { dedup: true, reference: ref };

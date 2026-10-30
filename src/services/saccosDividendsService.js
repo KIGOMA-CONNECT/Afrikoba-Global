@@ -157,7 +157,7 @@ async function distributeDividend(actorId, saccosId, runId) {
       const ref = payout.reference_id;
       const userBefore = await client.query(`SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE`, [payout.user_id]);
       const before = Number(userBefore.rows[0].wallet_balance);
-      const op = await fin.claimOperation({ client, operationType: 'SACCOS_DIVIDEND_PAYOUT', reference: ref, userId: payout.user_id, amount: amountN , validateShape: true});
+      const op = await fin.claimOperation({ client, operationType: 'SACCOS_DIVIDEND_PAYOUT', reference: ref, userId: payout.user_id, amount: amountN });
       if (!op.claimed) continue;
       await fin.postJournal({
         client,

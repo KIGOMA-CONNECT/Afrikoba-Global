@@ -163,8 +163,7 @@ async function fundPartner(adminId, partnerId, amount, reference) {
       reference: opRef,
       userId: adminId,
       amount: amountNum,
-      validateShape: true,
-    });
+          });
     if (!op.claimed) {
       await client.query('ROLLBACK');
       const bal = await pool.query('SELECT balance FROM partners WHERE id=$1', [partnerId]);

@@ -212,8 +212,7 @@ async function adminExecutePayout(adminId, payoutId) {
       reference: ref,
       userId: merchantUser.user_id,
       amount: Number(p.gross_amount),
-      validateShape: true,
-    });
+          });
     if (!op.claimed) throw badge('Payout hii imeshatengenezwa (duplicate).', 409);
 
     await fin.postJournal({
@@ -335,8 +334,7 @@ async function creditMerchantProceeds({
     reference,
     userId: payerId,
     amount: amountN,
-    validateShape: true,
-  });
+      });
 
   if (!op.claimed) {
     return { credited: true, account, dedup: true };

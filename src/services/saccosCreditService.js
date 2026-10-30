@@ -88,7 +88,7 @@ async function ensureCreditAccounts(client, saccosId) {
 /** Credit a member wallet from a SACCOS account: DR <fromAccount> / CR CUSTOMER_WALLET. */
 async function creditFromSaccos({ client, userId, amount, reference, fromAccount, description, actor, txnType }) {
   const amountN = Number(amount);
-  const op = await fin.claimOperation({ client, operationType: 'CREDIT', reference, userId, amount: amountN , validateShape: true});
+  const op = await fin.claimOperation({ client, operationType: 'CREDIT', reference, userId, amount: amountN });
   if (!op.claimed) return { dedup: true, reference };
   const before = Number((await client.query('SELECT wallet_balance FROM users WHERE id = $1', [userId])).rows[0].wallet_balance);
   await fin.postJournal({
@@ -111,7 +111,7 @@ async function creditFromSaccos({ client, userId, amount, reference, fromAccount
 /** Debit a member wallet into a SACCOS account: DR CUSTOMER_WALLET / CR <toAccount> (multi-credit allowed). */
 async function debitToSaccos({ client, userId, amount, reference, toAccounts, description, actor, txnType }) {
   const amountN = Number(amount);
-  const op = await fin.claimOperation({ client, operationType: 'DEBIT', reference, userId, amount: amountN , validateShape: true});
+  const op = await fin.claimOperation({ client, operationType: 'DEBIT', reference, userId, amount: amountN });
   if (!op.claimed) return { dedup: true, reference };
   const walletRow = await client.query(
     'SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE',

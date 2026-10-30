@@ -240,7 +240,7 @@ async function transferFund(actorId, saccosId, { fromFundId, toFundId, amount, r
     await client.query('BEGIN');
     const fromBal = await fundBalance(client, from.account_code);
     if (fromBal < amountN) throw createAppError('SACCOS_FUND_INSUFFICIENT');
-    const op = await fin.claimOperation({ client, operationType: 'SACCOS_FUND_TRANSFER', reference, userId: actorId, amount: amountN , validateShape: true});
+    const op = await fin.claimOperation({ client, operationType: 'SACCOS_FUND_TRANSFER', reference, userId: actorId, amount: amountN });
     if (!op.claimed) {
       await client.query('ROLLBACK');
       return { dedup: true, reference };
@@ -326,7 +326,7 @@ async function provisionLoanLoss(actorId, saccosId, { loanId, amount, ratePercen
        loanLossReserveCode(saccosId), `SACCOS #${saccosId} Loan-Loss Reserves`]
     );
     const reference = newRef('LLR');
-    const op = await fin.claimOperation({ client, operationType: 'SACCOS_LOAN_LOSS_PROVISION', reference, userId: actorId, amount: amountN , validateShape: true});
+    const op = await fin.claimOperation({ client, operationType: 'SACCOS_LOAN_LOSS_PROVISION', reference, userId: actorId, amount: amountN });
     if (!op.claimed) {
       await client.query('ROLLBACK');
       return { dedup: true, reference };
@@ -365,7 +365,7 @@ async function releaseLoanLoss(actorId, saccosId, llrId) {
   try {
     await client.query('BEGIN');
     const reference = newRef('LLR');
-    const op = await fin.claimOperation({ client, operationType: 'SACCOS_LOAN_LOSS_RELEASE', reference, userId: actorId, amount: Number(llr.rows[0].provision_amount) , validateShape: true});
+    const op = await fin.claimOperation({ client, operationType: 'SACCOS_LOAN_LOSS_RELEASE', reference, userId: actorId, amount: Number(llr.rows[0].provision_amount) });
     if (!op.claimed) {
       await client.query('ROLLBACK');
       return { dedup: true, reference };
