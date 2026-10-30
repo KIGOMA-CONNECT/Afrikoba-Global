@@ -380,10 +380,23 @@ async function settleWithdrawal(tx) {
 
 async function reconcilePendingDeposits() {
   if (!config.azampay.enabled) {
+    const wd = await pool.connect();
+    let processingWithdrawals = [];
+    try {
+      const { rows: processing } = await wd.query(
+        `SELECT * FROM transactions
+           WHERE status = 'PROCESSING' AND type = 'WITHDRAWAL'
+           ORDER BY updated_at ASC
+           LIMIT 20`
+      );
+      processingWithdrawals = processing.map((r) => ({ id: r.id, reference_id: r.reference_id }));
+    } finally {
+      wd.release();
+    }
     logger.info('RECON', 'AzamPay disabled; provider reconciliation skipped.');
     return {
       checkedDeposits: 0,
-      processedWithdrawals: [],
+      processedWithdrawals,
       providerDisabled: true,
     };
   }
