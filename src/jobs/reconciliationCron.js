@@ -384,14 +384,17 @@ async function reconcilePendingDeposits() {
     let processingWithdrawals = [];
     try {
       const { rows: processing } = await wd.query(
-        `SELECT * FROM transactions
+        `SELECT id, reference_id FROM transactions
            WHERE status = 'PROCESSING' AND type = 'WITHDRAWAL'
            ORDER BY updated_at ASC
            LIMIT 20`
       );
       processingWithdrawals = processing.map((r) => ({ id: r.id, reference_id: r.reference_id }));
+    } catch (e) {
+      logger.error('RECON', 'disabled-path query failed: ' + e.message);
+      throw e;
     } finally {
-      wd.release();
+      try { wd.release(); } catch (e) { logger.warn('RECON', 'release failed: ' + e.message); }
     }
     logger.info('RECON', 'AzamPay disabled; provider reconciliation skipped.');
     return {
