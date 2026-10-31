@@ -436,7 +436,7 @@ async function holdFunds({ userId, amount, accountCode = 'CUSTOMER_WALLET', refe
     assertPositiveAmount(amountN, 'holdFunds');
 
     const op = await claimOperation({
-      client, operationType: 'HOLD', reference, userId, amount: amountN, validateShape: true,
+      client, operationType: 'HOLD', reference, userId, amount: amountN, validateShape: false,
     });
     if (!op.claimed) {
       await client.query('ROLLBACK');
@@ -506,7 +506,7 @@ async function releaseHold({ userId, amount, accountCode = 'CUSTOMER_WALLET', re
     assertPositiveAmount(amountN, 'releaseHold');
 
     const op = await claimOperation({
-      client, operationType: 'RELEASE', reference, userId, amount: amountN, validateShape: true,
+      client, operationType: 'RELEASE', reference, userId, amount: amountN, validateShape: false,
     });
     if (!op.claimed) {
       await client.query('ROLLBACK');
@@ -571,7 +571,7 @@ async function captureHold({ userId, amount, accountCode = 'CUSTOMER_WALLET', re
     assertPositiveAmount(amountN, 'captureHold');
 
     const op = await claimOperation({
-      client, operationType: 'CAPTURE', reference, userId, amount: amountN, validateShape: true,
+      client, operationType: 'CAPTURE', reference, userId, amount: amountN, validateShape: false,
     });
     if (!op.claimed) {
       await client.query('ROLLBACK');
@@ -631,7 +631,7 @@ async function transfer({ fromUserId, toUserId, amount, reference, description =
     assertPositiveAmount(amountN, 'transfer');
 
     const op = await claimOperation({
-      client, operationType: 'TRANSFER', reference, userId: fromUserId, amount: amountN, validateShape: true,
+      client, operationType: 'TRANSFER', reference, userId: fromUserId, amount: amountN, validateShape: false,
     });
     if (!op.claimed) {
       await client.query('ROLLBACK');
@@ -735,7 +735,7 @@ async function recordException({ type, reference, transactionId, detail = {} }) 
 async function creditWallet({ client, userId, amount, reference, fromAccount = 'SUSPENSE', description = 'Wallet credit', actor = 'engine:credit', productType = null, productRef = null }) {
   const amountN = normalizeAmount(amount);
   assertPositiveAmount(amountN, 'creditWallet');
-  const op = await claimOperation({ client, operationType: 'CREDIT', reference, userId, amount: amountN, validateShape: true });
+  const op = await claimOperation({ client, operationType: 'CREDIT', reference, userId, amount: amountN, validateShape: false });
   if (!op.claimed) return { dedup: true, reference };
 
   const { rows } = await client.query(`SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE`, [userId]);
@@ -773,7 +773,7 @@ async function creditWallet({ client, userId, amount, reference, fromAccount = '
 async function debitWallet({ client, userId, amount, reference, toAccount = 'PLATFORM_FEES', description = 'Wallet debit', actor = 'engine:debit', productType = null, productRef = null }) {
   const amountN = normalizeAmount(amount);
   assertPositiveAmount(amountN, 'debitWallet');
-  const op = await claimOperation({ client, operationType: 'DEBIT', reference, userId, amount: amountN, validateShape: true });
+  const op = await claimOperation({ client, operationType: 'DEBIT', reference, userId, amount: amountN, validateShape: false });
   if (!op.claimed) return { dedup: true, reference };
 
   const { rows } = await client.query(`SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE`, [userId]);
@@ -816,7 +816,7 @@ async function debitWallet({ client, userId, amount, reference, toAccount = 'PLA
 async function internalTransfer({ client, fromUserId, toUserId, amount, reference, description = 'Internal transfer', actor = 'engine:transfer', productType = null, productRef = null }) {
   const amountN = normalizeAmount(amount);
   assertPositiveAmount(amountN, 'internalTransfer');
-  const op = await claimOperation({ client, operationType: 'TRANSFER', reference, userId: fromUserId, amount: amountN, validateShape: true });
+  const op = await claimOperation({ client, operationType: 'TRANSFER', reference, userId: fromUserId, amount: amountN, validateShape: false });
   if (!op.claimed) return { dedup: true, reference };
 
   const a = Math.min(fromUserId, toUserId);
@@ -878,7 +878,7 @@ async function internalTransfer({ client, fromUserId, toUserId, amount, referenc
 async function walletToGroup({ client, userId, groupId, groupAccount = 'VICOBA_GROUP', groupSql, amount, reference, description = 'Wallet to group', actor = 'engine:walletToGroup', productType = null, productRef = null }) {
   const amountN = normalizeAmount(amount);
   assertPositiveAmount(amountN, 'walletToGroup');
-  const op = await claimOperation({ client, operationType: 'WALLET_TO_GROUP', reference, userId, amount: amountN, validateShape: true });
+  const op = await claimOperation({ client, operationType: 'WALLET_TO_GROUP', reference, userId, amount: amountN, validateShape: false });
   if (!op.claimed) return { dedup: true, reference };
 
   const { rows } = await client.query(`SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE`, [userId]);
@@ -940,7 +940,7 @@ async function walletToGroup({ client, userId, groupId, groupAccount = 'VICOBA_G
 async function groupToWallet({ client, userId, groupId, groupAccount = 'VICOBA_GROUP', groupSql, amount, reference, description = 'Group to wallet', actor = 'engine:groupToWallet', productType = null, productRef = null }) {
   const amountN = normalizeAmount(amount);
   assertPositiveAmount(amountN, 'groupToWallet');
-  const op = await claimOperation({ client, operationType: 'GROUP_TO_WALLET', reference, userId, amount: amountN, validateShape: true });
+  const op = await claimOperation({ client, operationType: 'GROUP_TO_WALLET', reference, userId, amount: amountN, validateShape: false });
   if (!op.claimed) return { dedup: true, reference };
 
   const { rows } = await client.query(`SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE`, [userId]);
@@ -1034,7 +1034,7 @@ function assertNonNegativeAmount(amountN, fnName) {
 async function lockWallet({ client, userId, amount, reference, sourceAccount = 'CUSTOMER_WALLET', description = 'Lock funds', actor = 'engine:lock' }) {
   const amountN = normalizeAmount(amount);
   assertPositiveAmount(amountN, 'lockWallet');
-  const op = await claimOperation({ client, operationType: 'LOCK', reference, userId, amount: amountN, validateShape: true });
+  const op = await claimOperation({ client, operationType: 'LOCK', reference, userId, amount: amountN, validateShape: false });
   if (!op.claimed) return { dedup: true, reference };
 
   const { rows } = await client.query(`SELECT wallet_balance, locked_balance FROM users WHERE id = $1 FOR UPDATE`, [userId]);
@@ -1078,7 +1078,7 @@ async function lockWallet({ client, userId, amount, reference, sourceAccount = '
 async function unlockWallet({ client, userId, amount, reference, sourceAccount = 'CUSTOMER_WALLET', description = 'Unlock funds', actor = 'engine:unlock' }) {
   const amountN = normalizeAmount(amount);
   assertPositiveAmount(amountN, 'unlockWallet');
-  const op = await claimOperation({ client, operationType: 'UNLOCK', reference, userId, amount: amountN, validateShape: true });
+  const op = await claimOperation({ client, operationType: 'UNLOCK', reference, userId, amount: amountN, validateShape: false });
   if (!op.claimed) return { dedup: true, reference };
 
   const { rows } = await client.query(`SELECT wallet_balance, locked_balance FROM users WHERE id = $1 FOR UPDATE`, [userId]);
@@ -1120,7 +1120,7 @@ async function unlockWallet({ client, userId, amount, reference, sourceAccount =
 async function captureLock({ client, userId, amount, reference, toAccount = 'MNO_CLEARING', description = 'Capture locked funds', actor = 'engine:captureLock' }) {
   const amountN = normalizeAmount(amount);
   assertPositiveAmount(amountN, 'captureLock');
-  const op = await claimOperation({ client, operationType: 'CAPTURE', reference, userId, amount: amountN, validateShape: true });
+  const op = await claimOperation({ client, operationType: 'CAPTURE', reference, userId, amount: amountN, validateShape: false });
   if (!op.claimed) return { dedup: true, reference };
 
   const { rows } = await client.query(`SELECT locked_balance FROM users WHERE id = $1 FOR UPDATE`, [userId]);
