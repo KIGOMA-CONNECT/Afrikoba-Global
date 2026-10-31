@@ -100,6 +100,7 @@ async function settleAndExit(actorId, saccosId) {
       });
       await client.query(`UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2`, [shareRedemption, actorId]);
       await fin.auditBalance({ client, accountKind: 'USER_BALANCE', accountId: actorId, operation: 'exit_share_redemption', amount: shareRedemption, balanceBefore: Number(beforeSh.rows[0].wallet_balance), balanceAfter: Number(beforeSh.rows[0].wallet_balance) + shareRedemption, reference: ref, actor: 'saccos-exits' }).catch(() => {});
+      await fin.setOperationState({ client, reference: ref, status: 'SUCCESS' });
       await client.query(
         `UPDATE saccos_share_holdings SET share_count = 0, total_value = 0, avg_price = 0, updated_at = NOW() WHERE member_id = $1`,
         [membership.id]
@@ -138,6 +139,7 @@ async function settleAndExit(actorId, saccosId) {
       });
       await client.query(`UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2`, [amountN, actorId]);
       await fin.auditBalance({ client, accountKind: 'USER_BALANCE', accountId: actorId, operation: 'exit_dividend_settlement', amount: amountN, balanceBefore: Number(before.rows[0].wallet_balance), balanceAfter: Number(before.rows[0].wallet_balance) + amountN, reference: payout.reference_id, actor: 'saccos-exits' }).catch(() => {});
+      await fin.setOperationState({ client, reference: payout.reference_id, status: 'SUCCESS' });
       await client.query(`UPDATE saccos_dividend_payouts SET status = 'PAID', paid_at = NOW() WHERE id = $1`, [payout.id]);
       await client.query(
         `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)

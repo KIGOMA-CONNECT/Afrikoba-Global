@@ -50,7 +50,7 @@ jobs:
             -e PROD_TARGET=${{ contains(inputs.base_url, 'afrikoba.com') && !contains(inputs.base_url, 'staging') }}
 
       - name: Summarize
-        run: echo "Security suite completed against ${{ inputs.base_url }} (gate: checks rate==1)"
+        run: 'echo "Security suite completed against ${{ inputs.base_url }} (gate: checks rate==1)"'
 
   load:
     name: Load suite (health / auth / transfer / browsing)
@@ -67,4 +67,4 @@ jobs:
             -e BASE_URL=${{ inputs.base_url }}
 
       - name: Summarize
-        run: echo "Load suite completed against ${{ inputs.base_url }} (thresholds: P95<2s, failed<15%, logins>5, transfers>3)"
+        run: 'echo "Load suite completed against ${{ inputs.base_url }} (thresholds: P95<2s, failed<15%, logins>5, transfers>3)"'

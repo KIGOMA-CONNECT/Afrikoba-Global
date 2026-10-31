@@ -8,9 +8,11 @@
  * SUBSCRIPTION` txn. Redemption at maturity (flat interest =
  * principal * rate% * termMonths/12) is a 3-leg journal
  * (DR LIABILITY principal / DR `SACCOS<id>_INVESTMENT_INTEREST_
- * EXPENSE` interest / CR CUSTOMER_WALLET) idempotent on RED-*,
- * wallet FOR UPDATE guard. Rejects return funds via `creditWallet`
- * on a fresh -R reference (SUCCESS terminal). Cross-entity 404.
+ * EXPENSE` interest / CR CUSTOMER_WALLET) idempotent on a deterministic
+ * reference derived from the investment id, guarded by a conditional status
+ * update so concurrent redemptions cannot credit twice. Rejects return funds
+ * via `creditWallet` on a fresh -R reference (SUCCESS terminal). Cross-entity
+ * 404.
  */
 const pool = require('../config/db');
 const crypto = require('crypto');
@@ -239,18 +241,23 @@ async function redeemInvestment(actorId, saccosId, investmentId) {
   maturity.setHours(23, 59, 59, 999);
   if (new Date() < maturity) throw createAppError('SACCOS_INV_NOT_MATURED');
 
-  const reference = newRef('RED');
+  // Deterministic reference: a retry of the same redemption dedupes instead of
+  // crediting the wallet a second time. The investment id is globally unique.
+  const reference = `SACCOS-INV-RED:${investmentId}`;
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     await ensureInvestmentAccounts(client, saccosId);
-    const from = await client.query(`SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE`, [actorId]);
-    const before = Number(from.rows[0].wallet_balance);
+
     const op = await fin.claimOperation({ client, operationType: 'SACCOS_INVESTMENT_REDEMPTION', reference, userId: actorId, amount: total });
     if (!op.claimed) {
       await client.query('ROLLBACK');
-      return { dedup: true, reference };
+      const current = await fetchInvestment(saccosId, investmentId);
+      return { ...current, principal, interest, total, reference, dedup: true };
     }
+
+    const from = await client.query(`SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE`, [actorId]);
+    const before = Number(from.rows[0].wallet_balance);
     await fin.postJournal({
       client,
       lines: [
@@ -263,9 +270,14 @@ async function redeemInvestment(actorId, saccosId, investmentId) {
     await client.query(`UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2`, [total, actorId]);
     await fin.auditBalance({ client, accountKind: 'USER_BALANCE', accountId: actorId, operation: 'investment_redemption', amount: total, balanceBefore: before, balanceAfter: before + total, reference, actor: 'saccos-investments' }).catch(() => {});
     const r = await client.query(
-      `UPDATE saccos_investments SET status = 'CLOSED', redeemed_at = NOW() WHERE id = $1 AND status = 'ACTIVE' RETURNING *`,
+      `UPDATE saccos_investments SET status = 'CLOSED', redeemed_at = NOW() WHERE id = $1 AND status IN ('ACTIVE','MATURED') RETURNING *`,
       [investmentId]
     );
+    if (r.rowCount !== 1) {
+      await client.query('ROLLBACK');
+      throw createAppError('SACCOS_INV_STATE');
+    }
+    await fin.setOperationState({ client, reference, status: 'SUCCESS' });
     await client.query('COMMIT');
     await logAudit(actorId, 'SACCOS_INV_REDEEMED', { referenceId: saccosId, details: { investmentId, reference, principal, interest, total } }).catch(() => {});
     return { ...r.rows[0], principal, interest, total, reference };

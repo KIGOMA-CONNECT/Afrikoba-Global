@@ -1,5 +1,12 @@
+const crypto = require('crypto');
 const config = require('../config');
 const logger = require('../utils/logger');
+
+function secretsEqual(a, b) {
+  const x = Buffer.from(a, 'utf8');
+  const y = Buffer.from(b, 'utf8');
+  return x.length === y.length && crypto.timingSafeEqual(x, y);
+}
 
 /**
  * IP sawa na entry ya allowlist? (exact IP au CIDR)
@@ -42,7 +49,7 @@ function verifyWebhookSecurity(req, res, next) {
   }
 
   const headerSecret = req.headers['x-webhook-secret'] || req.headers['x-azampay-secret'];
-  if (!headerSecret || headerSecret !== config.webhook.secret) {
+  if (!headerSecret || !secretsEqual(String(headerSecret), String(config.webhook.secret))) {
     logger.warn('WEBHOOK', 'Secret header si sahihi (Fake Callback attempt)');
     return res.status(401).json({ success: false, message: 'Unauthorized Webhook Request' });
   }

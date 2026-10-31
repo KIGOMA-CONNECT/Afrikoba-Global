@@ -146,15 +146,30 @@ async function setPartnerSuspended(adminId, partnerId, suspended) {
 // K2: FUNDING (admin book transfer)
 // ====================================================================
 
-async function fundPartner(adminId, partnerId, amount) {
+async function fundPartner(adminId, partnerId, amount, reference) {
   const amountNum = Number(amount);
   if (!isFinite(amountNum) || amountNum <= 0) throw badge('Kiasi si sahihi.', 400);
-  const ref = generateReference('PF');
+  const ref = reference || generateReference('PF');
+  const opRef = `${ref}:FND`;
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     const p = await client.query('SELECT * FROM partners WHERE id=$1 FOR UPDATE', [partnerId]);
     if (!p.rows.length) throw badge('Partner hapatikani.', 404);
+
+    const op = await fin.claimOperation({
+      client,
+      operationType: 'BAP_PARTNER_FUNDING',
+      reference: opRef,
+      userId: adminId,
+      amount: amountNum,
+          });
+    if (!op.claimed) {
+      await client.query('ROLLBACK');
+      const bal = await pool.query('SELECT balance FROM partners WHERE id=$1', [partnerId]);
+      return { partner_id: partnerId, reference: ref, balance: Number(bal.rows[0].balance), dedup: true };
+    }
+
     await client.query('UPDATE partners SET balance = balance + $1, updated_at=NOW() WHERE id=$2', [amountNum, partnerId]);
     await fin.postJournal({
       client,
@@ -162,10 +177,11 @@ async function fundPartner(adminId, partnerId, amount) {
         { accountCode: 'SUSPENSE', direction: 'DR', amount: amountNum },
         { accountCode: 'PARTNER_BALANCE', direction: 'CR', amount: amountNum }
       ],
-      referenceId: `${ref}:FND`,
+      referenceId: opRef,
       description: `Partner funding: ${p.rows[0].name}`
     });
     await logPartnerTxn(partnerId, 'FUNDING', amountNum, ref, null, null, 'COMPLETED', client);
+    await fin.setOperationState({ client, reference: opRef, status: 'SUCCESS' });
     await client.query('COMMIT');
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {});

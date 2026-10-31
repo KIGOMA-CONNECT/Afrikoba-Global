@@ -149,7 +149,7 @@ async function main() {
   await pool.query(`UPDATE saccos_investments SET maturity_date = CURRENT_DATE - 1 WHERE id = $1`, [inv1Id]);
   const redeem = await api('POST', `/api/saccos/${orgId}/investments/${inv1Id}/redeem`, m1.data.token);
   await expect(redeem.status === 200 && redeem.data.result.status === 'CLOSED' && redeem.data.result.principal === 100000
-    && redeem.data.result.interest === 10000 && redeem.data.result.total === 110000 && String(redeem.data.result.reference).startsWith('RED-'),
+    && redeem.data.result.interest === 10000 && redeem.data.result.total === 110000 && String(redeem.data.result.reference).startsWith('SACCOS-INV-RED:'),
     'redeem matured -> CLOSED, total 110000 (principal + flat interest)');
 
   const afterWallet = await pool.query('SELECT wallet_balance FROM users WHERE id = $1', [m1.data.user.id]);

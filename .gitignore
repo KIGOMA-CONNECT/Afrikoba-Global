@@ -40,3 +40,9 @@ _ci_fail*.log
 _ci_artifacts/
 
 .env.staging
+
+# Phase 68: prevent secret-containing backup accumulation
+*.backup-*
+*.pre-restore-*
+*.clean.js
+F01_git_crontab.txt

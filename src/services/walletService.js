@@ -1,6 +1,8 @@
+const crypto = require('crypto');
 const pool = require('../config/db');
 const config = require('../config');
-const { triggerMnoCheckout } = require('./azampayService');
+const { triggerMnoCheckout, triggerPayout, queryTransactionStatus } = require('./azampayService');
+const { classifyGatewayDeposit } = require('./depositVerification');
 const { sendSMS } = require('./smsService');
 const { computeDepositAmounts, generateReference, formatMoney } = require('../utils/helpers');
 const { logAudit } = require('./auditService');
@@ -61,11 +63,21 @@ async function initiateDeposit(userId, amount, provider) {
     );
 
     if (!azamResponse.success) {
-      await client.query(
-        `UPDATE transactions SET status = 'FAILED', failure_reason = $1, updated_at = NOW()
-         WHERE reference_id = $2`,
+      const failedTransition = await client.query(
+        `UPDATE transactions
+            SET status = 'FAILED',
+                failure_reason = $1,
+                updated_at = NOW()
+          WHERE reference_id = $2
+            AND status = 'PENDING'`,
         [azamResponse.message, referenceId]
       );
+      if (failedTransition.rowCount !== 1) {
+        throw Object.assign(
+          new Error('Deposit failure transition did not update exactly one pending transaction'),
+          { code: 'DEPOSIT_INITIATION_FAILURE_TRANSITION_CONFLICT' }
+        );
+      }
       throw Object.assign(new Error(azamResponse.message), { statusCode: 400 });
     }
 
@@ -90,10 +102,88 @@ async function initiateDeposit(userId, amount, provider) {
  * - FOR UPDATE lock kwenye transactions & users row (kuzuia double crediting)
  * - Idempotency: transaction iliyo SUCCESS/FAILED haijatibiwa tena
  */
+async function recordCallbackExceptionOnce(type, referenceId, transactionId, detail) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const lockKey = `${referenceId || ''}:${type}`;
+    await client.query(
+      'SELECT pg_advisory_xact_lock(0, hashtext($1))',
+      [lockKey]
+    );
+
+    const existing = await client.query(
+      `SELECT 1 FROM reconciliation_exceptions
+        WHERE reference_id IS NOT DISTINCT FROM $1
+          AND exception_type = $2
+        LIMIT 1`,
+      [referenceId || null, type]
+    );
+    if (existing.rows.length) {
+      await client.query('COMMIT');
+      return false;
+    }
+
+    await client.query(
+      `INSERT INTO reconciliation_exceptions
+         (exception_type, reference_id, transaction_id, detail)
+       VALUES ($1, $2, $3, $4::jsonb)`,
+      [type, referenceId || null, transactionId || null, JSON.stringify(detail || {})]
+    );
+    await client.query('COMMIT');
+    return true;
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 async function processDepositCallback({ utilityref, transactionstatus, reference, message, provider }) {
   const referenceId = utilityref;
-  const incomingStatus = (transactionstatus || '').toLowerCase() === 'success' ? 'SUCCESS' : 'FAILED';
+  const claimedStatus = (transactionstatus || '').toLowerCase() === 'success' ? 'SUCCESS' : 'FAILED';
 
+  // The callback body is a claim, not evidence. Nothing is credited or failed on
+  // the body alone. Replays of finished transactions return before any gateway call.
+  const pre = await pool.query(
+    'SELECT id, status, total_charged FROM transactions WHERE reference_id = $1', [referenceId]
+  );
+  if (pre.rows.length === 0) {
+    return { success: false, message: 'Transaction ID haijapatikana.', code: 404 };
+  }
+  if (pre.rows[0].status !== 'PENDING') {
+    return { success: true, duplicate: true, message: 'Muamala ulishapokelewa tayari.' };
+  }
+
+  let gateway;
+  try {
+    gateway = await queryTransactionStatus(referenceId);
+  } catch (e) {
+    logger.warn('WALLET CALLBACK', `Gateway query unavailable for ${referenceId}: ${e.message}`);
+    await recordCallbackExceptionOnce('CALLBACK_UNVERIFIED', referenceId, pre.rows[0].id, {
+      claimedStatus, decision: 'UNVERIFIED', reason: 'gateway_unavailable',
+    });
+    return { success: true, pending: true, verified: false, message: 'Deposit inasubiri uthibitisho wa gateway.' };
+  }
+  const verdict = classifyGatewayDeposit(gateway, {
+    referenceId,
+    expectedTotal: pre.rows[0].total_charged,
+    contractVerified: config.azampay.statusContractVerified,
+  });
+  const agrees =
+    (verdict.decision === 'SUCCESS' && claimedStatus === 'SUCCESS') ||
+    (verdict.decision === 'FAILED' && claimedStatus === 'FAILED');
+  if (!agrees) {
+    const type = verdict.decision === 'UNVERIFIED' ? 'CALLBACK_UNVERIFIED' : 'CALLBACK_GATEWAY_CONFLICT';
+    await recordCallbackExceptionOnce(type, referenceId, pre.rows[0].id, {
+      claimedStatus, decision: verdict.decision, reason: verdict.reason,
+    });
+    logger.warn('WALLET CALLBACK', `Deposit ${referenceId} not applied: ${verdict.decision} (${verdict.reason})`);
+    return { success: true, pending: true, verified: false, message: 'Deposit inasubiri uthibitisho wa gateway.' };
+  }
+
+  const incomingStatus = verdict.decision;
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -118,11 +208,52 @@ async function processDepositCallback({ utilityref, transactionstatus, reference
       return { success: true, duplicate: true, message: 'Muamala ulishapokelewa tayari.' };
     }
 
+    // The gateway was checked before acquiring this row lock. Revalidate the
+    // locked transaction identity and charged amount before any financial write.
+    const preTotal = Number(pre.rows[0].total_charged);
+    const lockedTotal = Number(tx.total_charged);
+    const transactionChanged =
+      String(tx.id) !== String(pre.rows[0].id) ||
+      String(tx.reference_id) !== String(referenceId) ||
+      !Number.isFinite(preTotal) ||
+      !Number.isFinite(lockedTotal) ||
+      Math.abs(preTotal - lockedTotal) > 0.005;
+
+    if (transactionChanged) {
+      await client.query('ROLLBACK');
+      await recordCallbackExceptionOnce(
+        'CALLBACK_TRANSACTION_CHANGED',
+        referenceId,
+        tx.id,
+        {
+          preTransactionId: pre.rows[0].id,
+          lockedTransactionId: tx.id,
+          preTotalCharged: pre.rows[0].total_charged,
+          lockedTotalCharged: tx.total_charged,
+        }
+      );
+      logger.warn(
+        'WALLET CALLBACK',
+        `Deposit ${referenceId} not applied: locked transaction differs from gateway-verified snapshot`
+      );
+      return {
+        success: true,
+        pending: true,
+        verified: false,
+        message: 'Deposit inasubiri uhakiki wa transaction.',
+      };
+    }
+
     if (incomingStatus === 'SUCCESS') {
-      // Route money movement through the Financial Engine. It is idempotent on
-      // reference_id, so even if the reconciliation job also honours this same
-      // deposit, only ONE credit + ONE journal group is ever posted.
+      // Serialize callback and reconciliation settlement for this reference.
+      await client.query(
+        'SELECT pg_advisory_xact_lock(0, hashtext($1))',
+        [referenceId]
+      );
+
       const posted = await fin.postDeposit({
+        client,
+        transactionId: tx.id,
         userId: tx.user_id,
         amount: tx.wallet_amount,
         commission: tx.commission,
@@ -131,43 +262,108 @@ async function processDepositCallback({ utilityref, transactionstatus, reference
         description: 'Deposit kupitia AzamPay',
       });
 
-      await client.query(
-        `UPDATE transactions SET status = 'SUCCESS', external_tx_id = $1, updated_at = NOW()
-         WHERE reference_id = $2`,
-        [reference || null, referenceId]
-      );
+      if (posted && posted.dedup && posted.verified !== true) {
+        const error = new Error(`Unverified deposit duplicate: ${referenceId}`);
+        error.code = 'DEPOSIT_IDEMPOTENCY_CONFLICT';
+        throw error;
+      }
 
       await client.query(
-        `INSERT INTO wallet_ledger (transaction_id, reference_id, to_user_id, amount, description)
-         VALUES ($1, $2, $3, $4, 'Deposit kupitia AzamPay')`,
+        `INSERT INTO wallet_ledger
+           (transaction_id, reference_id, to_user_id, amount, description)
+         VALUES ($1, $2, $3, $4, 'Deposit kupitia AzamPay')
+         ON CONFLICT DO NOTHING`,
         [tx.id, referenceId, tx.user_id, tx.wallet_amount]
       );
 
-      await client.query('COMMIT');
+      const ledgerResult = await client.query(
+        `SELECT transaction_id, reference_id, to_user_id, amount
+           FROM wallet_ledger
+          WHERE reference_id = $1
+          ORDER BY id
+          FOR UPDATE`,
+        [referenceId]
+      );
 
-      await logAudit({ eventType: 'DEPOSIT', action: 'CREATE', entityType: 'TRANSACTION', userId: tx.user_id, referenceId, amount: tx.wallet_amount, afterData: { status: 'SUCCESS', provider } });
+      const { verifyWalletLedgerRows } = require('./depositVerification');
+      if (!verifyWalletLedgerRows(ledgerResult.rows, {
+        referenceId,
+        transactionId: tx.id,
+        userId: tx.user_id,
+        amount: tx.wallet_amount
+      })) {
+        const error = new Error(`Deposit wallet-ledger conflict: ${referenceId}`);
+        error.code = 'DEPOSIT_LEDGER_CONFLICT';
+        throw error;
+      }
+
+      const updated = await client.query(
+        `UPDATE transactions
+            SET status = 'SUCCESS', external_tx_id = $1, updated_at = NOW()
+          WHERE id = $2 AND status = 'PENDING'`,
+        [reference || null, tx.id]
+      );
+
+      if (updated.rowCount !== 1) {
+        throw new Error(`Deposit status transition failed: ${referenceId}`);
+      }
 
       const balRes = await client.query(
-        'SELECT wallet_balance, phone_number, full_name FROM users WHERE id = $1', [tx.user_id]
+        'SELECT wallet_balance, phone_number, full_name FROM users WHERE id = $1',
+        [tx.user_id]
       );
-      const bal = balRes.rows[0];
-      const newBalance = bal.wallet_balance;
-      const smsMsg = `Habari ${bal.full_name}, deposit yako ya ${formatMoney(tx.wallet_amount)} imefanikiwa! Salio jipya: ${formatMoney(newBalance)}. Ref: ${referenceId}`;
-      await sendSMS(bal.phone_number, smsMsg).catch((smsErr) => logger.error('WALLET', `SMS post-deposit imefunga: ${smsErr.message}`));
+      if (!balRes.rows.length) {
+        throw new Error(`Deposit user missing after posting: ${tx.user_id}`);
+      }
 
-      return { success: true, message: 'Deposit Processed Successfully.' };
+      await client.query('COMMIT');
+
+      await logAudit({
+        eventType: 'DEPOSIT',
+        action: 'CREATE',
+        entityType: 'TRANSACTION',
+        userId: tx.user_id,
+        referenceId,
+        amount: tx.wallet_amount,
+        afterData: { status: 'SUCCESS', provider }
+      });
+
+      const bal = balRes.rows[0];
+      const smsMsg = `Habari ${bal.full_name}, deposit yako ya ${formatMoney(tx.wallet_amount)} imefanikiwa! Salio jipya: ${formatMoney(bal.wallet_balance)}. Ref: ${referenceId}`;
+      await sendSMS(bal.phone_number, smsMsg).catch((smsErr) =>
+        logger.error('WALLET', `SMS post-deposit imefunga: ${smsErr.message}`)
+      );
+
+      return {
+        success: true,
+        duplicate: Boolean(posted && posted.dedup),
+        message: 'Deposit Processed Successfully.'
+      };
     }
 
-    await client.query(
-      `UPDATE transactions SET status = 'FAILED', failure_reason = $1, external_tx_id = $2, updated_at = NOW()
-       WHERE reference_id = $3`,
-      [message || 'Transaction failed', reference || null, referenceId]
+    const failedUpdate = await client.query(
+      `UPDATE transactions
+          SET status = 'FAILED', failure_reason = $1,
+              external_tx_id = $2, updated_at = NOW()
+        WHERE id = $3 AND status = 'PENDING'`,
+      [message || 'Transaction failed', reference || null, tx.id]
     );
+    if (failedUpdate.rowCount !== 1) {
+      throw new Error('DEPOSIT_FAILURE_TRANSITION_CONFLICT: expected one PENDING transaction');
+    }
     await client.query('COMMIT');
     return { success: true, message: 'Transaction Failed Recorded.' };
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {});
     logger.error('WALLET CALLBACK', error.message);
+    // Settlement failed after the gateway was checked: keep an operator-visible
+    // exception instead of leaving the deposit silently PENDING.
+    await recordCallbackExceptionOnce(
+      'DEPOSIT_SETTLEMENT_FAILED',
+      referenceId,
+      pre.rows[0].id,
+      { message: error.message, code: error.code || null }
+    ).catch((recErr) => logger.error('WALLET CALLBACK', `exception write failed: ${recErr.message}`));
     throw error;
   } finally {
     client.release();
@@ -270,11 +466,27 @@ async function transferWallet(fromUserId, toPhoneNumber, amount, note) {
  * This removes the ambiguous "money disappeared into PENDING" state and the
  * dangerous timeout-based refund that could double-credit a customer.
  */
-async function withdrawToMno(userId, amount, provider) {
+function withdrawalReference(userId, idempotencyKey) {
+  const digest = crypto.createHash('sha256').update(`${userId}:${idempotencyKey}`).digest('hex');
+  // 35 chars: leaves room for the longest ledger suffix ("-RELEASE"/"-CAPTURE")
+  // within reference_id VARCHAR(50) on wallet_ledger and journal_entries.
+  return `WD-${digest.slice(0, 32).toUpperCase()}`;
+}
+
+async function withdrawToMno(userId, amount, provider, idempotencyKey = null) {
   if (!config.azampay.enabled) {
     throw Object.assign(
       new Error('Withdrawal kwenda MNO imezimwa kwa sasa.'),
       { statusCode: 503, code: 'AZAMPAY_DISABLED' }
+    );
+  }
+
+  // Fail closed until the AzamPay payout contract is verified against official
+  // docs (Phase 68 D1). Checked before any hold or transaction is created.
+  if (!config.azampay.payoutContractVerified) {
+    throw Object.assign(
+      new Error('Withdrawal kwenda MNO imezuiwa: payout contract haijathibitishwa.'),
+      { statusCode: 503, code: 'PAYOUT_CONTRACT_UNVERIFIED' }
     );
   }
 
@@ -283,7 +495,12 @@ async function withdrawToMno(userId, amount, provider) {
     throw Object.assign(new Error('Kiasi kidogo cha withdrawal ni TZS 1,000.'), { statusCode: 400 });
   }
 
-  const referenceId = generateReference('WD');
+  // With a client Idempotency-Key the reference is derived from (user, key), so a
+  // concurrent or repeated request hits the UNIQUE reference in holdFunds and
+  // cannot create a second hold or a second dispatch.
+  const referenceId = idempotencyKey
+    ? withdrawalReference(userId, idempotencyKey)
+    : generateReference('WD');
 
   try {
     const held = await fin.holdFunds({
@@ -295,7 +512,14 @@ async function withdrawToMno(userId, amount, provider) {
     });
 
     if (held.dedup) {
-      return { success: true, referenceId, message: 'Ombi hili tayari limepokelewa.', status: 'PENDING' };
+      const existing = await pool.query(
+        `SELECT status, failure_reason FROM transactions WHERE reference_id = $1`, [referenceId]
+      );
+      if (existing.rows.length && existing.rows[0].status === 'FAILED') {
+        return { success: false, referenceId, message: existing.rows[0].failure_reason || 'Withdrawal imeshindwa.', status: 'FAILED' };
+      }
+      const status = existing.rows.length ? existing.rows[0].status : 'PENDING';
+      return { success: true, referenceId, message: 'Ombi hili tayari limepokelewa.', status };
     }
 
     const client = await pool.connect();
@@ -309,10 +533,10 @@ async function withdrawToMno(userId, amount, provider) {
       const txRes = await client.query(
         `INSERT INTO transactions
           (reference_id, user_id, wallet_amount, commission, total_charged, status, type,
-           available_balance, locked_balance)
-         VALUES ($1, $2, $3, 0, $3, 'PROCESSING', 'WITHDRAWAL', 0, $3)
+           available_balance, locked_balance, meta)
+         VALUES ($1, $2, $3, 0, $3, 'PROCESSING', 'WITHDRAWAL', 0, $3, $4)
          RETURNING id`,
-        [referenceId, userId, amountNum]
+        [referenceId, userId, amountNum, JSON.stringify({ dispatch: 'INTENT', provider })]
       );
 
       await client.query(
@@ -321,6 +545,62 @@ async function withdrawToMno(userId, amount, provider) {
         [txRes.rows[0].id, referenceId, userId, amountNum]
       );
       await client.query('COMMIT');
+
+      // D1: dispatch the payout to the gateway AFTER commit (mirrors
+      // initiateDeposit). If the gateway refuses the request, release the
+      // reservation and mark the transaction FAILED, so funds are never left
+      // locked for a payout that was never sent.
+      const payout = await triggerPayout(user.phone_number, amountNum, referenceId, provider);
+      const accepted = payout.success && payout.data?.success !== false;
+      const refused = !accepted && !payout.ambiguous;
+
+      if (!accepted && !refused) {
+        // Timeout, network error or 5xx: the provider may already have accepted
+        // the payout. Keep the hold and PROCESSING; reconciliation decides from
+        // the gateway's record. Releasing here could double-credit the customer.
+        await pool.query(
+          `UPDATE transactions
+           SET meta = jsonb_set(COALESCE(meta, '{}'::jsonb), '{dispatch}', '"UNCERTAIN"'), updated_at = NOW()
+           WHERE reference_id = $1`,
+          [referenceId]
+        );
+        logger.warn('WALLET_WD', `Dispatch uncertain ref=${referenceId} - hold kept for reconciliation`);
+        await logAudit({ eventType: 'WITHDRAWAL', action: 'DISPATCH_UNCERTAIN', entityType: 'TRANSACTION', userId, referenceId, amount: amountNum, afterData: { status: 'PROCESSING', provider, error: payout.message } });
+        return { success: true, referenceId, message: 'Ombi la withdrawal limepokelewa.', status: 'PROCESSING' };
+      }
+
+      if (refused) {
+        const reason = payout.message || payout.data?.message || 'Gateway dispatch failed';
+        await fin.releaseHold({
+          userId,
+          amount: amountNum,
+          accountCode: 'CUSTOMER_WALLET',
+          reference: `${referenceId}-RELEASE`,
+          description: 'Withdrawal dispatch failed - funds returned',
+        });
+        await pool.query(
+          `UPDATE transactions
+           SET status = 'FAILED', failure_reason = $1,
+               meta = jsonb_set(COALESCE(meta, '{}'::jsonb), '{dispatch}', '"REFUSED"'),
+               updated_at = NOW()
+           WHERE reference_id = $2`,
+          [reason, referenceId]
+        );
+        await logAudit({ eventType: 'WITHDRAWAL', action: 'DISPATCH_FAILED', entityType: 'TRANSACTION', userId, referenceId, amount: amountNum, afterData: { status: 'FAILED', provider, error: reason } });
+        throw Object.assign(
+          new Error(reason),
+          { statusCode: 502, code: 'GATEWAY_DISPATCH_FAILED' }
+        );
+      }
+
+      await pool.query(
+        `UPDATE transactions
+         SET external_tx_id = $1,
+             meta = jsonb_set(COALESCE(meta, '{}'::jsonb), '{dispatch}', '"ACCEPTED"'),
+             updated_at = NOW()
+         WHERE reference_id = $2`,
+        [payout.data?.externalId || 'DISPATCHED', referenceId]
+      );
 
       await logAudit({ eventType: 'WITHDRAWAL', action: 'CREATE', entityType: 'TRANSACTION', userId, referenceId, amount: amountNum, afterData: { status: 'PROCESSING', provider } });
 

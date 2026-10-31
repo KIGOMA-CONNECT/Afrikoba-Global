@@ -169,6 +169,7 @@ async function distributeDividend(actorId, saccosId, runId) {
       });
       await client.query(`UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2`, [amountN, payout.user_id]);
       await fin.auditBalance({ client, accountKind: 'USER_BALANCE', accountId: payout.user_id, operation: 'dividend_payout', amount: amountN, balanceBefore: before, balanceAfter: before + amountN, reference: ref, actor: 'saccos-dividends' }).catch(() => {});
+      await fin.setOperationState({ client, reference: ref, status: 'SUCCESS' });
       await client.query(
         `UPDATE saccos_dividend_payouts SET status = 'PAID', paid_at = NOW() WHERE id = $1`,
         [payout.id]
