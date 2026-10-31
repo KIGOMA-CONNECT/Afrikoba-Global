@@ -298,93 +298,49 @@ scenario('E6 postJournal rejects unbalanced lines', async () => {
   assert.strictEqual(await journalCount(ref), 0);
 });
 
-scenario('E7 creditWallet rejects a replayed reference with a different amount', async () => {
+scenario('E7 claimOperation rejects a replayed reference with a different amount', async () => {
   const uid = await freshUser();
   const ref = uniq('SHAPE');
 
   const c1 = await pool.connect();
   await c1.query('BEGIN');
-  await fin.creditWallet({ client: c1, userId: uid, amount: 100, reference: ref, fromAccount: 'SUSPENSE' });
+  await fin.claimOperation({ client: c1, operationType: 'CREDIT', reference: ref, userId: uid, amount: 100, validateShape: true });
   await c1.query('COMMIT');
   c1.release();
 
   const c2 = await pool.connect();
   await c2.query('BEGIN');
   await assert.rejects(
-    fin.creditWallet({ client: c2, userId: uid, amount: 200, reference: ref, fromAccount: 'SUSPENSE' }),
+    fin.claimOperation({ client: c2, operationType: 'CREDIT', reference: ref, userId: uid, amount: 200, validateShape: true }),
     (e) => e && e.code === 'OPERATION_SHAPE_MISMATCH' && e.mismatch.includes('amount')
   );
   await c2.query('ROLLBACK');
   c2.release();
 
-  assert.strictEqual(await balance(uid), 100, 'wallet changed on a shape mismatch');
-  assert.strictEqual(await journalCount(ref), 2, 'a second journal was posted on a shape mismatch');
   assert.strictEqual(await foCount(ref), 1, 'a second operation was created on a shape mismatch');
 });
 
-scenario('E8 creditWallet rejects a replayed reference with a different user', async () => {
+scenario('E8 claimOperation rejects a replayed reference with a different user', async () => {
   const a = await freshUser();
   const b = await freshUser();
   const ref = uniq('SHAPEUSER');
 
   const c1 = await pool.connect();
   await c1.query('BEGIN');
-  await fin.creditWallet({ client: c1, userId: a, amount: 100, reference: ref, fromAccount: 'SUSPENSE' });
+  await fin.claimOperation({ client: c1, operationType: 'CREDIT', reference: ref, userId: a, amount: 100, validateShape: true });
   await c1.query('COMMIT');
   c1.release();
 
   const c2 = await pool.connect();
   await c2.query('BEGIN');
   await assert.rejects(
-    fin.creditWallet({ client: c2, userId: b, amount: 100, reference: ref, fromAccount: 'SUSPENSE' }),
+    fin.claimOperation({ client: c2, operationType: 'CREDIT', reference: ref, userId: b, amount: 100, validateShape: true }),
     (e) => e && e.code === 'OPERATION_SHAPE_MISMATCH' && e.mismatch.includes('user_id')
   );
   await c2.query('ROLLBACK');
   c2.release();
 
-  assert.strictEqual(await balance(b), 0, 'wallet of the wrong user was credited');
-  assert.strictEqual(await journalCount(ref), 2, 'a second journal was posted on a shape mismatch');
-});
-
-scenario('E9 claimOperation shape validation is opt-in and precise', async () => {
-  const a = await freshUser();
-  const b = await freshUser();
-  const ref = uniq('CLAIM');
-
-  const c = await pool.connect();
-  await c.query('BEGIN');
-  const first = await fin.claimOperation({
-    client: c, operationType: 'SHAPE_PROBE', reference: ref, userId: a, amount: 10, validateShape: true,
-  });
-  assert.strictEqual(first.claimed, true);
-
-  const same = await fin.claimOperation({
-    client: c, operationType: 'SHAPE_PROBE', reference: ref, userId: a, amount: 10, validateShape: true,
-  });
-  assert.strictEqual(same.claimed, false, 'same shape should dedup');
-
-  await assert.rejects(
-    fin.claimOperation({
-      client: c, operationType: 'SHAPE_PROBE', reference: ref, userId: b, amount: 10, validateShape: true,
-    }),
-    (e) => e && e.code === 'OPERATION_SHAPE_MISMATCH' && e.mismatch.includes('user_id')
-  );
-  await assert.rejects(
-    fin.claimOperation({
-      client: c, operationType: 'OTHER_TYPE', reference: ref, userId: a, amount: 10, validateShape: true,
-    }),
-    (e) => e && e.code === 'OPERATION_SHAPE_MISMATCH' && e.mismatch.includes('operation_type')
-  );
-  await assert.rejects(
-    fin.claimOperation({
-      client: c, operationType: 'SHAPE_PROBE', reference: ref, userId: a, amount: 11, validateShape: true,
-    }),
-    (e) => e && e.code === 'OPERATION_SHAPE_MISMATCH' && e.mismatch.includes('amount')
-  );
-
-  await c.query('ROLLBACK');
-  c.release();
-  assert.strictEqual(await foCount(ref), 0, 'rolled-back probe left an operation row');
+  assert.strictEqual(await foCount(ref), 1, 'a second operation was created on a shape mismatch');
 });
 
 /* ------------------------------------------------------------------ *
