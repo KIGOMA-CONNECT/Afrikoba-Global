@@ -149,12 +149,12 @@ to be silently treated as a duplicate.
 
 `claimOperation` now accepts `validateShape` and raises
 `OPERATION_SHAPE_MISMATCH` (409, with the differing fields in `.mismatch`) when
-a replay does not describe the same operation. All twelve engine primitives
-(`holdFunds`, `releaseHold`, `captureHold`, `transfer`, `creditWallet`,
-`debitWallet`, `internalTransfer`, `walletToGroup`, `groupToWallet`,
-`lockWallet`, `unlockWallet`, `captureLock`) opt in. `postDeposit` keeps
-`validateShape: false` because it already performs a richer duplicate check and
-raises `DEPOSIT_IDEMPOTENCY_CONFLICT` (covered by deposit tests B6/B7/C2–C4).
+a replay does not describe the same operation. The `validateShape` parameter is available on `claimOperation` and is exercised
+by E7–E9. Engine primitives currently keep it off by default so that
+service-level conflict handling (e.g. `SACCOS_FUND_REFERENCE_CONFLICT`) is not
+bypassed. `postDeposit` keeps `validateShape: false` because it already performs
+a richer duplicate check and raises `DEPOSIT_IDEMPOTENCY_CONFLICT`
+(covered by deposit tests B6/B7/C2–C4).
 
 Service-level direct `claimOperation` callers (SACCOS, BAP, field partner,
 project finance, merchant payouts, network) can opt in incrementally; their
