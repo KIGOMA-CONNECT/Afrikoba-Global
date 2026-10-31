@@ -29,7 +29,10 @@ router.post('/send-otp', otpLimiter, validate(schemas.auth.sendOtp), async (req,
     const { phoneNumber } = req.body;
     const otp = await authService.sendOtp(phoneNumber, 'LOGIN');
     logger.info('AUTH', `OTP imetumwa kwenda ${toInternationalFormat(phoneNumber)}`);
-    return res.json({ success: true, message: res.t('AUTH_OTP_SENT'), devOtp: otp });
+    if (process.env.NODE_ENV !== 'production') {
+      return res.json({ success: true, message: res.t('AUTH_OTP_SENT'), devOtp: otp });
+    }
+    return res.json({ success: true, message: res.t('AUTH_OTP_SENT_SMS') });
   } catch (error) {
     next(error);
   }
