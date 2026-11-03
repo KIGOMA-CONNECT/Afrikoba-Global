@@ -261,7 +261,8 @@ async function adminExecutePayout(adminId, payoutId) {
       reference: `PAYOUT:${payoutId}:${ref}`,
       tx: client,
     });
-    await logAction(adminId, 'MERCHANT_PAYOUT_EXECUTED', 'MERCHANT_PAYOUT', payoutId, { reference: ref, gross: p.gross_amount, net: p.net_amount }, client);
+    const { writeAudit } = require('./auditService');
+    await writeAudit({ userId: adminId, action: 'MERCHANT_PAYOUT_EXECUTED', entityType: 'MERCHANT_PAYOUT', entityId: payoutId, meta: { reference: ref, gross: p.gross_amount, net: p.net_amount }, client });
     await client.query('COMMIT');
     return (await pool.query('SELECT * FROM merchant_payouts WHERE id = $1', [payoutId])).rows[0];
   } catch (e) {
