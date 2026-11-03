@@ -226,10 +226,6 @@ async function withdraw(actorId, saccosId, { amount }) {
   const membership = await requireActiveMember(actorId, saccosId);
   const cfg = savingsConfig(saccos);
 
-  const account = await getSavingsAccount(saccosId, membership.id);
-  const available = (account ? Number(account.balance) : 0) - cfg.minBalanceToRetain - await pendingSum(account ? account.id : 0);
-  if (value > available) throw createAppError('SACCOS_SAVINGS_INSUFFICIENT');
-
   const auto = cfg.autoApproveWithdrawals !== false;
   const ref = newSolarRef('SWD');
   const client = await pool.connect();
@@ -237,12 +233,34 @@ async function withdraw(actorId, saccosId, { amount }) {
     await client.query('BEGIN');
     await ensureSavingsLiability(client, saccosId);
     await ensureMemberAccount(client, saccosId, membership.id, cfg.savingsType);
+
+    // Lock account row and validate balance inside transaction
+    const acctRes = await client.query(
+      'SELECT id, balance FROM saccos_savings_accounts WHERE saccos_id = $1 AND member_id = $2 FOR UPDATE',
+      [saccosId, membership.id]
+    );
+    const account = acctRes.rows[0];
+    if (!account) throw createAppError('SACCOS_SAVINGS_ACCOUNT_NOT_FOUND');
+
+    const pending = await client.query(
+      "SELECT COALESCE(SUM(amount), 0)::numeric AS total FROM saccos_savings_withdrawals WHERE account_id = $1 AND status = 'PENDING'",
+      [account.id]
+    );
+    const pendingTotal = Number(pending.rows[0].total);
+    const available = Number(account.balance) - cfg.minBalanceToRetain - pendingTotal;
+    if (value > available) throw createAppError('SACCOS_SAVINGS_INSUFFICIENT');
+
     if (auto) {
-      await fin.creditWallet({
+      const creditResult = await fin.creditWallet({
         client, userId: actorId, amount: value, reference: ref,
         fromAccount: savingsLiabilityCode(saccosId),
         description: `Uondoaji wa akiba SACCOS #${saccosId}`, actor: 'saccos:savings:withdraw',
       });
+      if (creditResult.dedup) {
+        // Already processed — rollback and return dedup
+        await client.query('ROLLBACK');
+        return { reference: ref, status: 'APPROVED', requiresApproval: false, dedup: true, newBalance: Number(account.balance) - value };
+      }
       await client.query(
         `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
          VALUES ($1, $2, $3, 0, $3, 'SUCCESS', 'SACCOS_SAVINGS_WITHDRAWAL', $4)`,
@@ -290,19 +308,39 @@ async function fetchWithdrawal(saccosId, withdrawalId) {
 async function decideWithdrawal(actorId, saccosId, withdrawalId, decision) {
   await saccosCore.assertActiveRole(actorId, saccosId, ['OWNER', 'BOARD']);
   const wd = await fetchWithdrawal(saccosId, withdrawalId);
-  if (wd.status !== 'PENDING') throw createAppError('SACCOS_SAVINGS_DECIDED');
 
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+
+    // Lock withdrawal row and validate status inside transaction
+    const wdLock = await client.query(
+      'SELECT status FROM saccos_savings_withdrawals WHERE id = $1 AND saccos_id = $2 FOR UPDATE',
+      [withdrawalId, saccosId]
+    );
+    if (!wdLock.rows.length) throw createAppError('SACCOS_SAVINGS_WITHDRAWAL_NOT_FOUND');
+    if (wdLock.rows[0].status !== 'PENDING') throw createAppError('SACCOS_SAVINGS_DECIDED');
+
     if (decision === 'APPROVE') {
-      const acct = await client.query('SELECT balance FROM saccos_savings_accounts WHERE id = $1', [wd.account_id]);
+      // Lock account row
+      const acct = await client.query(
+        'SELECT balance FROM saccos_savings_accounts WHERE id = $1 FOR UPDATE',
+        [wd.account_id]
+      );
+      if (!acct.rows.length) throw createAppError('SACCOS_SAVINGS_ACCOUNT_NOT_FOUND');
       if (Number(acct.rows[0].balance) < Number(wd.amount)) throw createAppError('SACCOS_SAVINGS_INSUFFICIENT');
-      await fin.creditWallet({
+
+      const creditResult = await fin.creditWallet({
         client, userId: wd.member_user_id, amount: Number(wd.amount), reference: wd.reference_id,
         fromAccount: savingsLiabilityCode(wd.saccos_id),
         description: `Uondoaji wa akiba SACCOS #${wd.saccos_id}`, actor: 'saccos:savings:withdraw:approve',
       });
+      if (creditResult.dedup) {
+        // Already processed — rollback and return dedup
+        await client.query('ROLLBACK');
+        return { success: true, withdrawalId, status: 'APPROVED', dedup: true };
+      }
+
       await client.query(
         `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
          VALUES ($1, $2, $3, 0, $3, 'SUCCESS', 'SACCOS_SAVINGS_WITHDRAWAL', $4)`,
