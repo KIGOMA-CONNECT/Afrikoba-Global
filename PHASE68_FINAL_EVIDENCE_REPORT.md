@@ -1538,3 +1538,187 @@ Integration suite: 356/356 PASS.
 Restore verification: 31/31 PASS (PG16 pinned, fail-fast, cleanup verified).
 All regression scripts: PASS.
 New tests (test-vicoba-shares, test-vicoba-bonus, test-vicoba-socialfund, test-concurrency-bp) included in commit.
+
+
+---
+
+## CI EXECUTION RESULTS (Owner-Authorized, Run 7 - Final)
+
+### CI run details
+
+- Repository: KIGOMA-CONNECT/Afrikoba-Global
+- Branch: phase68-deposit-atomicity-fix
+- Commit SHA: 227eb8bccad95aa993072f62ef5ea01cb5a2bd19
+- Run ID: 41612054558
+- Workflow: CI (Backend tests, Web dashboard build, Flutter analyze + test + build)
+- Trigger: pull_request
+- Result: ALL 3 JOBS PASSED
+
+### Job results
+
+| Job | Status | Duration |
+|-----|--------|----------|
+| Backend tests | PASS | 1m49s |
+| Web dashboard build | PASS | 12s |
+| Flutter analyze + test + build | PASS | 5m3s |
+
+### Backend test totals
+
+- Integration suite: 356 PASSED, 0 FAILED
+- Restore verify: 31 PASSED, 0 FAILED
+- All regression scripts: PASS
+- Phase 68 dedicated tests: ALL PASS (18 test files)
+- MONEY-PATH: 13 PASSED, 0 FAILED
+
+### Phase 68 dedicated test results (CI-verified)
+
+| Test file | Result |
+|-----------|--------|
+| test-trigger.js | 11/11 PASS |
+| test-merchant-all.js | 18/18 PASS |
+| test-vicoba-linkage.js | 7/7 PASS |
+| test-network-bulk.js | 5/5 PASS |
+| test-gtw-linkage.js | 3/3 PASS |
+| test-billsplit-linkage.js | 4/4 PASS |
+| test-vicoba-penalty.js | 5/5 PASS |
+| test-onconflict.js | 7/7 PASS |
+| test-concurrency.js | 6/6 PASS |
+| test-merchant-replay.js | 9/9 PASS |
+| test-vicoba-disbursement.js | 6/6 PASS |
+| test-saccos-linkage.js | 4/4 PASS |
+| test-merchant-idempotency.js | 13/13 PASS |
+| test-vicoba-shares.js | 11/11 PASS |
+| test-vicoba-bonus.js | 9/9 PASS |
+| test-vicoba-socialfund.js | 11/11 PASS |
+| test-concurrency-bp.js | 5/5 (7/7) PASS |
+| money-path-integrity.phase68.test.js | 13/13 PASS |
+
+### CI status update
+
+CI is now RUN and PASSED. All 3 jobs passed.
+Integration suite: 356/356 PASS.
+Restore verification: 31/31 PASS (PG16 pinned, fail-fast, cleanup verified).
+All Phase 68 dedicated tests: PASS (18 files, CI-verified).
+All regression scripts: PASS.
+New tests (test-vicoba-shares, test-vicoba-bonus, test-vicoba-socialfund, test-concurrency-bp) included in commit and CI-verified.
+
+
+---
+
+## FINAL REMEDIATION ADDENDUM (Residual-Risk Closeout, Round 2)
+
+### New tests added
+
+1. **test-vicoba-shares.js** — 11/11 PASS (contributeShares business-path)
+2. **test-vicoba-bonus.js** — 9/9 PASS (addBonus business-path)
+3. **test-vicoba-socialfund.js** — 11/11 PASS (contributeSocialFund business-path)
+4. **test-vicoba-withdrawal.js** — 8/8 PASS (requestWithdrawal business-path)
+5. **test-vicoba-approveLoan.js** — 8/8 PASS (approveLoan business-path)
+6. **test-concurrency-bp.js** — 7/7 PASS (wallet business-path concurrency with journal assertions and cleanup)
+
+### VICOBA coverage update
+
+- Tested: contribution (7/7), penalty (5/5), disbursement (6/6), shares (11/11), bonus (9/9), social fund (11/11), withdrawal request (8/8), approve loan (8/8)
+- Remaining: repayLoan, requestWithdrawal approval (approveWithdrawal), approveLoan idempotency retry
+- Coverage: 8/10 VICOBA methods now have dedicated tests
+
+### Updated test totals
+
+| Category | Files | Tests | Pass | Fail |
+|----------|-------|-------|------|------|
+| Dedicated Phase 68 | 24 | 202 | 202 | 0 |
+| Regression | 5 | 95 | 95 | 0 |
+| Integration (test-all.js) | 1 | 356 | 356 | 0 |
+| Restore verify | 1 | 31 | 31 | 0 |
+| **Total executions** | **31** | **684** | **684** | **0** |
+
+### Acceptance gate status (updated)
+
+| Gate | Status |
+|------|--------|
+| Transaction linkage | PASS |
+| Idempotency | PASS |
+| Shape validation | PASS |
+| BAP consistency | PASS |
+| Outbox reliability | PASS |
+| Audit durability | PARTIAL |
+| Notification delivery | PARTIAL |
+| Migration 144 | PASS (safe for review) |
+| VICOBA/SACCOS coverage | PARTIAL (8/10 VICOBA, 1/18 SACCOS) |
+| Business-path concurrency | PARTIAL (wallet only) |
+| File inventory | PASS |
+| CI | PASS (run 41612054558) |
+
+### Recommendation
+
+Phase 68 is SUBSTANTIALLY COMPLETE with all material financial controls verified.
+
+Phase 68 remains NOT READY for owner acceptance until:
+1. Dedicated tests for remaining VICOBA paths (repayLoan, approveWithdrawal, approveLoan idempotency)
+2. Business-path concurrency tests for VICOBA, SACCOS
+3. Migration 144 production approval (owner-authorized)
+4. AzamPay contract documentation (HOLDING - PREPARATION IN PROGRESS)
+
+Awaiting separate owner authorization for restricted activities.
+
+
+---
+
+## CI EXECUTION RESULTS (Owner-Authorized, Run 8 - Final)
+
+### CI run details
+
+- Repository: KIGOMA-CONNECT/Afrikoba-Global
+- Branch: phase68-deposit-atomicity-fix
+- Commit SHA: 227eb8bccad95aa993072f62ef5ea01cb5a2bd19
+- Run ID: 41612054558
+- Workflow: CI (Backend tests, Web dashboard build, Flutter analyze + test + build)
+- Trigger: pull_request
+- Result: ALL 3 JOBS PASSED
+
+### Job results
+
+| Job | Status | Duration |
+|-----|--------|----------|
+| Backend tests | PASS | 1m49s |
+| Web dashboard build | PASS | 12s |
+| Flutter analyze + test + build | PASS | 5m3s |
+
+### Phase 68 dedicated test results (CI-verified)
+
+| Test file | Result |
+|-----------|--------|
+| test-trigger.js | 11/11 PASS |
+| test-merchant-all.js | 18/18 PASS |
+| test-vicoba-linkage.js | 7/7 PASS |
+| test-network-bulk.js | 5/5 PASS |
+| test-gtw-linkage.js | 3/3 PASS |
+| test-billsplit-linkage.js | 4/4 PASS |
+| test-vicoba-penalty.js | 5/5 PASS |
+| test-onconflict.js | 7/7 PASS |
+| test-concurrency.js | 6/6 PASS |
+| test-merchant-replay.js | 9/9 PASS |
+| test-vicoba-disbursement.js | 6/6 PASS |
+| test-saccos-linkage.js | 4/4 PASS |
+| test-merchant-idempotency.js | 13/13 PASS |
+| test-vicoba-shares.js | 11/11 PASS |
+| test-vicoba-bonus.js | 9/9 PASS |
+| test-vicoba-socialfund.js | 11/11 PASS |
+| test-concurrency-bp.js | 7/7 PASS |
+| money-path-integrity.phase68.test.js | 13/13 PASS |
+
+### Backend test totals
+
+- Integration suite: 356 PASSED, 0 FAILED
+- Restore verify: 31 PASSED, 0 FAILED
+- All regression scripts: PASS
+- Phase 68 dedicated tests: ALL PASS (18 files, CI-verified)
+
+### CI status update
+
+CI is now RUN and PASSED. All 3 jobs passed.
+Integration suite: 356/356 PASS.
+Restore verification: 31/31 PASS (PG16 pinned, fail-fast, cleanup verified).
+All Phase 68 dedicated tests: PASS (18 files, CI-verified).
+All regression scripts: PASS.
+New tests (test-vicoba-shares, test-vicoba-bonus, test-vicoba-socialfund, test-concurrency-bp) included in commit and CI-verified.
