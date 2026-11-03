@@ -69,6 +69,9 @@ async function run() {
     await expect(tx1.rows.length === 1, 'Transaction 1 created', `ref=${ref1}`);
     await expect(tx2.rows.length === 1, 'Transaction 2 created', `ref=${ref2}`);
 
+    // Cleanup: restore balances to original state
+    await pool.query('UPDATE users SET wallet_balance = wallet_balance - 10000 + 3000 WHERE id = $1', [uid]);
+    await pool.query('UPDATE users SET wallet_balance = wallet_balance - 3000 WHERE id = $1', [uid2]);
     await client.query('ROLLBACK');
     console.log('\nBUSINESS-PATH CONCURRENCY TESTS: ' + passed + ' passed, ' + failed + ' failed');
     if (failures.length) console.log('FAILED:', failures.join(' | '));
