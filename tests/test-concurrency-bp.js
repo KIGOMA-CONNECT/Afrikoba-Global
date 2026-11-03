@@ -24,30 +24,27 @@ async function expect(cond, label, extra) { if (cond) ok(label); else fail(label
 
 async function run() {
   const client = await pool.connect();
+  let uid, uid2, phone2, bal1Before, bal2Before;
   try {
     await client.query('BEGIN');
-    const uid = (await client.query('SELECT min(id) AS id FROM users')).rows[0].id;
-    const uid2 = (await client.query('SELECT id, phone_number FROM users ORDER BY id OFFSET 1 LIMIT 1')).rows[0].id;
-    const phone2 = (await client.query('SELECT phone_number FROM users WHERE id = $1', [uid2])).rows[0].phone_number;
+    uid = (await client.query('SELECT min(id) AS id FROM users')).rows[0].id;
+    const uid2Row = (await client.query('SELECT id, phone_number FROM users ORDER BY id OFFSET 1 LIMIT 1')).rows[0];
+    uid2 = uid2Row.id;
+    phone2 = uid2Row.phone_number;
+    const phone1 = (await client.query('SELECT phone_number FROM users WHERE id = $1', [uid])).rows[0].phone_number;
 
-    // Fund user1 wallet
+    // Fund user1 wallet (will be cleaned up in finally)
     await client.query('UPDATE users SET wallet_balance = wallet_balance + 10000 WHERE id = $1', [uid]);
     await client.query('COMMIT');
 
-    const bal1Before = (await pool.query('SELECT wallet_balance FROM users WHERE id = $1', [uid])).rows[0].wallet_balance;
-    const bal2Before = (await pool.query('SELECT wallet_balance FROM users WHERE id = $1', [uid2])).rows[0].wallet_balance;
+    bal1Before = (await pool.query('SELECT wallet_balance FROM users WHERE id = $1', [uid])).rows[0].wallet_balance;
+    bal2Before = (await pool.query('SELECT wallet_balance FROM users WHERE id = $1', [uid2])).rows[0].wallet_balance;
 
     // Two concurrent transfers from user1 to user2 (different references)
-    const conn1 = await pool.connect();
-    const conn2 = await pool.connect();
-
     const results = await Promise.all([
       walletService.transferWallet(uid, phone2, 1000, 'CONC-BP-1').then(r => ({ ok: true, r })).catch(e => ({ ok: false, e: e.message })),
       walletService.transferWallet(uid, phone2, 2000, 'CONC-BP-2').then(r => ({ ok: true, r })).catch(e => ({ ok: false, e: e.message })),
     ]);
-
-    conn1.release();
-    conn2.release();
 
     // Both should succeed (different references, sufficient balance)
     const successes = results.filter(r => r.ok);
@@ -69,20 +66,30 @@ async function run() {
     await expect(tx1.rows.length === 1, 'Transaction 1 created', `ref=${ref1}`);
     await expect(tx2.rows.length === 1, 'Transaction 2 created', `ref=${ref2}`);
 
+    // Verify journal entries exist for both
+    const je1 = await pool.query('SELECT COUNT(*)::int AS n FROM journal_entries WHERE reference_id = $1', [ref1]);
+    const je2 = await pool.query('SELECT COUNT(*)::int AS n FROM journal_entries WHERE reference_id = $1', [ref2]);
+    await expect(je1.rows[0].n >= 2, 'Journal entries for transfer 1', `got ${je1.rows[0].n}`);
+    await expect(je2.rows[0].n >= 2, 'Journal entries for transfer 2', `got ${je2.rows[0].n}`);
+
+  } catch (e) {
+    console.error('FATAL', e);
+    failed++;
+  } finally {
     // Cleanup: restore balances to original state
-    await pool.query('UPDATE users SET wallet_balance = wallet_balance - 10000 + 3000 WHERE id = $1', [uid]);
-    await pool.query('UPDATE users SET wallet_balance = wallet_balance - 3000 WHERE id = $1', [uid2]);
-    await client.query('ROLLBACK');
+    try {
+      if (uid && uid2 && bal1Before && bal2Before) {
+        await pool.query('UPDATE users SET wallet_balance = $1 WHERE id = $2', [bal1Before, uid]);
+        await pool.query('UPDATE users SET wallet_balance = $1 WHERE id = $2', [bal2Before, uid2]);
+      }
+    } catch (cleanupErr) {
+      console.error('CLEANUP ERROR:', cleanupErr.message);
+    }
+    client.release();
+    await pool.end();
     console.log('\nBUSINESS-PATH CONCURRENCY TESTS: ' + passed + ' passed, ' + failed + ' failed');
     if (failures.length) console.log('FAILED:', failures.join(' | '));
     process.exit(failed ? 1 : 0);
-  } catch (e) {
-    await client.query('ROLLBACK').catch(() => {});
-    console.error('FATAL', e);
-    process.exit(1);
-  } finally {
-    client.release();
-    await pool.end();
   }
 }
 
