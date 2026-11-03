@@ -103,6 +103,7 @@ jobs:
           node tests/test-vicoba-shares.js
           node tests/test-vicoba-bonus.js
           node tests/test-vicoba-socialfund.js
+          node tests/test-vicoba-repayLoan.js
           node tests/test-vicoba-withdrawal.js
           node tests/test-vicoba-approveWithdrawal.js
           node tests/test-vicoba-approveLoan.js
