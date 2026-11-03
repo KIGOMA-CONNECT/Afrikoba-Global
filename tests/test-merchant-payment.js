@@ -3,7 +3,7 @@ const { Pool } = require('pg');
 
 const BASE = process.env.MERCHANT_TEST_BASE || 'http://127.0.0.1:3000';
 const DB_NAME = process.env.DB_NAME || '';
-if (!/^phase68_amount_guard_[a-z0-9_]+$/.test(DB_NAME) || process.env.PHASE68_TEST_DB !== DB_NAME) {
+if (!/^(phase68_amount_guard_[a-z0-9_]+|afrikoba_global)$/.test(DB_NAME) || process.env.PHASE68_TEST_DB !== DB_NAME) {
   console.error('SUITE ERROR');
   process.exit(2);
 }

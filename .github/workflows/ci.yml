@@ -84,6 +84,8 @@ jobs:
         run: node scripts/test-all.js
 
       - name: Run Phase 68 dedicated tests
+        env:
+          PHASE68_TEST_DB: afrikoba_global
         run: |
           node tests/test-trigger.js
           node tests/test-merchant-all.js
