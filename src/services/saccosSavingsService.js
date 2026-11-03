@@ -257,9 +257,17 @@ async function withdraw(actorId, saccosId, { amount }) {
         description: `Uondoaji wa akiba SACCOS #${saccosId}`, actor: 'saccos:savings:withdraw',
       });
       if (creditResult.dedup) {
-        // Already processed — rollback and return dedup
+        // Dedup detected — verify the withdrawal was actually completed
         await client.query('ROLLBACK');
-        return { reference: ref, status: 'APPROVED', requiresApproval: false, dedup: true, newBalance: Number(account.balance) - value };
+        const existingWd = await pool.query(
+          "SELECT status, amount FROM saccos_savings_withdrawals WHERE reference_id = $1",
+          [ref]
+        );
+        if (existingWd.rows.length === 1 && existingWd.rows[0].status === 'APPROVED' &&
+            Number(existingWd.rows[0].amount) === value) {
+          return { reference: ref, status: 'APPROVED', requiresApproval: false, dedup: true };
+        }
+        throw createAppError('SACCOS_SAVINGS_WITHDRAWAL_INCOMPLETE');
       }
       await client.query(
         `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
@@ -306,6 +314,7 @@ async function fetchWithdrawal(saccosId, withdrawalId) {
 }
 
 async function decideWithdrawal(actorId, saccosId, withdrawalId, decision) {
+  if (decision !== 'APPROVE' && decision !== 'REJECT') throw createAppError('SACCOS_SAVINGS_DECISION_INVALID');
   await saccosCore.assertActiveRole(actorId, saccosId, ['OWNER', 'BOARD']);
   const wd = await fetchWithdrawal(saccosId, withdrawalId);
 
@@ -336,9 +345,21 @@ async function decideWithdrawal(actorId, saccosId, withdrawalId, decision) {
         description: `Uondoaji wa akiba SACCOS #${wd.saccos_id}`, actor: 'saccos:savings:withdraw:approve',
       });
       if (creditResult.dedup) {
-        // Already processed — rollback and return dedup
+        // Dedup detected — verify the withdrawal was actually completed
         await client.query('ROLLBACK');
-        return { success: true, withdrawalId, status: 'APPROVED', dedup: true };
+        const existingTx = await pool.query(
+          "SELECT status FROM transactions WHERE reference_id = $1",
+          [wd.reference_id]
+        );
+        const existingWd = await pool.query(
+          "SELECT status FROM saccos_savings_withdrawals WHERE id = $1",
+          [withdrawalId]
+        );
+        if (existingTx.rows.length === 1 && existingTx.rows[0].status === 'SUCCESS' &&
+            existingWd.rows.length === 1 && existingWd.rows[0].status === 'APPROVED') {
+          return { success: true, withdrawalId, status: 'APPROVED', dedup: true };
+        }
+        throw createAppError('SACCOS_SAVINGS_WITHDRAWAL_INCOMPLETE');
       }
 
       await client.query(
