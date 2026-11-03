@@ -1,5 +1,5 @@
 'use strict';
-const { Pool } = require('/tmp/afrikoba-phase68-deposit-fix/node_modules/pg');
+const { Pool } = require('pg');
 
 const BASE = process.env.MERCHANT_TEST_BASE || 'http://127.0.0.1:3000';
 const DB_NAME = process.env.DB_NAME || '';

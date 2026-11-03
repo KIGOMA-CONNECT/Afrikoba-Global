@@ -1,5 +1,5 @@
 'use strict';
-const { Pool } = require('/tmp/afrikoba-phase68-deposit-fix/node_modules/pg');
+const { Pool } = require('pg');
 
 const DB_NAME = process.env.DB_NAME || '';
 if (!/^phase68_amount_guard_[a-z0-9_]+$/.test(DB_NAME) || process.env.PHASE68_TEST_DB !== DB_NAME) {
@@ -32,7 +32,7 @@ async function run() {
     // Test 1: Zero amount
     const zeroResult = await (async () => {
       try {
-        const walletService = require('/tmp/afrikoba-phase68-deposit-fix/src/services/walletService');
+        const walletService = require('../src/services/walletService');
         await walletService.withdrawToMno(uid, 0, 'MPESA', null);
         return { success: true };
       } catch (e) {
@@ -44,7 +44,7 @@ async function run() {
     // Test 2: Negative amount
     const negResult = await (async () => {
       try {
-        const walletService = require('/tmp/afrikoba-phase68-deposit-fix/src/services/walletService');
+        const walletService = require('../src/services/walletService');
         await walletService.withdrawToMno(uid, -1000, 'MPESA', null);
         return { success: true };
       } catch (e) {
@@ -56,7 +56,7 @@ async function run() {
     // Test 3: Non-finite amount (Infinity)
     const infResult = await (async () => {
       try {
-        const walletService = require('/tmp/afrikoba-phase68-deposit-fix/src/services/walletService');
+        const walletService = require('../src/services/walletService');
         await walletService.withdrawToMno(uid, Infinity, 'MPESA', null);
         return { success: true };
       } catch (e) {
@@ -68,7 +68,7 @@ async function run() {
     // Test 4: Below minimum (1000)
     const belowResult = await (async () => {
       try {
-        const walletService = require('/tmp/afrikoba-phase68-deposit-fix/src/services/walletService');
+        const walletService = require('../src/services/walletService');
         await walletService.withdrawToMno(uid, 500, 'MPESA', null);
         return { success: true };
       } catch (e) {
@@ -80,7 +80,7 @@ async function run() {
     // Test 5: AzamPay disabled (expected - payout contract not verified)
     const disabledResult = await (async () => {
       try {
-        const walletService = require('/tmp/afrikoba-phase68-deposit-fix/src/services/walletService');
+        const walletService = require('../src/services/walletService');
         await walletService.withdrawToMno(uid, 5000, 'MPESA', null);
         return { success: true };
       } catch (e) {

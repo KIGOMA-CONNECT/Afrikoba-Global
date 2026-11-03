@@ -1,5 +1,5 @@
 'use strict';
-const { Pool } = require('/tmp/afrikoba-phase68-deposit-fix/node_modules/pg');
+const { Pool } = require('pg');
 
 const DB_NAME = process.env.DB_NAME || '';
 if (!/^phase68_amount_guard_[a-z0-9_]+$/.test(DB_NAME) || process.env.PHASE68_TEST_DB !== DB_NAME) {
@@ -56,7 +56,7 @@ async function run() {
     await client.query('COMMIT');
 
     // Call processBulkBatch (creates its own connection)
-    const networkService = require('/tmp/afrikoba-phase68-deposit-fix/src/services/networkService');
+    const networkService = require('../src/services/networkService');
     const result = await networkService.processBulkBatch(batchId);
     await expect(result.success === 2 && result.failed === 0, 'Bulk batch processed: 2 success, 0 failed', JSON.stringify(result));
 

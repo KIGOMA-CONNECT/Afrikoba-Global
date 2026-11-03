@@ -1,6 +1,6 @@
 'use strict';
-const { Pool } = require('/tmp/afrikoba-phase68-deposit-fix/node_modules/pg');
-const fin = require('/tmp/afrikoba-phase68-deposit-fix/src/services/financialEngine');
+const { Pool } = require('pg');
+const fin = require('../src/services/financialEngine');
 
 const DB_NAME = process.env.DB_NAME || '';
 if (!/^phase68_amount_guard_[a-z0-9_]+$/.test(DB_NAME) || process.env.PHASE68_TEST_DB !== DB_NAME) {
