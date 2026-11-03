@@ -222,7 +222,8 @@ async function processPayout(partner, payload) {
   try {
     await client.query('BEGIN');
     const p = (await client.query('SELECT * FROM partners WHERE id=$1 FOR UPDATE', [partner.id])).rows[0];
-    if (Number(p.balance) < amountNum) {
+    if (!p || Number(p.balance) < amountNum) {
+      await client.query('ROLLBACK');
       const ref = generateReference('BPF');
       await logPartnerTxn(partner.id, 'FAILED', amountNum, ref, request_id, phone, 'FAILED');
       throw badge('Salio la partner halitoshi.', 400);
@@ -232,7 +233,6 @@ async function processPayout(partner, payload) {
     const uRes = await client.query('SELECT id, wallet_balance FROM users WHERE phone_number=$1 FOR UPDATE', [phone]);
     if (!uRes.rows.length) {
       await client.query('ROLLBACK');
-      client.release();
       throw badge('Mteja hapatikani kwenye mfumo.', 404);
     }
     const u = uRes.rows[0];
@@ -247,11 +247,10 @@ async function processPayout(partner, payload) {
     });
     if (creditResult.dedup) {
       await client.query('ROLLBACK');
-      client.release();
       throw badge('Malipo tayari yamefanyika (duplicate).', 409);
     }
     await logTx(client, u.id, amountNum, 'PARTNER_PAYOUT', { partner_id: partner.id, partner_name: partner.name, reference });
-    await logPartnerTxn(partner.id, 'PAYOUT', amountNum, reference, request_id, phone, 'COMPLETED');
+    await logPartnerTxn(partner.id, 'PAYOUT', amountNum, reference, request_id, phone, 'COMPLETED', client);
     const after = await client.query('SELECT balance, monthly_volume FROM partners WHERE id=$1', [partner.id]);
     await client.query('COMMIT');
     const web = partner.webhook_url ? await deliverWebhook(partner, 'PAYOUT_SETTLED', {
