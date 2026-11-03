@@ -1269,9 +1269,25 @@ async function repayLoan(userId, loanId, amount, note, idempotencyKey = null) {
 
     const totalDeduct = amountNum + penaltyAmount;
 
-    await fin.walletToGroup({ client, userId, groupId: loan.group_id, groupAccount: 'VICOBA_GROUP', groupSql: 'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance + $1 WHERE id = $2', amount: amountNum, reference: `${finalReferenceId}:WG`, description: 'VICOBA Loan Repayment', productType: 'VICOBA', productRef: String(loan.group_id) });
+    // Create transaction first (enables TX ID propagation and canonical reference)
+    const txRes = await client.query(
+      `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
+       VALUES ($1, $2, $3, 0, $3, 'SUCCESS', 'VICOBA_LOAN_REPAYMENT', $4)
+       RETURNING id`,
+      [finalReferenceId, userId, totalDeduct, JSON.stringify({ group_id: loan.group_id, loan_id: loanId, penalty: penaltyAmount })]
+    );
+    const transactionId = txRes.rows[0].id;
+
+    const wgResult = await fin.walletToGroup({ client, userId, groupId: loan.group_id, groupAccount: 'VICOBA_GROUP', groupSql: 'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance + $1 WHERE id = $2', amount: amountNum, reference: `${finalReferenceId}:WG`, description: 'VICOBA Loan Repayment', productType: 'VICOBA', productRef: String(loan.group_id), transactionId });
+    if (wgResult.dedup) {
+      await client.query('ROLLBACK');
+      return { success: true, referenceId: finalReferenceId, dedup: true, message: 'Malipo haya tayari yalipokelewa.' };
+    }
     if (penaltyAmount > 0) {
-      await fin.debitWallet({ client, userId, amount: penaltyAmount, reference: `${finalReferenceId}:DR`, toAccount: 'PLATFORM_FEES', description: 'VICOBA Late Loan Penalty' });
+      const debitResult = await fin.debitWallet({ client, userId, amount: penaltyAmount, reference: `${finalReferenceId}:DR`, toAccount: 'PLATFORM_FEES', description: 'VICOBA Late Loan Penalty', transactionId });
+      if (debitResult.dedup) {
+        // Penalty already assessed — continue (penalty record check below prevents duplicate)
+      }
     }
 
     // Update schedule
@@ -1318,12 +1334,6 @@ async function repayLoan(userId, loanId, amount, note, idempotencyKey = null) {
         );
       }
     }
-
-    await client.query(
-      `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
-       VALUES ($1, $2, $3, 0, $3, 'SUCCESS', 'VICOBA_LOAN_REPAYMENT', $4)`,
-      [finalReferenceId, userId, totalDeduct, JSON.stringify({ group_id: loan.group_id, loan_id: loanId, penalty: penaltyAmount })]
-    );
 
     await client.query(
       `INSERT INTO vicoba_loan_repayments (loan_id, schedule_id, user_id, amount, reference_id, note)
