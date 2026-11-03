@@ -1207,7 +1207,7 @@ async function repayLoan(userId, loanId, amount, note, idempotencyKey = null) {
     const schedule = scheduleRes.rows[0];
 
     // Determine final reference ID (deterministic when no idempotency key)
-    const finalReferenceId = referenceId || `VLR-${loanId}-S${schedule.id}`;
+    const finalReferenceId = referenceId || `VLR-${loanId}-S${schedule.id}-A${amountNum}`;
 
     // Idempotency check (works for both key and no-key cases)
     const existingRepayment = await client.query(
