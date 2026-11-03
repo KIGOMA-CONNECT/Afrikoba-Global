@@ -83,6 +83,27 @@ jobs:
       - name: Run integration suite
         run: node scripts/test-all.js
 
+      - name: Run Phase 68 dedicated tests
+        run: |
+          node tests/test-trigger.js
+          node tests/test-merchant-all.js
+          node tests/test-vicoba-linkage.js
+          node tests/test-network-bulk.js
+          node tests/test-gtw-linkage.js
+          node tests/test-billsplit-linkage.js
+          node tests/test-vicoba-penalty.js
+          node tests/test-onconflict.js
+          node tests/test-concurrency.js
+          node tests/test-merchant-replay.js
+          node tests/test-vicoba-disbursement.js
+          node tests/test-saccos-linkage.js
+          node tests/test-merchant-idempotency.js
+          node tests/test-vicoba-shares.js
+          node tests/test-vicoba-bonus.js
+          node tests/test-vicoba-socialfund.js
+          node tests/test-concurrency-bp.js
+          node tests/money-path-integrity.phase68.test.js
+
       - name: Run regression scripts
         run: |
           node scripts/test-services.js
