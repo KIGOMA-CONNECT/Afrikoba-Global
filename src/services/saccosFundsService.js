@@ -148,11 +148,19 @@ async function contributeFund(actorId, saccosId, fundId, amount, { client: calle
     if (!Number.isFinite(amountN) || amountN <= 0) throw createAppError('SACCOS_FUND_AMOUNT');
     const w = await client.query('SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE', [actorId]);
     if (Number(w.rows[0].wallet_balance) < amountN) throw createAppError('WALLET_INSUFFICIENT_FUNDS');
-    const debit = await fin.debitWallet({
-      client, userId: actorId, amount: amountN,
-      toAccount: fund.account_code,
-      reference: ref, description: `SACCOS #${saccosId} fund ${fund.code} contribution`, actor: 'saccos-funds',
-    });
+    let debit;
+    try {
+      debit = await fin.debitWallet({
+        client, userId: actorId, amount: amountN,
+        toAccount: fund.account_code,
+        reference: ref, description: `SACCOS #${saccosId} fund ${fund.code} contribution`, actor: 'saccos-funds',
+      });
+    } catch (e) {
+      if (e.code === 'OPERATION_SHAPE_MISMATCH') {
+        throw createAppError('SACCOS_FUND_REFERENCE_CONFLICT');
+      }
+      throw e;
+    }
     if (debit.dedup) {
       const existing = await client.query(
         `SELECT *
