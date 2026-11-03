@@ -2645,3 +2645,40 @@ Phase 68 remains NOT READY for owner acceptance until:
 4. AzamPay contract documentation (HOLDING - PREPARATION IN PROGRESS)
 
 Awaiting separate owner authorization for restricted activities.
+
+
+---
+
+## CI EXECUTION RESULTS (Owner-Authorized, Run 18 - Final)
+
+### CI run details
+
+- Repository: KIGOMA-CONNECT/Afrikoba-Global
+- Branch: phase68-deposit-atomicity-fix
+- Commit SHA: f8ac1223bf2e8d5bb48650be0a61bbd2fcc209f0
+- Run ID: 41699694418
+- Workflow: CI (Backend tests, Web dashboard build, Flutter analyze + test + build)
+- Trigger: pull_request
+- Result: ALL 3 JOBS PASSED
+
+### Job results
+
+| Job | Status | Duration |
+|-----|--------|----------|
+| Backend tests | PASS | 2m23s |
+| Web dashboard build | PASS | 24s |
+| Flutter analyze + test + build | PASS | 5m41s |
+
+### Backend test totals
+
+- Integration suite: 356 PASSED, 0 FAILED
+- Restore verify: 31 PASSED, 0 FAILED
+- All regression scripts: PASS
+
+### CI status update
+
+CI is now RUN and PASSED. All 3 jobs passed.
+Integration suite: 356/356 PASS.
+Restore verification: 31/31 PASS (PG16 pinned, fail-fast, cleanup verified).
+All regression scripts: PASS.
+Recurrence auto-savings stable reference fix included in commit and CI-verified.
