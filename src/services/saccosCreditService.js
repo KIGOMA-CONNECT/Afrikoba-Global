@@ -732,7 +732,12 @@ async function decideApplication(actorId, saccosId, applicationId, decision) {
       );
       await activateGuarantees(client, saccosId, applicationId, loan.rows[0].id);
       if (cfg.autoDisburse) {
-        await disburseInClient({ client, saccos, loan: loan.rows[0], actorId });
+        const disburseResult = await disburseInClient({ client, saccos, loan: loan.rows[0], actorId });
+        if (disburseResult.dedup) {
+          // Already disbursed — rollback business state changes (loan already ACTIVE)
+          await client.query('ROLLBACK');
+          return { success: true, applicationId, decision, status: 'APPROVED', dedup: true };
+        }
       }
     }
     await client.query('COMMIT');
@@ -763,7 +768,11 @@ async function disburseLoan(actorId, saccosId, loanId) {
     const loan = loanRes.rows[0];
     if (loan.status !== 'PENDING') throw createAppError('SACCOS_LOAN_NOT_DISBURSABLE');
 
-    await disburseInClient({ client, saccos, loan, actorId });
+    const disburseResult = await disburseInClient({ client, saccos, loan, actorId });
+    if (disburseResult.dedup) {
+      await client.query('ROLLBACK');
+      return { success: true, loanId, status: 'ACTIVE', dedup: true };
+    }
     await client.query('COMMIT');
     await logAudit(actorId, 'SACCOS_LOAN_DISBURSED', { referenceId: saccosId, details: { loanId } }).catch(() => {});
     return { success: true, loanId, status: 'ACTIVE' };

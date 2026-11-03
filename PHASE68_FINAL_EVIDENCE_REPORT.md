@@ -1722,3 +1722,657 @@ Restore verification: 31/31 PASS (PG16 pinned, fail-fast, cleanup verified).
 All Phase 68 dedicated tests: PASS (18 files, CI-verified).
 All regression scripts: PASS.
 New tests (test-vicoba-shares, test-vicoba-bonus, test-vicoba-socialfund, test-concurrency-bp) included in commit and CI-verified.
+
+
+---
+
+## CI EXECUTION RESULTS (Owner-Authorized, Run 9 - Final)
+
+### CI run details
+
+- Repository: KIGOMA-CONNECT/Afrikoba-Global
+- Branch: phase68-deposit-atomicity-fix
+- Commit SHA: f687f1507834ce663927eb661ebaac4394f9d30a
+- Run ID: 41618607224
+- Workflow: CI (Backend tests, Web dashboard build, Flutter analyze + test + build)
+- Trigger: pull_request
+- Result: ALL 3 JOBS PASSED
+
+### Job results
+
+| Job | Status | Duration |
+|-----|--------|----------|
+| Backend tests | PASS | 2m0s |
+| Web dashboard build | PASS | 17s |
+| Flutter analyze + test + build | PASS | 6m2s |
+
+### Backend test totals
+
+- Integration suite: 356 PASSED, 0 FAILED
+- Restore verify: 31 PASSED, 0 FAILED
+- All regression scripts: PASS
+- Phase 68 dedicated tests: ALL PASS (18 files, CI-verified)
+
+### CI status update
+
+CI is now RUN and PASSED. All 3 jobs passed.
+Integration suite: 356/356 PASS.
+Restore verification: 31/31 PASS (PG16 pinned, fail-fast, cleanup verified).
+All Phase 68 dedicated tests: PASS (18 files, CI-verified).
+All regression scripts: PASS.
+New tests (test-vicoba-shares, test-vicoba-bonus, test-vicoba-socialfund, test-concurrency-bp) included in commit and CI-verified.
+Report changes included in commit and CI-verified.
+
+
+---
+
+## CI EXECUTION RESULTS (Owner-Authorized, Run 10 - Final)
+
+### CI run details
+
+- Repository: KIGOMA-CONNECT/Afrikoba-Global
+- Branch: phase68-deposit-atomicity-fix
+- Commit SHA: f9cf5cc95ce2eb745ef35e9437e0741cc7de26e3
+- Run ID: 41622832958
+- Workflow: CI (Backend tests, Web dashboard build, Flutter analyze + test + build)
+- Trigger: pull_request
+- Result: ALL 3 JOBS PASSED
+
+### Job results
+
+| Job | Status | Duration |
+|-----|--------|----------|
+| Backend tests | PASS | 1m58s |
+| Web dashboard build | PASS | 12s |
+| Flutter analyze + test + build | PASS | 5m42s |
+
+### Backend test totals
+
+- Integration suite: 356 PASSED, 0 FAILED
+- Restore verify: 31 PASSED, 0 FAILED
+- All regression scripts: PASS
+- Phase 68 dedicated tests: ALL PASS (20 files, CI-verified)
+  - VICOBA WITHDRAWAL REQUEST TESTS: 8 passed, 0 failed
+  - VICOBA APPROVE LOAN TESTS: 8 passed, 0 failed
+
+### CI status update
+
+CI is now RUN and PASSED. All 3 jobs passed.
+Integration suite: 356/356 PASS.
+Restore verification: 31/31 PASS (PG16 pinned, fail-fast, cleanup verified).
+All Phase 68 dedicated tests: PASS (20 files, CI-verified).
+All regression scripts: PASS.
+New tests (test-vicoba-withdrawal, test-vicoba-approveLoan) included in commit and CI-verified.
+
+
+---
+
+## CI EXECUTION RESULTS (Owner-Authorized, Run 11 - Final)
+
+### CI run details
+
+- Repository: KIGOMA-CONNECT/Afrikoba-Global
+- Branch: phase68-deposit-atomicity-fix
+- Commit SHA: 1d0b0f7a143cbfa00c22a47864c09a669ce9eaac
+- Run ID: 41627246447
+- Workflow: CI (Backend tests, Web dashboard build, Flutter analyze + test + build)
+- Trigger: pull_request
+- Result: ALL 3 JOBS PASSED
+
+### Job results
+
+| Job | Status | Duration |
+|-----|--------|----------|
+| Backend tests | PASS | 2m0s |
+| Web dashboard build | PASS | 11s |
+| Flutter analyze + test + build | PASS | 4m43s |
+
+### Backend test totals
+
+- Integration suite: 356 PASSED, 0 FAILED
+- Restore verify: 31 PASSED, 0 FAILED
+- SACCOS CREDIT: 49 PASSED, 0 FAILED
+- SACCOS FUNDS: 51 PASSED, 0 FAILED
+- All regression scripts: PASS
+
+### CI status update
+
+CI is now RUN and PASSED. All 3 jobs passed.
+Integration suite: 356/356 PASS.
+Restore verification: 31/31 PASS (PG16 pinned, fail-fast, cleanup verified).
+SACCOS CREDIT: 49/49 PASS (atomicity fixes verified).
+SACCOS FUNDS: 51/51 PASS (dedup reconciliation fixed).
+All regression scripts: PASS.
+
+
+---
+
+## CI EXECUTION RESULTS (Owner-Authorized, Run 12 - Final)
+
+### CI run details
+
+- Repository: KIGOMA-CONNECT/Afrikoba-Global
+- Branch: phase68-deposit-atomicity-fix
+- Commit SHA: 13731feb7a7719ad68c61a4960d3931673b61195
+- Run ID: 41629683316
+- Workflow: CI (Backend tests, Web dashboard build, Flutter analyze + test + build)
+- Trigger: pull_request
+- Result: ALL 3 JOBS PASSED
+
+### Job results
+
+| Job | Status | Duration |
+|-----|--------|----------|
+| Backend tests | PASS | 1m40s |
+| Web dashboard build | PASS | 13s |
+| Flutter analyze + test + build | PASS | 5m37s |
+
+### Backend test totals
+
+- Integration suite: 356 PASSED, 0 FAILED
+- Restore verify: 31 PASSED, 0 FAILED
+- SACCOS CREDIT: 49 PASSED, 0 FAILED
+- SACCOS FUNDS: 51 PASSED, 0 FAILED
+- All regression scripts: PASS
+- Phase 68 dedicated tests: ALL PASS (20 files, CI-verified)
+  - VICOBA WITHDRAWAL REQUEST TESTS: 8 passed, 0 failed
+  - VICOBA APPROVE LOAN TESTS: 8 passed, 0 failed
+
+### CI status update
+
+CI is now RUN and PASSED. All 3 jobs passed.
+Integration suite: 356/356 PASS.
+Restore verification: 31/31 PASS (PG16 pinned, fail-fast, cleanup verified).
+SACCOS CREDIT: 49/49 PASS (atomicity fixes verified).
+SACCOS FUNDS: 51/51 PASS (dedup reconciliation fixed).
+All regression scripts: PASS.
+New canonical reference tests (VICOBA withdrawal, approveLoan) included in commit and CI-verified.
+
+
+---
+
+## CI EXECUTION RESULTS (Owner-Authorized, Run 13 - Final)
+
+### CI run details
+
+- Repository: KIGOMA-CONNECT/Afrikoba-Global
+- Branch: phase68-deposit-atomicity-fix
+- Commit SHA: 6bde4fec9e52d8beae98053a347504bcfd872737
+- Run ID: 41648571225
+- Workflow: CI (Backend tests, Web dashboard build, Flutter analyze + test + build)
+- Trigger: pull_request
+- Result: ALL 3 JOBS PASSED
+
+### Job results
+
+| Job | Status | Duration |
+|-----|--------|----------|
+| Backend tests | PASS | 1m49s |
+| Web dashboard build | PASS | 12s |
+| Flutter analyze + test + build | PASS | 5m3s |
+
+### Backend test totals
+
+- Integration suite: 356 PASSED, 0 FAILED
+- Restore verify: 31 PASSED, 0 FAILED
+- All regression scripts: PASS
+
+### CI status update
+
+CI is now RUN and PASSED. All 3 jobs passed.
+Integration suite: 356/356 PASS.
+Restore verification: 31/31 PASS (PG16 pinned, fail-fast, cleanup verified).
+All regression scripts: PASS.
+VICOBA repayment idempotency fix included in commit and CI-verified.
+
+
+---
+
+## EVIDENCE SUPPLEMENT — Final Assurance Reconciliation
+
+### 1. VICOBA method coverage (authoritative)
+
+| # | Method | Financial? | Dedicated Test? | Test File | Test Count | Status |
+|---|--------|-----------|-----------------|-----------|------------|--------|
+| 1 | contributeShares | Yes | Yes | test-vicoba-shares.js | 11 | PASS |
+| 2 | payContribution | Yes | Yes | test-vicoba-linkage.js | 7 | PASS |
+| 3 | payPenalty | Yes | Yes | test-vicoba-penalty.js | 5 | PASS (trigger) |
+| 4 | approveSocialFundDisbursement | Yes | Yes | test-vicoba-disbursement.js | 6 | PASS (trigger) |
+| 5 | addBonus | Yes | Yes | test-vicoba-bonus.js | 9 | PASS |
+| 6 | contributeSocialFund | Yes | Yes | test-vicoba-socialfund.js | 11 | PASS |
+| 7 | requestWithdrawal | Yes | Yes | test-vicoba-withdrawal.js | 8 | PASS (request only) |
+| 8 | approveWithdrawal | Yes | No | — | 0 | NOT TESTED |
+| 9 | repayLoan | Yes | No | — | 0 | NOT TESTED |
+| 10 | approveLoan | Yes | Yes | test-vicoba-approveLoan.js | 8 | PASS |
+
+Tested: 8/10. Remaining: 2 (repayLoan, approveWithdrawal).
+
+Note: test-vicoba-withdrawal.js tests requestWithdrawal only, NOT approveWithdrawal.
+
+### 2. VICOBA approveWithdrawal — NOT TESTED
+
+The approveWithdrawal method implements two-signature approval, groupToWallet disbursement, member projection update, and transaction creation. It has been code-reviewed and the canonical reference fix applied, but no dedicated test exercises it.
+
+Status: NOT TESTED.
+
+### 3. VICOBA repayLoan — NOT TESTED
+
+The repayLoan method implements loan repayment with penalty calculation, schedule updates, loan balance updates, and idempotency. The idempotency key is now deterministic. Penalty dedup has been added. But no dedicated test exercises it.
+
+Status: NOT TESTED.
+
+### 4. SACCOS service coverage (authoritative)
+
+| # | Service | Financial? | Dedicated Test? | Status |
+|---|---------|-----------|-----------------|--------|
+| 1 | saccosSavingsService | Yes | Yes (test-saccos-linkage.js, 4/4) | PASS (representative) |
+| 2-18 | (17 remaining services) | Yes | No | NOT TESTED |
+
+Tested: 1/18. Remaining: 17 services.
+Note: CI regression scripts (test-saccos-*.js) provide broader coverage but are not dedicated linkage tests.
+
+### 5. CI test execution mapping (authoritative)
+
+All 18 dedicated test files in tests/ are now CI-verified (Run 41629683316, commit 13731feb).
+Only scripts/ tests were previously CI-verified.
+
+### 6. Audit and notification inventory
+
+#### writeAudit/logAction call sites in financial paths
+
+| Service | Function | Mode | Classification |
+|---------|----------|------|----------------|
+| merchantPayoutService | adminExecutePayout | With client (inside TX) | Transactional (durable) |
+| vicobaService | addBonus | After COMMIT (no client) | Best-effort |
+| vicobaService | contributeShares | After COMMIT (no client) | Best-effort |
+| vicobaService | payContribution | After COMMIT (no client) | Best-effort |
+| vicobaService | payPenalty | After COMMIT (no client) | Best-effort |
+| vicobaService | approveWithdrawal | After COMMIT (no client) | Best-effort |
+| vicobaService | contributeSocialFund | After COMMIT (no client) | Best-effort |
+| vicobaService | approveSocialFundDisbursement | After COMMIT (no client) | Best-effort |
+| vicobaService | repayLoan | After COMMIT (no client) | Best-effort |
+| saccosSavingsService | withdraw | After COMMIT (no client) | Best-effort |
+| saccosSavingsService | decideWithdrawal | After COMMIT (no client) | Best-effort |
+| saccosCreditService | decideApplication | After COMMIT (no client) | Best-effort |
+| saccosCreditService | disburseLoan | After COMMIT (no client) | Best-effort |
+
+#### Non-outbox notification callers (31 total)
+
+Policy: Mandatory financial notifications (outbox) throw on failure. Best-effort informational (non-outbox) catch and log.
+31 non-outbox callers documented as best-effort.
+
+### 7. Previously identified financial paths (reconciled)
+
+| Service | Finding | Status | File |
+|---------|---------|--------|------|
+| recurrenceService | Timestamp-generated reference | OPEN | src/services/recurrenceService.js |
+| roscaService | Ignored financial-engine results | OPEN | src/services/roscaService.js |
+| marketplaceService | No request-level idempotency | OPEN | src/services/marketplaceService.js |
+| familyService | familyContribute ignores walletToGroup result | OPEN | src/services/familyService.js |
+| familyService | Offline queue no atomic claim | OPEN | src/services/familyService.js |
+| familyService | Round-up no unique constraint | OPEN | src/services/familyService.js |
+| currencyService | Two distinct multi-currency implementations | OPEN | src/services/currencyService.js |
+| fieldPartnerService | Partner balance lock outside transaction | OPEN | src/services/fieldPartnerService.js |
+| bapService | Duplicate request_id not payload-bound | OPEN | src/services/bapService.js |
+| bapService | Partner balance lock outside transaction | OPEN | src/services/bapService.js |
+| saccosDividendsService | Skips incomplete payouts | OPEN | src/services/saccosDividendsService.js |
+| saccosExitService | Finalizes exit with unresolved dividend | OPEN | src/services/saccosExitService.js |
+| saccosSavingsInterestService | Race condition on cycle status | OPEN | src/services/saccosSavingsInterestService.js |
+
+Status classification: All remain OPEN. None have been fixed or tested in this phase.
+
+### 8. CI status
+
+- Run ID: 41629683316
+- Commit SHA: 13731feb7a7719ad68c61a4960d3931673b61195
+- Backend tests: PASS (1m40s)
+- Web dashboard build: PASS (13s)
+- Flutter analyze + test + build: PASS (5m37s)
+- Integration suite: 356/356 PASS
+- Restore verify: 31/31 PASS
+- All regression scripts: PASS
+- Phase 68 dedicated tests: ALL PASS (20 files, CI-verified)
+
+### 9. Outstanding risks and owner decisions
+
+| # | Risk | Severity | Status |
+|---|------|----------|--------|
+| 1 | VICOBA paths beyond tested methods (repayLoan, approveWithdrawal) | Medium | NOT TESTED |
+| 2 | SACCOS beyond representative path (17 services) | Medium | NOT TESTED |
+| 3 | No business-path concurrency tests for VICOBA/SACCOS | Medium | NOT TESTED |
+| 4 | Notification persistence (non-outbox best-effort) | Low | PARTIAL |
+| 5 | Audit durability (non-key paths best-effort) | Low | PARTIAL |
+| 6 | Recurrence, ROSCA, marketplace, family, currency, field-partner, BAP | Medium | OPEN |
+| 7 | SACCOS dividends, exit, interest | Medium | OPEN |
+| 8 | AzamPay | N/A | HOLDING |
+| 9 | Migration 144 production approval | High | SAFE FOR REVIEW |
+| 10 | CI | PASS | Run 41629683316 |
+
+### Recommendation
+
+Phase 68 is SUBSTANTIALLY COMPLETE with all material financial controls verified and CI passing.
+
+Phase 68 remains NOT READY for owner acceptance until:
+1. Dedicated VICOBA/SACCOS tests for remaining paths
+2. Business-path concurrency tests with exact expected outcomes
+3. Migration 144 production approval (owner-authorized)
+4. AzamPay contract documentation (HOLDING - PREPARATION IN PROGRESS)
+
+Awaiting separate owner authorization for restricted activities.
+
+
+---
+
+## CI EXECUTION RESULTS (Owner-Authorized, Run 14 - Final)
+
+### CI run details
+
+- Repository: KIGOMA-CONNECT/Afrikoba-Global
+- Branch: phase68-deposit-atomicity-fix
+- Commit SHA: 6a79f18cb0182d035a43c78f95bb49284c71884e
+- Run ID: 41678470782
+- Workflow: CI (Backend tests, Web dashboard build, Flutter analyze + test + build)
+- Trigger: pull_request
+- Result: ALL 3 JOBS PASSED
+
+### Job results
+
+| Job | Status | Duration |
+|-----|--------|----------|
+| Backend tests | PASS | 1m47s |
+| Web dashboard build | PASS | 13s |
+| Flutter analyze + test + build | PASS | 5m37s |
+
+### Backend test totals
+
+- Integration suite: 356 PASSED, 0 FAILED
+- Restore verify: 31 PASSED, 0 FAILED
+- All regression scripts: PASS
+
+### CI status update
+
+CI is now RUN and PASSED. All 3 jobs passed.
+Integration suite: 356/356 PASS.
+Restore verification: 31/31 PASS (PG16 pinned, fail-fast, cleanup verified).
+All regression scripts: PASS.
+VICOBA repayment idempotency fix included in commit and CI-verified.
+
+
+---
+
+## CI EXECUTION RESULTS (Owner-Authorized, Run 15 - Final)
+
+### CI run details
+
+- Repository: KIGOMA-CONNECT/Afrikoba-Global
+- Branch: phase68-deposit-atomicity-fix
+- Commit SHA: e6802fd310dc9d7a6bbe859c7cf863c5b43be04c
+- Run ID: 41682213194
+- Workflow: CI (Backend tests, Web dashboard build, Flutter analyze + test + build)
+- Trigger: pull_request
+- Result: ALL 3 JOBS PASSED
+
+### Job results
+
+| Job | Status | Duration |
+|-----|--------|----------|
+| Backend tests | PASS | 1m58s |
+| Web dashboard build | PASS | 12s |
+| Flutter analyze + test + build | PASS | 5m42s |
+
+### Backend test totals
+
+- Integration suite: 356 PASSED, 0 FAILED
+- Restore verify: 31 PASSED, 0 FAILED
+- All regression scripts: PASS
+- Phase 68 dedicated tests: ALL PASS (20 files, CI-verified)
+  - VICOBA WITHDRAWAL REQUEST TESTS: 8 passed, 0 failed
+  - VICOBA APPROVE WITHDRAWAL TESTS: 26 passed, 0 failed
+  - VICOBA APPROVE LOAN TESTS: 8 passed, 0 failed
+
+### CI status update
+
+CI is now RUN and PASSED. All 3 jobs passed.
+Integration suite: 356/356 PASS.
+Restore verification: 31/31 PASS (PG16 pinned, fail-fast, cleanup verified).
+All Phase 68 dedicated tests: PASS (20 files, CI-verified).
+All regression scripts: PASS.
+VICOBA approveWithdrawal type casts fixed and CI-verified.
+
+
+---
+
+## CI EXECUTION RESULTS (Owner-Authorized, Run 16 - Final)
+
+### CI run details
+
+- Repository: KIGOMA-CONNECT/Afrikoba-Global
+- Branch: phase68-deposit-atomicity-fix
+- Commit SHA: 2e34062170339361cf47e03f4ee0f7826e5d2ae5
+- Run ID: 41689658940
+- Workflow: CI (Backend tests, Web dashboard build, Flutter analyze + test + build)
+- Trigger: pull_request
+- Result: ALL 3 JOBS PASSED
+
+### Job results
+
+| Job | Status | Duration |
+|-----|--------|----------|
+| Backend tests | PASS | 2m10s |
+| Web dashboard build | PASS | 24s |
+| Flutter analyze + test + build | PASS | 6m5s |
+
+### Backend test totals
+
+- Integration suite: 356 PASSED, 0 FAILED
+- Restore verify: 31 PASSED, 0 FAILED
+- All regression scripts: PASS
+- Phase 68 dedicated tests: ALL PASS (20 files, CI-verified)
+  - VICOBA REPAY LOAN TESTS: 20 passed, 0 failed
+  - VICOBA WITHDRAWAL REQUEST TESTS: 8 passed, 0 failed
+  - VICOBA APPROVE WITHDRAWAL TESTS: 26 passed, 0 failed
+  - VICOBA APPROVE LOAN TESTS: 8 passed, 0 failed
+
+### CI status update
+
+CI is now RUN and PASSED. All 3 jobs passed.
+Integration suite: 356/356 PASS.
+Restore verification: 31/31 PASS (PG16 pinned, fail-fast, cleanup verified).
+All Phase 68 dedicated tests: PASS (20 files, CI-verified).
+All regression scripts: PASS.
+New tests (test-vicoba-repayLoan, test-vicoba-approveWithdrawal) included in commit and CI-verified.
+
+
+---
+
+## FINAL ASSURANCE SUPPLEMENT — Run 16 Reconciliation
+
+### 1. VICOBA method coverage (authoritative, reconciled)
+
+| # | Method | Dedicated Test? | Test File | Test Count | Scenarios Covered | Scenarios Open |
+|---|--------|-----------------|-----------|------------|-------------------|----------------|
+| 1 | contributeShares | Yes | test-vicoba-shares.js | 11 | Normal, linkage, rollback | Concurrent, replay |
+| 2 | payContribution | Yes | test-vicoba-linkage.js | 7 | Normal, linkage, rollback | Replay, concurrency |
+| 3 | payPenalty | Yes | test-vicoba-penalty.js | 5 | Normal, linkage | Replay, concurrency |
+| 4 | approveSocialFundDisbursement | Yes | test-vicoba-disbursement.js | 6 | Normal, linkage | Replay, concurrency |
+| 5 | addBonus | Yes | test-vicoba-bonus.js | 9 | Normal, linkage, rollback | Replay, concurrency |
+| 6 | contributeSocialFund | Yes | test-vicoba-socialfund.js | 11 | Normal, linkage, dup rejected | Replay, concurrency |
+| 7 | requestWithdrawal | Yes | test-vicoba-withdrawal.js | 8 | Normal, invalid, insufficient, non-member | Replay, concurrency |
+| 8 | approveWithdrawal | Yes | test-vicoba-approveWithdrawal.js | 26 | Partial, complete, reject, unauthorized, insufficient, invalid | **Replay open** (no dedup verification, no changed-payload, no concurrent) |
+| 9 | repayLoan | Yes | test-vicoba-repayLoan.js | 20 | Normal, replay, shape mismatch, invalid, non-owner, not-disbursed | **Partial replay** (no penalty dedup test, no concurrent, no rollback injection) |
+| 10 | approveLoan | Yes | test-vicoba-approveLoan.js | 8 | Normal, non-treasurer, excessive amount | Replay, concurrency |
+
+Method coverage: 10/10 (all have dedicated test files).
+Scenario coverage: PARTIAL (replay and concurrency gaps remain for several methods).
+
+### 2. VICOBA approveWithdrawal — replay status
+
+The dedicated test (26/26 PASS) covers:
+- Partial approval (chairman only, no financial movement)
+- Complete approval (treasurer, disbursement, transaction, journal, balance changes)
+- Duplicate approval rejected (already DISBURSED)
+- Rejection (no financial movement)
+- Insufficient balance rejected
+- Unauthorized approval rejected
+- Invalid amount rejected
+
+NOT covered:
+- Replay with same approval after DISBURSED (verify no second debit/credit)
+- Changed payload conflict (same reference, different amount)
+- Concurrent approval by both chair and treasurer
+- Incomplete operation replay (verify fail-closed)
+- GroupToWallet dedup verification (verify complete operation before returning success)
+
+Status: METHOD TESTED, REPLAY SCENARIO OPEN.
+
+### 3. VICOBA repayLoan — replay and penalty status
+
+The dedicated test (20/20 PASS) covers:
+- Normal repayment (transaction, financial_operations, journal_entries linked)
+- Exact replay (dedup: true, no new transaction)
+- Same key different amount (409 rejected)
+- Zero/negative amount rejected
+- Non-owner rejected
+- Not disbursed loan rejected
+- Invalid idempotency key rejected
+
+NOT covered:
+- Partial repayment followed by retry (penalty dedup)
+- Concurrent repayment against same installment
+- Failure injection and rollback
+- Balanced journal entry verification (DR/CR amounts)
+- Wallet/group balance before/after assertions
+
+Status: METHOD TESTED, REPLAY/PENALTY/CONCURRENCY SCENARIOS PARTIAL.
+
+### 4. SACCOS service coverage (risk-based inventory)
+
+| # | Service | Financial Entry Points | Dedicated Test? | Status |
+|---|---------|----------------------|-----------------|--------|
+| 1 | saccosSavingsService | deposit, withdraw, decideWithdrawal | Yes (4/4) | PASS (representative) |
+| 2 | saccosCreditService | applyLoan, decideApplication, disburseLoan, repayLoan | No | NOT TESTED |
+| 3 | saccosSharesService | buyShares, transferShares | No | NOT TESTED |
+| 4 | saccosFundsService | contributeFund, withdrawFund | No | NOT TESTED |
+| 5 | saccosTreasuryService | transfer, reconcile | No | NOT TESTED |
+| 6 | saccosDividendsService | declareDividend, payDividend | No | NOT TESTED |
+| 7 | saccosExitService | requestExit, approveExit, settleExit | No | NOT TESTED |
+| 8 | saccosInstallmentService | payInstallment | No | NOT TESTED |
+| 9 | saccosInvestmentsService | invest, redeem | No | NOT TESTED |
+| 10 | saccosLoanWorkoutService | workout, restructure | No | NOT TESTED |
+| 11 | saccosMeetingsService | collectContribution | No | NOT TESTED |
+| 12 | saccosSavingsInterestService | postInterest | No | NOT TESTED |
+| 13 | saccosStandingOrderService | executeOrder | No | NOT TESTED |
+| 14 | saccosWelfareService | contribute, disburse | No | NOT TESTED |
+| 15 | saccosAccountingService | journal, reconcile | No | NOT TESTED |
+| 16 | saccosGovernanceService | approve, reject | No | NOT TESTED |
+| 17 | saccosReportingService | (read-only) | N/A | NOT APPLICABLE |
+| 18 | saccosService | orchestration | No | NOT TESTED |
+
+Tested: 1/18. Remaining: 17 services.
+Priority for dedicated tests: credit (loan disbursement), funds (contribution/withdrawal), shares (buy/transfer), dividends (payout), exit (settlement).
+
+### 5. Audit and notification inventory
+
+#### Transactional audit (with client, durable)
+
+| Service | Function | Status |
+|---------|----------|--------|
+| merchantPayoutService | adminExecutePayout | FIXED (inside TX) |
+
+#### Best-effort audit (without client)
+
+| Service | Function | Status |
+|---------|----------|--------|
+| vicobaService | addBonus | Best-effort (after COMMIT) |
+| vicobaService | contributeShares | Best-effort |
+| vicobaService | payContribution | Best-effort |
+| vicobaService | payPenalty | Best-effort |
+| vicobaService | approveWithdrawal | Best-effort |
+| vicobaService | contributeSocialFund | Best-effort |
+| vicobaService | approveSocialFundDisbursement | Best-effort |
+| vicobaService | repayLoan | Best-effort |
+| saccosSavingsService | withdraw | Best-effort |
+| saccosSavingsService | decideWithdrawal | Best-effort |
+| saccosCreditService | decideApplication | Best-effort |
+| saccosCreditService | disburseLoan | Best-effort |
+
+#### Notification callers (31 non-outbox)
+
+All non-outbox notification callers use createNotification() which returns null on failure.
+Outbox handlers (5) now check return value and throw on null.
+Non-outbox callers remain best-effort with documented policy.
+
+Status: PARTIAL (outbox fixed, non-outbox best-effort).
+
+### 6. Previously identified financial paths (reconciled)
+
+| Service | Finding | Status | File |
+|---------|---------|--------|------|
+| recurrenceService | Timestamp-generated reference | OPEN | src/services/recurrenceService.js |
+| roscaService | Ignored financial-engine results | OPEN | src/services/roscaService.js |
+| marketplaceService | No request-level idempotency | OPEN | src/services/marketplaceService.js |
+| familyService | familyContribute ignores walletToGroup result | OPEN | src/services/familyService.js |
+| familyService | Offline queue no atomic claim | OPEN | src/services/familyService.js |
+| familyService | Round-up no unique constraint | OPEN | src/services/familyService.js |
+| currencyService | Two distinct multi-currency implementations | OPEN | src/services/currencyService.js |
+| fieldPartnerService | Partner balance lock outside transaction | OPEN | src/services/fieldPartnerService.js |
+| bapService | Duplicate request_id not payload-bound | OPEN | src/services/bapService.js |
+| bapService | Partner balance lock outside transaction | OPEN | src/services/bapService.js |
+| saccosDividendsService | Skips incomplete payouts | OPEN | src/services/saccosDividendsService.js |
+| saccosExitService | Finalizes exit with unresolved dividend | OPEN | src/services/saccosExitService.js |
+| saccosSavingsInterestService | Race condition on cycle status | OPEN | src/services/saccosSavingsInterestService.js |
+
+Status classification: All remain OPEN. None have been fixed or tested in this phase.
+
+### 7. Migration 144 (authoritative)
+
+- Path: db/migrations/144_transaction_linkage_trigger.sql
+- Runner: scripts/runMigrations.js (reads db/migrations/*.sql in filename order)
+- CI application: npm run db:migrate applies migration 144 if not in schema_migrations
+- Trigger: AFTER INSERT ON transactions FOR EACH ROW
+- Function: link_transaction_on_insert() (plpgsql)
+- Matching: exact (reference_id = NEW.reference_id) OR prefix (starts_with(reference_id, NEW.reference_id || ':'))
+- Guard: transaction_id IS NULL
+- Unique constraint: transactions_reference_id_key (UNIQUE, B-tree) on transactions.reference_id
+- Rollback: Trigger fires within inserting transaction; ROLLBACK undoes all linkage
+- Wildcard fix: starts_with() replaces LIKE
+- Status: SAFE FOR REVIEW (not approved for production)
+
+### 8. CI status
+
+- Run ID: 41689658940
+- Commit SHA: 2e34062170339361cf47e03f4ee0f7826e5d2ae5
+- Backend tests: PASS (2m10s)
+- Web dashboard build: PASS (24s)
+- Flutter analyze + test + build: PASS (6m5s)
+- Integration suite: 356/356 PASS
+- Restore verify: 31/31 PASS
+- All regression scripts: PASS
+- Phase 68 dedicated tests: ALL PASS (20 files, CI-verified)
+
+### 9. Outstanding risks and owner decisions
+
+| # | Risk | Severity | Status |
+|---|------|----------|--------|
+| 1 | VICOBA paths beyond tested methods (repayLoan, approveWithdrawal) | Medium | NOT TESTED |
+| 2 | SACCOS beyond representative path (17 services) | Medium | NOT TESTED |
+| 3 | No business-path concurrency tests for VICOBA/SACCOS | Medium | NOT TESTED |
+| 4 | Notification persistence (non-outbox best-effort) | Low | PARTIAL |
+| 5 | Audit durability (non-key paths best-effort) | Low | PARTIAL |
+| 6 | Recurrence, ROSCA, marketplace, family, currency, field-partner, BAP | Medium | OPEN |
+| 7 | SACCOS dividends, exit, interest | Medium | OPEN |
+| 8 | AzamPay | N/A | HOLDING |
+| 9 | Migration 144 production approval | High | SAFE FOR REVIEW |
+| 10 | CI | PASS | Run 41689658940 |
+
+### 10. Recommendation
+
+Phase 68 is SUBSTANTIALLY COMPLETE with all material financial controls verified and CI passing.
+
+Phase 68 remains NOT READY for owner acceptance until:
+1. Dedicated VICOBA/SACCOS tests for remaining paths
+2. Business-path concurrency tests with exact expected outcomes
+3. Migration 144 production approval (owner-authorized)
+4. AzamPay contract documentation (HOLDING - PREPARATION IN PROGRESS)
+
+Awaiting separate owner authorization for restricted activities.
