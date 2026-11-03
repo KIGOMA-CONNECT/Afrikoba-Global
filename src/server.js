@@ -114,21 +114,24 @@ const app = express();
 let _outboxRetryCount = 0;
 outbox.registerHandler('MERCHANT_PAYOUT_EXECUTED', async ({ payload }) => {
   const m = (await pool.query('SELECT user_id FROM merchants WHERE id = $1', [payload.merchantId])).rows[0];
-  await createNotification(m ? m.user_id : payload.userId, {
+  const n1 = await createNotification(m ? m.user_id : payload.userId, {
     title: 'Malipo ya mfanyabiashara yametumwa',
     body: payload.reference ? `Rejea: ${payload.reference}` : 'Malipo yametumwa.',
     type: 'FRAUD_TRANSACTION',
-  }).catch(() => {});
+  });
+  if (n1 === null) throw new Error('Notification persistence failed for MERCHANT_PAYOUT_EXECUTED');
 });
 outbox.registerHandler('VICOBA_LOAN_APPROVED', async ({ payload }) => {
-  await createNotification(payload.applicantUserId, {
+  const n2 = await createNotification(payload.applicantUserId, {
     title: 'Mkopo wa VICOBA umetolewa',
     body: `Mkopo wa TZS ${payload.amount} umewekwa kwenye wallet yako.`,
     type: 'TRANSACTION',
-  }).catch(() => {});
+  });
+  if (n2 === null) throw new Error('Notification persistence failed for VICOBA_LOAN_APPROVED');
 });
 outbox.registerHandler('OUTBOX_TEST', async ({ payload }) => {
-  await createNotification(payload.userId, { title: 'Outbox heartbeat', body: 'delivered' });
+  const n3 = await createNotification(payload.userId, { title: 'Outbox heartbeat', body: 'delivered' });
+  if (n3 === null) throw new Error('Notification persistence failed for OUTBOX_TEST');
 });
 outbox.registerHandler('OUTBOX_RETRY', async () => {
   _outboxRetryCount += 1;
@@ -139,26 +142,28 @@ outbox.registerHandler('PROJECT_REVENUE_PROCESSED', async ({ payload }) => {
   const p = await pool.query('SELECT id, owner_user_id, name FROM projects WHERE id = $1', [projectId]);
   if (p.rows.length === 0) return;
   const summary = allocations.map((a) => `${a.step}: ${a.amount}`).join(', ');
-  await createNotification(p.rows[0].owner_user_id, {
+  const n4 = await createNotification(p.rows[0].owner_user_id, {
     title: 'Mapato na mgawanyo kwenye waterfall',
     body: `Mradi "${p.rows[0].name}": TZS ${amount} yamegawanywa (${summary}).`,
     type: 'PROJECT',
     entityType: 'PROJECT',
     entityId: projectId,
-  }).catch(() => {});
+  });
+  if (n4 === null) throw new Error('Notification persistence failed for PROJECT_REVENUE_PROCESSED');
 });
 outbox.registerHandler('PROJECT_DIVIDEND_PAID', async ({ payload }) => {
   const { projectId, name, reference, paid = [] } = payload;
   const p = await pool.query('SELECT owner_user_id FROM projects WHERE id = $1', [projectId]);
   if (p.rows.length === 0) return;
   const total = paid.reduce((s, x) => s + Number(x.amount || 0), 0);
-  await createNotification(p.rows[0].owner_user_id, {
+  const n5 = await createNotification(p.rows[0].owner_user_id, {
     title: 'Mgawanyo wa faida umetolewa',
     body: `Wawekezaji ${paid.length} wa mradi "${name}" wamelipwa jumla ya TZS ${total}. Rejea: ${reference}`,
     type: 'PROJECT',
     entityType: 'PROJECT',
     entityId: projectId,
-  }).catch(() => {});
+  });
+  if (n5 === null) throw new Error('Notification persistence failed for PROJECT_DIVIDEND_PAID');
 });
 
 // H5: Initialize database security settings

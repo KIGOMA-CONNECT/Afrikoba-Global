@@ -30,7 +30,12 @@ async function enqueueOutbox({ eventType, aggregateId = null, payload = {}, refe
   };
   const res = tx ? await tx.query(q) : await pool.query(q);
   const row = res.rows[0];
-  return { id: row ? row.id : null, queued: !!row, eventType, reference };
+  if (row) return { id: row.id, queued: true, eventType, reference };
+  const _ph = "$" + "1";
+  const _sql = "SELECT id, event_type, payload FROM outbox_events WHERE reference_id = " + _ph;
+  const ex = tx ? await tx.query(_sql, [reference]) : await pool.query(_sql, [reference]);
+  const existing = ex.rows[0] || null;
+  return { id: existing ? existing.id : null, queued: false, eventType, reference, existingEventType: existing ? existing.event_type : null, existingPayload: existing ? existing.payload : null };
 }
 
 function backoffDelayMs(attempts) {

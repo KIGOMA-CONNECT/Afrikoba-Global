@@ -505,12 +505,13 @@ async function processBulkBatch(batchId) {
         if (!recipient.rows.length) throw new Error('Mpokeaji hajapatikana');
         if (Number(sender.rows[0].wallet_balance) < Number(item.amount)) throw new Error('Salio halitoshi');
         const reference = generateReference('BP');
-        await client.query(
+        const txResult = await client.query(
           `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
-           VALUES ($1,$2,$3,0,$3,'SUCCESS','BULK_PAYMENT', $4)`,
+           VALUES ($1,$2,$3,0,$3,'SUCCESS','BULK_PAYMENT', $4)
+           RETURNING id`,
           [reference, b.user_id, item.amount, JSON.stringify({ recipient: item.recipient_phone, batch_id: batchId })]
         );
-        await fin.internalTransfer({ client, fromUserId: b.user_id, toUserId: recipient.rows[0].id, amount: Number(item.amount), reference: `NET:${item.id}:TR`, description: 'Bulk transfer' });
+        await fin.internalTransfer({ client, fromUserId: b.user_id, toUserId: recipient.rows[0].id, amount: Number(item.amount), reference: `NET:${item.id}:TR`, description: 'Bulk transfer', transactionId: txResult.rows[0].id });
         await client.query("UPDATE bulk_payment_items SET status = 'SUCCESS', transaction_id = (SELECT id FROM transactions WHERE reference_id = $1) WHERE id = $2", [reference, item.id]);
         success++;
       } catch (e) {

@@ -40,6 +40,7 @@ async function writeAudit({ userId, action, entityType, entityId, meta, req, cli
   } catch (err) {
     const logger = require('../utils/logger');
     logger.error('AUDIT_LOG_FAILURE', err.message, { action, userId });
+    if (client) throw err;
   }
 }
 

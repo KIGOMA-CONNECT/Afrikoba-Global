@@ -427,7 +427,7 @@ async function transferWallet(fromUserId, toPhoneNumber, amount, note) {
       [referenceId, fromUserId, amountNum, JSON.stringify({ to_user_id: to.id, note: note || null })]
     );
 
-    await fin.internalTransfer({ client, fromUserId: from.id, toUserId: to.id, amount: amountNum, reference: referenceId, description: note || 'Uhamisho wa wallet' });
+    await fin.internalTransfer({ client, fromUserId: from.id, toUserId: to.id, amount: amountNum, reference: referenceId, description: note || 'Uhamisho wa wallet', transactionId: txResult.rows[0].id });
     await client.query(
       `INSERT INTO wallet_ledger (transaction_id, reference_id, from_user_id, to_user_id, amount, description)
        VALUES ($1, $2, $3, $4, $5, $6)`,
@@ -473,6 +473,52 @@ function withdrawalReference(userId, idempotencyKey) {
   return `WD-${digest.slice(0, 32).toUpperCase()}`;
 }
 
+async function recordWithdrawalDispatchException(reference, transactionId, detail) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const lockKey = `${reference || ''}:WD_ACCEPTED_STATE_CONFLICT`;
+    await client.query(
+      'SELECT pg_advisory_xact_lock(0, hashtext($1))',
+      [lockKey]
+    );
+
+    const existing = await client.query(
+      `SELECT 1
+         FROM reconciliation_exceptions
+        WHERE reference_id IS NOT DISTINCT FROM $1
+          AND exception_type = 'WD_ACCEPTED_STATE_CONFLICT'
+        LIMIT 1`,
+      [reference]
+    );
+
+    if (existing.rows.length) {
+      await client.query('COMMIT');
+      return false;
+    }
+
+    await client.query(
+      `INSERT INTO reconciliation_exceptions
+         (exception_type, reference_id, transaction_id, detail)
+       VALUES ('WD_ACCEPTED_STATE_CONFLICT', $1, $2, $3::jsonb)`,
+      [reference, transactionId || null, JSON.stringify(detail || {})]
+    );
+
+    await client.query('COMMIT');
+    logger.warn(
+      'WALLET_WD',
+      `Accepted payout state conflict recorded for ${reference}; hold retained`
+    );
+    return true;
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 async function withdrawToMno(userId, amount, provider, idempotencyKey = null) {
   if (!config.azampay.enabled) {
     throw Object.assign(
@@ -481,8 +527,6 @@ async function withdrawToMno(userId, amount, provider, idempotencyKey = null) {
     );
   }
 
-  // Fail closed until the AzamPay payout contract is verified against official
-  // docs (Phase 68 D1). Checked before any hold or transaction is created.
   if (!config.azampay.payoutContractVerified) {
     throw Object.assign(
       new Error('Withdrawal kwenda MNO imezuiwa: payout contract haijathibitishwa.'),
@@ -490,134 +534,333 @@ async function withdrawToMno(userId, amount, provider, idempotencyKey = null) {
     );
   }
 
-  const amountNum = parseFloat(amount);
-  if (!amountNum || amountNum < 1000) {
+  const amountNum = Number(amount);
+  if (!Number.isFinite(amountNum) || amountNum < 1000) {
     throw Object.assign(new Error('Kiasi kidogo cha withdrawal ni TZS 1,000.'), { statusCode: 400 });
   }
 
-  // With a client Idempotency-Key the reference is derived from (user, key), so a
-  // concurrent or repeated request hits the UNIQUE reference in holdFunds and
-  // cannot create a second hold or a second dispatch.
+  if (!provider || typeof provider !== 'string') {
+    throw Object.assign(new Error('Chagua mtandao wa kupokea withdrawal.'), { statusCode: 400 });
+  }
+
   const referenceId = idempotencyKey
     ? withdrawalReference(userId, idempotencyKey)
     : generateReference('WD');
 
+  let txId;
+  let user;
+
+  // The unique transaction reference is the idempotency authority.
+  // Only the request that inserts the transaction is permitted to dispatch.
+  const client = await pool.connect();
   try {
+    await client.query('BEGIN');
+
+    const userRes = await client.query(
+      `SELECT id, phone_number, full_name
+         FROM users
+        WHERE id = $1
+        FOR UPDATE`,
+      [userId]
+    );
+
+    if (!userRes.rows.length) {
+      throw Object.assign(new Error('Mtumiaji hajapatikana.'), { statusCode: 404 });
+    }
+    user = userRes.rows[0];
+
+    const inserted = await client.query(
+      `INSERT INTO transactions
+         (reference_id, user_id, wallet_amount, commission, total_charged,
+          status, type, available_balance, locked_balance, meta)
+       VALUES ($1, $2, $3, 0, $3, 'PROCESSING', 'WITHDRAWAL', 0, $3, $4::jsonb)
+       ON CONFLICT (reference_id) DO NOTHING
+       RETURNING id`,
+      [
+        referenceId,
+        userId,
+        amountNum,
+        JSON.stringify({ dispatch: 'INTENT', provider }),
+      ]
+    );
+
+    if (!inserted.rows.length) {
+      // ON CONFLICT waits for a concurrent creator to commit or roll back.
+      // Under READ COMMITTED this next statement sees the committed winner.
+      const existing = await client.query(
+        `SELECT id, user_id, wallet_amount, type, status, failure_reason, meta
+           FROM transactions
+          WHERE reference_id = $1
+          FOR UPDATE`,
+        [referenceId]
+      );
+
+      if (!existing.rows.length) {
+        throw Object.assign(
+          new Error('Withdrawal idempotency record disappeared after reference conflict.'),
+          { statusCode: 409, code: 'WITHDRAWAL_IDEMPOTENCY_INTEGRITY_ERROR' }
+        );
+      }
+
+      const prior = existing.rows[0];
+      const sameShape =
+        Number(prior.user_id) === Number(userId) &&
+        prior.type === 'WITHDRAWAL' &&
+        Math.abs(Number(prior.wallet_amount) - amountNum) < 0.005 &&
+        String(prior.meta?.provider || '') === provider;
+
+      if (!sameShape) {
+        throw Object.assign(
+          new Error('Idempotency-Key tayari imetumika kwa ombi tofauti la withdrawal.'),
+          { statusCode: 409, code: 'WITHDRAWAL_IDEMPOTENCY_CONFLICT' }
+        );
+      }
+
+      await client.query('COMMIT');
+
+      if (prior.status === 'FAILED') {
+        return {
+          success: false,
+          referenceId,
+          message: prior.failure_reason || 'Withdrawal imeshindwa.',
+          status: 'FAILED',
+        };
+      }
+
+      return {
+        success: true,
+        referenceId,
+        message: 'Ombi hili tayari limepokelewa.',
+        status: prior.status || 'PROCESSING',
+      };
+    }
+
+    txId = inserted.rows[0].id;
+
     const held = await fin.holdFunds({
       userId,
       amount: amountNum,
       accountCode: 'CUSTOMER_WALLET',
       reference: referenceId,
       description: 'Withdrawal reservation',
+      client,
+      transactionId: txId,
     });
 
-    if (held.dedup) {
-      const existing = await pool.query(
-        `SELECT status, failure_reason FROM transactions WHERE reference_id = $1`, [referenceId]
+    // A newly inserted transaction must create a new HOLD. A replay here
+    // indicates inconsistent pre-existing financial state; never dispatch it.
+    const heldAmount = Number(held?.held);
+    const holdIsValid = Boolean(
+      held &&
+      held.success === true &&
+      held.replay !== true &&
+      held.dedup !== true &&
+      held.reference === referenceId &&
+      String(held.transactionId) === String(txId) &&
+      Number.isFinite(heldAmount) &&
+      Math.abs(heldAmount - amountNum) < 0.005
+    );
+
+    if (!holdIsValid) {
+      throw Object.assign(
+        new Error(`HOLD result failed exact reference, transaction or amount validation for ${referenceId}.`),
+        {
+          statusCode: 409,
+          code: 'WITHDRAWAL_HOLD_INTEGRITY_ERROR',
+          holdResult: held || null,
+        }
       );
-      if (existing.rows.length && existing.rows[0].status === 'FAILED') {
-        return { success: false, referenceId, message: existing.rows[0].failure_reason || 'Withdrawal imeshindwa.', status: 'FAILED' };
-      }
-      const status = existing.rows.length ? existing.rows[0].status : 'PENDING';
-      return { success: true, referenceId, message: 'Ombi hili tayari limepokelewa.', status };
     }
 
-    const client = await pool.connect();
+    await client.query(
+      `INSERT INTO wallet_ledger
+         (transaction_id, reference_id, from_user_id, to_user_id, amount, description)
+       VALUES ($1, $2, $3, NULL, $4, 'Withdrawal reserved (locked)')`,
+      [txId, referenceId, userId, amountNum]
+    );
+
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+
+  // The financial reservation is durable before the external provider call.
+  // A thrown/network error is treated as ambiguous because the provider may
+  // have received the request before the connection failed.
+  let payout;
+  try {
+    payout = await triggerPayout(user.phone_number, amountNum, referenceId, provider);
+  } catch (dispatchError) {
+    payout = {
+      success: false,
+      ambiguous: true,
+      message: dispatchError.message || 'Payout dispatch outcome is uncertain',
+    };
+  }
+
+  const accepted = Boolean(payout?.success && payout.data?.success !== false);
+  const refused = !accepted && payout?.ambiguous !== true;
+
+  if (!accepted && !refused) {
+    await pool.query(
+      `UPDATE transactions
+          SET meta = jsonb_set(COALESCE(meta, '{}'::jsonb), '{dispatch}', '"UNCERTAIN"'),
+              updated_at = NOW()
+        WHERE id = $1 AND status = 'PROCESSING'`,
+      [txId]
+    );
+
+    logger.warn(
+      'WALLET_WD',
+      `Dispatch uncertain ref=${referenceId} - hold kept for reconciliation`
+    );
+
+    await logAudit({
+      eventType: 'WITHDRAWAL',
+      action: 'DISPATCH_UNCERTAIN',
+      entityType: 'TRANSACTION',
+      userId,
+      referenceId,
+      amount: amountNum,
+      afterData: {
+        status: 'PROCESSING',
+        provider,
+        error: payout?.message || null,
+      },
+    });
+
+    return {
+      success: true,
+      referenceId,
+      message: 'Ombi la withdrawal limepokelewa.',
+      status: 'PROCESSING',
+    };
+  }
+
+  if (refused) {
+    const reason = payout?.message || payout?.data?.message || 'Gateway dispatch failed';
+    const releaseClient = await pool.connect();
+
     try {
-      await client.query('BEGIN');
-      const userRes = await client.query(
-        `SELECT id, phone_number, full_name FROM users WHERE id = $1`, [userId]
-      );
-      const user = userRes.rows[0];
+      await releaseClient.query('BEGIN');
 
-      const txRes = await client.query(
-        `INSERT INTO transactions
-          (reference_id, user_id, wallet_amount, commission, total_charged, status, type,
-           available_balance, locked_balance, meta)
-         VALUES ($1, $2, $3, 0, $3, 'PROCESSING', 'WITHDRAWAL', 0, $3, $4)
-         RETURNING id`,
-        [referenceId, userId, amountNum, JSON.stringify({ dispatch: 'INTENT', provider })]
+      const locked = await releaseClient.query(
+        `SELECT id, user_id, wallet_amount, status
+           FROM transactions
+          WHERE id = $1
+          FOR UPDATE`,
+        [txId]
       );
 
-      await client.query(
-        `INSERT INTO wallet_ledger (transaction_id, reference_id, from_user_id, to_user_id, amount, description)
-         VALUES ($1, $2, $3, NULL, $4, 'Withdrawal reserved (locked)')`,
-        [txRes.rows[0].id, referenceId, userId, amountNum]
-      );
-      await client.query('COMMIT');
-
-      // D1: dispatch the payout to the gateway AFTER commit (mirrors
-      // initiateDeposit). If the gateway refuses the request, release the
-      // reservation and mark the transaction FAILED, so funds are never left
-      // locked for a payout that was never sent.
-      const payout = await triggerPayout(user.phone_number, amountNum, referenceId, provider);
-      const accepted = payout.success && payout.data?.success !== false;
-      const refused = !accepted && !payout.ambiguous;
-
-      if (!accepted && !refused) {
-        // Timeout, network error or 5xx: the provider may already have accepted
-        // the payout. Keep the hold and PROCESSING; reconciliation decides from
-        // the gateway's record. Releasing here could double-credit the customer.
-        await pool.query(
-          `UPDATE transactions
-           SET meta = jsonb_set(COALESCE(meta, '{}'::jsonb), '{dispatch}', '"UNCERTAIN"'), updated_at = NOW()
-           WHERE reference_id = $1`,
-          [referenceId]
-        );
-        logger.warn('WALLET_WD', `Dispatch uncertain ref=${referenceId} - hold kept for reconciliation`);
-        await logAudit({ eventType: 'WITHDRAWAL', action: 'DISPATCH_UNCERTAIN', entityType: 'TRANSACTION', userId, referenceId, amount: amountNum, afterData: { status: 'PROCESSING', provider, error: payout.message } });
-        return { success: true, referenceId, message: 'Ombi la withdrawal limepokelewa.', status: 'PROCESSING' };
-      }
-
-      if (refused) {
-        const reason = payout.message || payout.data?.message || 'Gateway dispatch failed';
-        await fin.releaseHold({
-          userId,
-          amount: amountNum,
-          accountCode: 'CUSTOMER_WALLET',
-          reference: `${referenceId}-RELEASE`,
-          description: 'Withdrawal dispatch failed - funds returned',
-        });
-        await pool.query(
-          `UPDATE transactions
-           SET status = 'FAILED', failure_reason = $1,
-               meta = jsonb_set(COALESCE(meta, '{}'::jsonb), '{dispatch}', '"REFUSED"'),
-               updated_at = NOW()
-           WHERE reference_id = $2`,
-          [reason, referenceId]
-        );
-        await logAudit({ eventType: 'WITHDRAWAL', action: 'DISPATCH_FAILED', entityType: 'TRANSACTION', userId, referenceId, amount: amountNum, afterData: { status: 'FAILED', provider, error: reason } });
+      if (!locked.rows.length || locked.rows[0].status !== 'PROCESSING') {
         throw Object.assign(
-          new Error(reason),
-          { statusCode: 502, code: 'GATEWAY_DISPATCH_FAILED' }
+          new Error(`Withdrawal state changed before refusal release: ${referenceId}`),
+          { statusCode: 409, code: 'WITHDRAWAL_REFUSAL_STATE_CONFLICT' }
         );
       }
 
-      await pool.query(
+      const current = locked.rows[0];
+
+      await fin.releaseHold({
+        userId: current.user_id,
+        amount: current.wallet_amount,
+        accountCode: 'CUSTOMER_WALLET',
+        reference: `${referenceId}-RELEASE`,
+        description: 'Withdrawal dispatch failed - funds returned',
+        client: releaseClient,
+        transactionId: current.id,
+      });
+
+      const failed = await releaseClient.query(
         `UPDATE transactions
-         SET external_tx_id = $1,
-             meta = jsonb_set(COALESCE(meta, '{}'::jsonb), '{dispatch}', '"ACCEPTED"'),
-             updated_at = NOW()
-         WHERE reference_id = $2`,
-        [payout.data?.externalId || 'DISPATCHED', referenceId]
+            SET status = 'FAILED',
+                failure_reason = $1,
+                meta = jsonb_set(COALESCE(meta, '{}'::jsonb), '{dispatch}', '"REFUSED"'),
+                updated_at = NOW()
+          WHERE id = $2 AND status = 'PROCESSING'`,
+        [reason, current.id]
       );
 
-      await logAudit({ eventType: 'WITHDRAWAL', action: 'CREATE', entityType: 'TRANSACTION', userId, referenceId, amount: amountNum, afterData: { status: 'PROCESSING', provider } });
+      if (failed.rowCount !== 1) {
+        throw Object.assign(
+          new Error(`Withdrawal FAILED transition did not update exactly one row: ${referenceId}`),
+          { code: 'WITHDRAWAL_FAILURE_TRANSITION_CONFLICT' }
+        );
+      }
 
-      const msg = `AFRIKOBA: Ombi la kutoa ${formatMoney(amountNum)} limepokelewa. Ingiza PIN kwenye simu kuthibitisha.`;
-      await sendSMS(user.phone_number, msg).catch((smsErr) => logger.error('WALLET', `SMS post-withdrawal imefunga: ${smsErr.message}`));
-
-      return { success: true, referenceId, message: 'Ombi la withdrawal limepokelewa.', status: 'PROCESSING' };
+      await releaseClient.query('COMMIT');
     } catch (error) {
-      await client.query('ROLLBACK').catch(() => {});
+      await releaseClient.query('ROLLBACK').catch(() => {});
       throw error;
     } finally {
-      client.release();
+      releaseClient.release();
     }
-  } catch (error) {
-    logger.error('WALLET_WD', error.message, { userId, amount: amountNum, referenceId });
-    throw error;
+
+    await logAudit({
+      eventType: 'WITHDRAWAL',
+      action: 'DISPATCH_FAILED',
+      entityType: 'TRANSACTION',
+      userId,
+      referenceId,
+      amount: amountNum,
+      afterData: { status: 'FAILED', provider, error: reason },
+    });
+
+    throw Object.assign(
+      new Error(reason),
+      { statusCode: 502, code: 'GATEWAY_DISPATCH_FAILED' }
+    );
   }
+
+  const acceptedUpdate = await pool.query(
+    `UPDATE transactions
+        SET external_tx_id = $1,
+            meta = jsonb_set(COALESCE(meta, '{}'::jsonb), '{dispatch}', '"ACCEPTED"'),
+            updated_at = NOW()
+      WHERE id = $2 AND status = 'PROCESSING'`,
+    [payout.data?.externalId || 'DISPATCHED', txId]
+  );
+
+  if (acceptedUpdate.rowCount !== 1) {
+    // Do not release funds or redispatch. Reconciliation must resolve the
+    // provider state against the durable transaction and hold.
+    await recordWithdrawalDispatchException(referenceId, txId, {
+      reason: 'ACCEPTED_DISPATCH_STATE_UPDATE_CONFLICT',
+      provider,
+    }).catch((error) =>
+      logger.error('WALLET_WD', `Could not record dispatch exception: ${error.message}`)
+    );
+
+    throw Object.assign(
+      new Error(`Payout accepted but transaction dispatch state update conflicted: ${referenceId}`),
+      { statusCode: 409, code: 'WITHDRAWAL_ACCEPTED_STATE_CONFLICT' }
+    );
+  }
+
+  await logAudit({
+    eventType: 'WITHDRAWAL',
+    action: 'CREATE',
+    entityType: 'TRANSACTION',
+    userId,
+    referenceId,
+    amount: amountNum,
+    afterData: { status: 'PROCESSING', provider },
+  });
+
+  const msg = `AFRIKOBA: Ombi la kutoa ${formatMoney(amountNum)} limepokelewa. Ingiza PIN kwenye simu kuthibitisha.`;
+  await sendSMS(user.phone_number, msg).catch((smsErr) =>
+    logger.error('WALLET', `SMS post-withdrawal imefunga: ${smsErr.message}`)
+  );
+
+  return {
+    success: true,
+    referenceId,
+    message: 'Ombi la withdrawal limepokelewa.',
+    status: 'PROCESSING',
+  };
 }
 
 async function getBalance(userId) {

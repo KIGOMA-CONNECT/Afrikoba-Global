@@ -197,7 +197,7 @@ async function payInvoice(invoiceId, payerUserId) {
     const inv = await client.query("SELECT * FROM business_invoices WHERE id = $1 AND status = 'PENDING' FOR UPDATE", [invoiceId]);
     if (!inv.rows.length) throw Object.assign(new Error('Ankara haipatikani au imelipwa.'), { statusCode: 404 });
     const i = inv.rows[0];
-    await fin.debitWallet({ client, userId: payerUserId, amount: i.total_amount, reference: `BIZINV:${i.invoice_number}:PAID`, toAccount: 'BUSINESS_WALLET', description: 'Invoice payment' });
+    await fin.debitWallet({ client, userId: payerUserId, amount: i.total_amount, reference: `BIZINV:${i.id}:PAID`, toAccount: 'BUSINESS_WALLET', description: 'Invoice payment' });
     await client.query('UPDATE business_accounts SET balance = balance + $1 WHERE id = $2', [i.total_amount, i.business_id]);
     await client.query("UPDATE business_invoices SET status = 'PAID', paid_at = NOW() WHERE id = $1", [invoiceId]);
     await logTx(client, payerUserId, Number(i.total_amount), 'TRANSFER', { feature: 'invoice', invoice_number: i.invoice_number, business_id: i.business_id });

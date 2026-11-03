@@ -55,11 +55,16 @@ jobs:
       - run: npm run seed
       - run: npm run db:migrate
 
-      - name: Install PostgreSQL client (restore-verify)
+      - name: Install PostgreSQL 16 client (restore-verify)
         run: |
           sudo apt-get update
-          sudo apt-get install -y postgresql-client
-          pg_dump --version
+          sudo apt-get install -y postgresql-client-16
+          sudo ln -sf /usr/lib/postgresql/16/bin/pg_dump /usr/local/bin/pg_dump
+          sudo ln -sf /usr/lib/postgresql/16/bin/psql /usr/local/bin/psql
+          echo "pg_dump: $(pg_dump --version)"
+          echo "psql: $(psql --version)"
+          pg_dump --version | grep -q "16\." || { echo "ERROR: pg_dump is not PostgreSQL 16"; exit 1; }
+          psql --version | grep -q "16\." || { echo "ERROR: psql is not PostgreSQL 16"; exit 1; }
 
       - name: Start server (rate limiting off)
         run: |

@@ -169,7 +169,7 @@ async function runStandingInstruction(payload) {
       [referenceId, fromUserId, amount, JSON.stringify({ to_user_id: to.id, note, via: 'STANDING_INSTRUCTION' })]
     );
 
-    const result = await fin.internalTransfer({ client, fromUserId: from.id, toUserId: to.id, amount, reference: referenceId, description: note, actor: 'recurrence:standing-instruction' });
+    const result = await fin.internalTransfer({ client, fromUserId: from.id, toUserId: to.id, amount, reference: referenceId, description: note, actor: 'recurrence:standing-instruction', transactionId: txResult.rows[0].id });
     if (result.dedup) { await client.query('ROLLBACK').catch(() => {}); return { skipped: true, reason: 'dedup', reference: result.reference }; }
     await client.query(
       `INSERT INTO wallet_ledger (transaction_id, reference_id, from_user_id, to_user_id, amount, description)

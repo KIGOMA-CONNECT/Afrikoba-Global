@@ -78,7 +78,8 @@ async function payMerchant(
     if (existingOp.rows.length) {
       const op = existingOp.rows[0];
 
-      if (op.operation_type !== 'MERCHANT_PAYMENT') {
+      const allowedTypes = ['MERCHANT_PAYMENT', 'TRANSFER', 'DEBIT'];
+      if (!allowedTypes.includes(op.operation_type)) {
         throw new Error(`Reference ${ref} tayari inatumika kwa operation nyingine.`);
       }
 
@@ -137,6 +138,41 @@ async function payMerchant(
       throw new Error(`Reference ${ref} iko katika state ${op.status}.`);
     }
 
+    const paymentInsert = await client.query(
+      `INSERT INTO merchant_payments
+         (merchant_id, payer_id, amount, reference, description, status)
+       VALUES ($1, $2, $3, $4, $5, 'SUCCESS')
+       RETURNING id`,
+      [
+        merchantId,
+        payerId,
+        amountN,
+        ref,
+        description || `Malipo kwa ${merchant.name}`,
+      ]
+    );
+
+    const txResult = await client.query(
+      `INSERT INTO transactions
+         (user_id, type, total_charged, wallet_amount, commission,
+          status, reference_id, meta)
+       VALUES ($1, 'TRANSFER', $2, 0, 0, 'SUCCESS', $3, $4)
+       RETURNING id`,
+      [
+        payerId,
+        amountN,
+        ref,
+        JSON.stringify({
+          merchant_id: merchantId,
+          merchant_name: merchant.name,
+          type: 'MERCHANT_PAYMENT',
+          merchant_payment_id: paymentInsert.rows[0].id,
+        }),
+      ]
+    );
+
+    const transactionId = txResult.rows[0].id;
+
     const acc = await creditMerchantProceeds({
       client,
       payerId,
@@ -144,6 +180,7 @@ async function payMerchant(
       amount: amountN,
       reference: ref,
       description: `Merchant payment to ${merchant.name}`,
+      transactionId,
     });
 
     if (acc.dedup) {
@@ -161,6 +198,7 @@ async function payMerchant(
           amount: amountN,
           reference: ref,
           description: `Merchant payment to ${merchant.name}`,
+          transactionId,
         });
       } else {
         await fin.debitWallet({
@@ -170,41 +208,10 @@ async function payMerchant(
           reference: ref,
           toAccount: 'SUSPENSE',
           description: `Merchant payment to ${merchant.name}`,
+          transactionId,
         });
       }
     }
-
-    const paymentInsert = await client.query(
-      `INSERT INTO merchant_payments
-         (merchant_id, payer_id, amount, reference, description, status)
-       VALUES ($1, $2, $3, $4, $5, 'SUCCESS')
-       RETURNING id`,
-      [
-        merchantId,
-        payerId,
-        amountN,
-        ref,
-        description || `Malipo kwa ${merchant.name}`,
-      ]
-    );
-
-    await client.query(
-      `INSERT INTO transactions
-         (user_id, type, total_charged, wallet_amount, commission,
-          status, reference_id, meta)
-       VALUES ($1, 'TRANSFER', $2, 0, 0, 'SUCCESS', $3, $4)`,
-      [
-        payerId,
-        amountN,
-        ref,
-        JSON.stringify({
-          merchant_id: merchantId,
-          merchant_name: merchant.name,
-          type: 'MERCHANT_PAYMENT',
-          merchant_payment_id: paymentInsert.rows[0].id,
-        }),
-      ]
-    );
 
     if (ownTransaction) {
       await client.query('COMMIT');

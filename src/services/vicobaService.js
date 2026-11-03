@@ -103,7 +103,7 @@ async function contributeShares(groupId, userId, amount, sharesCount) {
       [referenceId, userId, amountNum, JSON.stringify({ group_id: groupId })]
     );
 
-    await fin.walletToGroup({ client, userId, groupId, groupAccount: 'VICOBA_GROUP', groupSql: 'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance + $1 WHERE id = $2', amount: amountNum, reference: `${referenceId}:WG`, description: 'VICOBA Share Contribution', productType: 'VICOBA', productRef: String(groupId) });
+    await fin.walletToGroup({ client, userId, groupId, groupAccount: 'VICOBA_GROUP', groupSql: 'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance + $1 WHERE id = $2', amount: amountNum, reference: `${referenceId}:WG`, description: 'VICOBA Share Contribution', productType: 'VICOBA', productRef: String(groupId), transactionId: tx.rows[0].id });
     await client.query(
       `UPDATE vicoba_members SET total_shares = total_shares + $1, contribution_balance = contribution_balance + $2
        WHERE group_id = $3 AND user_id = $4`,
@@ -655,17 +655,17 @@ async function payContribution(groupId, userId, cycleNumber, amount, sharesCount
     const totalDeduct = amountNum + penaltyAmount;
 
     const referenceId = generateReference('VC');
-    await fin.walletToGroup({ client, userId, groupId, groupAccount: 'VICOBA_GROUP', groupSql: 'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance + $1 WHERE id = $2', amount: amountNum, reference: `${referenceId}:WG`, description: 'VICOBA Contribution', productType: 'VICOBA', productRef: String(groupId) });
-    if (penaltyAmount > 0) {
-      await fin.debitWallet({ client, userId, amount: penaltyAmount, reference: `${referenceId}:DR`, toAccount: 'PLATFORM_FEES', description: 'VICOBA Late Penalty' });
-    }
-
     const tx = await client.query(
       `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
        VALUES ($1, $2, $3, 0, $3, 'SUCCESS', 'VICOBA_SHARE', $4)
        RETURNING id`,
       [referenceId, userId, totalDeduct, JSON.stringify({ group_id: groupId, cycle: cycleNumber, penalty: penaltyAmount })]
     );
+
+    await fin.walletToGroup({ client, userId, groupId, groupAccount: 'VICOBA_GROUP', groupSql: 'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance + $1 WHERE id = $2', amount: amountNum, reference: `${referenceId}:WG`, description: 'VICOBA Contribution', productType: 'VICOBA', productRef: String(groupId), transactionId: tx.rows[0].id });
+    if (penaltyAmount > 0) {
+      await fin.debitWallet({ client, userId, amount: penaltyAmount, reference: `${referenceId}:DR`, toAccount: 'PLATFORM_FEES', description: 'VICOBA Late Penalty', transactionId: tx.rows[0].id });
+    }
 
     await client.query(
       `INSERT INTO vicoba_member_contributions (schedule_id, group_id, user_id, amount, shares_count, is_late, penalty_paid)

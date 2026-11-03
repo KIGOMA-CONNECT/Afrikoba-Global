@@ -235,7 +235,7 @@ async function processPayout(partner, payload) {
       client,
       userId: u.rows[0].id,
       amount: Number(amountNum),
-      reference: `BP:${request_id}:CR`,
+      reference: `BP:${partner.id}:${request_id}:CR`,
       fromAccount: 'PARTNER_BALANCE',
       description: `Partner payout ${reference}`,
     });

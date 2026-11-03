@@ -81,20 +81,22 @@ async function payQrCode(qrCodeId, payerId, amount) {
       throw createAppError('WALLET_INSUFFICIENT_FUNDS');
     }
 
+    const txResult = await client.query(
+      `INSERT INTO transactions (user_id, type, wallet_amount, total_charged, commission, status, reference_id, meta)
+       VALUES ($1, 'TRANSFER', $2, $2, 0, 'SUCCESS', $3, $4)
+       RETURNING id`,
+      [payerId, payAmount, ref, JSON.stringify({ type: 'QR_PAYMENT', qr_code: q.code, payee_id: q.user_id })]
+    );
+
     await fin.internalTransfer({
       client, fromUserId: payerId, toUserId: q.user_id, amount: payAmount,
-      reference: ref, description: `QR payment to ${q.user_id}`
+      reference: ref, description: `QR payment to ${q.user_id}`,
+      transactionId: txResult.rows[0].id
     });
 
     await client.query(
       `INSERT INTO qr_payments (qr_code_id, payer_id, payee_id, amount, status) VALUES ($1, $2, $3, $4, 'SUCCESS')`,
       [qrCodeId, payerId, q.user_id, payAmount]
-    );
-
-    await client.query(
-      `INSERT INTO transactions (user_id, type, wallet_amount, total_charged, commission, status, reference_id, meta)
-       VALUES ($1, 'TRANSFER', $2, $2, 0, 'SUCCESS', $3, $4)`,
-      [payerId, payAmount, ref, JSON.stringify({ type: 'QR_PAYMENT', qr_code: q.code, payee_id: q.user_id })]
     );
 
     await client.query('COMMIT');

@@ -289,94 +289,200 @@ async function recordExceptionOnce(exception) {
  * drives the outcome - never a blind timeout.
  */
 async function settleWithdrawal(tx) {
+  // Query the gateway BEFORE acquiring a database row lock, mirroring
+  // settleDeposit. The batch result (tx) is only used to obtain the
+  // reference; the freshly locked row is authoritative for all decisions.
+  const gateway = await queryTransactionStatus(tx.reference_id);
+
   const client = await pool.connect();
+  let transactionOpen = false;
+
   try {
     await client.query('BEGIN');
+    transactionOpen = true;
+
     const fresh = await client.query(
-      `SELECT * FROM transactions WHERE id = $1 FOR UPDATE`, [tx.id]
+      `SELECT * FROM transactions WHERE id = $1 FOR UPDATE`,
+      [tx.id]
     );
-    if (fresh.rows.length === 0 || fresh.rows[0].status !== 'PROCESSING') {
+
+    if (fresh.rows.length === 0) {
       await client.query('COMMIT');
+      transactionOpen = false;
       return { skipped: true };
     }
 
-    // D1: no accepted dispatch yet. Give an in-flight request time to finish
-    // before judging it; after the grace window the gateway is asked directly.
-    const dispatched = Boolean(fresh.rows[0].external_tx_id);
-    const ageMs = Date.now() - new Date(fresh.rows[0].created_at).getTime();
+    const lockedTx = fresh.rows[0];
+
+    if (lockedTx.status !== 'PROCESSING' || lockedTx.type !== 'WITHDRAWAL') {
+      await client.query('COMMIT');
+      transactionOpen = false;
+      return { skipped: true };
+    }
+
+    // Stale-response guard
+    if (
+      String(lockedTx.reference_id) !== String(tx.reference_id) ||
+      Number(lockedTx.user_id) !== Number(tx.user_id) ||
+      Math.abs(Number(lockedTx.wallet_amount) - Number(tx.wallet_amount)) >= 0.005
+    ) {
+      await client.query('COMMIT');
+      transactionOpen = false;
+      logger.warn('RECON', `Withdrawal ${tx.reference_id}: stale gateway response (transaction changed)`);
+      return { skipped: true, reason: 'transaction_changed' };
+    }
+
+    const dispatched = Boolean(lockedTx.external_tx_id);
+    const ageMs = Date.now() - new Date(lockedTx.created_at).getTime();
+
     if (!dispatched && ageMs < DISPATCH_GRACE_MS) {
       await client.query('COMMIT');
+      transactionOpen = false;
       return { skipped: true, reason: 'dispatch_in_flight' };
     }
 
-    const gateway = await queryTransactionStatus(tx.reference_id);
-
     if (gateway.status === 'SUCCESS') {
       await fin.captureHold({
-        userId: tx.user_id,
-        amount: tx.wallet_amount,
+        userId: lockedTx.user_id,
+        amount: lockedTx.wallet_amount,
         accountCode: 'CUSTOMER_WALLET',
-        reference: `${tx.reference_id}-CAPTURE`,
+        reference: `${lockedTx.reference_id}-CAPTURE`,
         description: 'Withdrawal settled (MNO paid)',
+        client,
+        transactionId: lockedTx.id,
       });
-      await client.query(
-        `UPDATE transactions SET status = 'SUCCESS', updated_at = NOW() WHERE id = $1`,
-        [tx.id]
+
+      const updated = await client.query(
+        `UPDATE transactions
+            SET status = 'SUCCESS',
+                updated_at = NOW()
+          WHERE id = $1
+            AND status = 'PROCESSING'
+            AND type = 'WITHDRAWAL'`,
+        [lockedTx.id]
       );
+
+      if (updated.rowCount !== 1) {
+        throw Object.assign(
+          new Error(`Withdrawal SUCCESS transition conflict: ${lockedTx.reference_id}`),
+          { code: 'WITHDRAWAL_SUCCESS_TRANSITION_CONFLICT', statusCode: 409 }
+        );
+      }
+
       await client.query('COMMIT');
-      logger.info('RECON', `Withdrawal ${tx.reference_id} settled (gateway SUCCESS)`);
+      transactionOpen = false;
+
+      logger.info('RECON', `Withdrawal ${lockedTx.reference_id} settled (gateway SUCCESS)`);
       return { settled: true };
     }
 
     if (gateway.status === 'FAILED') {
       await fin.releaseHold({
-        userId: tx.user_id,
-        amount: tx.wallet_amount,
+        userId: lockedTx.user_id,
+        amount: lockedTx.wallet_amount,
         accountCode: 'CUSTOMER_WALLET',
-        reference: `${tx.reference_id}-RELEASE`,
+        reference: `${lockedTx.reference_id}-RELEASE`,
         description: 'Withdrawal failed - funds returned',
+        client,
+        transactionId: lockedTx.id,
       });
-      await client.query(
-        `UPDATE transactions SET status = 'FAILED',
-           failure_reason = 'Failed at gateway.',
-           updated_at = NOW()
-         WHERE id = $1`,
-        [tx.id]
+
+      const updated = await client.query(
+        `UPDATE transactions
+            SET status = 'FAILED',
+                failure_reason = 'Failed at gateway.',
+                updated_at = NOW()
+          WHERE id = $1
+            AND status = 'PROCESSING'
+            AND type = 'WITHDRAWAL'`,
+        [lockedTx.id]
       );
-      const { rows } = await client.query(
-        `SELECT phone_number FROM users WHERE id = $1`, [tx.user_id]
-      );
-      await client.query('COMMIT');
-      if (rows[0]) {
-        const msg = `AFRIKOBA: Withdrawal yako ya ${formatMoney(tx.wallet_amount)} haijafanikiwa. Fedha zimerudishwa kwenye wallet yako. Ref: ${tx.reference_id}`;
-        await sendSMS(rows[0].phone_number, msg).catch(() => {});
+
+      if (updated.rowCount !== 1) {
+        throw Object.assign(
+          new Error(`Withdrawal FAILED transition conflict: ${lockedTx.reference_id}`),
+          { code: 'WITHDRAWAL_FAILED_TRANSITION_CONFLICT', statusCode: 409 }
+        );
       }
-      logger.info('RECON', `Withdrawal ${tx.reference_id} refunded (gateway FAILED)`);
+
+      const { rows } = await client.query(
+        `SELECT phone_number FROM users WHERE id = $1`,
+        [lockedTx.user_id]
+      );
+
+      await client.query('COMMIT');
+      transactionOpen = false;
+
+      if (rows[0]?.phone_number) {
+        const msg = `AFRIKOBA: Withdrawal yako ya ${formatMoney(lockedTx.wallet_amount)} haijafanikiwa. Fedha zimerudishwa kwenye wallet yako. Ref: ${lockedTx.reference_id}`;
+        await sendSMS(rows[0].phone_number, msg).catch((error) =>
+          logger.error('RECON_WITHDRAW', `SMS failed after refund commit: ${error.message}`)
+        );
+      }
+
+      logger.info('RECON', `Withdrawal ${lockedTx.reference_id} refunded (gateway FAILED)`);
       return { refunded: true };
     }
 
-    // gateway PENDING/UNKNOWN -> DO NOT auto-refund. Surface as an exception.
-    // A never-confirmed dispatch is UNDISPATCHED_WITHDRAWAL: operator decides
-    // whether the payout was sent before any refund or re-dispatch.
-    // updated_at is touched so unresolved rows rotate out of the batch window.
-    await client.query(`UPDATE transactions SET updated_at = NOW() WHERE id = $1`, [tx.id]);
+    // PENDING/UNKNOWN: preserve the hold; never auto-refund.
+    await client.query(
+      `UPDATE transactions
+          SET updated_at = NOW()
+        WHERE id = $1
+          AND status = 'PROCESSING'
+          AND type = 'WITHDRAWAL'`,
+      [lockedTx.id]
+    );
+
     await client.query('COMMIT');
-    await recordExceptionOnce({
-      type: dispatched ? 'STALE_WITHDRAWAL' : 'UNDISPATCHED_WITHDRAWAL',
-      reference: tx.reference_id,
-      transactionId: tx.id,
-      detail: { status: gateway.status, dispatch: fresh.rows[0].meta?.dispatch || null },
-    });
-    logger.warn('RECON', `Withdrawal ${tx.reference_id} unresolved at gateway (${gateway.status}) - opened exception, not auto-refunded`);
-    return { exception: true };
+    transactionOpen = false;
+
+    let exceptionRecorded = false;
+
+    try {
+      await recordExceptionOnce({
+        type: dispatched ? 'STALE_WITHDRAWAL' : 'UNDISPATCHED_WITHDRAWAL',
+        reference: lockedTx.reference_id,
+        transactionId: lockedTx.id,
+        detail: {
+          status: gateway.status,
+          dispatch: lockedTx.meta?.dispatch || null,
+        },
+      });
+      exceptionRecorded = true;
+    } catch (exceptionError) {
+      logger.error(
+        'RECON_WITHDRAW',
+        `Exception recording failed after hold-preserving commit for ${lockedTx.reference_id}: ${exceptionError.message}`
+      );
+    }
+
+    if (exceptionRecorded) {
+      logger.warn(
+        'RECON',
+        `Withdrawal ${lockedTx.reference_id} unresolved at gateway (${gateway.status}) - exception recorded, hold retained`
+      );
+    } else {
+      logger.warn(
+        'RECON',
+        `Withdrawal ${lockedTx.reference_id} unresolved at gateway (${gateway.status}) - exception recording failed, hold retained`
+      );
+    }
+
+    return { exception: true, exceptionRecorded };
   } catch (error) {
-    await client.query('ROLLBACK').catch(() => {});
+    if (transactionOpen) {
+      await client.query('ROLLBACK').catch(() => {});
+      transactionOpen = false;
+    }
+
     logger.error('RECON_WITHDRAW', error.message, { id: tx.id });
     throw error;
   } finally {
     client.release();
   }
 }
+
 
 async function reconcilePendingDeposits() {
   if (!config.azampay.enabled) {
@@ -425,22 +531,22 @@ async function reconcilePendingDeposits() {
   } finally {
     dep.release();
   }
-
-  // 2) Withdrawals - settle independently by gateway state.
+  // 2) Withdrawals - fetch candidates, release connection, then settle.
   const wd = await pool.connect();
+  let processingWithdrawals = [];
   try {
-    const { rows: processingWithdrawals } = await wd.query(
+    const { rows: processing } = await wd.query(
       `SELECT * FROM transactions
        WHERE status = 'PROCESSING' AND type = 'WITHDRAWAL'
        ORDER BY updated_at ASC
        LIMIT 20`
     );
-    processedWithdrawals = processingWithdrawals.map((r) => ({ id: r.id, reference_id: r.reference_id }));
-    for (const tx of processingWithdrawals) {
-      await settleWithdrawal(tx);
-    }
+    processingWithdrawals = processing.map((r) => ({ id: r.id, reference_id: r.reference_id }));
   } finally {
     wd.release();
+  }
+  for (const tx of processingWithdrawals) {
+    await settleWithdrawal(tx);
   }
 
   return { checkedDeposits, processedWithdrawals };
