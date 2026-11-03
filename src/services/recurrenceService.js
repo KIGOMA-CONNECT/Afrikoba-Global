@@ -51,7 +51,10 @@ async function runAutoSavings(payload) {
     const user = (await client.query('SELECT wallet_balance FROM users WHERE id=$1 FOR UPDATE', [userId])).rows[0];
     if (!user) throw new Error('User not found');
     if (Number(user.wallet_balance) < amount) throw new Error('Insufficient balance for auto-savings');
-    const reference = `SAV-${Date.now()}`;
+    // Stable reference: use rule ID and due date instead of timestamp
+    const ruleId = payload.ruleId || payload.rule_id || 'default';
+    const dueDate = payload.dueDate || payload.due_date || new Date().toISOString().slice(0, 10);
+    const reference = `SAV-${userId}-${ruleId}-${dueDate}`;
     const op = await fin.claimOperation({
       client,
       operationType: 'DEBIT',
@@ -250,7 +253,7 @@ async function runDueTasks() {
       try {
         let result;
         switch (rule.task_type) {
-          case 'AUTO_SAVINGS': result = await runAutoSavings(rule.payload); break;
+          case 'AUTO_SAVINGS': result = await runAutoSavings({ ...rule.payload, ruleId: rule.id, dueDate: rule.next_run_at }); break;
           case 'CONTRIBUTION_CYCLE': result = await runContributionCycle(rule.payload); break;
           case 'PAYROLL_RUN': result = await runPayroll({ ...rule.payload, frequency: rule.frequency }); break;
           case 'STANDING_INSTRUCTION': result = await runStandingInstruction(rule.payload); break;
