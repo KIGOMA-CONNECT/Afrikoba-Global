@@ -2682,3 +2682,40 @@ Integration suite: 356/356 PASS.
 Restore verification: 31/31 PASS (PG16 pinned, fail-fast, cleanup verified).
 All regression scripts: PASS.
 Recurrence auto-savings stable reference fix included in commit and CI-verified.
+
+
+---
+
+## CI EXECUTION RESULTS (Owner-Authorized, Run 19 - Final)
+
+### CI run details
+
+- Repository: KIGOMA-CONNECT/Afrikoba-Global
+- Branch: phase68-deposit-atomicity-fix
+- Commit SHA: e653d58c03b39a9f56356d9fe2643b1e29a18852
+- Run ID: 41711134038
+- Workflow: CI (Backend tests, Web dashboard build, Flutter analyze + test + build)
+- Trigger: pull_request
+- Result: ALL 3 JOBS PASSED
+
+### Job results
+
+| Job | Status | Duration |
+|-----|--------|----------|
+| Backend tests | PASS | 1m58s |
+| Web dashboard build | PASS | 12s |
+| Flutter analyze + test + build | PASS | 5m3s |
+
+### Backend test totals
+
+- Integration suite: 356 PASSED, 0 FAILED
+- Restore verify: 31 PASSED, 0 FAILED
+- All regression scripts: PASS
+
+### CI status update
+
+CI is now RUN and PASSED. All 3 jobs passed.
+Integration suite: 356/356 PASS.
+Restore verification: 31/31 PASS (PG16 pinned, fail-fast, cleanup verified).
+All regression scripts: PASS.
+BAP payload binding + partner balance lock fix included in commit and CI-verified.
