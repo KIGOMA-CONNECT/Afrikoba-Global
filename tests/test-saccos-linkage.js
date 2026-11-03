@@ -25,7 +25,6 @@ async function run() {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const uid = (await client.query('SELECT user_id FROM saccos_members LIMIT 1')).rows[0].user_id;
 
     console.log('\n--- SACCOS Savings Deposit Linkage Test (Trigger-based) ---');
 
@@ -47,13 +46,14 @@ async function run() {
 
     const saccosId = orgs.rows[0].id;
 
-    // Check if user is a member
-    const member = await client.query("SELECT id FROM saccos_members WHERE saccos_id = $1 AND user_id = $2", [saccosId, uid]);
-    if (member.rows.length === 0) {
-      console.log('  SKIP: User is not a SACCOS member');
+    // Get a member user
+    const memberRes = await client.query("SELECT user_id FROM saccos_members WHERE saccos_id = $1 LIMIT 1", [saccosId]);
+    if (memberRes.rows.length === 0) {
+      console.log('  SKIP: No SACCOS members found');
       await client.query('ROLLBACK');
       process.exit(0);
     }
+    const uid = memberRes.rows[0].user_id;
 
     // Fund user wallet
     await client.query('UPDATE users SET wallet_balance = wallet_balance + 10000 WHERE id = $1', [uid]);
