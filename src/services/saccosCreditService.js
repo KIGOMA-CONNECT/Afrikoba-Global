@@ -88,9 +88,30 @@ async function ensureCreditAccounts(client, saccosId) {
 /** Credit a member wallet from a SACCOS account: DR <fromAccount> / CR CUSTOMER_WALLET. */
 async function creditFromSaccos({ client, userId, amount, reference, fromAccount, description, actor, txnType }) {
   const amountN = Number(amount);
-  const op = await fin.claimOperation({ client, operationType: 'CREDIT', reference, userId, amount: amountN });
-  if (!op.claimed) return { dedup: true, reference };
-  const before = Number((await client.query('SELECT wallet_balance FROM users WHERE id = $1', [userId])).rows[0].wallet_balance);
+  const op = await fin.claimOperation({ client, operationType: 'CREDIT', reference, userId, amount: amountN, validateShape: true });
+  if (!op.claimed) {
+    // Dedup detected — verify the operation was actually completed
+    const existingOp = await client.query(
+      `SELECT status FROM financial_operations WHERE reference_id = $1`,
+      [reference]
+    );
+    const existingTx = await client.query(
+      `SELECT status FROM transactions WHERE reference_id = $1`,
+      [reference]
+    );
+    if (existingOp.rows.length === 1 && existingOp.rows[0].status === 'SUCCESS' &&
+        existingTx.rows.length === 1 && existingTx.rows[0].status === 'SUCCESS') {
+      return { dedup: true, reference };
+    }
+    throw createAppError('SACCOS_CREDIT_INCOMPLETE');
+  }
+  // Lock wallet row
+  const walletRow = await client.query('SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE', [userId]);
+  if (!walletRow.rows.length) {
+    await fin.setOperationState({ client, reference, status: 'FAILED' });
+    throw createAppError('SACCOS_MEMBER_NOT_FOUND');
+  }
+  const before = Number(walletRow.rows[0].wallet_balance);
   await fin.postJournal({
     client,
     lines: [
@@ -105,6 +126,7 @@ async function creditFromSaccos({ client, userId, amount, reference, fromAccount
      VALUES ($1, $2, $3, 0, $3, 'SUCCESS', $4, $5)`,
     [reference, userId, amountN, txnType, JSON.stringify({ description })]
   );
+  await fin.setOperationState({ client, reference, status: 'SUCCESS' });
   return { success: true, reference, amount: amountN, balanceBefore: before, balanceAfter: before + amountN };
 }
 
@@ -628,12 +650,17 @@ async function disburseInClient({ client, saccos, loan, actorId }) {
   if (!member.rows.length) throw createAppError('SACCOS_MEMBER_NOT_FOUND');
   const userId = member.rows[0].user_id;
   await ensureCreditAccounts(client, saccos.id);
-  await creditFromSaccos({
+  const creditResult = await creditFromSaccos({
     client, userId, amount: Number(loan.principal), reference: ref,
     fromAccount: loansReceivableCode(saccos.id),
     description: `Mkopo SACCOS #${saccos.id}`, actor: 'saccos:credit:disburse',
     txnType: 'SACCOS_LOAN_DISBURSEMENT',
   });
+  if (creditResult.dedup) {
+    // Already disbursed — rollback and return dedup
+    await client.query('ROLLBACK');
+    return { dedup: true, userId, cfg };
+  }
   await client.query(
     `UPDATE saccos_loans SET status = 'ACTIVE', disbursed_at = NOW() WHERE id = $1`,
     [loan.id]
@@ -647,14 +674,22 @@ async function disburseInClient({ client, saccos, loan, actorId }) {
 
 async function decideApplication(actorId, saccosId, applicationId, decision) {
   await saccosCore.assertActiveRole(actorId, saccosId, ['OWNER', 'BOARD']);
-  const app = await fetchApplication(saccosId, applicationId);
-  if (app.status !== 'PENDING') throw createAppError('SACCOS_LOAN_APPLICATION_DECIDED');
   const saccos = await fetchActiveOrg(actorId, saccosId);
   const cfg = lendingConfig(saccos);
 
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+
+    // Lock application row and revalidate status inside transaction
+    const appRes = await client.query(
+      'SELECT * FROM saccos_loan_applications WHERE id = $1 AND saccos_id = $2 FOR UPDATE',
+      [applicationId, saccosId]
+    );
+    if (!appRes.rows.length) throw createAppError('SACCOS_LOAN_APPLICATION_NOT_FOUND');
+    const app = appRes.rows[0];
+    if (app.status !== 'PENDING') throw createAppError('SACCOS_LOAN_APPLICATION_DECIDED');
+
     if (decision === 'REJECT') {
       await client.query(
         `UPDATE saccos_loan_applications SET status = 'REJECTED', decided_by = $1, decision_at = NOW() WHERE id = $2`,
@@ -713,13 +748,21 @@ async function decideApplication(actorId, saccosId, applicationId, decision) {
 
 async function disburseLoan(actorId, saccosId, loanId) {
   await saccosCore.assertActiveRole(actorId, saccosId, ['OWNER', 'BOARD']);
-  const loan = await fetchLoan(saccosId, loanId);
-  if (loan.status !== 'PENDING') throw createAppError('SACCOS_LOAN_NOT_DISBURSABLE');
   const saccos = await fetchActiveOrg(actorId, saccosId);
 
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+
+    // Re-fetch and lock loan inside transaction
+    const loanRes = await client.query(
+      'SELECT * FROM saccos_loans WHERE id = $1 AND saccos_id = $2 FOR UPDATE',
+      [loanId, saccosId]
+    );
+    if (!loanRes.rows.length) throw createAppError('SACCOS_LOAN_NOT_FOUND');
+    const loan = loanRes.rows[0];
+    if (loan.status !== 'PENDING') throw createAppError('SACCOS_LOAN_NOT_DISBURSABLE');
+
     await disburseInClient({ client, saccos, loan, actorId });
     await client.query('COMMIT');
     await logAudit(actorId, 'SACCOS_LOAN_DISBURSED', { referenceId: saccosId, details: { loanId } }).catch(() => {});

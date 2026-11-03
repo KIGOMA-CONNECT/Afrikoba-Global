@@ -1477,12 +1477,17 @@ async function approveWithdrawal(actorUserId, withdrawalId, { approved, note }) 
     );
     const transactionId = txRes.rows[0].id;
 
-    await fin.groupToWallet({
+    const gwResult = await fin.groupToWallet({
       client, userId: cur.user_id, groupId: cur.group_id, groupAccount: 'VICOBA_GROUP',
       groupSql: 'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance - $1 WHERE id = $2 AND group_wallet_balance >= $1',
       amount: Number(cur.amount), reference: cur.reference_id, description: 'VICOBA Group Withdrawal',
       productType: 'VICOBA', productRef: String(cur.group_id), transactionId,
     });
+    if (gwResult.dedup) {
+      // Already processed — rollback and return dedup
+      await client.query('ROLLBACK');
+      return { success: true, message: 'Uondoaji tayari umekamilika.', referenceId: cur.reference_id, dedup: true };
+    }
 
     const memberProjection = await client.query(
       `UPDATE vicoba_members
