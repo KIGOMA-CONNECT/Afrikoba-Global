@@ -206,40 +206,54 @@ async function processPayout(partner, payload) {
   if (!request_id) throw badge('request_id (idempotency) ni lazima.', 400);
 
   const dup = await pool.query(
-    'SELECT reference FROM partner_transactions WHERE partner_id=$1 AND request_id=$2',
+    'SELECT reference, amount, phone FROM partner_transactions WHERE partner_id=$1 AND request_id=$2',
     [partner.id, request_id]
   );
   if (dup.rows.length) {
+    const d = dup.rows[0];
+    if (Number(d.amount) !== amountNum || d.phone !== phone) {
+      throw badge('request_id tayari ilitumika kwa payload tofauti (amount au phone).', 409);
+    }
     const bal = await pool.query('SELECT balance FROM partners WHERE id=$1', [partner.id]);
-    return { success: true, duplicate: true, reference: dup.rows[0].reference, partner_balance: Number(bal.rows[0].balance), message: 'Ombi lilishatolewa (idempotent).' };
+    return { success: true, duplicate: true, reference: d.reference, partner_balance: Number(bal.rows[0].balance), message: 'Ombi lilishatolewa (idempotent).' };
   }
 
-  const p = await pool.query('SELECT * FROM partners WHERE id=$1 FOR UPDATE', [partner.id]);
-  if (Number(p.rows[0].balance) < amountNum) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const p = (await client.query('SELECT * FROM partners WHERE id=$1 FOR UPDATE', [partner.id])).rows[0];
+    if (Number(p.balance) < amountNum) {
     const ref = generateReference('BPF');
     await logPartnerTxn(partner.id, 'FAILED', amountNum, ref, request_id, phone, 'FAILED');
     throw badge('Salio la partner halitoshi.', 400);
   }
 
   const reference = generateReference('BP');
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    const u = await client.query('SELECT id, wallet_balance FROM users WHERE phone_number=$1 FOR UPDATE', [phone]);
+  const u = (await client.query('SELECT id, wallet_balance FROM users WHERE phone_number=$1 FOR UPDATE', [phone])).rows[0];
+  if (!u) {
+    await client.query('ROLLBACK');
+    client.release();
+    throw badge('Mteja hapatikani kwenye mfumo.', 404);
+  }
     if (!u.rows.length) {
       await client.query('ROLLBACK');
       throw badge('Mteja hapatikani kwenye mfumo.', 404);
     }
     await client.query('UPDATE partners SET balance = balance - $1, monthly_volume = monthly_volume + $1, updated_at=NOW() WHERE id=$2', [amountNum, partner.id]);
-    await fin.creditWallet({
+    const creditResult = await fin.creditWallet({
       client,
-      userId: u.rows[0].id,
+      userId: u.id,
       amount: Number(amountNum),
       reference: `BP:${partner.id}:${request_id}:CR`,
       fromAccount: 'PARTNER_BALANCE',
       description: `Partner payout ${reference}`,
     });
-    await logTx(client, u.rows[0].id, amountNum, 'PARTNER_PAYOUT', { partner_id: partner.id, partner_name: partner.name, reference });
+    if (creditResult.dedup) {
+      await client.query('ROLLBACK');
+      client.release();
+      throw badge('Malipo tayari yamefanyika (duplicate).', 409);
+    }
+    await logTx(client, u.id, amountNum, 'PARTNER_PAYOUT', { partner_id: partner.id, partner_name: partner.name, reference });
     await logPartnerTxn(partner.id, 'PAYOUT', amountNum, reference, request_id, phone, 'COMPLETED');
     const after = await client.query('SELECT balance, monthly_volume FROM partners WHERE id=$1', [partner.id]);
     await client.query('COMMIT');
