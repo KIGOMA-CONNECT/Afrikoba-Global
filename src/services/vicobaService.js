@@ -1177,42 +1177,17 @@ async function repayLoan(userId, loanId, amount, note, idempotencyKey = null) {
     }
     const loan = loanRes.rows[0];
 
+    // Determine reference: use idempotency key if provided, otherwise
+    // derive a deterministic reference from loan + schedule to prevent
+    // silent duplicate financial effects on retry without a key.
+    // NOTE: schedule is fetched after this point, so we use loanId + amount
+    // as the base. The full idempotency check happens after schedule fetch.
     const referenceId = idempotencyKey
       ? `VLR-${loanId}-${idempotencyKey}`
-      : generateReference('LR');
+      : null;  // Will be set after schedule fetch
 
-    if (idempotencyKey) {
-      const existingRepayment = await client.query(
-        `SELECT amount, reference_id
-         FROM vicoba_loan_repayments
-         WHERE reference_id = $1
-         LIMIT 1`,
-        [referenceId]
-      );
-
-      if (existingRepayment.rows.length === 1) {
-        const existingAmount = Number(existingRepayment.rows[0].amount);
-
-        if (existingAmount !== amountNum) {
-          await client.query('ROLLBACK');
-
-          throw Object.assign(
-            new Error('Idempotency key tayari ilitumika kwa kiasi tofauti.'),
-            { statusCode: 409 }
-          );
-        }
-
-        await client.query('ROLLBACK');
-
-        return {
-          success: true,
-          referenceId,
-          amount: existingAmount,
-          dedup: true,
-          message: 'Malipo haya tayari yalipokelewa.',
-        };
-      }
-    }
+    // If no idempotency key, we still need dedup protection.
+    // Use loan_id + schedule_id as deterministic reference (set after schedule fetch).
 
     if (loan.status !== 'DISBURSED') {
       throw Object.assign(new Error('Mkopo haujaondolewa au tayari umelipwa.'), { statusCode: 400 });
@@ -1230,6 +1205,39 @@ async function repayLoan(userId, loanId, amount, note, idempotencyKey = null) {
       throw Object.assign(new Error('Hakuna deni la kulipa.'), { statusCode: 400 });
     }
     const schedule = scheduleRes.rows[0];
+
+    // Determine final reference ID (deterministic when no idempotency key)
+    const finalReferenceId = referenceId || `VLR-${loanId}-S${schedule.id}`;
+
+    // Idempotency check (works for both key and no-key cases)
+    const existingRepayment = await client.query(
+      `SELECT amount, reference_id
+       FROM vicoba_loan_repayments
+       WHERE reference_id = $1
+       LIMIT 1`,
+      [finalReferenceId]
+    );
+
+    if (existingRepayment.rows.length === 1) {
+      const existingAmount = Number(existingRepayment.rows[0].amount);
+
+      if (existingAmount !== amountNum) {
+        await client.query('ROLLBACK');
+        throw Object.assign(
+          new Error('Idempotency key tayari ilitumika kwa kiasi tofauti.'),
+          { statusCode: 409 }
+        );
+      }
+
+      await client.query('ROLLBACK');
+      return {
+        success: true,
+        referenceId: finalReferenceId,
+        amount: existingAmount,
+        dedup: true,
+        message: 'Malipo haya tayari yalipokelewa.',
+      };
+    }
 
     // Check for late repayment penalty
     const today = new Date();
@@ -1261,9 +1269,9 @@ async function repayLoan(userId, loanId, amount, note, idempotencyKey = null) {
 
     const totalDeduct = amountNum + penaltyAmount;
 
-    await fin.walletToGroup({ client, userId, groupId: loan.group_id, groupAccount: 'VICOBA_GROUP', groupSql: 'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance + $1 WHERE id = $2', amount: amountNum, reference: `${referenceId}:WG`, description: 'VICOBA Loan Repayment', productType: 'VICOBA', productRef: String(loan.group_id) });
+    await fin.walletToGroup({ client, userId, groupId: loan.group_id, groupAccount: 'VICOBA_GROUP', groupSql: 'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance + $1 WHERE id = $2', amount: amountNum, reference: `${finalReferenceId}:WG`, description: 'VICOBA Loan Repayment', productType: 'VICOBA', productRef: String(loan.group_id) });
     if (penaltyAmount > 0) {
-      await fin.debitWallet({ client, userId, amount: penaltyAmount, reference: `${referenceId}:DR`, toAccount: 'PLATFORM_FEES', description: 'VICOBA Late Loan Penalty' });
+      await fin.debitWallet({ client, userId, amount: penaltyAmount, reference: `${finalReferenceId}:DR`, toAccount: 'PLATFORM_FEES', description: 'VICOBA Late Loan Penalty' });
     }
 
     // Update schedule
@@ -1294,29 +1302,37 @@ async function repayLoan(userId, loanId, amount, note, idempotencyKey = null) {
       await client.query("UPDATE vicoba_loan_requests SET status = 'REPAID' WHERE id = $1", [loanId]);
     }
 
-    // Record penalty if late
+    // Record penalty if late (only if not already assessed for this installment)
     if (penaltyAmount > 0) {
-      await client.query(
-        `INSERT INTO vicoba_penalties (group_id, user_id, penalty_type, amount, reason, related_loan_id, status, paid_at)
-         VALUES ($1, $2, 'LATE_LOAN_REPAYMENT', $3, $4, $5, 'PAID', NOW())`,
-        [loan.group_id, userId, penaltyAmount, `Late repayment for installment ${schedule.installment_number}`, loanId]
+      const existingPenalty = await client.query(
+        `SELECT id FROM vicoba_penalties
+         WHERE related_loan_id = $1 AND penalty_type = 'LATE_LOAN_REPAYMENT'
+           AND reason LIKE $2`,
+        [loanId, `%installment ${schedule.installment_number}%`]
       );
+      if (existingPenalty.rows.length === 0) {
+        await client.query(
+          `INSERT INTO vicoba_penalties (group_id, user_id, penalty_type, amount, reason, related_loan_id, status, paid_at)
+           VALUES ($1, $2, 'LATE_LOAN_REPAYMENT', $3, $4, $5, 'PAID', NOW())`,
+          [loan.group_id, userId, penaltyAmount, `Late repayment for installment ${schedule.installment_number}`, loanId]
+        );
+      }
     }
 
     await client.query(
       `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
        VALUES ($1, $2, $3, 0, $3, 'SUCCESS', 'VICOBA_LOAN_REPAYMENT', $4)`,
-      [referenceId, userId, totalDeduct, JSON.stringify({ group_id: loan.group_id, loan_id: loanId, penalty: penaltyAmount })]
+      [finalReferenceId, userId, totalDeduct, JSON.stringify({ group_id: loan.group_id, loan_id: loanId, penalty: penaltyAmount })]
     );
 
     await client.query(
       `INSERT INTO vicoba_loan_repayments (loan_id, schedule_id, user_id, amount, reference_id, note)
        VALUES ($1, $2, $3, $4, $5, $6)`,
-      [loanId, schedule.id, userId, amountNum, referenceId, note || null]
+      [loanId, schedule.id, userId, amountNum, finalReferenceId, note || null]
     );
 
     await client.query('COMMIT');
-    await logAudit({ eventType: 'VICOBA_LOAN_REPAYMENT', action: 'CREATE', entityType: 'VICOBA_LOAN_REPAYMENT', userId, entityId: loanId, referenceId, amount: amountNum, afterData: { group_id: loan.group_id, outstanding: Math.max(0, newOutstanding) } });
+    await logAudit({ eventType: 'VICOBA_LOAN_REPAYMENT', action: 'CREATE', entityType: 'VICOBA_LOAN_REPAYMENT', userId, entityId: loanId, referenceId: finalReferenceId, amount: amountNum, afterData: { group_id: loan.group_id, outstanding: Math.max(0, newOutstanding) } });
 
     const msg = isLate
       ? `Habari ${user.full_name}, umelipa deni la TSh ${formatMoney(amountNum)} + faini ya TSh ${formatMoney(penaltyAmount)}. Salio inayobaki: TSh ${formatMoney(Math.max(0, newOutstanding))}.`
@@ -1324,7 +1340,7 @@ async function repayLoan(userId, loanId, amount, note, idempotencyKey = null) {
     await sendSMS(user.phone_number, msg);
 
     return {
-      success: true, referenceId, isLate, penaltyAmount,
+      success: true, referenceId: finalReferenceId, isLate, penaltyAmount,
       remainingBalance: Math.max(0, newOutstanding),
       fullyRepaid: newOutstanding <= 0,
       message: newOutstanding <= 0 ? 'Mkopo umelipwa kikamilifu!' : 'Malipo yamepokewa.',
