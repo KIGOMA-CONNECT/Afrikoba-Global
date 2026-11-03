@@ -1452,10 +1452,10 @@ async function approveWithdrawal(actorUserId, withdrawalId, { approved, note }) 
     if (!approved) {
       await client.query(
         `UPDATE vicoba_withdrawals SET status = 'REJECTED',
-           chairman_id = COALESCE(chairman_id, CASE WHEN $2 THEN $1 END),
-           treasurer_id = COALESCE(treasurer_id, CASE WHEN $3 THEN $1 END),
-           chairman_note = COALESCE(chairman_note, CASE WHEN $2 THEN $4 END),
-           treasurer_note = COALESCE(treasurer_note, CASE WHEN $3 THEN $4 END)
+           chairman_id = COALESCE(chairman_id, CASE WHEN $2::boolean THEN $1::integer END),
+           treasurer_id = COALESCE(treasurer_id, CASE WHEN $3::boolean THEN $1::integer END),
+           chairman_note = COALESCE(chairman_note, CASE WHEN $2::boolean THEN $4::text END),
+           treasurer_note = COALESCE(treasurer_note, CASE WHEN $3::boolean THEN $4::text END)
          WHERE id = $5`,
         [actorUserId, isChair, isTreasurer, note || 'Imekataliwa', withdrawalId]
       );
@@ -1466,10 +1466,10 @@ async function approveWithdrawal(actorUserId, withdrawalId, { approved, note }) 
 
     await client.query(
       `UPDATE vicoba_withdrawals SET
-         chairman_id = COALESCE(chairman_id, CASE WHEN $2 THEN $1 END),
-         treasurer_id = COALESCE(treasurer_id, CASE WHEN $3 THEN $1 END),
-         chairman_note = COALESCE(chairman_note, CASE WHEN $2 THEN $4 END),
-         treasurer_note = COALESCE(treasurer_note, CASE WHEN $3 THEN $4 END),
+         chairman_id = COALESCE(chairman_id, CASE WHEN $2::boolean THEN $1::integer END),
+         treasurer_id = COALESCE(treasurer_id, CASE WHEN $3::boolean THEN $1::integer END),
+         chairman_note = COALESCE(chairman_note, CASE WHEN $2::boolean THEN $4::text END),
+         treasurer_note = COALESCE(treasurer_note, CASE WHEN $3::boolean THEN $4::text END),
          chairman_at = CASE WHEN $2 AND chairman_id IS NULL THEN NOW() ELSE chairman_at END,
          treasurer_at = CASE WHEN $3 AND treasurer_id IS NULL THEN NOW() ELSE treasurer_at END
        WHERE id = $5`,

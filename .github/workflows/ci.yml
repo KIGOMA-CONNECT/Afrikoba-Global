@@ -104,6 +104,7 @@ jobs:
           node tests/test-vicoba-bonus.js
           node tests/test-vicoba-socialfund.js
           node tests/test-vicoba-withdrawal.js
+          node tests/test-vicoba-approveWithdrawal.js
           node tests/test-vicoba-approveLoan.js
           node tests/test-concurrency-bp.js
           node tests/money-path-integrity.phase68.test.js
