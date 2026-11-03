@@ -223,22 +223,19 @@ async function processPayout(partner, payload) {
     await client.query('BEGIN');
     const p = (await client.query('SELECT * FROM partners WHERE id=$1 FOR UPDATE', [partner.id])).rows[0];
     if (Number(p.balance) < amountNum) {
-    const ref = generateReference('BPF');
-    await logPartnerTxn(partner.id, 'FAILED', amountNum, ref, request_id, phone, 'FAILED');
-    throw badge('Salio la partner halitoshi.', 400);
-  }
+      const ref = generateReference('BPF');
+      await logPartnerTxn(partner.id, 'FAILED', amountNum, ref, request_id, phone, 'FAILED');
+      throw badge('Salio la partner halitoshi.', 400);
+    }
 
-  const reference = generateReference('BP');
-  const u = (await client.query('SELECT id, wallet_balance FROM users WHERE phone_number=$1 FOR UPDATE', [phone])).rows[0];
-  if (!u) {
-    await client.query('ROLLBACK');
-    client.release();
-    throw badge('Mteja hapatikani kwenye mfumo.', 404);
-  }
-    if (!u.rows.length) {
+    const reference = generateReference('BP');
+    const uRes = await client.query('SELECT id, wallet_balance FROM users WHERE phone_number=$1 FOR UPDATE', [phone]);
+    if (!uRes.rows.length) {
       await client.query('ROLLBACK');
+      client.release();
       throw badge('Mteja hapatikani kwenye mfumo.', 404);
     }
+    const u = uRes.rows[0];
     await client.query('UPDATE partners SET balance = balance - $1, monthly_volume = monthly_volume + $1, updated_at=NOW() WHERE id=$2', [amountNum, partner.id]);
     const creditResult = await fin.creditWallet({
       client,
