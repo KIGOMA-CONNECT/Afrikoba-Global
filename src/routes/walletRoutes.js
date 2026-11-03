@@ -147,7 +147,7 @@ router.post('/withdraw', enforceDeviceTrust, requireKycLevel(1), validate(schema
       });
     }
 
-    const result = await walletService.withdrawToMno(req.user.id, amount, provider);
+    const result = await walletService.withdrawToMno(req.user.id, amount, provider, req.headers['idempotency-key'] || null);
     return res.json(result);
   } catch (error) {
     next(error);

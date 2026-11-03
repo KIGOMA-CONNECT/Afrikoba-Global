@@ -2,14 +2,13 @@
  * AFRIKOBA GLOBAL - DISASTER RECOVERY / RESTORE VERIFICATION
  * Closes GAP AFK-INST-18 required update + standards-audit rec #5:
  * proves the daily pg_dump can actually be RESTORED and that the
- * restored database is structurally + financially sound. Steps:
- *  - pg_dump the live source DB to a temp file
- *  - static verify (CREATE TABLE / COPY / CREATE INDEX present)
- *  - restore the dump into a scratch database via psql
- *  - verify scratch matches source (object + row counts)
- *  - post-restore integrity (balanced journal, non-negative wallets,
- *    serials ahead of max ids, partitions intact, migrations replay)
- *  - drop the scratch database (no residue)
+ * restored database is structurally + financially sound.
+ *
+ * Refactored (Phase 68):
+ *  - Fails fast on backup or restore failure (no misleading downstream errors)
+ *  - Version check: pg_dump and psql must be PostgreSQL 16
+ *  - Cleanup in finally block (scratch DB + temp dump)
+ *  - Reports executable, exit code, stderr and failure stage
  * ============================================================ */
 const fs = require('fs');
 const os = require('os');
@@ -23,6 +22,7 @@ const DB_PORT = parseInt(process.env.DB_PORT || '5432', 10);
 const DB_USER = process.env.DB_USER || 'postgres';
 const DB_PASS = process.env.DB_PASSWORD || process.env.PGPASSWORD || 'postgres';
 const DB_NAME = process.env.DB_NAME || 'afrikoba_global';
+const EXPECTED_PG_MAJOR = 16;
 const WIN_PG_BIN = 'C:\\Program Files\\PostgreSQL\\18\\bin\\';
 const isWin = process.platform === 'win32';
 const PGDUMP_PATH = process.env.PGDUMP_PATH || (isWin ? '"' + WIN_PG_BIN + 'pg_dump.exe"' : 'pg_dump');
@@ -32,11 +32,11 @@ let passed = 0;
 let failed = 0;
 const failures = [];
 
-function ok(label) { passed++; console.log(`  ✓ ${label}`); }
+function ok(label) { passed++; console.log(`  \u2713 ${label}`); }
 function fail(label, extra) {
   failed++;
   failures.push(label);
-  console.log(`  ✗ ${label}${extra ? ' :: ' + extra : ''}`);
+  console.log(`  \u2717 ${label}${extra ? ' :: ' + extra : ''}`);
 }
 async function expect(cond, label, extra) {
   if (cond) ok(label);
@@ -46,6 +46,8 @@ async function section(label) { console.log('\n--- ' + label + ' ---'); }
 
 let scratchName = '';
 let dumpFile = '';
+let restoreSucceeded = false;
+let backupSucceeded = false;
 
 async function maint(cmd, params) {
   const c = new Client({
@@ -74,8 +76,21 @@ async function scratch(cmd, params) {
 }
 
 function stripQuotes(p) {
-  const s = p.replace(/"/g, '');
-  return s;
+  return p.replace(/"/g, '');
+}
+
+function checkVersion(bin, label) {
+  try {
+    const out = execFileSync(bin, ['--version'], { stdio: 'pipe', timeout: 10000 }).toString().trim();
+    const m = out.match(/(\d+)\./);
+    const major = m ? parseInt(m[1], 10) : null;
+    if (major !== EXPECTED_PG_MAJOR) {
+      return { ok: false, version: out, major, error: `${label} major version ${major} != ${EXPECTED_PG_MAJOR}` };
+    }
+    return { ok: true, version: out, major };
+  } catch (e) {
+    return { ok: false, version: null, major: null, error: `${label} --version failed: ${e.message}` };
+  }
 }
 
 async function run() {
@@ -84,14 +99,32 @@ async function run() {
   const dumpBin = stripQuotes(PGDUMP_PATH);
   const psqlBin = stripQuotes(PSQL_PATH);
 
+  // --- Step 0: Version check ---
+  await section('0. PostgreSQL client version check');
+  const dumpVer = checkVersion(dumpBin, 'pg_dump');
+  const psqlVer = checkVersion(psqlBin, 'psql');
+  await expect(dumpVer.ok, `pg_dump is PostgreSQL ${EXPECTED_PG_MAJOR} (${dumpVer.version || dumpVer.error})`);
+  await expect(psqlVer.ok, `psql is PostgreSQL ${EXPECTED_PG_MAJOR} (${psqlVer.version || psqlVer.error})`);
+  if (!dumpVer.ok || !psqlVer.ok) {
+    console.error('\nFATAL: Incompatible PostgreSQL client version. Aborting restore verification.');
+    await cleanup();
+    process.exit(1);
+  }
+
+  // --- Step 1: Backup creation ---
   await section('1. Backup creation via pg_dump');
   try {
     execFileSync(dumpBin, ['--no-owner', '--no-privileges', '-h', DB_HOST, '-p', String(DB_PORT), '-U', DB_USER, '-d', DB_NAME, '-f', dumpFile], {
       timeout: 300000, stdio: 'pipe', env: { ...process.env, PGPASSWORD: DB_PASS },
     });
+    backupSucceeded = true;
     ok('pg_dump exited 0');
   } catch (e) {
-    fail('pg_dump exited 0', e.message.split('\n').slice(0, 3).join(' '));
+    const stderr = e.stderr ? e.stderr.toString().trim() : '';
+    const code = e.status || e.code || 'unknown';
+    fail('pg_dump exited 0', `executable=${dumpBin} exit_code=${code} stderr=${stderr.slice(0, 300)}`);
+    await cleanup();
+    process.exit(1);
   }
   const stats = fs.existsSync(dumpFile) ? fs.statSync(dumpFile) : null;
   await expect(!!stats && stats.size > 1000, `dump file created + non-empty (${stats ? stats.size : 0} bytes)`);
@@ -102,26 +135,39 @@ async function run() {
     await expect(content.includes('CREATE INDEX'), 'dump contains CREATE INDEX statements');
   }
 
+  // --- Step 2: Restore ---
   await section('2. Restore into scratch database');
+  let srcTables = 0;
   try {
     const src = await pool.query('SELECT count(*)::int AS n FROM pg_tables WHERE schemaname = $1', ['public']);
-    const srcTables = src.rows[0].n;
+    srcTables = src.rows[0].n;
     await maint('CREATE DATABASE ' + scratchName);
     ok(`scratch database created (${scratchName})`);
-    try {
-      execFileSync(psqlBin, ['-v', 'ON_ERROR_STOP=1', '-h', DB_HOST, '-p', String(DB_PORT), '-U', DB_USER, '-d', scratchName, '-f', dumpFile], {
-        timeout: 600000, stdio: 'pipe', env: { ...process.env, PGPASSWORD: DB_PASS },
-      });
-      ok('psql restore exited 0');
-      const restored = await scratch("SELECT count(*)::int AS n FROM pg_tables WHERE schemaname = 'public'");
-      await expect(restored.rows[0].n === srcTables, `restored table count matches source (${restored.rows[0].n} == ${srcTables})`);
-    } catch (e) {
-      fail('psql restore exited 0', String(e.message).split('\n').slice(0, 4).join(' '));
-    }
   } catch (e) {
-    fail('scratch database created + restorable', e.message);
+    fail('scratch database created', e.message);
+    await cleanup();
+    process.exit(1);
   }
 
+  try {
+    execFileSync(psqlBin, ['-v', 'ON_ERROR_STOP=1', '-h', DB_HOST, '-p', String(DB_PORT), '-U', DB_USER, '-d', scratchName, '-f', dumpFile], {
+      timeout: 600000, stdio: 'pipe', env: { ...process.env, PGPASSWORD: DB_PASS },
+    });
+    restoreSucceeded = true;
+    ok('psql restore exited 0');
+    const restored = await scratch("SELECT count(*)::int AS n FROM pg_tables WHERE schemaname = 'public'");
+    await expect(restored.rows[0].n === srcTables, `restored table count matches source (${restored.rows[0].n} == ${srcTables})`);
+  } catch (e) {
+    const stderr = e.stderr ? e.stderr.toString().trim() : '';
+    const code = e.status || e.code || 'unknown';
+    fail('psql restore exited 0', `executable=${psqlBin} exit_code=${code} stderr=${stderr.slice(0, 500)}`);
+    // FAIL FAST: skip all dependent checks
+    console.log('\n  !! Restore failed — skipping all dependent validation checks.');
+    await cleanup();
+    process.exit(1);
+  }
+
+  // --- Step 3: Row-count parity (only if restore succeeded) ---
   await section('3. Row-count parity with source');
   for (const table of ['users', 'transactions', 'wallet_ledger', 'journal_entries', 'audit_logs', 'ledger_accounts', 'supported_countries', 'schema_migrations']) {
     try {
@@ -133,6 +179,7 @@ async function run() {
     }
   }
 
+  // --- Step 4: Post-restore financial integrity ---
   await section('4. Post-restore financial integrity');
   const unbalanced = await scratch(
     `SELECT COUNT(*)::int AS n FROM (
@@ -146,6 +193,7 @@ async function run() {
   const negWallets = await scratch(`SELECT COUNT(*)::int AS n FROM users WHERE wallet_balance < 0`);
   await expect(negWallets.rows[0].n === 0, `no negative wallet balances (got ${negWallets.rows[0].n})`);
 
+  // --- Step 5: Serial IDs + partitioning ---
   await section('5. Serializable IDs + partitioning survive restore');
   for (const table of ['users', 'transactions', 'journal_entries', 'audit_logs', 'supported_countries']) {
     const seqRes = await scratch(`SELECT pg_get_serial_sequence($1, 'id') AS seq`, [`public.${table}`]);
@@ -168,34 +216,43 @@ async function run() {
   const jparts = (await scratch(`SELECT COUNT(*)::int AS n FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid WHERE c.relname LIKE 'journal_entries_y%'`)).rows[0].n;
   await expect(jparts >= 13, `journal_entries month partitions restored (${jparts})`);
 
+  // --- Step 6: Migration ledger ---
   await section('6. Migration ledger replays cleanly');
   const srcMigs = await pool.query('SELECT version FROM schema_migrations ORDER BY version');
   const rstMigs = await scratch('SELECT version FROM schema_migrations ORDER BY version');
   await expect(srcMigs.rows.length === rstMigs.rows.length && srcMigs.rows.every((r, i) => r.version === rstMigs.rows[i].version),
     `all ${rstMigs.rows.length} applied migrations present after restore`);
 
-  await section('7. Cleanup');
-  try {
-    await maint('DROP DATABASE ' + scratchName + ' WITH (FORCE)');
-    ok('scratch database dropped');
-  } catch (e) {
-    fail('scratch database dropped', e.message.slice(0, 120));
-  }
-  try {
-    fs.unlinkSync(dumpFile);
-    ok('temp dump removed');
-  } catch (e) {
-    fail('temp dump removed', e.message.slice(0, 120));
-  }
+  // --- Step 7: Cleanup ---
+  await cleanup();
 
   console.log(`\n===== RESTORE VERIFY: ${passed} passed, ${failed} failed =====`);
   if (failures.length) console.log('FAILURES: ' + failures.join(' | '));
   process.exit(failed ? 1 : 0);
 }
 
+async function cleanup() {
+  await section('7. Cleanup');
+  if (scratchName) {
+    try {
+      await maint('DROP DATABASE ' + scratchName + ' WITH (FORCE)');
+      ok('scratch database dropped');
+    } catch (e) {
+      fail('scratch database dropped', e.message.slice(0, 120));
+    }
+  }
+  if (dumpFile && fs.existsSync(dumpFile)) {
+    try {
+      fs.unlinkSync(dumpFile);
+      ok('temp dump removed');
+    } catch (e) {
+      fail('temp dump removed', e.message.slice(0, 120));
+    }
+  }
+}
+
 run().catch(async (e) => {
   console.error('SUITE CRASH:', e.message);
-  try { if (scratchName) await maint('DROP DATABASE ' + scratchName + ' WITH (FORCE)'); } catch (_) {}
-  try { if (dumpFile && fs.existsSync(dumpFile)) fs.unlinkSync(dumpFile); } catch (_) {}
+  await cleanup();
   process.exit(1);
 });

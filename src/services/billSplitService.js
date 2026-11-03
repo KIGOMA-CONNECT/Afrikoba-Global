@@ -115,16 +115,18 @@ async function paySplit(splitId, userId, amount) {
       await client.query(`UPDATE bill_splits SET status = 'PARTIAL', updated_at = NOW() WHERE id = $1`, [splitId]);
     }
 
-    await fin.internalTransfer({
-      client, fromUserId: userId, toUserId: creatorId, amount,
-      reference: ref, description: `Bill split payment for split ${splitId}`
-    });
-
-    await client.query(
-      `INSERT INTO transactions (user_id, type, total_charged, commission, status, reference_id, meta)
-       VALUES ($1, 'TRANSFER', $2, 0, 'SUCCESS', $3, $4)`,
+    const txResult = await client.query(
+      `INSERT INTO transactions (user_id, type, total_charged, wallet_amount, commission, status, reference_id, meta)
+       VALUES ($1, 'TRANSFER', $2, $2, 0, 'SUCCESS', $3, $4)
+       RETURNING id`,
       [userId, amount, ref, JSON.stringify({ split_id: splitId, type: 'BILL_SPLIT', unique: ref })]
     );
+
+    await fin.internalTransfer({
+      client, fromUserId: userId, toUserId: creatorId, amount,
+      reference: ref, description: `Bill split payment for split ${splitId}`,
+      transactionId: txResult.rows[0].id
+    });
 
     await client.query('COMMIT');
   } catch (error) {

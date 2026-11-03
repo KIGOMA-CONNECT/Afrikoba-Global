@@ -240,17 +240,17 @@ async function section(title) { console.log(`\n== ${title} ==`); }
   const webhookData = await resWebhook.json();
   await expect(resWebhook.status === 200 && webhookData.success, 'Callback ya AzamPay inathibitisha deposit', `${resWebhook.status} ${JSON.stringify(webhookData)}`);
   const depAft = await balanceOf(regB.data.user.id);
-  await expect(depAft.wallet === depBef.wallet + 100000, 'Deposit inaongezwa kwenye wallet (wallet_amount)', `${depBef.wallet} → ${depAft.wallet}`);
+  await expect(depAft.wallet === depBef.wallet, 'Deposit inabaki PENDING (AzamPay disabled) - hakuna credit', `${depBef.wallet} → ${depAft.wallet}`);
 
   const revMid = await pool.query('SELECT total_commission FROM company_revenue WHERE id = 1');
-  await expect(Number(revMid.rows[0].total_commission) - Number(revBefore.rows[0].total_commission) === 1000, 'Commission 1% inaenda company_revenue');
+  await expect(Number(revMid.rows[0].total_commission) - Number(revBefore.rows[0].total_commission) === 0, 'Hakuna commission (deposit bado PENDING, AzamPay disabled)');
 
   const wbDup = await fetch(BASE + '/api/payments/azampay-callback', {
     method: 'POST', headers: hdr, body: whBody,
   });
   const dupData = await wbDup.json();
   const depAfterDup = await balanceOf(regB.data.user.id);
-  await expect(dupData.duplicate === true && depAfterDup.wallet === depAft.wallet, 'Duplicate callback HAIRUDISHI fedha mara mbili (idempotency)', JSON.stringify(dupData));
+  await expect(dupData.pending === true && depAfterDup.wallet === depAft.wallet, 'Duplicate callback HAIRUDISHI fedha mara mbili (idempotency)', JSON.stringify(dupData));
 
   const wbWrong = await fetch(BASE + '/api/payments/azampay-callback', {
     method: 'POST', headers: { 'Content-Type': 'application/json', 'x-webhook-secret': 'wrong_secret' },
@@ -258,21 +258,52 @@ async function section(title) { console.log(`\n== ${title} ==`); }
   });
   await expect(wbWrong.status === 401, 'Webhook secret mbaya inakataliwa (401)', `${wbWrong.status}`);
 
-  // Withdrawal + reconciliation refund
-  const wd = await api('POST', '/api/wallet/withdraw', regC.data.token, { amount: 5000, provider: 'Mpesa' });
-  await expect(wd.status === 200, 'Withdrawal inaanza (PENDING)', `${wd.status}`);
-  const afterWd = await balanceOf(regC.data.user.id);
-  await expect(afterWd.wallet === cAfter.wallet - 5000, 'Salio linaondolewa kwa withdrawal', `${afterWd.wallet}`);
+  // Withdrawal (provider disabled) - capture state before the rejected request.
+  const wdTxBefore = (await pool.query(
+    "SELECT count(*)::int AS n FROM transactions WHERE user_id = $1 AND type = 'WITHDRAWAL'",
+    [regC.data.user.id]
+  )).rows[0].n;
+  const wdLedgerBefore = (await pool.query(
+    'SELECT count(*)::int AS n FROM wallet_ledger WHERE from_user_id = $1', [regC.data.user.id]
+  )).rows[0].n;
+  const wdLockedBefore = Number((await pool.query(
+    'SELECT locked_balance FROM users WHERE id = $1', [regC.data.user.id]
+  )).rows[0].locked_balance);
 
-  await pool.query(`UPDATE transactions SET created_at = NOW() - INTERVAL '16 minutes' WHERE reference_id = $1`, [wd.data.referenceId]);
-  const recon = await reconcilePendingDeposits();
-  await expect(recon.processedWithdrawals.length >= 1, 'Reconciliation inachakata withdrawal iliyokwama', JSON.stringify(recon));
-  // v2 policy: withdrawal inatatuliwa tu kulingana na hali ya gateway.
-  // Matokeo: watumiaji hawawezi kukosa fedha - ama zimerudishwa (gateway
-  // FAILED -> refund) au zimesalia kwenye hold (gateway UNKNOWN/PENDING).
-  const afterRefund = await balanceOf(regC.data.user.id);
-  await expect(afterRefund.wallet === cAfter.wallet || afterRefund.wallet === afterWd.wallet,
-    'Fedha hazipotei kwenye withdrawal (refund au hold)', `ledger=${afterRefund.wallet} base=${cAfter.wallet} afterWd=${afterWd.wallet}`);
+  const wd = await api('POST', '/api/wallet/withdraw', regC.data.token, { amount: 5000, provider: 'Mpesa' });
+  await expect(wd.status === 503 && wd.data.code === 'AZAMPAY_DISABLED', 'Withdrawal inakataliwa (AzamPay disabled)', `${wd.status} ${JSON.stringify(wd.data)}`);
+  const afterWd = await balanceOf(regC.data.user.id);
+  await expect(afterWd.wallet === cAfter.wallet, 'Salio HAILIONDOLIWI (withdrawal gate closed, no hold)', `${afterWd.wallet}`);
+
+  const wdTxAfter = (await pool.query(
+    "SELECT count(*)::int AS n FROM transactions WHERE user_id = $1 AND type = 'WITHDRAWAL'", [regC.data.user.id]
+  )).rows[0].n;
+  await expect(wdTxAfter === wdTxBefore, 'Hakuna withdrawal transaction mpya (gate closed)', wdTxBefore + ' -> ' + wdTxAfter);
+
+  const wdLedgerAfter = (await pool.query(
+    'SELECT count(*)::int AS n FROM wallet_ledger WHERE from_user_id = $1', [regC.data.user.id]
+  )).rows[0].n;
+  await expect(wdLedgerAfter === wdLedgerBefore, 'Hakuna ledger movement (gate closed)', wdLedgerBefore + ' -> ' + wdLedgerAfter);
+
+  const wdLockedAfter = Number((await pool.query(
+    'SELECT locked_balance FROM users WHERE id = $1', [regC.data.user.id]
+  )).rows[0].locked_balance);
+  await expect(wdLockedAfter === wdLockedBefore, 'Hakuna hold (locked_balance unchanged)', wdLockedBefore + ' -> ' + wdLockedAfter);
+
+  // Isolated reconciliation test: a known PROCESSING withdrawal must NOT be
+  // settled when AzamPay is disabled.
+  const isoRef = 'WD-ISO-' + nowSuffix();
+  await pool.query(
+    "INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, created_at) VALUES ($1, $2, 1000, 0, 1000, 'PROCESSING', 'WITHDRAWAL', NOW() - INTERVAL '16 minutes')",
+    [isoRef, regC.data.user.id]
+  );
+  const isoRecon = await reconcilePendingDeposits();
+  await expect(isoRecon.providerDisabled === true, 'Reconciliation inaripoti provider disabled', JSON.stringify(isoRecon));
+  await expect(isoRecon.processedWithdrawals.some((w) => w.reference_id === isoRef),
+    'Reconciliation inagundua withdrawal iliyokwama (found, not settled)', JSON.stringify(isoRecon));
+  const isoAfter = await pool.query('SELECT status FROM transactions WHERE reference_id = $1', [isoRef]);
+  await expect(isoAfter.rows[0].status === 'PROCESSING', 'Withdrawal inabaki PROCESSING (hakuna settle)', isoAfter.rows[0].status);
+  await pool.query('DELETE FROM transactions WHERE reference_id = $1', [isoRef]);
 
   // ------------------------------------------------------------
   await section('4. VICOBA — kikundi, join-code, mialiko, hisa, mikopo, usalama');

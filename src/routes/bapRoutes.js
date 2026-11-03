@@ -61,7 +61,7 @@ router.post('/admin/partners/:id/suspend', authRequired, requireRoles('ADMIN'), 
 });
 
 router.post('/admin/partners/:id/fund', authRequired, requireRoles('ADMIN'), async (req, res, next) => {
-  try { res.json({ success: true, result: await bap.fundPartner(req.user.id, req.params.id, req.body.amount) }); }
+  try { res.json({ success: true, result: await bap.fundPartner(req.user.id, req.params.id, req.body.amount, req.body.reference) }); }
   catch (e) { next(e); }
 });
 

@@ -260,19 +260,27 @@ async function genInvoiceHealth(userId) {
 
 async function genPayrollHealth(userId) {
   const r = await pool.query(
-    `WITH months AS (
-       SELECT b.owner_id,
-              EXTRACT(MONTH FROM pr.created_at)::int AS m,
-              EXTRACT(YEAR FROM pr.created_at)::int AS y,
-              SUM(pr.total_amount)::numeric AS total,
-              COUNT(*)::int AS runs
-         FROM payroll_runs pr
-        JOIN business_accounts b ON b.owner_id = pr.created_by
-        WHERE pr.created_by = $1 AND pr.created_at > NOW() - INTERVAL '90 days'
-        GROUP BY b.owner_id, m, y
-     )
-     SELECT COALESCE((SELECT total FROM months WHERE m = EXTRACT(MONTH FROM NOW()) AND y = EXTRACT(YEAR FROM NOW())),0)::numeric AS current_month,
-            COALESCE((SELECT total FROM months WHERE m = EXTRACT(MONTH FROM NOW()) - 1),0)::numeric AS prev_month`,
+    `SELECT
+       COALESCE((
+         SELECT SUM(pr.total_amount)::numeric
+           FROM payroll_runs pr
+          WHERE pr.created_by = $1
+            AND pr.created_at >= date_trunc('month', NOW())
+            AND pr.created_at < date_trunc('month', NOW()) + INTERVAL '1 month'
+            AND EXISTS (
+              SELECT 1 FROM business_accounts b WHERE b.owner_id = pr.created_by
+            )
+       ), 0)::numeric AS current_month,
+       COALESCE((
+         SELECT SUM(pr.total_amount)::numeric
+           FROM payroll_runs pr
+          WHERE pr.created_by = $1
+            AND pr.created_at >= date_trunc('month', NOW()) - INTERVAL '1 month'
+            AND pr.created_at < date_trunc('month', NOW())
+            AND EXISTS (
+              SELECT 1 FROM business_accounts b WHERE b.owner_id = pr.created_by
+            )
+       ), 0)::numeric AS prev_month`,
     [userId]
   );
   const row = r.rows[0] || { current_month: 0, prev_month: 0 };

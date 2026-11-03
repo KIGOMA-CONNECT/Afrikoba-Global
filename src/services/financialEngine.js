@@ -19,6 +19,7 @@ const pool = require('../config/db');
 const { generateReference } = require('../utils/helpers');
 const logger = require('../utils/logger');
 const { startSpan } = require('../utils/trace');
+const { verifyDepositJournal } = require('./depositVerification');
 
 /** Look up (and lazily create) an internal account id by its code. */
 async function accountIdByCode(code, client) {
@@ -43,8 +44,14 @@ async function accountIdByCode(code, client) {
  * Attempts to claim the reference; if already present, we dedup.
  * Runs *inside* the caller's transaction (client must be mid-BEGIN).
  * Returns { claimed: boolean } - true means this call owns the operation.
+ *
+ * With `validateShape: true`, a reused reference must describe the same
+ * operation. A different operation type, user or amount is a programming error,
+ * not a legitimate replay, so it raises `OPERATION_SHAPE_MISMATCH` (409)
+ * instead of silently returning `claimed: false`. `postDeposit` keeps its own
+ * richer duplicate handling and does not opt in.
  */
-async function claimOperation({ client, operationType, reference, transactionId = null, userId = null, amount = 0 }) {
+async function claimOperation({ client, operationType, reference, transactionId = null, userId = null, amount = 0, validateShape = false }) {
   const r = await client.query(
     `INSERT INTO financial_operations (operation_type, reference_id, transaction_id, user_id, amount, status, attempts)
      VALUES ($1,$2,$3,$4,$5,'NEW',1)
@@ -52,7 +59,192 @@ async function claimOperation({ client, operationType, reference, transactionId 
      RETURNING id`,
     [operationType, reference, transactionId, userId, amount]
   );
-  return { claimed: r.rows.length > 0 };
+  if (r.rows.length > 0) return { claimed: true };
+
+  if (validateShape) {
+    const existing = await client.query(
+      `SELECT operation_type, transaction_id, user_id, amount
+         FROM financial_operations
+        WHERE reference_id = $1`,
+      [reference]
+    );
+    const row = existing.rows[0];
+    if (row) {
+      const mismatch = [];
+      if (String(row.operation_type) !== String(operationType)) mismatch.push('operation_type');
+      if (userId != null && row.user_id != null && String(row.user_id) !== String(userId)) mismatch.push('user_id');
+      if (amount != null && Number(amount) > 0 && Math.abs(Number(row.amount) - Number(amount)) >= 0.005) mismatch.push('amount');
+      if (transactionId != null && row.transaction_id != null && String(row.transaction_id) !== String(transactionId)) mismatch.push('transaction_id');
+      if (mismatch.length) {
+        const error = new Error(`OPERATION_SHAPE_MISMATCH: ${reference} (${mismatch.join(',')})`);
+        error.code = 'OPERATION_SHAPE_MISMATCH';
+        error.statusCode = 409;
+        error.reference = reference;
+        error.mismatch = mismatch;
+        throw error;
+      }
+    }
+  }
+
+  return { claimed: false };
+}
+
+
+/**
+ * Strict replay validation for transaction-linked hold lifecycle operations.
+ * A reused reference is only a valid replay when the operation and its journal
+ * are complete and linked to the exact same business transaction.
+ */
+async function verifyLifecycleReplay({
+  client, operationType, reference, transactionId, userId, amount,
+  accountCode = 'CUSTOMER_WALLET',
+}) {
+  const operationResult = await client.query(
+    `SELECT operation_type, transaction_id, user_id, amount, status
+       FROM financial_operations
+      WHERE reference_id = $1
+      FOR UPDATE`,
+    [reference]
+  );
+
+  const operation = operationResult.rows[0];
+  const mismatch = [];
+  const requestedAmount = Number(amount);
+
+  if (!Number.isFinite(requestedAmount) || requestedAmount <= 0) {
+    mismatch.push('requested_amount_invalid');
+  }
+
+  if (!operation) mismatch.push('operation_missing');
+  else {
+    if (String(operation.operation_type) !== String(operationType)) {
+      mismatch.push('operation_type');
+    }
+
+    const existingTxId = operation.transaction_id == null
+      ? null : String(operation.transaction_id);
+    const expectedTxId = transactionId == null
+      ? null : String(transactionId);
+    if (existingTxId !== expectedTxId) mismatch.push('transaction_id');
+
+    if (String(operation.user_id) !== String(userId)) mismatch.push('user_id');
+
+    if (!Number.isFinite(Number(operation.amount)) ||
+        !Number.isFinite(requestedAmount) ||
+        Math.abs(Number(operation.amount) - requestedAmount) >= 0.005) {
+      mismatch.push('amount');
+    }
+
+    if (operation.status !== 'SUCCESS') mismatch.push('operation_status');
+  }
+
+  const expectedLines = {
+    HOLD: [
+      { account_code: accountCode, direction: 'DR' },
+      { account_code: 'CARD_HOLD', direction: 'CR' },
+    ],
+    RELEASE: [
+      { account_code: 'CARD_HOLD', direction: 'DR' },
+      { account_code: accountCode, direction: 'CR' },
+    ],
+    CAPTURE: [
+      { account_code: 'CARD_HOLD', direction: 'DR' },
+      { account_code: 'MNO_CLEARING', direction: 'CR' },
+    ],
+  }[operationType];
+
+  if (!expectedLines) mismatch.push('unsupported_operation_type');
+
+  const journalResult = await client.query(
+    `SELECT je.transaction_id, je.direction, je.amount,
+            je.entry_group_id, la.account_code
+       FROM journal_entries je
+       JOIN ledger_accounts la ON la.id = je.account_id
+      WHERE je.reference_id = $1
+      ORDER BY la.account_code, je.direction, je.id`,
+    [reference]
+  );
+
+  const journalRows = journalResult.rows;
+
+  if (journalRows.length !== 2) {
+    mismatch.push('journal_line_count');
+  } else if (expectedLines) {
+    const actual = journalRows.map((row) => ({
+      account_code: String(row.account_code),
+      direction: String(row.direction),
+    })).sort((a, b) =>
+      `${a.account_code}:${a.direction}`.localeCompare(
+        `${b.account_code}:${b.direction}`
+      )
+    );
+
+    const expected = expectedLines.map((line) => ({
+      account_code: String(line.account_code),
+      direction: String(line.direction),
+    })).sort((a, b) =>
+      `${a.account_code}:${a.direction}`.localeCompare(
+        `${b.account_code}:${b.direction}`
+      )
+    );
+
+    if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+      mismatch.push('journal_accounts_or_directions');
+    }
+  }
+
+  const expectedTxId = transactionId == null ? null : String(transactionId);
+  let debitTotal = 0;
+  let creditTotal = 0;
+  const groupIds = new Set();
+
+  for (const row of journalRows) {
+    const journalTxId = row.transaction_id == null
+      ? null : String(row.transaction_id);
+
+    if (journalTxId !== expectedTxId) {
+      mismatch.push('journal_transaction_id');
+    }
+
+    const journalAmount = Number(row.amount);
+    if (!Number.isFinite(journalAmount) ||
+        !Number.isFinite(requestedAmount) ||
+        Math.abs(journalAmount - requestedAmount) >= 0.005) {
+      mismatch.push('journal_amount');
+    }
+
+    if (row.direction === 'DR') debitTotal += journalAmount;
+    else if (row.direction === 'CR') creditTotal += journalAmount;
+    else mismatch.push('journal_direction_invalid');
+
+    if (row.entry_group_id == null || String(row.entry_group_id) === '') {
+      mismatch.push('journal_group_missing');
+    } else {
+      groupIds.add(String(row.entry_group_id));
+    }
+  }
+
+  if (groupIds.size !== 1) mismatch.push('journal_group_inconsistent');
+
+  if (!Number.isFinite(debitTotal) ||
+      !Number.isFinite(creditTotal) ||
+      Math.abs(debitTotal - creditTotal) >= 0.0001) {
+    mismatch.push('journal_unbalanced');
+  }
+
+  if (mismatch.length) {
+    const uniqueMismatch = [...new Set(mismatch)];
+    const error = new Error(
+      `FINANCIAL_REPLAY_INTEGRITY_ERROR: ${reference} (${uniqueMismatch.join(',')})`
+    );
+    error.code = 'FINANCIAL_REPLAY_INTEGRITY_ERROR';
+    error.statusCode = 409;
+    error.reference = reference;
+    error.mismatch = uniqueMismatch;
+    throw error;
+  }
+
+  return { dedup: true, reference, transactionId };
 }
 
 /**
@@ -177,276 +369,574 @@ async function guardAgainstDuplicate(groupId, client) {
  * Idempotent on referenceId. Uses the transaction row as the source of truth for
  * whether the deposit was already honoured.
  */
-async function postDeposit({ userId, amount, commission, reference, externalTxId, description = 'Deposit' }) {
-  const client = await pool.connect();
+async function postDeposit({
+  client: suppliedClient,
+  transactionId = null,
+  userId,
+  amount,
+  commission,
+  reference,
+  externalTxId,
+  description = 'Deposit'
+}) {
+  const ownsClient = !suppliedClient;
+  const client = suppliedClient || await pool.connect();
+  let beganTransaction = false;
+
   try {
-    await client.query('BEGIN');
+    if (ownsClient) {
+      await client.query('BEGIN');
+      beganTransaction = true;
+    }
 
     const amountN = normalizeAmount(amount);
     assertPositiveAmount(amountN, 'postDeposit');
+
     const commissionN = commission === undefined || commission === null
       ? 0
       : normalizeAmount(commission);
     assertNonNegativeAmount(commissionN, 'postDeposit.commission');
 
-    // Hard idempotency: claim the reference atomically. A retried reference
-    // returns nothing to post and is reported as a duplicate.
-    const op = await claimOperation({
-      client, operationType: 'DEPOSIT', reference,
-      transactionId: null, userId, amount: amountN,
-    });
-    if (!op.claimed) {
-      await client.query('ROLLBACK');
-      return { dedup: true, reference };
+    if (!reference) {
+      throw new Error('DEPOSIT_REFERENCE_REQUIRED');
     }
 
-    // Post double-entry journal.
+    const op = await claimOperation({
+      client,
+      operationType: 'DEPOSIT',
+      reference,
+      transactionId,
+      userId,
+      amount: amountN,
+    });
+
+    if (!op.claimed) {
+      const existingResult = await client.query(
+        `SELECT operation_type, transaction_id, user_id, amount, status
+           FROM financial_operations
+          WHERE reference_id = $1
+          FOR UPDATE`,
+        [reference]
+      );
+
+      const existing = existingResult.rows[0];
+      const journalResult = await client.query(
+        `SELECT je.entry_group_id,
+                la.account_code,
+                je.direction,
+                SUM(je.amount)::text AS amount,
+                COUNT(*)::int AS line_count,
+                COUNT(*) FILTER (
+                  WHERE je.transaction_id IS DISTINCT FROM $2::integer
+                )::int AS mismatched_transaction_rows
+           FROM journal_entries je
+           JOIN ledger_accounts la ON la.id = je.account_id
+          WHERE je.reference_id = $1
+          GROUP BY je.entry_group_id, la.account_code, je.direction`,
+        [reference, transactionId]
+      );
+
+      const journalComplete = verifyDepositJournal(journalResult.rows, {
+        referenceId: reference,
+        transactionId,
+        amount: amountN,
+        commission: commissionN
+      });
+
+      const sameTransaction =
+        transactionId == null
+          ? existing?.transaction_id == null
+          : String(existing?.transaction_id) === String(transactionId);
+
+      const verified = Boolean(
+        existing &&
+        existing.operation_type === 'DEPOSIT' &&
+        String(existing.user_id) === String(userId) &&
+        Number.isFinite(Number(existing.amount)) &&
+        Math.abs(Number(existing.amount) - amountN) < 0.005 &&
+        existing.status === 'SUCCESS' &&
+        journalComplete &&
+        sameTransaction
+      );
+
+      if (!verified) {
+        const error = new Error(
+          `DEPOSIT_IDEMPOTENCY_CONFLICT: existing reference ${reference} does not match a completed deposit`
+        );
+        error.code = 'DEPOSIT_IDEMPOTENCY_CONFLICT';
+        throw error;
+      }
+
+      if (ownsClient && beganTransaction) {
+        await client.query('ROLLBACK');
+        beganTransaction = false;
+      }
+
+      return { dedup: true, verified: true, reference };
+    }
+
     const journalLines = [
       { accountCode: 'MNO_CLEARING', direction: 'DR', amount: amountN + commissionN },
       { accountCode: 'CUSTOMER_WALLET', direction: 'CR', amount: amountN },
     ];
+
     if (commissionN > 0) {
-      journalLines.push({ accountCode: 'COMMISSION', direction: 'CR', amount: commissionN });
+      journalLines.push({
+        accountCode: 'COMMISSION',
+        direction: 'CR',
+        amount: commissionN
+      });
     }
-    const before = await client.query(`SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE`, [userId]);
+
+    const before = await client.query(
+      `SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE`,
+      [userId]
+    );
+
     if (before.rows.length === 0) {
-      await setOperationState({ client, reference, status: 'FAILED' });
       throw new Error('User not found');
     }
+
     const beforeBal = Number(before.rows[0].wallet_balance);
 
-    // Projection update FIRST, journal second.
     const credited = await client.query(
       `UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2`,
       [amountN, userId]
     );
+
     if (credited.rowCount !== 1) {
-      await setOperationState({ client, reference, status: 'FAILED' });
       throw new Error('User not found');
     }
-    await client.query(
-      `UPDATE company_revenue SET total_commission = total_commission + $1, updated_at = NOW() WHERE id = 1`,
+
+    const revenueUpdate = await client.query(
+      `UPDATE company_revenue
+          SET total_commission = total_commission + $1, updated_at = NOW()
+        WHERE id = 1`,
       [commissionN]
     );
 
-    await postJournal({
-      client, lines: journalLines, referenceId: reference,
-      description, postedBy: 'engine:deposit'
-    });
-
-    await setOperationState({ client, reference, status: 'SUCCESS' });
-
-    await auditBalance({ client, accountKind: 'USER_BALANCE', accountId: userId, operation: 'deposit', amount: amountN, balanceBefore: beforeBal, balanceAfter: beforeBal + amountN, reference, actor: 'engine:deposit' });
-    if (commissionN > 0) {
-      await auditBalance({ client, accountKind: 'COMPANY_REVENUE', accountId: 1, operation: 'commission', amount: commissionN, balanceBefore: null, balanceAfter: null, reference, actor: 'engine:deposit' });
+    if (revenueUpdate.rowCount !== 1) {
+      throw new Error('DEPOSIT_REVENUE_PROJECTION_MISSING: company_revenue id=1');
     }
 
-    await client.query('COMMIT');
+    await postJournal({
+      client,
+      lines: journalLines,
+      transactionId,
+      referenceId: reference,
+      description,
+      postedBy: 'engine:deposit'
+    });
+
+    const state = await setOperationState({
+      client,
+      reference,
+      status: 'SUCCESS'
+    });
+
+    if (!state.transitioned) {
+      throw new Error(`DEPOSIT_OPERATION_FINALIZATION_FAILED: ${reference}`);
+    }
+
+    await auditBalance({
+      client,
+      accountKind: 'USER_BALANCE',
+      accountId: userId,
+      operation: 'deposit',
+      amount: amountN,
+      balanceBefore: beforeBal,
+      balanceAfter: beforeBal + amountN,
+      reference,
+      actor: 'engine:deposit'
+    });
+
+    if (commissionN > 0) {
+      await auditBalance({
+        client,
+        accountKind: 'COMPANY_REVENUE',
+        accountId: 1,
+        operation: 'commission',
+        amount: commissionN,
+        balanceBefore: null,
+        balanceAfter: null,
+        reference,
+        actor: 'engine:deposit'
+      });
+    }
+
+    if (ownsClient) {
+      await client.query('COMMIT');
+      beganTransaction = false;
+    }
+
     return { success: true, reference, posted: true };
   } catch (error) {
-    await client.query('ROLLBACK').catch(() => {});
+    if (ownsClient && beganTransaction) {
+      await client.query('ROLLBACK').catch(() => {});
+      beganTransaction = false;
+    }
+
     logger.error('FIN_ENGINE_DEPOSIT', error.message, { userId, reference });
     throw error;
   } finally {
-    client.release();
+    if (ownsClient) {
+      client.release();
+    }
   }
 }
 
-/**
- * HOLD (RESERVE) FUNDS - e.g. withdrawal request, card authorization.
- * Moves amount from available (wallet_balance) to locked_balance, keeping the
- * user's total funds constant. Returns the idempotent hold group id.
- */
-async function holdFunds({ userId, amount, accountCode = 'CUSTOMER_WALLET', reference, description = 'Hold' }) {
-  const client = await pool.connect();
+
+async function holdFunds({
+  userId, amount, accountCode = 'CUSTOMER_WALLET', reference,
+  description = 'Hold', client: suppliedClient = null, transactionId = null,
+}) {
+  const ownsClient = !suppliedClient;
+  const client = suppliedClient || await pool.connect();
+  let beganTransaction = false;
+
   try {
-    await client.query('BEGIN');
+    if (ownsClient) {
+      await client.query('BEGIN');
+      beganTransaction = true;
+    }
 
     const amountN = normalizeAmount(amount);
     assertPositiveAmount(amountN, 'holdFunds');
 
     const op = await claimOperation({
-      client, operationType: 'HOLD', reference, userId, amount: amountN,
+      client, operationType: 'HOLD', reference, transactionId,
+      userId, amount: amountN, validateShape: false,
     });
+
     if (!op.claimed) {
-      await client.query('ROLLBACK');
-      return { dedup: true, reference };
+      const replay = await verifyLifecycleReplay({
+        client, operationType: 'HOLD', reference, transactionId,
+        userId, amount: amountN, accountCode,
+      });
+      if (ownsClient && beganTransaction) {
+        await client.query('ROLLBACK');
+        beganTransaction = false;
+      }
+      return replay;
     }
 
-    // Validate available funds before locking.
     const { rows } = await client.query(
-      `SELECT wallet_balance, locked_balance FROM users WHERE id = $1 FOR UPDATE`, [userId]
+      `SELECT wallet_balance, locked_balance
+         FROM users WHERE id = $1 FOR UPDATE`,
+      [userId]
     );
     if (rows.length === 0) throw new Error('User not found');
+
     const avail = Number(rows[0].wallet_balance);
     const lockedBefore = Number(rows[0].locked_balance);
     if (avail < amountN) {
-      throw Object.assign(new Error('Salio lako halitoshi kwa hold hii.'), { statusCode: 400 });
+      throw Object.assign(
+        new Error('Salio lako halitoshi kwa hold hii.'),
+        { statusCode: 400 }
+      );
     }
 
-    // Guarded projection update runs BEFORE the journal. The ledger is only
-    // posted for a movement that actually happened, and rowCount - not the
-    // journal - is the authoritative decision.
     const guarded = await client.query(
-      `UPDATE users SET wallet_balance = wallet_balance - $1, locked_balance = locked_balance + $1 WHERE id = $2 AND wallet_balance >= $1`,
+      `UPDATE users
+          SET wallet_balance = wallet_balance - $1,
+              locked_balance = locked_balance + $1
+        WHERE id = $2 AND wallet_balance >= $1`,
       [amountN, userId]
     );
+
     if (guarded.rowCount !== 1) {
-      // Rolled back together with the claim: no residue in any table.
-      await setOperationState({ client, reference, status: 'FAILED' });
-      throw Object.assign(new Error('Salio lako halitoshi kwa hold hii (locked)'), { statusCode: 400 });
+      throw Object.assign(
+        new Error('Salio lako halitoshi kwa hold hii (locked)'),
+        { statusCode: 400 }
+      );
     }
 
     await postJournal({
       client,
+      transactionId,
       lines: [
         { accountCode, direction: 'DR', amount: amountN },
         { accountCode: 'CARD_HOLD', direction: 'CR', amount: amountN },
       ],
-      referenceId: reference, description, postedBy: 'engine:hold'
+      referenceId: reference,
+      description,
+      postedBy: 'engine:hold',
     });
 
-    // NEW -> SUCCESS. A financial operation never ends in the transient NEW state.
-    await setOperationState({ client, reference, status: 'SUCCESS' });
+    const finalization = await setOperationState({
+      client, reference, status: 'SUCCESS',
+    });
+    if (!finalization.transitioned) {
+      const error = new Error(
+        `FINANCIAL_OPERATION_FINALIZATION_CONFLICT: ${reference}`
+      );
+      error.code = 'FINANCIAL_OPERATION_FINALIZATION_CONFLICT';
+      error.statusCode = 409;
+      throw error;
+    }
 
-    await auditBalance({ client, accountKind: 'USER_BALANCE', accountId: userId, operation: 'hold', amount: amountN, balanceBefore: avail, balanceAfter: avail - amountN, reference, actor: 'engine:hold' });
-    await auditBalance({ client, accountKind: 'USER_LOCKED', accountId: userId, operation: 'hold', amount: amountN, balanceBefore: lockedBefore, balanceAfter: lockedBefore + amountN, reference, actor: 'engine:hold' });
+    await auditBalance({
+      client, accountKind: 'USER_BALANCE', accountId: userId,
+      operation: 'hold', amount: amountN,
+      balanceBefore: avail, balanceAfter: avail - amountN,
+      reference, actor: 'engine:hold',
+    });
+    await auditBalance({
+      client, accountKind: 'USER_LOCKED', accountId: userId,
+      operation: 'hold', amount: amountN,
+      balanceBefore: lockedBefore, balanceAfter: lockedBefore + amountN,
+      reference, actor: 'engine:hold',
+    });
 
-    await client.query('COMMIT');
-    return { success: true, reference, held: amountN };
+    if (ownsClient) {
+      await client.query('COMMIT');
+      beganTransaction = false;
+    }
+
+    return { success: true, reference, transactionId, held: amountN };
   } catch (error) {
-    await client.query('ROLLBACK').catch(() => {});
+    if (ownsClient && beganTransaction) {
+      await client.query('ROLLBACK').catch(() => {});
+      beganTransaction = false;
+    }
     logger.error('FIN_ENGINE_HOLD', error.message, { userId, reference });
     throw error;
   } finally {
-    client.release();
+    if (ownsClient) client.release();
   }
 }
+
 
 /**
  * RELEASE (REFUND) A HOLD - funds move back from locked to available.
  * idempotent on a reference.
  */
-async function releaseHold({ userId, amount, accountCode = 'CUSTOMER_WALLET', reference, description = 'Release hold' }) {
-  const client = await pool.connect();
+
+async function releaseHold({
+  userId, amount, accountCode = 'CUSTOMER_WALLET', reference,
+  description = 'Release hold', client: suppliedClient = null, transactionId = null,
+}) {
+  const ownsClient = !suppliedClient;
+  const client = suppliedClient || await pool.connect();
+  let beganTransaction = false;
+
   try {
-    await client.query('BEGIN');
+    if (ownsClient) {
+      await client.query('BEGIN');
+      beganTransaction = true;
+    }
 
     const amountN = normalizeAmount(amount);
     assertPositiveAmount(amountN, 'releaseHold');
 
     const op = await claimOperation({
-      client, operationType: 'RELEASE', reference, userId, amount: amountN,
+      client, operationType: 'RELEASE', reference, transactionId,
+      userId, amount: amountN, validateShape: false,
     });
+
     if (!op.claimed) {
-      await client.query('ROLLBACK');
-      return { dedup: true, reference };
+      const replay = await verifyLifecycleReplay({
+        client, operationType: 'RELEASE', reference, transactionId,
+        userId, amount: amountN, accountCode,
+      });
+      if (ownsClient && beganTransaction) {
+        await client.query('ROLLBACK');
+        beganTransaction = false;
+      }
+      return replay;
     }
 
     const { rows } = await client.query(
-      `SELECT wallet_balance, locked_balance FROM users WHERE id = $1 FOR UPDATE`, [userId]
+      `SELECT wallet_balance, locked_balance
+         FROM users WHERE id = $1 FOR UPDATE`,
+      [userId]
     );
     if (rows.length === 0) throw new Error('User not found');
+
     const availBefore = Number(rows[0].wallet_balance);
     const lockedBefore = Number(rows[0].locked_balance);
 
-    // Guarded projection update FIRST, and its rowCount decides the outcome.
-    // Nothing is posted to the ledger and no audit is written unless the
-    // movement actually happened.
     const released = await client.query(
-      `UPDATE users SET wallet_balance = wallet_balance + $1, locked_balance = locked_balance - $1 WHERE id = $2 AND locked_balance >= $1`,
+      `UPDATE users
+          SET wallet_balance = wallet_balance + $1,
+              locked_balance = locked_balance - $1
+        WHERE id = $2 AND locked_balance >= $1`,
       [amountN, userId]
     );
+
     if (released.rowCount !== 1) {
-      // Rolls back with the whole transaction - the claim leaves no trace.
-      await setOperationState({ client, reference, status: 'FAILED' });
-      throw Object.assign(new Error('Salio lako halitoshi kwa release hii.'), { statusCode: 400 });
+      throw Object.assign(
+        new Error('Salio lako halitoshi kwa release hii.'),
+        { statusCode: 400 }
+      );
     }
 
     await postJournal({
       client,
+      transactionId,
       lines: [
         { accountCode: 'CARD_HOLD', direction: 'DR', amount: amountN },
         { accountCode, direction: 'CR', amount: amountN },
       ],
-      referenceId: reference, description, postedBy: 'engine:release'
+      referenceId: reference,
+      description,
+      postedBy: 'engine:release',
     });
 
-    await setOperationState({ client, reference, status: 'SUCCESS' });
+    const finalization = await setOperationState({
+      client, reference, status: 'SUCCESS',
+    });
+    if (!finalization.transitioned) {
+      const error = new Error(
+        `FINANCIAL_OPERATION_FINALIZATION_CONFLICT: ${reference}`
+      );
+      error.code = 'FINANCIAL_OPERATION_FINALIZATION_CONFLICT';
+      error.statusCode = 409;
+      throw error;
+    }
 
-    await auditBalance({ client, accountKind: 'USER_BALANCE', accountId: userId, operation: 'release', amount: amountN, balanceBefore: availBefore, balanceAfter: availBefore + amountN, reference, actor: 'engine:release' });
-    await auditBalance({ client, accountKind: 'USER_LOCKED', accountId: userId, operation: 'release', amount: amountN, balanceBefore: lockedBefore, balanceAfter: lockedBefore - amountN, reference, actor: 'engine:release' });
+    await auditBalance({
+      client, accountKind: 'USER_BALANCE', accountId: userId,
+      operation: 'release', amount: amountN,
+      balanceBefore: availBefore, balanceAfter: availBefore + amountN,
+      reference, actor: 'engine:release',
+    });
+    await auditBalance({
+      client, accountKind: 'USER_LOCKED', accountId: userId,
+      operation: 'release', amount: amountN,
+      balanceBefore: lockedBefore, balanceAfter: lockedBefore - amountN,
+      reference, actor: 'engine:release',
+    });
 
-    await client.query('COMMIT');
-    return { success: true, reference, released: amountN };
+    if (ownsClient) {
+      await client.query('COMMIT');
+      beganTransaction = false;
+    }
+
+    return { success: true, reference, transactionId, released: amountN };
   } catch (error) {
-    await client.query('ROLLBACK').catch(() => {});
+    if (ownsClient && beganTransaction) {
+      await client.query('ROLLBACK').catch(() => {});
+      beganTransaction = false;
+    }
     logger.error('FIN_ENGINE_RELEASE', error.message, { userId, reference });
     throw error;
   } finally {
-    client.release();
+    if (ownsClient) client.release();
   }
 }
+
 
 /**
  * CAPTURE / SETTLE A HOLD - funds are permanently moved (e.g. withdrawal paid out).
  * The locked funds leave locked_balance and become a real payment (MNO asset).
  */
-async function captureHold({ userId, amount, accountCode = 'CUSTOMER_WALLET', reference, description = 'Capture hold' }) {
-  const client = await pool.connect();
+
+async function captureHold({
+  userId, amount, accountCode = 'CUSTOMER_WALLET', reference,
+  description = 'Capture hold', client: suppliedClient = null, transactionId = null,
+}) {
+  const ownsClient = !suppliedClient;
+  const client = suppliedClient || await pool.connect();
+  let beganTransaction = false;
+
   try {
-    await client.query('BEGIN');
+    if (ownsClient) {
+      await client.query('BEGIN');
+      beganTransaction = true;
+    }
 
     const amountN = normalizeAmount(amount);
     assertPositiveAmount(amountN, 'captureHold');
 
     const op = await claimOperation({
-      client, operationType: 'CAPTURE', reference, userId, amount: amountN,
+      client, operationType: 'CAPTURE', reference, transactionId,
+      userId, amount: amountN, validateShape: false,
     });
+
     if (!op.claimed) {
-      await client.query('ROLLBACK');
-      return { dedup: true, reference };
+      const replay = await verifyLifecycleReplay({
+        client, operationType: 'CAPTURE', reference, transactionId,
+        userId, amount: amountN, accountCode: 'MNO_CLEARING',
+      });
+      if (ownsClient && beganTransaction) {
+        await client.query('ROLLBACK');
+        beganTransaction = false;
+      }
+      return replay;
     }
 
     const { rows } = await client.query(
-      `SELECT locked_balance FROM users WHERE id = $1 FOR UPDATE`, [userId]
+      `SELECT locked_balance FROM users WHERE id = $1 FOR UPDATE`,
+      [userId]
     );
     if (rows.length === 0) throw new Error('User not found');
+
     const lockedBefore = Number(rows[0].locked_balance);
 
-    // Guarded projection update FIRST, journal second.
     const captured = await client.query(
-      `UPDATE users SET locked_balance = locked_balance - $1 WHERE id = $2 AND locked_balance >= $1`,
+      `UPDATE users
+          SET locked_balance = locked_balance - $1
+        WHERE id = $2 AND locked_balance >= $1`,
       [amountN, userId]
     );
+
     if (captured.rowCount !== 1) {
-      await setOperationState({ client, reference, status: 'FAILED' });
-      throw Object.assign(new Error('Salio lako halitoshi kwa capture hii.'), { statusCode: 400 });
+      throw Object.assign(
+        new Error('Salio lako halitoshi kwa capture hii.'),
+        { statusCode: 400 }
+      );
     }
 
     await postJournal({
       client,
+      transactionId,
       lines: [
         { accountCode: 'CARD_HOLD', direction: 'DR', amount: amountN },
         { accountCode: 'MNO_CLEARING', direction: 'CR', amount: amountN },
       ],
-      referenceId: reference, description, postedBy: 'engine:capture'
+      referenceId: reference,
+      description,
+      postedBy: 'engine:capture',
     });
 
-    await setOperationState({ client, reference, status: 'SUCCESS' });
+    const finalization = await setOperationState({
+      client, reference, status: 'SUCCESS',
+    });
+    if (!finalization.transitioned) {
+      const error = new Error(
+        `FINANCIAL_OPERATION_FINALIZATION_CONFLICT: ${reference}`
+      );
+      error.code = 'FINANCIAL_OPERATION_FINALIZATION_CONFLICT';
+      error.statusCode = 409;
+      throw error;
+    }
 
-    await auditBalance({ client, accountKind: 'USER_LOCKED', accountId: userId, operation: 'capture', amount: amountN, balanceBefore: lockedBefore, balanceAfter: lockedBefore - amountN, reference, actor: 'engine:capture' });
+    await auditBalance({
+      client, accountKind: 'USER_LOCKED', accountId: userId,
+      operation: 'capture', amount: amountN,
+      balanceBefore: lockedBefore, balanceAfter: lockedBefore - amountN,
+      reference, actor: 'engine:capture',
+    });
 
-    await client.query('COMMIT');
-    return { success: true, reference, captured: amountN };
+    if (ownsClient) {
+      await client.query('COMMIT');
+      beganTransaction = false;
+    }
+
+    return { success: true, reference, transactionId, captured: amountN };
   } catch (error) {
-    await client.query('ROLLBACK').catch(() => {});
+    if (ownsClient && beganTransaction) {
+      await client.query('ROLLBACK').catch(() => {});
+      beganTransaction = false;
+    }
     logger.error('FIN_ENGINE_CAPTURE', error.message, { userId, reference });
     throw error;
   } finally {
-    client.release();
+    if (ownsClient) client.release();
   }
 }
+
 
 /**
  * TRANSFER between two customer wallets.
@@ -461,7 +951,7 @@ async function transfer({ fromUserId, toUserId, amount, reference, description =
     assertPositiveAmount(amountN, 'transfer');
 
     const op = await claimOperation({
-      client, operationType: 'TRANSFER', reference, userId: fromUserId, amount: amountN,
+      client, operationType: 'TRANSFER', reference, userId: fromUserId, amount: amountN, validateShape: false,
     });
     if (!op.claimed) {
       await client.query('ROLLBACK');
@@ -562,10 +1052,10 @@ async function recordException({ type, reference, transactionId, detail = {} }) 
  * Credit a user's available wallet balance.
  *   DR <fromAccount>   CR CUSTOMER_WALLET
  */
-async function creditWallet({ client, userId, amount, reference, fromAccount = 'SUSPENSE', description = 'Wallet credit', actor = 'engine:credit', productType = null, productRef = null }) {
+async function creditWallet({ client, userId, amount, reference, fromAccount = 'SUSPENSE', description = 'Wallet credit', actor = 'engine:credit', productType = null, productRef = null, transactionId = null }) {
   const amountN = normalizeAmount(amount);
   assertPositiveAmount(amountN, 'creditWallet');
-  const op = await claimOperation({ client, operationType: 'CREDIT', reference, userId, amount: amountN });
+  const op = await claimOperation({ client, operationType: 'CREDIT', reference, transactionId, userId, amount: amountN, validateShape: true });
   if (!op.claimed) return { dedup: true, reference };
 
   const { rows } = await client.query(`SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE`, [userId]);
@@ -588,6 +1078,7 @@ async function creditWallet({ client, userId, amount, reference, fromAccount = '
       { accountCode: fromAccount, direction: 'DR', amount: amountN },
       { accountCode: 'CUSTOMER_WALLET', direction: 'CR', amount: amountN },
     ],
+    transactionId,
     referenceId: reference, description, postedBy: actor, productType, productRef,
   });
 
@@ -600,10 +1091,10 @@ async function creditWallet({ client, userId, amount, reference, fromAccount = '
  * Debit a user's available wallet balance (with insufficient-funds guard).
  *   DR CUSTOMER_WALLET   CR <toAccount>
  */
-async function debitWallet({ client, userId, amount, reference, toAccount = 'PLATFORM_FEES', description = 'Wallet debit', actor = 'engine:debit', productType = null, productRef = null }) {
+async function debitWallet({ client, userId, amount, reference, toAccount = 'PLATFORM_FEES', description = 'Wallet debit', actor = 'engine:debit', productType = null, productRef = null, transactionId = null }) {
   const amountN = normalizeAmount(amount);
   assertPositiveAmount(amountN, 'debitWallet');
-  const op = await claimOperation({ client, operationType: 'DEBIT', reference, userId, amount: amountN });
+  const op = await claimOperation({ client, operationType: 'DEBIT', reference, transactionId, userId, amount: amountN, validateShape: true });
   if (!op.claimed) return { dedup: true, reference };
 
   const { rows } = await client.query(`SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE`, [userId]);
@@ -631,6 +1122,7 @@ async function debitWallet({ client, userId, amount, reference, toAccount = 'PLA
       { accountCode: 'CUSTOMER_WALLET', direction: 'DR', amount: amountN },
       { accountCode: toAccount, direction: 'CR', amount: amountN },
     ],
+    transactionId,
     referenceId: reference, description, postedBy: actor, productType, productRef,
   });
 
@@ -643,10 +1135,10 @@ async function debitWallet({ client, userId, amount, reference, toAccount = 'PLA
  * Internal transfer between two customer wallets (aggregate-neutral).
  *   DR CUSTOMER_WALLET (from)   CR CUSTOMER_WALLET (to)
  */
-async function internalTransfer({ client, fromUserId, toUserId, amount, reference, description = 'Internal transfer', actor = 'engine:transfer', productType = null, productRef = null }) {
+async function internalTransfer({ client, fromUserId, toUserId, amount, reference, description = 'Internal transfer', actor = 'engine:transfer', productType = null, productRef = null, transactionId = null }) {
   const amountN = normalizeAmount(amount);
   assertPositiveAmount(amountN, 'internalTransfer');
-  const op = await claimOperation({ client, operationType: 'TRANSFER', reference, userId: fromUserId, amount: amountN });
+  const op = await claimOperation({ client, operationType: 'TRANSFER', reference, transactionId, userId: fromUserId, amount: amountN, validateShape: true });
   if (!op.claimed) return { dedup: true, reference };
 
   const a = Math.min(fromUserId, toUserId);
@@ -692,6 +1184,7 @@ async function internalTransfer({ client, fromUserId, toUserId, amount, referenc
       { accountCode: 'CUSTOMER_WALLET', direction: 'DR', amount: amountN },
       { accountCode: 'CUSTOMER_WALLET', direction: 'CR', amount: amountN },
     ],
+    transactionId,
     referenceId: reference, description, postedBy: actor, productType, productRef,
   });
 
@@ -705,10 +1198,10 @@ async function internalTransfer({ client, fromUserId, toUserId, amount, referenc
  * Move funds from a user wallet into a group wallet (e.g. VICOBA contribution).
  *   DR CUSTOMER_WALLET   CR <groupAccountCode>   [+ users -X, group +Y]
  */
-async function walletToGroup({ client, userId, groupId, groupAccount = 'VICOBA_GROUP', groupSql, amount, reference, description = 'Wallet to group', actor = 'engine:walletToGroup', productType = null, productRef = null }) {
+async function walletToGroup({ client, userId, groupId, groupAccount = 'VICOBA_GROUP', groupSql, amount, reference, description = 'Wallet to group', actor = 'engine:walletToGroup', productType = null, productRef = null, transactionId = null }) {
   const amountN = normalizeAmount(amount);
   assertPositiveAmount(amountN, 'walletToGroup');
-  const op = await claimOperation({ client, operationType: 'WALLET_TO_GROUP', reference, userId, amount: amountN });
+  const op = await claimOperation({ client, operationType: 'WALLET_TO_GROUP', reference, transactionId, userId, amount: amountN, validateShape: true });
   if (!op.claimed) return { dedup: true, reference };
 
   const { rows } = await client.query(`SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE`, [userId]);
@@ -755,6 +1248,7 @@ async function walletToGroup({ client, userId, groupId, groupAccount = 'VICOBA_G
       { accountCode: 'CUSTOMER_WALLET', direction: 'DR', amount: amountN },
       { accountCode: groupAccount, direction: 'CR', amount: amountN },
     ],
+    transactionId,
     referenceId: reference, description, postedBy: actor, productType, productRef,
   });
 
@@ -767,10 +1261,10 @@ async function walletToGroup({ client, userId, groupId, groupAccount = 'VICOBA_G
  * Move funds from a group wallet back to a user wallet (e.g. VICOBA payout).
  *   DR <groupAccountCode>   CR CUSTOMER_WALLET   [+ group -Y, users +X]
  */
-async function groupToWallet({ client, userId, groupId, groupAccount = 'VICOBA_GROUP', groupSql, amount, reference, description = 'Group to wallet', actor = 'engine:groupToWallet', productType = null, productRef = null }) {
+async function groupToWallet({ client, userId, groupId, groupAccount = 'VICOBA_GROUP', groupSql, amount, reference, description = 'Group to wallet', actor = 'engine:groupToWallet', productType = null, productRef = null, transactionId = null }) {
   const amountN = normalizeAmount(amount);
   assertPositiveAmount(amountN, 'groupToWallet');
-  const op = await claimOperation({ client, operationType: 'GROUP_TO_WALLET', reference, userId, amount: amountN });
+  const op = await claimOperation({ client, operationType: 'GROUP_TO_WALLET', reference, transactionId, userId, amount: amountN, validateShape: true });
   if (!op.claimed) return { dedup: true, reference };
 
   const { rows } = await client.query(`SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE`, [userId]);
@@ -800,6 +1294,7 @@ async function groupToWallet({ client, userId, groupId, groupAccount = 'VICOBA_G
       { accountCode: groupAccount, direction: 'DR', amount: amountN },
       { accountCode: 'CUSTOMER_WALLET', direction: 'CR', amount: amountN },
     ],
+    transactionId,
     referenceId: reference, description, postedBy: actor, productType, productRef,
   });
 
@@ -864,7 +1359,7 @@ function assertNonNegativeAmount(amountN, fnName) {
 async function lockWallet({ client, userId, amount, reference, sourceAccount = 'CUSTOMER_WALLET', description = 'Lock funds', actor = 'engine:lock' }) {
   const amountN = normalizeAmount(amount);
   assertPositiveAmount(amountN, 'lockWallet');
-  const op = await claimOperation({ client, operationType: 'LOCK', reference, userId, amount: amountN });
+  const op = await claimOperation({ client, operationType: 'LOCK', reference, userId, amount: amountN, validateShape: false });
   if (!op.claimed) return { dedup: true, reference };
 
   const { rows } = await client.query(`SELECT wallet_balance, locked_balance FROM users WHERE id = $1 FOR UPDATE`, [userId]);
@@ -908,7 +1403,7 @@ async function lockWallet({ client, userId, amount, reference, sourceAccount = '
 async function unlockWallet({ client, userId, amount, reference, sourceAccount = 'CUSTOMER_WALLET', description = 'Unlock funds', actor = 'engine:unlock' }) {
   const amountN = normalizeAmount(amount);
   assertPositiveAmount(amountN, 'unlockWallet');
-  const op = await claimOperation({ client, operationType: 'UNLOCK', reference, userId, amount: amountN });
+  const op = await claimOperation({ client, operationType: 'UNLOCK', reference, userId, amount: amountN, validateShape: false });
   if (!op.claimed) return { dedup: true, reference };
 
   const { rows } = await client.query(`SELECT wallet_balance, locked_balance FROM users WHERE id = $1 FOR UPDATE`, [userId]);
@@ -950,7 +1445,7 @@ async function unlockWallet({ client, userId, amount, reference, sourceAccount =
 async function captureLock({ client, userId, amount, reference, toAccount = 'MNO_CLEARING', description = 'Capture locked funds', actor = 'engine:captureLock' }) {
   const amountN = normalizeAmount(amount);
   assertPositiveAmount(amountN, 'captureLock');
-  const op = await claimOperation({ client, operationType: 'CAPTURE', reference, userId, amount: amountN });
+  const op = await claimOperation({ client, operationType: 'CAPTURE', reference, userId, amount: amountN, validateShape: false });
   if (!op.claimed) return { dedup: true, reference };
 
   const { rows } = await client.query(`SELECT locked_balance FROM users WHERE id = $1 FOR UPDATE`, [userId]);
@@ -981,6 +1476,30 @@ async function captureLock({ client, userId, amount, reference, toAccount = 'MNO
   return { success: true, reference, captured: amountN };
 }
 
+
+/**
+ * Link a business transaction to its financial operations and journal entries.
+ * Updates financial_operations.transaction_id and journal_entries.transaction_id
+ * for all rows whose reference_id matches the base reference or starts with
+ * base reference + ':' (to cover suffixed references like 'REF:WG', 'REF:DR').
+ * Must be called within the same DB transaction as the transaction insert.
+ */
+async function linkTransaction({ client, reference, transactionId }) {
+  if (!reference || !transactionId) return;
+  await client.query(
+    `UPDATE financial_operations SET transaction_id = $1
+     WHERE (reference_id = $2 OR reference_id LIKE $2 || ':%')
+       AND (transaction_id IS NULL OR transaction_id = $1)`,
+    [transactionId, reference]
+  );
+  await client.query(
+    `UPDATE journal_entries SET transaction_id = $1
+     WHERE (reference_id = $2 OR reference_id LIKE $2 || ':%')
+       AND (transaction_id IS NULL OR transaction_id = $1)`,
+    [transactionId, reference]
+  );
+}
+
 module.exports = {
   postJournal,
   postDeposit,
@@ -991,6 +1510,7 @@ module.exports = {
   creditWallet,
   debitWallet,
   internalTransfer,
+  linkTransaction,
   walletToGroup,
   groupToWallet,
   lockWallet,

@@ -19,7 +19,7 @@ on:
 jobs:
   backend:
     name: Backend tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     services:
       postgres:
         image: postgres:16-alpine
@@ -55,11 +55,20 @@ jobs:
       - run: npm run seed
       - run: npm run db:migrate
 
-      - name: Install PostgreSQL client (restore-verify)
+      - name: Install PostgreSQL 16 client (restore-verify)
         run: |
           sudo apt-get update
-          sudo apt-get install -y postgresql-client
-          pg_dump --version
+          sudo apt-get install -y wget ca-certificates gnupg lsb-release
+          sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt noble-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+          wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-16
+          sudo ln -sf /usr/lib/postgresql/16/bin/pg_dump /usr/local/bin/pg_dump
+          sudo ln -sf /usr/lib/postgresql/16/bin/psql /usr/local/bin/psql
+          echo "pg_dump: $(pg_dump --version)"
+          echo "psql: $(psql --version)"
+          pg_dump --version | grep -q "16\." || { echo "ERROR: pg_dump is not PostgreSQL 16"; exit 1; }
+          psql --version | grep -q "16\." || { echo "ERROR: psql is not PostgreSQL 16"; exit 1; }
 
       - name: Start server (rate limiting off)
         run: |
@@ -73,6 +82,33 @@ jobs:
 
       - name: Run integration suite
         run: node scripts/test-all.js
+
+      - name: Run Phase 68 dedicated tests
+        env:
+          PHASE68_TEST_DB: afrikoba_global
+        run: |
+          node tests/test-trigger.js
+          node tests/test-merchant-all.js
+          node tests/test-vicoba-linkage.js
+          node tests/test-network-bulk.js
+          node tests/test-gtw-linkage.js
+          node tests/test-billsplit-linkage.js
+          node tests/test-vicoba-penalty.js
+          node tests/test-onconflict.js
+          node tests/test-concurrency.js
+          node tests/test-merchant-replay.js
+          node tests/test-vicoba-disbursement.js
+          node tests/test-saccos-linkage.js
+          node tests/test-merchant-idempotency.js
+          node tests/test-vicoba-shares.js
+          node tests/test-vicoba-bonus.js
+          node tests/test-vicoba-socialfund.js
+          node tests/test-vicoba-repayLoan.js
+          node tests/test-vicoba-withdrawal.js
+          node tests/test-vicoba-approveWithdrawal.js
+          node tests/test-vicoba-approveLoan.js
+          node tests/test-concurrency-bp.js
+          node tests/money-path-integrity.phase68.test.js
 
       - name: Run regression scripts
         run: |
@@ -153,7 +189,7 @@ jobs:
 
   dashboard:
     name: Web dashboard build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -172,7 +208,7 @@ jobs:
 
   mobile:
     name: Flutter analyze + test + build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
