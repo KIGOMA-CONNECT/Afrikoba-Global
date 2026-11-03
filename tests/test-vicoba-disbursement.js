@@ -77,12 +77,12 @@ async function run() {
     await expect(txRes.rows.length === 1, 'Transaction row created for disbursement');
     const txId = txRes.rows[0].id;
 
-    // Check financial_operations (created by groupToWallet with reference ${ref}:GW)
-    const foRes = await client.query("SELECT transaction_id FROM financial_operations WHERE reference_id = $1", [ref + ':GW']);
+    // Check financial_operations (created by groupToWallet with canonical reference ${ref})
+    const foRes = await client.query("SELECT transaction_id FROM financial_operations WHERE reference_id = $1", [ref]);
     await expect(foRes.rows.length > 0 && foRes.rows[0].transaction_id === txId, 'Disbursement: financial_operations linked', `got ${foRes.rows[0]?.transaction_id} expected ${txId}`);
 
-    // Check journal_entries (created by groupToWallet with reference ${ref}:GW)
-    const jeRes = await client.query("SELECT transaction_id FROM journal_entries WHERE reference_id = $1", [ref + ':GW']);
+    // Check journal_entries (created by groupToWallet with canonical reference ${ref})
+    const jeRes = await client.query("SELECT transaction_id FROM journal_entries WHERE reference_id = $1", [ref]);
     await expect(jeRes.rows.length > 0 && jeRes.rows[0].transaction_id === txId, 'Disbursement: journal_entries linked', `got ${jeRes.rows[0]?.transaction_id} expected ${txId}`);
 
     // Verify requester wallet increased

@@ -234,12 +234,15 @@ async function approveLoan(approverUserId, loanId, approvedAmount) {
       [finalAmount, approverUserId, loanId]
     );
 
-    await client.query(
+    // Create transaction first with canonical reference
+    const txRes = await client.query(
       `INSERT INTO transactions
         (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
-       VALUES ($1, $2, $3, 0, $3, 'SUCCESS', 'VICOBA_LOAN', $4)`,
+       VALUES ($1, $2, $3, 0, $3, 'SUCCESS', 'VICOBA_LOAN', $4)
+       RETURNING id`,
       [referenceId, ctx.applicant_id, finalAmount, JSON.stringify({ group_id: loan.group_id, loan_id: loanId })]
     );
+    const transactionId = txRes.rows[0].id;
 
     const groupDebit = await client.query(
       `UPDATE vicoba_groups
@@ -260,11 +263,12 @@ async function approveLoan(approverUserId, loanId, approvedAmount) {
       client,
       userId: ctx.applicant_id,
       amount: finalAmount,
-      reference: `${referenceId}:GW`,
+      reference: referenceId,
       fromAccount: 'VICOBA_GROUP',
       description: 'VICOBA Loan Disbursement',
       productType: 'VICOBA',
       productRef: String(loan.group_id),
+      transactionId,
     });
 
     await generateLoanSchedule(
@@ -994,13 +998,17 @@ async function approveSocialFundDisbursement(actorUserId, requestId, approvedAmo
       [finalAmount, actorUserId, requestId]
     );
     const referenceId = generateReference('SD');
-    await fin.groupToWallet({ client, userId: request.requester_id, groupId: request.fund_id, groupAccount: 'VICOBA_GROUP', groupSql: 'UPDATE vicoba_social_fund SET total_balance = total_balance - $1, total_disbursed = total_disbursed + $1 WHERE id = $2 AND total_balance >= $1', amount: finalAmount, reference: `${referenceId}:GW`, description: 'VICOBA Social Fund Disbursement', productType: 'VICOBA', productRef: String(request.fund_id) });
 
-    await client.query(
+    // Create transaction first with canonical reference
+    const txRes = await client.query(
       `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
-       VALUES ($1, $2, $3, 0, $3, 'SUCCESS', 'VICOBA_SOCIAL_FUND_DISBURSEMENT', $4)`,
+       VALUES ($1, $2, $3, 0, $3, 'SUCCESS', 'VICOBA_SOCIAL_FUND_DISBURSEMENT', $4)
+       RETURNING id`,
       [referenceId, request.requester_id, finalAmount, JSON.stringify({ group_id: request.group_id, request_id: requestId, reason_type: request.reason_type })]
     );
+    const transactionId = txRes.rows[0].id;
+
+    await fin.groupToWallet({ client, userId: request.requester_id, groupId: request.fund_id, groupAccount: 'VICOBA_GROUP', groupSql: 'UPDATE vicoba_social_fund SET total_balance = total_balance - $1, total_disbursed = total_disbursed + $1 WHERE id = $2 AND total_balance >= $1', amount: finalAmount, reference: referenceId, description: 'VICOBA Social Fund Disbursement', productType: 'VICOBA', productRef: String(request.fund_id), transactionId });
 
     await client.query("UPDATE vicoba_social_fund_requests SET status = 'DISBURSED', disbursement_reference = $1 WHERE id = $2", [referenceId, requestId]);
 
@@ -1459,20 +1467,22 @@ async function approveWithdrawal(actorUserId, withdrawalId, { approved, note }) 
       throw Object.assign(new Error('Salio la kikundi halitoshi kwa uondoaji huu.'), { statusCode: 400 });
     }
 
+    // Create transaction first with canonical reference (enables TX ID propagation)
+    const txRes = await client.query(
+      `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
+       VALUES ($1, $2, $3, 0, $3, 'SUCCESS', 'VICOBA_WITHDRAWAL', $4)
+       RETURNING id`,
+      [cur.reference_id, cur.user_id, Number(cur.amount),
+       JSON.stringify({ group_id: cur.group_id, withdrawal_id: withdrawalId, via: 'SIGNATURE_2OF2' })]
+    );
+    const transactionId = txRes.rows[0].id;
+
     await fin.groupToWallet({
       client, userId: cur.user_id, groupId: cur.group_id, groupAccount: 'VICOBA_GROUP',
       groupSql: 'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance - $1 WHERE id = $2 AND group_wallet_balance >= $1',
-      amount: Number(cur.amount), reference: `${cur.reference_id}:GW`, description: 'VICOBA Group Withdrawal',
-      productType: 'VICOBA', productRef: String(cur.group_id),
+      amount: Number(cur.amount), reference: cur.reference_id, description: 'VICOBA Group Withdrawal',
+      productType: 'VICOBA', productRef: String(cur.group_id), transactionId,
     });
-
-    const refId = generateReference('WD');
-    await client.query(
-      `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
-       VALUES ($1, $2, $3, 0, $3, 'SUCCESS', 'VICOBA_WITHDRAWAL', $4)`,
-      [refId, cur.user_id, Number(cur.amount),
-       JSON.stringify({ group_id: cur.group_id, withdrawal_id: withdrawalId, via: 'SIGNATURE_2OF2' })]
-    );
 
     const memberProjection = await client.query(
       `UPDATE vicoba_members
