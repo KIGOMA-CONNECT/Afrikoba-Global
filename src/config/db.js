@@ -164,36 +164,43 @@ function trackTransactionState(client) {
 }
 
 function safeRelease(client, origRelease, err) {
+  var released = false;
+  function doRelease(e) {
+    if (released) return;
+    released = true;
+    try {
+      origRelease(e);
+    } catch (ex) {
+      try {
+        origRelease(e);
+      } catch (ex2) {}
+    }
+  }
+
   if (err) {
     if (client.__afrikobaInTx) {
-      var rbErr;
       try {
         var p = client.query('ROLLBACK');
         if (p && typeof p.then === 'function') {
           p.then(function() {
-            client.__afrikobaInTx = false;
-            origRelease();
+            // rollback succeeded but caller error requires destruction
+            doRelease(err);
           }).catch(function(rbE) {
-            rbErr = rbE || new Error('rollback_failed');
-            try {
-              origRelease(rbErr);
-            } catch (e2) {
-              origRelease(rbErr);
-            }
+            var rbErr = rbE || new Error('rollback_failed');
+            doRelease(rbErr);
           });
           return;
         }
       } catch (e) {
-        rbErr = e || new Error('rollback_failed');
-        try {
-          origRelease(rbErr);
-        } catch (e2) {
-          origRelease(rbErr);
-        }
+        var rbErr2 = e || new Error('rollback_failed');
+        doRelease(rbErr2);
         return;
       }
+      // sync path with no promise
+      doRelease(err);
+      return;
     }
-    origRelease(err);
+    doRelease(err);
     return;
   }
 
@@ -203,31 +210,23 @@ function safeRelease(client, origRelease, err) {
       if (p2 && typeof p2.then === 'function') {
         p2.then(function() {
           client.__afrikobaInTx = false;
-          origRelease();
+          doRelease();
         }).catch(function(rbE) {
-          var rbErr2 = rbE || new Error('rollback_failed');
-          try {
-            origRelease(rbErr2);
-          } catch (e2) {
-            origRelease(rbErr2);
-          }
+          var rbErr3 = rbE || new Error('rollback_failed');
+          doRelease(rbErr3);
         });
         return;
       }
     } catch (e) {
-      var rbErr3 = e || new Error('rollback_failed');
-      try {
-        origRelease(rbErr3);
-      } catch (e2) {
-        origRelease(rbErr3);
-      }
+      var rbErr4 = e || new Error('rollback_failed');
+      doRelease(rbErr4);
       return;
     }
     client.__afrikobaInTx = false;
-    origRelease();
+    doRelease();
     return;
   }
-  origRelease();
+  doRelease();
 }
 
 function safeConnect() {
