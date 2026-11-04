@@ -301,6 +301,101 @@ async function run() {
     assert.ok(true);
   });
 
+  // Test 10: Caller error + successful async rollback + throwing origRelease
+  test('10. Caller error + successful async rollback + throwing origRelease: exactly-once, no unhandled rejection', async () => {
+    const state = { lastReleaseErr: null, releaseCount: 0, unhandledRejection: null };
+    const unhandledHandler = (reason) => { state.unhandledRejection = reason; };
+    process.on('unhandledRejection', unhandledHandler);
+
+    if (typeof db._setPool === 'function') {
+      db._setPool({
+        _state: state,
+        connect: function() {
+          const self = this;
+          const client = {
+            __afrikobaInTx: true,
+            query: function() { return Promise.resolve({ rows: [] }); },
+            release: function(err) {
+              self._state.releaseCount++;
+              self._state.lastReleaseErr = err || null;
+              throw new Error('release-throws');
+            }
+          };
+          return Promise.resolve(client);
+        }
+      });
+    }
+    const pool = typeof db._getPool === 'function' ? db._getPool() : null;
+    if (pool && pool._state) { pool._state.releaseCount = 0; pool._state.lastReleaseErr = null; pool._state.unhandledRejection = null; }
+
+    const client = await db.connect();
+    const callerErr = new Error('caller-error-async-success');
+    client.release(callerErr);
+    await new Promise(function(r) { setTimeout(r, 30); });
+
+    process.removeListener('unhandledRejection', unhandledHandler);
+
+    // Exactly one underlying release invocation
+    assert.strictEqual(pool._state.releaseCount, 1);
+    // Caller error was passed to origRelease (primary application error)
+    assert.strictEqual(pool._state.lastReleaseErr, callerErr);
+    // No unhandled promise rejection emitted
+    assert.strictEqual(pool._state.unhandledRejection, null);
+    // Repeated calls do not cause another release
+    client.release(callerErr);
+    client.release(callerErr);
+    await new Promise(function(r) { setTimeout(r, 15); });
+    assert.strictEqual(pool._state.releaseCount, 1);
+  });
+
+  // Test 11: Caller error + rejected async rollback + throwing origRelease
+  test('11. Caller error + rejected async rollback + throwing origRelease: exactly-once, rollback failure observable, no unhandled rejection', async () => {
+    const state = { lastReleaseErr: null, releaseCount: 0, unhandledRejection: null };
+    const unhandledHandler = (reason) => { state.unhandledRejection = reason; };
+    process.on('unhandledRejection', unhandledHandler);
+
+    if (typeof db._setPool === 'function') {
+      db._setPool({
+        _state: state,
+        connect: function() {
+          const self = this;
+          const client = {
+            __afrikobaInTx: true,
+            query: function() { return Promise.reject(new Error('async-rollback-fail')); },
+            release: function(err) {
+              self._state.releaseCount++;
+              self._state.lastReleaseErr = err || null;
+              throw new Error('release-throws');
+            }
+          };
+          return Promise.resolve(client);
+        }
+      });
+    }
+    const pool = typeof db._getPool === 'function' ? db._getPool() : null;
+    if (pool && pool._state) { pool._state.releaseCount = 0; pool._state.lastReleaseErr = null; pool._state.unhandledRejection = null; }
+
+    const client = await db.connect();
+    const callerErr = new Error('caller-error-async-reject');
+    client.release(callerErr);
+    await new Promise(function(r) { setTimeout(r, 30); });
+
+    process.removeListener('unhandledRejection', unhandledHandler);
+
+    // Exactly one underlying release invocation
+    assert.strictEqual(pool._state.releaseCount, 1);
+    // Pool receives the rollback failure error (client-destruction error)
+    assert.ok(pool._state.lastReleaseErr, 'pool should receive an error');
+    assert.strictEqual(pool._state.lastReleaseErr.message, 'async-rollback-fail');
+    // No unhandled promise rejection emitted
+    assert.strictEqual(pool._state.unhandledRejection, null);
+    // Repeated calls do not cause another release
+    client.release(callerErr);
+    client.release(callerErr);
+    await new Promise(function(r) { setTimeout(r, 15); });
+    assert.strictEqual(pool._state.releaseCount, 1);
+  });
+
   for (let i = 0; i < tests.length; i++) {
     try {
       await tests[i].fn();
