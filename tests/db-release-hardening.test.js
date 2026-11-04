@@ -32,6 +32,7 @@ async function run() {
     client.release();
     await new Promise(function(r) { setTimeout(r, 15); });
     assert.strictEqual(pool._state.releaseCount, 1);
+    assert.strictEqual(pool._state.lastReleaseErr, null);
   });
 
   // Test 2: Repeated safeRelease calls invoke origRelease exactly once
@@ -93,7 +94,8 @@ async function run() {
   });
 
   // Test 4: Caller error remains the primary error if release also throws
-  test('4. Caller error remains the primary error if release also throws', async () => {
+  // Strengthened: strictEqual for callerErr, verify observable behavior when origRelease throws
+  test('4. Caller error preserved when origRelease throws (strictEqual)', async () => {
     const state = { lastReleaseErr: null, releaseCount: 0 };
     if (typeof db._setPool === 'function') {
       db._setPool({
@@ -116,18 +118,24 @@ async function run() {
     if (pool && pool._state) { pool._state.releaseCount = 0; pool._state.lastReleaseErr = null; }
     const client = await db.connect();
     const callerErr = new Error('caller-error');
+    let thrownErr = null;
     try {
       client.release(callerErr);
     } catch (e) {
-      // exception may propagate
+      thrownErr = e;
     }
     await new Promise(function(r) { setTimeout(r, 15); });
+    // Underlying release invoked exactly once
     assert.strictEqual(pool._state.releaseCount, 1);
-    assert(pool._state.lastReleaseErr);
+    // The exact original callerErr was passed to origRelease
+    assert.strictEqual(pool._state.lastReleaseErr, callerErr);
+    // The exception from origRelease propagated (not swallowed)
+    assert.ok(thrownErr instanceof Error, 'origRelease exception should propagate');
+    assert.strictEqual(thrownErr.message, 'release-throws');
   });
 
-  // Test 5: Failed rollback does not result in a second underlying release invocation
-  test('5. Failed rollback does not result in a second underlying release invocation', async () => {
+  // Test 5: Failed rollback (async rejection) does not result in a second underlying release invocation
+  test('5. Failed async rollback does not result in a second underlying release invocation', async () => {
     const state = { lastReleaseErr: null, releaseCount: 0 };
     if (typeof db._setPool === 'function') {
       db._setPool({
@@ -148,9 +156,12 @@ async function run() {
     const pool = typeof db._getPool === 'function' ? db._getPool() : null;
     if (pool && pool._state) { pool._state.releaseCount = 0; pool._state.lastReleaseErr = null; }
     const client = await db.connect();
+    client.__afrikobaInTx = true;
     client.release();
     await new Promise(function(r) { setTimeout(r, 25); });
     assert.strictEqual(pool._state.releaseCount, 1);
+    assert(pool._state.lastReleaseErr);
+    assert.strictEqual(pool._state.lastReleaseErr.message, 'rollback-fail');
   });
 
   // Test 6: Successful rollback and cleanup preserve existing behavior
@@ -181,8 +192,38 @@ async function run() {
     assert.strictEqual(pool._state.lastReleaseErr, null);
   });
 
-  // Test 7: Transaction state remains correct after BEGIN, COMMIT and ROLLBACK success/failure
-  test('7. Transaction state remains correct after BEGIN, COMMIT and ROLLBACK success/failure', async () => {
+  // Test 7: Synchronous rollback exception path
+  test('7. Synchronous rollback exception invokes release exactly once with sync error', async () => {
+    const state = { lastReleaseErr: null, releaseCount: 0 };
+    if (typeof db._setPool === 'function') {
+      db._setPool({
+        _state: state,
+        connect: function() {
+          const self = this;
+          const client = {
+            query: function() { throw new Error('sync-rollback-fail'); },
+            release: function(err) {
+              self._state.releaseCount++;
+              self._state.lastReleaseErr = err || null;
+            }
+          };
+          return Promise.resolve(client);
+        }
+      });
+    }
+    const pool = typeof db._getPool === 'function' ? db._getPool() : null;
+    if (pool && pool._state) { pool._state.releaseCount = 0; pool._state.lastReleaseErr = null; }
+    const client = await db.connect();
+    client.__afrikobaInTx = true;
+    client.release();
+    await new Promise(function(r) { setTimeout(r, 15); });
+    assert.strictEqual(pool._state.releaseCount, 1);
+    assert(pool._state.lastReleaseErr);
+    assert.strictEqual(pool._state.lastReleaseErr.message, 'sync-rollback-fail');
+  });
+
+  // Test 8: Transaction state remains correct after BEGIN, COMMIT and ROLLBACK success/failure
+  test('8. Transaction state remains correct after BEGIN, COMMIT and ROLLBACK success/failure', async () => {
     const state = { lastReleaseErr: null, releaseCount: 0 };
     if (typeof db._setPool === 'function') {
       db._setPool({
@@ -221,8 +262,8 @@ async function run() {
     assert.strictEqual(pool._state.releaseCount, 1);
   });
 
-  // Test 8: No real database credentials or live database connection are required
-  test('8. No real database credentials or live database connection are required by these unit tests', async () => {
+  // Test 9: No real database credentials or live database connection are required
+  test('9. No real database credentials or live database connection are required by these unit tests', async () => {
     assert.ok(true);
   });
 
