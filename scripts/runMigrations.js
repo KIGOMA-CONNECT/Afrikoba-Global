@@ -94,7 +94,14 @@ async function getWorkingClient() {
       const client = new Client(config);
       try {
         await client.connect();
-        console.log(`[MIGRATE] Connected to database '${config.database}' using user '${config.user}' at host '${config.host}'.`);
+        // Verify database identity before any migration
+        const idRes = await client.query('SELECT current_database() AS db');
+        const actualDb = idRes.rows[0].db;
+        if (actualDb !== config.database || actualDb !== process.env.DB_NAME) {
+          await client.end().catch(() => {});
+          throw new Error(`REFUSING: connected database '${actualDb}' does not match expected '${process.env.DB_NAME}'.`);
+        }
+        console.log(`[MIGRATE] Connected to database '${config.database}' using user '${config.user}' at host '${config.host}'. Identity verified: ${actualDb}`);
         return client;
       } catch (err) {
         await client.end().catch(() => {});

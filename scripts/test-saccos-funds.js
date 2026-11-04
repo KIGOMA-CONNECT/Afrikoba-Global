@@ -77,6 +77,15 @@ async function fundWallet(userId, amount) {
 function nowSuffix() { return String(Date.now()).slice(-6); }
 
 async function main() {
+  // Database identity verification before any write
+  const identity = await pool.query('SELECT current_database() AS db');
+  const dbName = identity.rows[0].db;
+  const DENYLIST = ['afrikoba_regression', 'afrikoba_global', 'afrikoba', 'afrikoba_staging', 'postgres', 'phase68_guard', 'phase68_remed_dryrun'];
+  if (DENYLIST.includes(dbName) || dbName !== process.env.DB_NAME) {
+    console.error(`REFUSING to run: database identity '${dbName}' does not match expected '${process.env.DB_NAME}'.`);
+    process.exit(2);
+  }
+  console.log(`[guard] verified database identity: ${dbName}`);
   const suffix = nowSuffix();
   const phone = (n) => `255${suffix.slice(-3)}${String(n).padStart(4, '0')}`;
 
