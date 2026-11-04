@@ -168,13 +168,7 @@ function safeRelease(client, origRelease, err) {
   function doRelease(e) {
     if (released) return;
     released = true;
-    try {
-      origRelease(e);
-    } catch (ex) {
-      try {
-        origRelease(e);
-      } catch (ex2) {}
-    }
+    origRelease(e);
   }
 
   if (err) {
