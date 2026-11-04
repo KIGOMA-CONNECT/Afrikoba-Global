@@ -93,9 +93,9 @@ async function run() {
     assert.strictEqual(pool._state.releaseCount, 1);
   });
 
-  // Test 4: Caller error remains the primary error if release also throws
-  // Strengthened: strictEqual for callerErr, verify observable behavior when origRelease throws
-  test('4. Caller error preserved when origRelease throws (strictEqual)', async () => {
+  // Test 4: Caller error remains the primary error when origRelease also throws
+  // Caller-visible error precedence: callerErr propagates, not release-throws
+  test('4. Caller error preserved when origRelease throws (error precedence)', async () => {
     const state = { lastReleaseErr: null, releaseCount: 0 };
     if (typeof db._setPool === 'function') {
       db._setPool({
@@ -129,8 +129,42 @@ async function run() {
     assert.strictEqual(pool._state.releaseCount, 1);
     // The exact original callerErr was passed to origRelease
     assert.strictEqual(pool._state.lastReleaseErr, callerErr);
-    // The exception from origRelease propagated (not swallowed)
-    assert.ok(thrownErr instanceof Error, 'origRelease exception should propagate');
+    // Caller-visible error precedence: callerErr propagates, not release exception
+    assert.strictEqual(thrownErr, callerErr, 'caller error should be the primary thrown error');
+  });
+
+  // Test 4b: origRelease throws with no caller error - release exception propagates
+  test('4b. origRelease throws with no caller error - release exception propagates', async () => {
+    const state = { lastReleaseErr: null, releaseCount: 0 };
+    if (typeof db._setPool === 'function') {
+      db._setPool({
+        _state: state,
+        connect: function() {
+          const self = this;
+          const client = {
+            query: function() { return Promise.resolve({ rows: [] }); },
+            release: function(err) {
+              self._state.releaseCount++;
+              self._state.lastReleaseErr = err || null;
+              throw new Error('release-throws');
+            }
+          };
+          return Promise.resolve(client);
+        }
+      });
+    }
+    const pool = typeof db._getPool === 'function' ? db._getPool() : null;
+    if (pool && pool._state) { pool._state.releaseCount = 0; pool._state.lastReleaseErr = null; }
+    const client = await db.connect();
+    let thrownErr = null;
+    try {
+      client.release();
+    } catch (e) {
+      thrownErr = e;
+    }
+    await new Promise(function(r) { setTimeout(r, 15); });
+    assert.strictEqual(pool._state.releaseCount, 1);
+    assert.ok(thrownErr instanceof Error, 'release exception should propagate when no caller error');
     assert.strictEqual(thrownErr.message, 'release-throws');
   });
 

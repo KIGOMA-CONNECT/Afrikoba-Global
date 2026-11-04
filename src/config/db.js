@@ -168,7 +168,15 @@ function safeRelease(client, origRelease, err) {
   function doRelease(e) {
     if (released) return;
     released = true;
-    origRelease(e);
+    try {
+      origRelease(e);
+    } catch (releaseEx) {
+      // Preserve original caller error; do not let release exception mask it
+      if (err) {
+        throw err;
+      }
+      throw releaseEx;
+    }
   }
 
   if (err) {
@@ -177,11 +185,18 @@ function safeRelease(client, origRelease, err) {
         var p = client.query('ROLLBACK');
         if (p && typeof p.then === 'function') {
           p.then(function() {
-            // rollback succeeded but caller error requires destruction
-            doRelease(err);
+            try {
+              doRelease(err);
+            } catch (e) {
+              // caller error is primary; suppress release exception
+            }
           }).catch(function(rbE) {
             var rbErr = rbE || new Error('rollback_failed');
-            doRelease(rbErr);
+            try {
+              doRelease(rbErr);
+            } catch (e) {
+              // caller error is primary; suppress release exception
+            }
           });
           return;
         }
@@ -204,10 +219,18 @@ function safeRelease(client, origRelease, err) {
       if (p2 && typeof p2.then === 'function') {
         p2.then(function() {
           client.__afrikobaInTx = false;
-          doRelease();
+          try {
+            doRelease();
+          } catch (e) {
+            // suppress release exception to avoid unhandled rejection
+          }
         }).catch(function(rbE) {
           var rbErr3 = rbE || new Error('rollback_failed');
-          doRelease(rbErr3);
+          try {
+            doRelease(rbErr3);
+          } catch (e) {
+            // suppress release exception to avoid unhandled rejection
+          }
         });
         return;
       }
