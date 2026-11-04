@@ -85,7 +85,6 @@ const dbPoolStatsInterval = setInterval(function() {
     });
   }
 }, 60000);
-
 if (typeof dbPoolStatsInterval.unref === 'function') {
   dbPoolStatsInterval.unref();
 }
@@ -108,28 +107,59 @@ function isRollbackQuery(text) {
   return t === 'rollback' || t.indexOf('rollback ') === 0;
 }
 
+function extractSql(args) {
+  if (!args || args.length === 0) return null;
+  var sql = args[0];
+  if (typeof sql === 'object' && sql !== null && sql.text) {
+    sql = sql.text;
+  }
+  if (typeof sql === 'string') return sql;
+  return null;
+}
+
 function trackTransactionState(client) {
   if (client.__afrikobaTxTracked) return;
   client.__afrikobaTxTracked = true;
   var origQuery = client.query.bind(client);
   client.query = function() {
     var args = Array.prototype.slice.call(arguments);
-    try {
-      var sql = args[0];
-      if (typeof sql === 'object' && sql !== null && sql.text) {
-        sql = sql.text;
-      }
-      if (typeof sql === 'string') {
-        if (isBeginQuery(sql)) {
-          client.__afrikobaInTx = true;
-        } else if (isCommitQuery(sql)) {
-          client.__afrikobaInTx = false;
-        } else if (isRollbackQuery(sql)) {
-          client.__afrikobaInTx = false;
+    var sql = extractSql(args);
+    var cmdBegin = sql && isBeginQuery(sql);
+    var cmdCommit = sql && isCommitQuery(sql);
+    var cmdRollback = sql && isRollbackQuery(sql);
+
+    if (typeof args[args.length - 1] === 'function') {
+      var cb = args[args.length - 1];
+      args[args.length - 1] = function(err, result) {
+        if (!err) {
+          if (cmdBegin) client.__afrikobaInTx = true;
+          else if (cmdCommit || cmdRollback) client.__afrikobaInTx = false;
         }
+        return cb(err, result);
+      };
+      try {
+        return origQuery.apply(this, args);
+      } catch (e) {
+        throw e;
       }
-    } catch (e) {}
-    return origQuery.apply(this, args);
+    }
+
+    var p;
+    try {
+      p = origQuery.apply(this, args);
+    } catch (e) {
+      throw e;
+    }
+    if (p && typeof p.then === 'function') {
+      return p.then(function(res) {
+        if (cmdBegin) client.__afrikobaInTx = true;
+        else if (cmdCommit || cmdRollback) client.__afrikobaInTx = false;
+        return res;
+      }, function(err) {
+        throw err;
+      });
+    }
+    return p;
   };
 }
 
