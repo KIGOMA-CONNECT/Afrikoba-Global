@@ -166,27 +166,61 @@ function trackTransactionState(client) {
 function safeRelease(client, origRelease, err) {
   if (err) {
     if (client.__afrikobaInTx) {
+      var rbErr;
       try {
         var p = client.query('ROLLBACK');
         if (p && typeof p.then === 'function') {
-          p.then(function() { origRelease(err); }).catch(function() { origRelease(err); });
+          p.then(function() {
+            client.__afrikobaInTx = false;
+            origRelease();
+          }).catch(function(rbE) {
+            rbErr = rbE || new Error('rollback_failed');
+            try {
+              origRelease(rbErr);
+            } catch (e2) {
+              origRelease(rbErr);
+            }
+          });
           return;
         }
-      } catch (e) {}
+      } catch (e) {
+        rbErr = e || new Error('rollback_failed');
+        try {
+          origRelease(rbErr);
+        } catch (e2) {
+          origRelease(rbErr);
+        }
+        return;
+      }
     }
     origRelease(err);
     return;
   }
+
   if (client.__afrikobaInTx) {
     try {
       var p2 = client.query('ROLLBACK');
       if (p2 && typeof p2.then === 'function') {
-        p2.then(function() { client.__afrikobaInTx = false; origRelease(); }).catch(function() { client.__afrikobaInTx = false; origRelease(); });
+        p2.then(function() {
+          client.__afrikobaInTx = false;
+          origRelease();
+        }).catch(function(rbE) {
+          var rbErr2 = rbE || new Error('rollback_failed');
+          try {
+            origRelease(rbErr2);
+          } catch (e2) {
+            origRelease(rbErr2);
+          }
+        });
         return;
       }
     } catch (e) {
-      client.__afrikobaInTx = false;
-      origRelease();
+      var rbErr3 = e || new Error('rollback_failed');
+      try {
+        origRelease(rbErr3);
+      } catch (e2) {
+        origRelease(rbErr3);
+      }
       return;
     }
     client.__afrikobaInTx = false;
