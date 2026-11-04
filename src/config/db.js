@@ -245,13 +245,19 @@ function safeConnect() {
   });
 }
 
-module.exports = new Proxy({}, {
+const proxy = new Proxy({}, {
   get: function(target, prop) {
     if (prop === 'connect') {
       return safeConnect;
     }
     if (prop === 'terminateStaleLockHolders') {
       return terminateStaleLockHolders;
+    }
+    if (prop === '_setPool') {
+      return function(pool) { currentPool = pool; };
+    }
+    if (prop === '_getPool') {
+      return function() { return currentPool; };
     }
     var value = currentPool[prop];
     if (typeof value === 'function') {
@@ -260,3 +266,4 @@ module.exports = new Proxy({}, {
     return value;
   }
 });
+module.exports = proxy;
