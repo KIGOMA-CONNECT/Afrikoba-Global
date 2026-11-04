@@ -399,7 +399,10 @@ router.post('/:id/savings/deposit', authRequired, async (req, res, next) => {
 
 router.post('/:id/savings/withdraw', authRequired, async (req, res, next) => {
   try {
-    const out = await savings.withdraw(req.user.id, Number(req.params.id), { amount: req.body.amount });
+    const out = await savings.withdraw(req.user.id, Number(req.params.id), {
+      amount: req.body.amount,
+      reference: req.body.reference || req.headers['idempotency-key'] || null
+    });
     res.status(201).json({ success: true, result: out });
   } catch (e) { next(e); }
 });

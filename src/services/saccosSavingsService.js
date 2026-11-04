@@ -219,36 +219,99 @@ async function deposit(actorId, saccosId, { amount, client: callerClient = null,
   }
 }
 
-async function withdraw(actorId, saccosId, { amount }) {
+async function withdraw(actorId, saccosId, { amount, reference = null }) {
   const value = Number(amount);
   if (!Number.isFinite(value) || value <= 0) throw createAppError('SACCOS_SAVINGS_AMOUNT_INVALID');
   const saccos = await fetchActiveOrg(actorId, saccosId);
   const membership = await requireActiveMember(actorId, saccosId);
   const cfg = savingsConfig(saccos);
 
+  if (value < cfg.minDeposit) throw createAppError('SACCOS_SAVINGS_BELOW_MIN_DEPOSIT');
+  if (cfg.maxDeposit !== null && value > cfg.maxDeposit) throw createAppError('SACCOS_SAVINGS_ABOVE_MAX_DEPOSIT');
+
   const auto = cfg.autoApproveWithdrawals !== false;
-  const ref = newSolarRef('SWD');
+  const ref = reference || newSolarRef('SWD');
+
   const client = await pool.connect();
+  let connectionError = null;
   try {
     await client.query('BEGIN');
     await ensureSavingsLiability(client, saccosId);
     await ensureMemberAccount(client, saccosId, membership.id, cfg.savingsType);
 
-    // Lock account row and validate balance inside transaction
+    // Atomic claim via INSERT...ON CONFLICT on unique reference_id
+    const claim = await client.query(
+      `INSERT INTO saccos_savings_withdrawals (saccos_id, member_id, account_id, reference_id, amount, status, requires_approval, decided_by, decision_at, released_at)
+       VALUES ($1, $2, $3, $4, $5, 'PENDING', $6, $7, $8, $9)
+       ON CONFLICT (reference_id) DO NOTHING
+       RETURNING id, status, saccos_id, member_id, account_id, amount`,
+      [saccosId, membership.id, null, ref, value,
+       !auto, auto ? actorId : null, auto ? new Date() : null, auto ? new Date() : null]
+    );
+
+    if (claim.rows.length === 0) {
+      // Reference already exists — fetch and verify
+      const existing = await client.query(
+        `SELECT saccos_id, member_id, account_id, reference_id, amount, status
+           FROM saccos_savings_withdrawals
+          WHERE reference_id = $1
+          FOR UPDATE`,
+        [ref]
+      );
+      const ex = existing.rows[0];
+      if (Number(ex.saccos_id) !== Number(saccosId) ||
+          Number(ex.member_id) !== Number(membership.id) ||
+          Number(ex.amount) !== Number(value)) {
+        throw createAppError('SACCOS_SAVINGS_REFERENCE_CONFLICT');
+      }
+      if (ex.status === 'APPROVED') {
+        await client.query('COMMIT');
+        return { reference: ref, status: 'APPROVED', requiresApproval: false, dedup: true };
+      }
+      if (ex.status === 'PENDING') {
+        await client.query('COMMIT');
+        return { reference: ref, status: 'PENDING', requiresApproval: true, dedup: true };
+      }
+      // REJECTED or FAILED
+      throw createAppError('SACCOS_SAVINGS_REFERENCE_CONFLICT');
+    }
+
+    // New withdrawal — revalidate membership inside transaction
+    const memberRes = await client.query(
+      'SELECT id, status FROM saccos_members WHERE id = $1 AND saccos_id = $2 FOR UPDATE',
+      [membership.id, saccosId]
+    );
+    if (!memberRes.rows.length || memberRes.rows[0].status !== 'ACTIVE') {
+      await client.query('ROLLBACK');
+      throw createAppError('SACCOS_NOT_MEMBER');
+    }
+
+    // Revalidate savings account inside transaction
     const acctRes = await client.query(
-      'SELECT id, balance FROM saccos_savings_accounts WHERE saccos_id = $1 AND member_id = $2 FOR UPDATE',
+      'SELECT id, balance, status FROM saccos_savings_accounts WHERE saccos_id = $1 AND member_id = $2 FOR UPDATE',
       [saccosId, membership.id]
     );
     const account = acctRes.rows[0];
     if (!account) throw createAppError('SACCOS_SAVINGS_ACCOUNT_NOT_FOUND');
+    if (account.status !== 'ACTIVE') throw createAppError('SACCOS_SAVINGS_ACCOUNT_INACTIVE');
 
+    // Update account_id on the withdrawal row
+    await client.query(
+      `UPDATE saccos_savings_withdrawals SET account_id = $1 WHERE id = $2`,
+      [account.id, claim.rows[0].id]
+    );
+
+    // Check available balance (pendingSum excludes the new row since it's not yet committed)
     const pending = await client.query(
-      "SELECT COALESCE(SUM(amount), 0)::numeric AS total FROM saccos_savings_withdrawals WHERE account_id = $1 AND status = 'PENDING'",
-      [account.id]
+      "SELECT COALESCE(SUM(amount), 0)::numeric AS total FROM saccos_savings_withdrawals WHERE account_id = $1 AND status = 'PENDING' AND id <> $2",
+      [account.id, claim.rows[0].id]
     );
     const pendingTotal = Number(pending.rows[0].total);
     const available = Number(account.balance) - cfg.minBalanceToRetain - pendingTotal;
-    if (value > available) throw createAppError('SACCOS_SAVINGS_INSUFFICIENT');
+    if (value > available) {
+      await client.query('ROLLBACK');
+      throw createAppError('SACCOS_SAVINGS_INSUFFICIENT');
+    }
 
     if (auto) {
       const creditResult = await fin.creditWallet({
@@ -257,14 +320,17 @@ async function withdraw(actorId, saccosId, { amount }) {
         description: `Uondoaji wa akiba SACCOS #${saccosId}`, actor: 'saccos:savings:withdraw',
       });
       if (creditResult.dedup) {
-        // Dedup detected — verify the withdrawal was actually completed
         await client.query('ROLLBACK');
-        const existingWd = await pool.query(
-          "SELECT status, amount FROM saccos_savings_withdrawals WHERE reference_id = $1",
+        const existingTx = await pool.query(
+          "SELECT status FROM transactions WHERE reference_id = $1",
           [ref]
         );
-        if (existingWd.rows.length === 1 && existingWd.rows[0].status === 'APPROVED' &&
-            Number(existingWd.rows[0].amount) === value) {
+        const existingWd = await pool.query(
+          "SELECT status FROM saccos_savings_withdrawals WHERE reference_id = $1",
+          [ref]
+        );
+        if (existingTx.rows.length === 1 && existingTx.rows[0].status === 'SUCCESS' &&
+            existingWd.rows.length === 1 && existingWd.rows[0].status === 'APPROVED') {
           return { reference: ref, status: 'APPROVED', requiresApproval: false, dedup: true };
         }
         throw createAppError('SACCOS_SAVINGS_WITHDRAWAL_INCOMPLETE');
@@ -274,30 +340,33 @@ async function withdraw(actorId, saccosId, { amount }) {
          VALUES ($1, $2, $3, 0, $3, 'SUCCESS', 'SACCOS_SAVINGS_WITHDRAWAL', $4)`,
         [ref, actorId, value, JSON.stringify({ saccosId, accountId: account.id, autoApproved: true })]
       );
+      await client.query(
+        `UPDATE saccos_savings_withdrawals SET status = 'APPROVED', decided_by = $1, decision_at = NOW(), released_at = NOW() WHERE id = $2 AND status = 'PENDING'`,
+        [actorId, claim.rows[0].id]
+      );
+      await client.query(
+        `UPDATE saccos_savings_accounts SET balance = balance - $1, updated_at = NOW() WHERE id = $2`,
+        [value, account.id]
+      );
     }
-    await client.query(
-      `INSERT INTO saccos_savings_withdrawals (saccos_id, member_id, account_id, reference_id, amount, status, requires_approval, decided_by, decision_at, released_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
-      [saccosId, membership.id, account.id, ref, value,
-       auto ? 'APPROVED' : 'PENDING', !auto,
-       auto ? actorId : null, auto ? new Date() : null, auto ? new Date() : null]
-    );
     await client.query(
       `INSERT INTO saccos_savings_movements (saccos_id, member_id, account_id, reference_id, type, amount, status)
        VALUES ($1, $2, $3, $4, 'WITHDRAWAL', $5, $6)`,
       [saccosId, membership.id, account.id, ref, value, auto ? 'APPROVED' : 'PENDING']
     );
-    if (auto) {
-      await client.query(`UPDATE saccos_savings_accounts SET balance = balance - $1, updated_at = NOW() WHERE id = $2`, [value, account.id]);
-    }
     await client.query('COMMIT');
     await logAudit(actorId, 'SACCOS_SAVINGS_WITHDRAWAL', { referenceId: saccosId, details: { amount: value, status: auto ? 'APPROVED' : 'PENDING' } }).catch(() => {});
     return { reference: ref, status: auto ? 'APPROVED' : 'PENDING', requiresApproval: !auto, newBalance: auto ? Number(account.balance) - value : Number(account.balance) };
   } catch (e) {
-    await client.query('ROLLBACK').catch(() => {});
+    if (e.code === 'ECONNRESET' || e.code === 'ETIMEDOUT' || e.code === 'ECONNREFUSED' || e.code === 'ENOTFOUND') {
+      connectionError = e;
+    }
+    await client.query('ROLLBACK').catch((rbErr) => {
+      logger.error('ROLLBACK_FAILED', rbErr.message, { service: 'saccosSavings.withdraw', reference: ref });
+    });
     throw e;
   } finally {
-    client.release();
+    client.release(connectionError);
   }
 }
 
@@ -387,10 +456,15 @@ async function decideWithdrawal(actorId, saccosId, withdrawalId, decision) {
     await logAudit(actorId, decision === 'APPROVE' ? 'SACCOS_SAVINGS_WITHDRAWAL_APPROVED' : 'SACCOS_SAVINGS_WITHDRAWAL_REJECTED', { referenceId: saccosId, details: { withdrawalId } }).catch(() => {});
     return { success: true, withdrawalId, status: decision === 'APPROVE' ? 'APPROVED' : 'REJECTED' };
   } catch (e) {
-    await client.query('ROLLBACK').catch(() => {});
+    if (e.code === 'ECONNRESET' || e.code === 'ETIMEDOUT' || e.code === 'ECONNREFUSED' || e.code === 'ENOTFOUND') {
+      connectionError = e;
+    }
+    await client.query('ROLLBACK').catch((rbErr) => {
+      logger.error('ROLLBACK_FAILED', rbErr.message, { service: 'saccosSavings.withdraw', reference: ref });
+    });
     throw e;
   } finally {
-    client.release();
+    client.release(connectionError);
   }
 }
 

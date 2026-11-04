@@ -365,19 +365,49 @@ async function provisionLoanLoss(actorId, saccosId, { loanId, amount, ratePercen
 
 async function releaseLoanLoss(actorId, saccosId, llrId) {
   await saccosCore.assertActiveRole(actorId, saccosId, ['OWNER', 'BOARD']);
-  const llr = await pool.query('SELECT * FROM saccos_loan_loss_reserves WHERE id = $1 AND saccos_id = $2', [llrId, saccosId]);
-  if (!llr.rows.length) throw createAppError('SACCOS_LLR_NOT_FOUND');
-  if (llr.rows[0].status !== 'PROVISIONED') throw createAppError('SACCOS_LLR_STATE');
 
   const client = await pool.connect();
+  let connectionError = null;
   try {
     await client.query('BEGIN');
+
+    // Lock reserve row inside transaction
+    const llr = await client.query(
+      'SELECT * FROM saccos_loan_loss_reserves WHERE id = $1 AND saccos_id = $2 FOR UPDATE',
+      [llrId, saccosId]
+    );
+    if (!llr.rows.length) {
+      await client.query('ROLLBACK');
+      throw createAppError('SACCOS_LLR_NOT_FOUND');
+    }
+    if (llr.rows[0].status === 'RELEASED') {
+      await client.query('ROLLBACK');
+      return { alreadyReleased: true, reference: llr.rows[0].reference_id, releasedAt: llr.rows[0].released_at, provision_amount: Number(llr.rows[0].provision_amount) };
+    }
+    if (llr.rows[0].status !== 'PROVISIONED') {
+      await client.query('ROLLBACK');
+      throw createAppError('SACCOS_LLR_STATE');
+    }
+
     const reference = newRef('LLR');
     const op = await fin.claimOperation({ client, operationType: 'SACCOS_LOAN_LOSS_RELEASE', reference, userId: actorId, amount: Number(llr.rows[0].provision_amount) });
     if (!op.claimed) {
       await client.query('ROLLBACK');
       return { dedup: true, reference };
     }
+
+    // Conditional state transition BEFORE journal posting
+    const r = await client.query(
+      `UPDATE saccos_loan_loss_reserves SET status = 'RELEASED', released_at = NOW()
+       WHERE id = $1 AND status = 'PROVISIONED' RETURNING *`,
+      [llrId]
+    );
+    if (r.rowCount !== 1) {
+      await client.query('ROLLBACK');
+      return { alreadyReleased: true, reference: llr.rows[0].reference_id, releasedAt: llr.rows[0].released_at, provision_amount: Number(llr.rows[0].provision_amount) };
+    }
+
+    // Post reversing journal ONLY after successful state transition
     await fin.postJournal({
       client,
       lines: [
@@ -386,18 +416,20 @@ async function releaseLoanLoss(actorId, saccosId, llrId) {
       ],
       referenceId: reference, description: `SACCOS #${saccosId} loan-loss release`, postedBy: 'saccos-funds',
     });
-    const r = await client.query(
-      `UPDATE saccos_loan_loss_reserves SET status = 'RELEASED', released_at = NOW() WHERE id = $1 RETURNING *`,
-      [llrId]
-    );
+
     await client.query('COMMIT');
     await logAudit(actorId, 'SACCOS_LLR_RELEASED', { referenceId: saccosId, details: { llrId, reference } }).catch(() => {});
     return { ...r.rows[0], provision_amount: Number(r.rows[0].provision_amount) };
   } catch (e) {
-    await client.query('ROLLBACK').catch(() => {});
+    if (e.code === 'ECONNRESET' || e.code === 'ETIMEDOUT' || e.code === 'ECONNREFUSED' || e.code === 'ENOTFOUND') {
+      connectionError = e;
+    }
+    await client.query('ROLLBACK').catch((rbErr) => {
+      logger.error('ROLLBACK_FAILED', rbErr.message, { service: 'saccosFunds.releaseLoanLoss', llrId });
+    });
     throw e;
   } finally {
-    client.release();
+    client.release(connectionError);
   }
 }
 

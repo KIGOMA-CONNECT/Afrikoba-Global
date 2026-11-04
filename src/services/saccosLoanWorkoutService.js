@@ -73,6 +73,7 @@ async function restructureLoan(actorId, saccosId, loanId, { newTermMonths, newRa
   if (!Number.isFinite(rate) || rate < 0) throw createAppError('SACCOS_LOAN_RESTRUCTURE_RATE');
 
   const client = await pool.connect();
+  let connectionError = null;
   try {
     await client.query('BEGIN');
     const loan = await fetchLoan(saccosId, loanId, client);
@@ -211,7 +212,7 @@ async function writeOffLoan(actorId, saccosId, loanId, { reason }) {
     );
 
     const llr = await client.query(
-      `SELECT * FROM saccos_loan_loss_reserves WHERE saccos_id = $1 AND loan_id = $2 AND status = 'PROVISIONED'`,
+      `SELECT * FROM saccos_loan_loss_reserves WHERE saccos_id = $1 AND loan_id = $2 AND status = 'PROVISIONED' FOR UPDATE`,
       [saccosId, loanId]
     );
     const provisioned = llr.rows.length ? round2(Number(llr.rows[0].provision_amount)) : 0;
@@ -280,10 +281,15 @@ async function writeOffLoan(actorId, saccosId, loanId, { reason }) {
       status: 'WRITTEN_OFF',
     };
   } catch (e) {
-    await client.query('ROLLBACK').catch(() => {});
+    if (e.code === 'ECONNRESET' || e.code === 'ETIMEDOUT' || e.code === 'ECONNREFUSED' || e.code === 'ENOTFOUND') {
+      connectionError = e;
+    }
+    await client.query('ROLLBACK').catch((rbErr) => {
+      logger.error('ROLLBACK_FAILED', rbErr.message, { service: 'saccosLoanWorkout.writeOffLoan', loanId });
+    });
     throw e;
   } finally {
-    client.release();
+    client.release(connectionError);
   }
 }
 

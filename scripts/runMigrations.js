@@ -13,7 +13,13 @@ const { Client } = require('pg');
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function ensureDatabaseAndSchema() {
-  const targetDb = process.env.DB_NAME || 'afrikoba_global';
+  const EXPECTED_DB = process.env.PHASE68_TEST_DB;
+  const DENYLIST = ['afrikoba_regression', 'afrikoba_global', 'afrikoba', 'afrikoba_staging', 'postgres', 'phase68_guard', 'phase68_remed_dryrun'];
+  if (!EXPECTED_DB || !process.env.DB_NAME || process.env.DB_NAME !== EXPECTED_DB ||
+      !/^phase68_amount_guard_[a-z0-9_]+$/i.test(EXPECTED_DB)) {
+    throw new Error('REFUSING to run migrations: DB_NAME and PHASE68_TEST_DB must match an explicit phase68_amount_guard_<unique_suffix> disposable database name.');
+  }
+  const targetDb = process.env.DB_NAME;
   const user = process.env.DB_USER || 'afrikoba';
   const password = process.env.DB_PASSWORD || 'change_me_strong_password';
   const host = process.env.DB_HOST || 'db';
@@ -63,21 +69,21 @@ async function getWorkingClient() {
     {
       user: process.env.DB_USER || 'afrikoba',
       host: process.env.DB_HOST || 'db',
-      database: process.env.DB_NAME || 'afrikoba_global',
+      database: process.env.DB_NAME,
       password: process.env.DB_PASSWORD || 'change_me_strong_password',
       port: Number(process.env.DB_PORT || 5432),
     },
     {
       user: 'afrikoba',
       host: process.env.DB_HOST || 'db',
-      database: process.env.DB_NAME || 'afrikoba_global',
+      database: process.env.DB_NAME,
       password: 'change_me_strong_password',
       port: Number(process.env.DB_PORT || 5432),
     },
     {
       user: 'postgres',
       host: process.env.DB_HOST || 'db',
-      database: process.env.DB_NAME || 'afrikoba_global',
+      database: process.env.DB_NAME,
       password: process.env.DB_PASSWORD || 'postgres',
       port: Number(process.env.DB_PORT || 5432),
     },

@@ -15,6 +15,16 @@
  * ============================================================ */
 const BASE = process.env.SACCOS_TEST_BASE || 'http://127.0.0.1:3000';
 const pool = require('../src/config/db');
+
+// Database safety guard — refuse to run against production or non-isolated databases
+const EXPECTED_DB = process.env.PHASE68_TEST_DB;
+const DENYLIST = ['afrikoba_regression', 'afrikoba_global', 'afrikoba', 'afrikoba_staging', 'postgres', 'phase68_guard', 'phase68_remed_dryrun'];
+if (!EXPECTED_DB || !process.env.DB_NAME || process.env.DB_NAME !== EXPECTED_DB ||
+    !/^phase68_amount_guard_[a-z0-9_]+$/i.test(EXPECTED_DB)) {
+  console.error('REFUSING to run: DB_NAME and PHASE68_TEST_DB must match an explicit phase68_amount_guard_<unique_suffix> disposable database name.');
+  process.exit(2);
+}
+
 const fundsService = require('../src/services/saccosFundsService');
 
 let passed = 0;
