@@ -393,7 +393,7 @@ async function main() {
   const release2 = await api('POST', `/api/saccos/${orgId}/loan-loss/${llr2Id}/release`, ownerTok);
   await expect(release2.status === 200 && release2.data.result.status === 'RELEASED', 'release loan2 provision -> RELEASED');
   const reRelease = await api('POST', `/api/saccos/${orgId}/loan-loss/${llr2Id}/release`, ownerTok);
-  await expect(reRelease.status === 400 && reRelease.data.code === 'SACCOS_LLR_STATE', 're-release -> SACCOS_LLR_STATE');
+  await expect(reRelease.status === 200 && reRelease.data.result.alreadyReleased === true, 're-release -> alreadyReleased');
 
   const llrList = await api('GET', `/api/saccos/${orgId}/loan-loss`, ownerTok);
   const llrSummary = await api('GET', `/api/saccos/${orgId}/loan-loss/summary`, ownerTok);

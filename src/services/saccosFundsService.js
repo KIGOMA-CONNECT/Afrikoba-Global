@@ -380,10 +380,6 @@ async function releaseLoanLoss(actorId, saccosId, llrId) {
       await client.query('ROLLBACK');
       throw createAppError('SACCOS_LLR_NOT_FOUND');
     }
-    if (llr.rows[0].status === 'RELEASED') {
-      await client.query('ROLLBACK');
-      return { alreadyReleased: true, reference: llr.rows[0].reference_id, releasedAt: llr.rows[0].released_at, provision_amount: Number(llr.rows[0].provision_amount) };
-    }
     if (llr.rows[0].status !== 'PROVISIONED') {
       await client.query('ROLLBACK');
       throw createAppError('SACCOS_LLR_STATE');
@@ -404,7 +400,12 @@ async function releaseLoanLoss(actorId, saccosId, llrId) {
     );
     if (r.rowCount !== 1) {
       await client.query('ROLLBACK');
-      return { alreadyReleased: true, reference: llr.rows[0].reference_id, releasedAt: llr.rows[0].released_at, provision_amount: Number(llr.rows[0].provision_amount) };
+      // Re-read to determine if already released by concurrent request
+      const recheck = await client.query('SELECT status, reference_id, released_at, provision_amount FROM saccos_loan_loss_reserves WHERE id = $1', [llrId]);
+      if (recheck.rows.length && recheck.rows[0].status === 'RELEASED') {
+        return { alreadyReleased: true, reference: recheck.rows[0].reference_id, releasedAt: recheck.rows[0].released_at, provision_amount: Number(recheck.rows[0].provision_amount) };
+      }
+      throw createAppError('SACCOS_LLR_STATE');
     }
 
     // Post reversing journal ONLY after successful state transition
