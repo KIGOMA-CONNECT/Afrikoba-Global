@@ -474,6 +474,7 @@ async function _dispatch(requestId, approverId) {
 async function retry(requestId, actorId) {
   const client = await pool.connect();
   let recoverApprovedSettlement = false;
+  let recoverApprovedRefund = false;
 
   try {
     await client.query('BEGIN');
@@ -543,6 +544,11 @@ async function retry(requestId, actorId) {
       // executor, whose SETTLED duplicate guard must prevent repeat effects.
       recoverApprovedSettlement = true;
       await client.query('COMMIT');
+    } else if (request.status === 'APPROVED' && request.action_code === 'ADMIN_LARGE_REFUND') {
+      // Leave APPROVED. _dispatch() re-invokes the executor, which verifies the committed
+      // operation under the stable reference and never repeats the wallet credit.
+      recoverApprovedRefund = true;
+      await client.query('COMMIT');
     } else {
       if (request.status !== 'FAILED') {
         throw Object.assign(
@@ -580,6 +586,7 @@ async function retry(requestId, actorId) {
   return {
     executed,
     recoveredSettledAgentRequest: recoverApprovedSettlement,
+    recoveredApprovedRefund: recoverApprovedRefund,
     request: (await getRequest(requestId)).request
   };
 }

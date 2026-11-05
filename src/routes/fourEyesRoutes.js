@@ -50,17 +50,61 @@ fe.registerExecutor('ADMIN_DEMOTE_ROLE', async (payload, approverId) => {
   return applyRoleChange(payload, approverId);
 });
 
-fe.registerExecutor('ADMIN_LARGE_REFUND', async (payload, approverId) => {
+// Stable, request-scoped operation reference. A dispatch that committed the wallet
+// credit but could not record EXECUTED is recovered by re-dispatch under this same
+// reference, so the credit is never repeated.
+function fourEyesRefundReference(requestId) {
+  return `FOUR_EYES_REFUND:${requestId}`;
+}
+
+function unresolvedRefund(message) {
+  return Object.assign(new Error(message), { status: 409, code: 'FOUR_EYES_OPERATION_UNRESOLVED' });
+}
+
+// Runs inside the executor's transaction. Success is reported only for a committed
+// CREDIT operation with the expected shape and a balanced two-line journal.
+async function verifyCommittedRefund(client, { reference, userId, amount }) {
+  const op = await client.query(
+    'SELECT operation_type, user_id, amount, status FROM financial_operations WHERE reference_id = $1',
+    [reference]
+  );
+  const row = op.rows[0];
+  if (!row) throw unresolvedRefund('Operesheni ya marejesho haijapatikana; haijathibitishwa.');
+  if (row.status !== 'SUCCESS') {
+    throw unresolvedRefund(`Operesheni ya marejesho iko katika hali ${row.status}, si SUCCESS.`);
+  }
+  if (row.operation_type !== 'CREDIT' || Number(row.user_id) !== Number(userId) ||
+      Math.abs(Number(row.amount) - Number(amount)) >= 0.005) {
+    throw Object.assign(new Error('Operesheni iliyopo ya marejesho hailingani na ombi.'), { status: 409, code: 'FOUR_EYES_OPERATION_MISMATCH' });
+  }
+  const journal = await client.query(
+    `SELECT COUNT(*)::int AS n,
+            COALESCE(SUM(CASE WHEN direction = 'DR' THEN amount ELSE 0 END), 0)::numeric AS dr,
+            COALESCE(SUM(CASE WHEN direction = 'CR' THEN amount ELSE 0 END), 0)::numeric AS cr
+       FROM journal_entries WHERE reference_id = $1`,
+    [reference]
+  );
+  const j = journal.rows[0];
+  if (j.n !== 2 || Math.abs(Number(j.dr) - Number(amount)) >= 0.005 || Math.abs(Number(j.cr) - Number(amount)) >= 0.005) {
+    throw unresolvedRefund('Jarida ya marejesho haijakamilika kwa operesheni iliyopo.');
+  }
+}
+
+fe.registerExecutor('ADMIN_LARGE_REFUND', async (payload, approverId, request) => {
+  const requestId = Number(request && request.id);
+  if (!Number.isSafeInteger(requestId) || requestId <= 0) {
+    throw Object.assign(new Error('Kitambulisho cha ombi si sahihi.'), { status: 400 });
+  }
   const userId = Number(payload.userId);
   const amount = Number(payload.amount);
   if (!userId || !amount || amount <= 0) throw Object.assign(new Error('userId na amount sahihi zinahitajika.'), { status: 400 });
   const user = await pool.query('SELECT id, full_name FROM users WHERE id = $1', [userId]);
   if (user.rows.length === 0) throw Object.assign(new Error('Mtumiaji hajapatikana.'), { status: 404 });
-  const reference = `REF-${approverId}-${Date.now()}`;
+  const reference = fourEyesRefundReference(requestId);
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    await fin.creditWallet({
+    const credit = await fin.creditWallet({
       client,
       userId,
       amount,
@@ -69,14 +113,17 @@ fe.registerExecutor('ADMIN_LARGE_REFUND', async (payload, approverId) => {
       description: `Malipo ya marejesho (four-eyes)`,
       actor: `four-eyes:${approverId}`,
     });
+    if (credit.dedup) {
+      await verifyCommittedRefund(client, { reference, userId, amount });
+    }
     await client.query('COMMIT');
+    return { userId, amount, reference, replayed: Boolean(credit.dedup) };
   } catch (e) {
     await client.query('ROLLBACK').catch(() => {});
     throw e;
   } finally {
     client.release();
   }
-  return { userId, amount, reference };
 });
 
 const num = (v) => Number(v);
