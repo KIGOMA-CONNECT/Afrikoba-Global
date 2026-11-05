@@ -24,6 +24,9 @@ async function ensureDatabaseAndSchema() {
   if (!/^[a-z][a-z0-9_]*$/i.test(targetDb)) {
     throw new Error('REFUSING: invalid database identifier.');
   }
+  if (DENYLIST.includes(targetDb)) {
+    throw new Error(`REFUSING: database '${targetDb}' is denylisted.`);
+  }
   const user = process.env.DB_USER || 'afrikoba';
   const password = process.env.DB_PASSWORD || 'change_me_strong_password';
   const host = process.env.DB_HOST || 'db';
@@ -36,7 +39,7 @@ async function ensureDatabaseAndSchema() {
     const res = await adminClient.query(`SELECT 1 FROM pg_database WHERE datname = $1`, [targetDb]);
     if (res.rows.length === 0) {
       console.log(`[MIGRATE] Database '${targetDb}' does not exist. Creating it now...`);
-      await adminClient.query(`CREATE DATABASE ${targetDb}`);
+      await adminClient.query(`CREATE DATABASE "${targetDb.replace(/"/g, '""')}"`);
       console.log(`[MIGRATE] Database '${targetDb}' created successfully.`);
     }
   } catch (e) {
@@ -114,6 +117,7 @@ async function getWorkingClient() {
         return client;
       } catch (err) {
         await client.end().catch(() => {});
+        if (String(err && err.message).startsWith('REFUSING')) throw err;
       }
     }
     console.log(`[MIGRATE] Waiting for database connection (attempt ${attempt}/15)...`);

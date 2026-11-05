@@ -398,6 +398,11 @@ async function decideWithdrawal(actorId, saccosId, withdrawalId, decision) {
       [withdrawalId, saccosId]
     );
     if (!wdLock.rows.length) throw createAppError('SACCOS_SAVINGS_WITHDRAWAL_NOT_FOUND');
+    const established = decision === 'APPROVE' ? 'APPROVED' : 'REJECTED';
+    if (wdLock.rows[0].status === established) {
+      await client.query('COMMIT');
+      return { success: true, withdrawalId, status: established, dedup: true };
+    }
     if (wdLock.rows[0].status !== 'PENDING') throw createAppError('SACCOS_SAVINGS_DECIDED');
 
     if (decision === 'APPROVE') {

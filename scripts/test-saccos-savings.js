@@ -249,7 +249,7 @@ async function main() {
   await expect(mineF.data.result.account.balance === 6000, 'balance 6000 after approval');
 
   const dupW = await api('POST', `/api/saccos/${s2Id}/savings/withdrawals/${wId}/approve`, o2Tok);
-  await expect(dupW.status === 400 && dupW.data.code === 'SACCOS_SAVINGS_DECIDED', 're-approve -> SACCOS_SAVINGS_DECIDED');
+  await expect(dupW.status === 200 && dupW.data.result.status === 'APPROVED' && dupW.data.result.dedup === true, 're-approve same decision -> established APPROVED, dedup (no second debit)');
 
   const w3 = await api('POST', `/api/saccos/${s2Id}/savings/withdraw`, fTok, { amount: 3000 }, { 'Idempotency-Key': 'W3-' + crypto.randomBytes(4).toString('hex') });
   await expect(w3.status === 201 && w3.data.result.status === 'PENDING', 'second gated withdrawal -> PENDING');
@@ -264,7 +264,7 @@ async function main() {
   const mineF2 = await api('GET', `/api/saccos/${s2Id}/savings/mine`, fTok);
   await expect(mineF2.data.result.account.balance === 6000, 'balance unchanged after rejection (6000)');
   const dupR = await api('POST', `/api/saccos/${s2Id}/savings/withdrawals/${w3Id}/reject`, o2Tok);
-  await expect(dupR.status === 400 && dupR.data.code === 'SACCOS_SAVINGS_DECIDED', 're-reject -> SACCOS_SAVINGS_DECIDED');
+  await expect(dupR.status === 200 && dupR.data.result.status === 'REJECTED' && dupR.data.result.dedup === true, 're-reject same decision -> established REJECTED, dedup');
 
   const s2Sum = await api('GET', `/api/saccos/${s2Id}/savings/summary`, o2Tok);
   await expect(Number(s2Sum.data.result.balance) === 6000, 'org2 summary balance 6000');
