@@ -101,9 +101,14 @@ async function getWorkingClient() {
         // Verify database identity before any migration
         const idRes = await client.query('SELECT current_database() AS db');
         const actualDb = idRes.rows[0].db;
-        if (actualDb !== config.database || actualDb !== process.env.DB_NAME) {
+        if (actualDb !== config.database || actualDb !== process.env.DB_NAME || actualDb !== process.env.PHASE68_TEST_DB) {
           await client.end().catch(() => {});
           throw new Error(`REFUSING: connected database '${actualDb}' does not match expected '${process.env.DB_NAME}'.`);
+        }
+        const DENYLIST = ['afrikoba_regression', 'afrikoba_global', 'afrikoba', 'afrikoba_staging', 'postgres', 'phase68_guard', 'phase68_remed_dryrun'];
+        if (DENYLIST.includes(actualDb)) {
+          await client.end().catch(() => {});
+          throw new Error(`REFUSING: database '${actualDb}' is denylisted.`);
         }
         console.log(`[MIGRATE] Connected to database '${config.database}' using user '${config.user}' at host '${config.host}'. Identity verified: ${actualDb}`);
         return client;
