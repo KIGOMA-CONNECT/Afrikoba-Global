@@ -15,6 +15,7 @@ const crypto = require('crypto');
 const { createAppError } = require('../utils/errorCodes');
 const { logAudit } = require('./auditService');
 const fin = require('./financialEngine');
+const logger = require('../utils/logger');
 const saccosCore = require('./saccosService');
 
 const DEFAULT_SAVINGS_CONFIG = {
@@ -237,7 +238,7 @@ async function withdraw(actorId, saccosId, { amount, reference = null }) {
   try {
     await client.query('BEGIN');
     await ensureSavingsLiability(client, saccosId);
-    await ensureMemberAccount(client, saccosId, membership.id, cfg.savingsType);
+    const memberAccount = await ensureMemberAccount(client, saccosId, membership.id, cfg.savingsType);
 
     // Atomic claim via INSERT...ON CONFLICT on unique reference_id
     const claim = await client.query(
@@ -245,7 +246,7 @@ async function withdraw(actorId, saccosId, { amount, reference = null }) {
        VALUES ($1, $2, $3, $4, $5, 'PENDING', $6, $7, $8, $9)
        ON CONFLICT (reference_id) DO NOTHING
        RETURNING id, status, saccos_id, member_id, account_id, amount`,
-      [saccosId, membership.id, null, ref, value,
+      [saccosId, membership.id, memberAccount.id, ref, value,
        !auto, auto ? actorId : null, auto ? new Date() : null, auto ? new Date() : null]
     );
 
@@ -288,12 +289,11 @@ async function withdraw(actorId, saccosId, { amount, reference = null }) {
 
     // Revalidate savings account inside transaction
     const acctRes = await client.query(
-      'SELECT id, balance, status FROM saccos_savings_accounts WHERE saccos_id = $1 AND member_id = $2 FOR UPDATE',
+      'SELECT id, balance FROM saccos_savings_accounts WHERE saccos_id = $1 AND member_id = $2 FOR UPDATE',
       [saccosId, membership.id]
     );
     const account = acctRes.rows[0];
     if (!account) throw createAppError('SACCOS_SAVINGS_ACCOUNT_NOT_FOUND');
-    if (account.status !== 'ACTIVE') throw createAppError('SACCOS_SAVINGS_ACCOUNT_INACTIVE');
 
     // Update account_id on the withdrawal row
     await client.query(
@@ -388,6 +388,7 @@ async function decideWithdrawal(actorId, saccosId, withdrawalId, decision) {
   const wd = await fetchWithdrawal(saccosId, withdrawalId);
 
   const client = await pool.connect();
+  let connectionError = null;
   try {
     await client.query('BEGIN');
 
@@ -460,7 +461,7 @@ async function decideWithdrawal(actorId, saccosId, withdrawalId, decision) {
       connectionError = e;
     }
     await client.query('ROLLBACK').catch((rbErr) => {
-      logger.error('ROLLBACK_FAILED', rbErr.message, { service: 'saccosSavings.withdraw', reference: ref });
+      logger.error('ROLLBACK_FAILED', rbErr.message, { service: 'saccosSavings.withdraw', reference: wd.reference_id });
     });
     throw e;
   } finally {

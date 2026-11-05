@@ -382,6 +382,9 @@ async function releaseLoanLoss(actorId, saccosId, llrId) {
     }
     if (llr.rows[0].status !== 'PROVISIONED') {
       await client.query('ROLLBACK');
+      if (llr.rows[0].status === 'RELEASED') {
+        return { alreadyReleased: true, reference: llr.rows[0].reference_id, releasedAt: llr.rows[0].released_at, provision_amount: Number(llr.rows[0].provision_amount) };
+      }
       throw createAppError('SACCOS_LLR_STATE');
     }
 

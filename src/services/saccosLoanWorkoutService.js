@@ -35,6 +35,7 @@ const fin = require('./financialEngine');
 const saccosCore = require('./saccosService');
 const credit = require('./saccosCreditService');
 const installments = require('./saccosInstallmentService');
+const logger = require('../utils/logger');
 
 const round2 = (n) => Math.round(Number(n) * 100) / 100;
 
