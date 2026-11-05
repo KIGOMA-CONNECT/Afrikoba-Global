@@ -20,6 +20,10 @@ async function ensureDatabaseAndSchema() {
     throw new Error('REFUSING to run migrations: DB_NAME and PHASE68_TEST_DB must match an explicit phase68_amount_guard_<unique_suffix> disposable database name.');
   }
   const targetDb = process.env.DB_NAME;
+  // Strict identifier validation before SQL interpolation
+  if (!/^[a-z][a-z0-9_]*$/i.test(targetDb)) {
+    throw new Error('REFUSING: invalid database identifier.');
+  }
   const user = process.env.DB_USER || 'afrikoba';
   const password = process.env.DB_PASSWORD || 'change_me_strong_password';
   const host = process.env.DB_HOST || 'db';

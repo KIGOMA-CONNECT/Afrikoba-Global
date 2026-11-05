@@ -81,7 +81,7 @@ async function main() {
   const identity = await pool.query('SELECT current_database() AS db');
   const dbName = identity.rows[0].db;
   const DENYLIST = ['afrikoba_regression', 'afrikoba_global', 'afrikoba', 'afrikoba_staging', 'postgres', 'phase68_guard', 'phase68_remed_dryrun'];
-  if (DENYLIST.includes(dbName) || dbName !== process.env.DB_NAME) {
+  if (DENYLIST.includes(dbName) || dbName !== process.env.DB_NAME || dbName !== process.env.PHASE68_TEST_DB) {
     console.error(`REFUSING to run: database identity '${dbName}' does not match expected '${process.env.DB_NAME}'.`);
     process.exit(2);
   }
