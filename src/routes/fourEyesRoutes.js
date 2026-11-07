@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { authRequired, requireRoles } = require('../middleware/auth');
-const { logAction } = require('../services/auditService');
+const { writeAudit } = require('../services/auditService');
 const fe = require('../services/fourEyesService');
 const pool = require('../config/db');
 const fin = require('../services/financialEngine');
@@ -193,11 +193,38 @@ router.get('/policies', async (req, res, next) => {
 });
 
 router.put('/policies/:code', async (req, res, next) => {
+  let client = null;
   try {
-    const policy = await fe.upsertPolicy({ actionCode: req.params.code, ...req.body });
-    await logAction(req.user.id, 'FOUR_EYES_POLICY_UPDATE', 'FOUR_EYES_POLICY', policy.id, { action_code: policy.action_code }, req);
-    res.json({ policy });
-  } catch (error) { next(error); }
+    client = await pool.connect();
+    await client.query('BEGIN');
+    const result = await fe.upsertPolicy({
+      actionCode: req.params.code,
+      ...req.body,
+      client,
+    });
+    await writeAudit({
+      userId: req.user.id,
+      action: 'FOUR_EYES_POLICY_UPDATE',
+      entityType: 'FOUR_EYES_POLICY',
+      entityId: result.policy.id,
+      meta: {
+        action_code: result.policy.action_code,
+        before: result.before,
+        after: result.after,
+      },
+      req,
+      client,
+    });
+    await client.query('COMMIT');
+    res.json({ policy: result.policy });
+  } catch (error) {
+    if (client) {
+      await client.query('ROLLBACK').catch(() => {});
+    }
+    next(error);
+  } finally {
+    if (client) client.release();
+  }
 });
 
 // ===== Requests =====

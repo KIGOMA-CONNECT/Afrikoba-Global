@@ -26,28 +26,42 @@ async function listPolicies() {
   return r.rows;
 }
 
-async function upsertPolicy({ actionCode, description, requiredApprovers, approverRoles, enabled, allowSelfApprove }) {
+async function upsertPolicy({ actionCode, description, requiredApprovers, approverRoles, enabled, allowSelfApprove, client }) {
   const code = String(actionCode || '').trim();
   if (!code) throw Object.assign(new Error('actionCode inahitajika.'), { status: 400 });
+  if (!client || client === pool) {
+    throw Object.assign(new Error('Policy updates require a caller-owned transaction client.'), { status: 500, code: 'FOUR_EYES_POLICY_TRANSACTION_REQUIRED' });
+  }
+
+  // Serialize updates even when the policy row does not yet exist.
+  await client.query(
+    'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
+    [`four_eyes_policy:${code}`]
+  );
+
+  const existing = await client.query(
+    'SELECT * FROM four_eyes_policies WHERE action_code = $1 FOR UPDATE',
+    [code]
+  );
+  const previous = existing.rows[0] || null;
   let base = { description: '', required_approvers: 1, approver_roles: ['ADMIN'], enabled: true, allow_self_approve: false };
-  const existing = await pool.query('SELECT * FROM four_eyes_policies WHERE action_code = $1', [code]);
-  if (existing.rows.length > 0) {
-    const r = existing.rows[0];
+  if (previous) {
     base = {
-      description: r.description,
-      required_approvers: r.required_approvers,
-      approver_roles: r.approver_roles,
-      enabled: r.enabled,
-      allow_self_approve: r.allow_self_approve,
+      description: previous.description,
+      required_approvers: previous.required_approvers,
+      approver_roles: previous.approver_roles,
+      enabled: previous.enabled,
+      allow_self_approve: previous.allow_self_approve,
     };
   }
+
   const roles = Array.isArray(approverRoles) && approverRoles.length ? approverRoles : base.approver_roles;
   const required = requiredApprovers !== undefined && requiredApprovers !== null
     ? Math.max(1, Math.min(3, Number(requiredApprovers) || 1))
     : base.required_approvers;
   const enabledVal = enabled !== undefined && enabled !== null ? Boolean(enabled) : base.enabled;
   const selfVal = allowSelfApprove !== undefined && allowSelfApprove !== null ? Boolean(allowSelfApprove) : base.allow_self_approve;
-  const r = await pool.query(
+  const result = await client.query(
     `INSERT INTO four_eyes_policies (action_code, description, required_approvers, approver_roles, enabled, allow_self_approve)
      VALUES ($1,$2,$3,$4,$5,$6)
      ON CONFLICT (action_code) DO UPDATE SET
@@ -57,7 +71,18 @@ async function upsertPolicy({ actionCode, description, requiredApprovers, approv
      RETURNING *`,
     [code, String(description ?? base.description), required, roles, enabledVal, selfVal]
   );
-  return r.rows[0];
+
+  const policy = result.rows[0];
+  const snapshot = (row) => row ? ({
+    action_code: row.action_code,
+    description: row.description,
+    required_approvers: row.required_approvers,
+    approver_roles: row.approver_roles,
+    enabled: row.enabled,
+    allow_self_approve: row.allow_self_approve,
+  }) : null;
+
+  return { policy, before: snapshot(previous), after: snapshot(policy) };
 }
 
 async function initiateRequest({ actionCode, requesterId, payload, client = pool }) {
