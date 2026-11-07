@@ -319,11 +319,39 @@ async function classify(client, r) {
       lines: Number(u.n),
     }));
 
+  // Retain orphan REF audit rows matching this request's recipient and amount.
+  // Actor alone is not an attribution key because an approver may approve
+  // multiple requests within the same reconciliation window.
+  const auditRefsQuery = await client.query(
+    `SELECT account_kind, account_id, operation, amount,
+            balance_before, balance_after, reference_id, actor, created_at
+       FROM financial_audit_log
+      WHERE reference_id LIKE 'REF-%' AND created_at BETWEEN $1 AND $2
+      ORDER BY id`, [from, to]);
+  const unlinkedAuditRefs = auditRefsQuery.rows
+    .filter((a) =>
+      !refs.has(a.reference_id) &&
+      a.account_kind === 'USER_BALANCE' &&
+      Number(a.account_id) === userId &&
+      Math.abs(Number(a.amount) - amount) < 0.005
+    )
+    .map((a) => ({
+      account_kind: a.account_kind,
+      account_id: a.account_id == null ? null : Number(a.account_id),
+      operation: a.operation,
+      amount: Number(a.amount),
+      balance_before: a.balance_before == null ? null : Number(a.balance_before),
+      balance_after: a.balance_after == null ? null : Number(a.balance_after),
+      reference_id: a.reference_id,
+      actor: a.actor,
+      created_at: iso(a.created_at),
+    }));
+
   const reasons = [];
-  if (candidates.length === 0 && unlinkedRefs.length === 0) {
-    return { ...base, classification: 'UNEXECUTED', reasons: ['no REF- operation and no unlinked journal evidence in window'], candidates, unlinked_journal_refs: unlinkedRefs };
+  if (candidates.length === 0 && unlinkedRefs.length === 0 && unlinkedAuditRefs.length === 0) {
+    return { ...base, classification: 'UNEXECUTED', reasons: ['no REF- operation, journal evidence or matching unlinked financial audit evidence in window'], candidates, unlinked_journal_refs: unlinkedRefs, unlinked_audit_refs: unlinkedAuditRefs };
   }
-  if (candidates.length === 1 && unlinkedRefs.length === 0) {
+  if (candidates.length === 1 && unlinkedRefs.length === 0 && unlinkedAuditRefs.length === 0) {
     const c = candidates[0];
     const j = c.journal;
     if (c.operation_type !== 'CREDIT') reasons.push(`operation_type ${c.operation_type}, expected CREDIT`);
@@ -394,13 +422,14 @@ async function classify(client, r) {
     }
 
     if (reasons.length === 0) {
-      return { ...base, classification: 'EXECUTED', reasons: ['single SUCCESS CREDIT with exact legacy journal group, transaction linkage and financial audit evidence', 'legacy REF actor matches the latest APPROVE approver'], candidates, unlinked_journal_refs: [] };
+      return { ...base, classification: 'EXECUTED', reasons: ['single SUCCESS CREDIT with exact legacy journal group, transaction linkage and financial audit evidence', 'legacy REF actor matches the latest APPROVE approver'], candidates, unlinked_journal_refs: [], unlinked_audit_refs: [] };
     }
-    return { ...base, classification: 'INDETERMINATE', reasons, candidates, unlinked_journal_refs: [] };
+    return { ...base, classification: 'INDETERMINATE', reasons, candidates, unlinked_journal_refs: [], unlinked_audit_refs: [] };
   }
   if (candidates.length > 1) reasons.push(`${candidates.length} REF- operations fall within the request time window; attribution is ambiguous`);
   if (unlinkedRefs.length > 0) reasons.push(`${unlinkedRefs.length} unlinked journal REF- posting(s) fall within the request time window`);
-  return { ...base, classification: 'INDETERMINATE', reasons, candidates, unlinked_journal_refs: unlinkedRefs };
+  if (unlinkedAuditRefs.length > 0) reasons.push(`${unlinkedAuditRefs.length} unlinked REF- financial_audit_log row(s) match the request recipient and amount`);
+  return { ...base, classification: 'INDETERMINATE', reasons, candidates, unlinked_journal_refs: unlinkedRefs, unlinked_audit_refs: unlinkedAuditRefs };
 }
 
 async function main() {

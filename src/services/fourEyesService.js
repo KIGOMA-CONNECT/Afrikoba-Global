@@ -15,7 +15,7 @@ function registerExecutor(actionCode, fn) {
 }
 
 async function getPolicy(actionCode, db = pool) {
-  const r = await db.query('SELECT * FROM four_eyes_policies WHERE action_code = $1', [actionCode]);
+  const r = await db.query('SELECT * FROM four_eyes_policies WHERE action_code = $1 FOR SHARE', [actionCode]);
   if (r.rows.length === 0) throw Object.assign(new Error('Sera ya four-eyes haijapatikana.'), { status: 404 });
   if (!r.rows[0].enabled) throw Object.assign(new Error('Sera hii imezimwa.'), { status: 403 });
   return r.rows[0];
@@ -136,7 +136,7 @@ async function getRequestForUpdate(client, requestId) {
        JOIN users u ON u.id = r.requester_id
        JOIN four_eyes_policies p ON p.action_code = r.action_code
       WHERE r.id = $1
-      FOR UPDATE OF r`,
+      FOR UPDATE OF r, p`,
     [requestId]
   );
 
@@ -214,6 +214,9 @@ async function approve(requestId, approverId, role, note) {
 
     const { request, policy } = await getRequestForUpdate(client, requestId);
 
+    if (!policy.enabled) {
+      throw Object.assign(new Error('Sera ya four-eyes imezimwa; idhini mpya hairuhusiwi.'), { status: 403 });
+    }
     if (request.status !== 'PENDING') {
       throw Object.assign(new Error('Ombi hili tayari limeamuliwa.'), { status: 409 });
     }
@@ -377,7 +380,12 @@ async function _dispatch(requestId, approverId) {
     inTransaction = true;
 
     const locked = await client.query(
-      'SELECT * FROM four_eyes_requests WHERE id = $1 FOR UPDATE',
+      `SELECT r.*, p.enabled AS policy_enabled
+         FROM four_eyes_requests r
+         JOIN four_eyes_policies p ON p.action_code = r.action_code
+        WHERE r.id = $1
+        FOR UPDATE OF r
+        FOR SHARE OF p`,
       [requestId]
     );
 
@@ -393,6 +401,87 @@ async function _dispatch(requestId, approverId) {
     // Dispatch only while this request is still APPROVED.
     // The row lock serializes concurrent dispatch attempts.
     if (request.status !== 'APPROVED') {
+      await client.query('COMMIT');
+      inTransaction = false;
+      return null;
+    }
+
+    // A disabled policy blocks fresh execution. The only exception is
+    // record-only recovery of an exactly matching, already-settled agent
+    // settlement; no executor or financial mutation is invoked.
+    if (request.policy_enabled !== true) {
+      let recoveryResult = null;
+
+      if (request.action_code === 'AGENT_SETTLEMENT') {
+        const payload = request.payload || {};
+        const settlementId = Number(payload.settlementId);
+        const agentId = Number(payload.agentId);
+        const amount = Number(payload.amount);
+        const type = String(payload.type || '');
+        const reference = String(payload.reference || '');
+
+        if (Number.isSafeInteger(settlementId) && settlementId > 0 &&
+            Number.isSafeInteger(agentId) && agentId > 0 &&
+            Number.isFinite(amount) && amount > 0 &&
+            ['DEPOSIT', 'WITHDRAWAL'].includes(type) && reference) {
+          const linked = await client.query(
+            `SELECT id, agent_id, amount, type, reference, status
+               FROM agent_settlements
+              WHERE id = $1
+              FOR UPDATE`,
+            [settlementId]
+          );
+
+          if (linked.rows.length) {
+            const settlement = linked.rows[0];
+            const matches =
+              Number(settlement.id) === settlementId &&
+              Number(settlement.agent_id) === agentId &&
+              Number(settlement.amount) === amount &&
+              String(settlement.type) === type &&
+              String(settlement.reference) === reference &&
+              settlement.status === 'SETTLED';
+
+            if (matches) {
+              recoveryResult = {
+                success: true,
+                reference,
+                status: 'SETTLED',
+                duplicate: true,
+                recovered: true
+              };
+
+              const recovered = await client.query(
+                `UPDATE four_eyes_requests
+                    SET status = 'EXECUTED',
+                        executed_by = $2,
+                        execution_result = $3,
+                        error = NULL,
+                        updated_at = NOW()
+                  WHERE id = $1 AND status = 'APPROVED'
+                  RETURNING id`,
+                [requestId, approverId, JSON.stringify(recoveryResult)]
+              );
+
+              if (recovered.rows.length) {
+                await client.query('COMMIT');
+                inTransaction = false;
+                return recoveryResult;
+              }
+            }
+          }
+        }
+      }
+
+      await client.query(
+        `UPDATE four_eyes_requests
+            SET status = 'FAILED',
+                error = 'Four-Eyes policy is disabled; dispatch was blocked.',
+                updated_at = NOW()
+          WHERE id = $1 AND status = 'APPROVED'`,
+        [requestId]
+      );
+
       await client.query('COMMIT');
       inTransaction = false;
       return null;
@@ -479,7 +568,7 @@ async function retry(requestId, actorId) {
   try {
     await client.query('BEGIN');
 
-    const { request } = await getRequestForUpdate(client, requestId);
+    const { request, policy } = await getRequestForUpdate(client, requestId);
 
     // Recover only the split-commit case: financial settlement committed,
     // but Four-Eyes could not persist the request's EXECUTED status.
@@ -554,6 +643,14 @@ async function retry(requestId, actorId) {
         throw Object.assign(
           new Error('Ombi linahitaji kuwa FAILED ili kurudia.'),
           { status: 409 }
+        );
+      }
+
+      // A normal FAILED retry requires the current policy to be enabled.
+      if (policy.enabled !== true) {
+        throw Object.assign(
+          new Error('Four-Eyes policy is disabled; retry is blocked.'),
+          { status: 403 }
         );
       }
 

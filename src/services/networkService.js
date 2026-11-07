@@ -266,11 +266,14 @@ async function agentSettlement(agentId, amount, type, requesterId) {
     await client.query('BEGIN');
 
     const agent = await client.query(
-      'SELECT id FROM agents WHERE id = $1 FOR UPDATE',
+      'SELECT id, status FROM agents WHERE id = $1 FOR UPDATE',
       [agentId]
     );
     if (!agent.rows.length) {
       throw Object.assign(new Error('Wakala hajapatikana.'), { statusCode: 404 });
+    }
+    if (String(agent.rows[0].status).toUpperCase() !== 'ACTIVE') {
+      throw Object.assign(new Error('Wakala hayuko ACTIVE; settlement mpya hairuhusiwi.'), { statusCode: 409 });
     }
 
     const settlement = await client.query(
@@ -349,6 +352,17 @@ async function executeAgentSettlement(payload, approverId) {
       throw Object.assign(new Error('Settlement hii haiwezi kutekelezwa katika hali yake ya sasa.'), { statusCode: 409 });
     }
 
+    const agentResult = await client.query(
+      'SELECT id, status FROM agents WHERE id = $1 FOR UPDATE',
+      [settlement.agent_id]
+    );
+    if (!agentResult.rows.length) {
+      throw Object.assign(new Error('Wakala hajapatikana.'), { statusCode: 404 });
+    }
+    if (String(agentResult.rows[0].status).toUpperCase() !== 'ACTIVE') {
+      throw Object.assign(new Error('Wakala hayuko ACTIVE; settlement haiwezi kutekelezwa.'), { statusCode: 409 });
+    }
+
     const amountNum = validateAgentAmount(settlement.amount);
     const operationReference = `${reference}:STL`;
     const claim = await fin.claimOperation({
@@ -368,6 +382,7 @@ async function executeAgentSettlement(payload, approverId) {
         `UPDATE agents
             SET balance = balance + $1::numeric
           WHERE id = $2
+            AND status = 'ACTIVE'
             AND balance <= $3::numeric - $1::numeric
           RETURNING id`,
         [amountNum, settlement.agent_id, '9999999999999.99']
@@ -390,6 +405,7 @@ async function executeAgentSettlement(payload, approverId) {
         `UPDATE agents
             SET balance = balance - $1::numeric
           WHERE id = $2
+            AND status = 'ACTIVE'
             AND balance >= $1::numeric
           RETURNING id`,
         [amountNum, settlement.agent_id]
@@ -430,6 +446,28 @@ async function executeAgentSettlement(payload, approverId) {
     if (!updated.rows.length) {
       throw Object.assign(new Error('Settlement status imebadilika; transaction imekataliwa.'), { statusCode: 409 });
     }
+
+    await logAudit({
+      eventType: 'AGENT_SETTLEMENT_SETTLED',
+      entityType: 'AGENT_SETTLEMENT',
+      entityId: settlementId,
+      userId: Number(approverId),
+      referenceId: reference,
+      amount: amountNum,
+      beforeData: {
+        status: 'PENDING',
+        agentId: Number(settlement.agent_id)
+      },
+      afterData: {
+        status: 'SETTLED',
+        type: settlement.type,
+        agentId: Number(settlement.agent_id),
+        reference,
+        operationReference,
+        approverId: Number(approverId)
+      },
+      client
+    });
 
     await client.query('COMMIT');
     return { success: true, reference, status: 'SETTLED', duplicate: false };

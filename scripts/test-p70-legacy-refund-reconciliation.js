@@ -93,16 +93,20 @@ async function main() {
            AND created_at >= NOW() - INTERVAL '5 minutes') AS recent_operations,
        (SELECT COUNT(*)::int FROM journal_entries
          WHERE (reference_id LIKE 'REF-%' OR entry_group_id LIKE 'REF-%')
-           AND posted_at >= NOW() - INTERVAL '5 minutes') AS recent_journals`
+           AND posted_at >= NOW() - INTERVAL '5 minutes') AS recent_journals,
+       (SELECT COUNT(*)::int FROM financial_audit_log
+         WHERE reference_id LIKE 'REF-%'
+           AND created_at >= NOW() - INTERVAL '5 minutes') AS recent_audits`
   )).rows[0];
   if (Number(legacyEvidence.recent_operations) !== 0 ||
-      Number(legacyEvidence.recent_journals) !== 0) {
+      Number(legacyEvidence.recent_journals) !== 0 ||
+      Number(legacyEvidence.recent_audits) !== 0) {
     throw new Error(
       `REFUSING: disposable database contains recent legacy evidence ` +
-      `(operations=${legacyEvidence.recent_operations}, journals=${legacyEvidence.recent_journals}); use a fresh isolated database`
+      `(operations=${legacyEvidence.recent_operations}, journals=${legacyEvidence.recent_journals}, audits=${legacyEvidence.recent_audits}); use a fresh isolated database`
     );
   }
-  console.log('[guard] no pre-existing REF-% operations or journal evidence in the fixture window');
+  console.log('[guard] no pre-existing REF-% operations, journal or audit evidence in the fixture window');
 
   const acct = await c.query("SELECT id, account_code FROM ledger_accounts WHERE account_code IN ('SUSPENSE','CUSTOMER_WALLET')");
   const acctId = Object.fromEntries(acct.rows.map((r) => [r.account_code, Number(r.id)]));
@@ -124,7 +128,7 @@ async function main() {
   const base = Date.now();
   // Run-unique amounts: 1e8 + (seconds mod 1e7)*10, plus a case offset 1..7.
   const unit = 100000000 + (Math.floor(base / 1000) % 10000000) * 10;
-  const A = { F1: unit + 1, F2: unit + 2, F3: unit + 3, F4: unit + 4, F5: unit + 5, F6: unit + 6, F7: unit + 7, F8: unit + 8, F9: unit + 9, F10: unit + 14, C1: unit + 11, C2: unit + 12, C3: unit + 13, F0: unit + 10 };
+  const A = { F1: unit + 1, F2: unit + 2, F3: unit + 3, F4: unit + 4, F5: unit + 5, F6: unit + 6, F7: unit + 7, F8: unit + 8, F9: unit + 9, F10: unit + 14, F11: unit + 15, C1: unit + 11, C2: unit + 12, C3: unit + 13, F0: unit + 10 };
 
   section('Fixtures (one transaction; all-or-nothing)');
   const before = await counts(c);
@@ -196,6 +200,8 @@ async function main() {
     { const r = ref(approvers[7]); await journalPair(r, A.F9 + 123, decider, acctId.CUSTOMER_WALLET, null); }
     await request({ key: 'F10_legacy_approver_mismatch', approverId: approvers[0], amount: A.F10 });
     { const r = ref(approvers[1]); await op(r, A.F10, 'SUCCESS'); await journalPair(r, A.F10, approvers[1]); await auditCredit(r, A.F10, approvers[1]); }
+    await request({ key: 'F11_audit_only_orphan', approverId: approvers[2], amount: A.F11 });
+    { const r = ref(approvers[2]); await auditCredit(r, A.F11, approvers[2]); }
     const c1 = await request({ key: 'C1_canonical_success', approverId: approvers[1], amount: A.C1 });
     const c1ref = `FOUR_EYES_REFUND:${c1}`;
     await c.query(
@@ -227,7 +233,7 @@ async function main() {
     throw e;
   }
   const after = await counts(c);
-  console.log(`  fixtures committed: ${Object.keys(fx).length} (1 non-APPROVED control; 10 legacy + 3 canonical APPROVED cases)`);
+  console.log(`  fixtures committed: ${Object.keys(fx).length} (1 non-APPROVED control; 11 legacy + 3 canonical APPROVED cases)`);
 
   section('Reconciler run (read-only transaction)');
   const reconPath = path.join(dir, 'reconciliation.json');
@@ -243,7 +249,7 @@ async function main() {
   expect(recon.population === dbApproved, `population equals every APPROVED ADMIN_LARGE_REFUND request in the database (${dbApproved})`, { population: recon.population, dbApproved });
   const byReq = Object.fromEntries(recon.requests.map((r) => [r.request_id, r]));
   expect(!byReq[fx.F0_status_executed], 'non-APPROVED control request excluded from the legacy population');
-  const fixtureIds = ['F1_executed', 'F2_unexecuted', 'F3_new_operation', 'F4_two_candidates', 'F5_unlinked_journal', 'F6_wrong_accounts', 'F7_no_approval', 'F8_partial_journal_linkage', 'F9_orphan_wrong_amount_actor', 'F10_legacy_approver_mismatch', 'C1_canonical_success', 'C2_canonical_incomplete', 'C3_canonical_no_approval'].map((k) => fx[k]);
+  const fixtureIds = ['F1_executed', 'F2_unexecuted', 'F3_new_operation', 'F4_two_candidates', 'F5_unlinked_journal', 'F6_wrong_accounts', 'F7_no_approval', 'F8_partial_journal_linkage', 'F9_orphan_wrong_amount_actor', 'F10_legacy_approver_mismatch', 'F11_audit_only_orphan', 'C1_canonical_success', 'C2_canonical_incomplete', 'C3_canonical_no_approval'].map((k) => fx[k]);
   expect(fixtureIds.every((x) => byReq[x]), 'every fixture legacy request is in the reconciled population');
 
   const want = {
@@ -257,6 +263,7 @@ async function main() {
     F8_partial_journal_linkage: ['INDETERMINATE', /journal evidence differs from expected SUSPENSE DR \/ CUSTOMER_WALLET CR/],
     F9_orphan_wrong_amount_actor: ['INDETERMINATE', /unlinked journal/],
     F10_legacy_approver_mismatch: ['INDETERMINATE', /legacy REF approver .* differs from latest APPROVE approver/],
+    F11_audit_only_orphan: ['INDETERMINATE', /unlinked REF- financial_audit_log row/],
     C1_canonical_success: ['EXECUTED', /canonical SUCCESS CREDIT has valid ADMIN approval/],
     C2_canonical_incomplete: ['INDETERMINATE', /canonical journal evidence is incomplete/],
     C3_canonical_no_approval: ['INDETERMINATE', /no valid ADMIN APPROVE approval row/],
@@ -341,6 +348,26 @@ async function main() {
       f9.unlinked_journal_refs[0].lines === 2,
     'orphan journal: evidence retained despite amount and actor mismatch',
     f9
+  );
+
+  const f11 = byReq[fx.F11_audit_only_orphan];
+  const f11Audit = f11 && f11.unlinked_audit_refs && f11.unlinked_audit_refs[0];
+  expect(
+    !!f11 &&
+      f11.candidates.length === 0 &&
+      f11.unlinked_journal_refs.length === 0 &&
+      f11.unlinked_audit_refs.length === 1 &&
+      f11Audit.account_kind === 'USER_BALANCE' &&
+      f11Audit.account_id === recipient &&
+      f11Audit.operation === 'credit' &&
+      Math.abs(f11Audit.amount - A.F11) < 0.005 &&
+      f11Audit.balance_before === 0 &&
+      Math.abs(f11Audit.balance_after - A.F11) < 0.005 &&
+      f11Audit.reference_id.startsWith('REF-') &&
+      f11Audit.actor === `four-eyes:${approvers[2]}` &&
+      !!f11Audit.created_at,
+    'audit-only orphan: exact recipient, amount, balance movement, reference, actor and timestamp retained',
+    f11
   );
 
   section('Read-only evidence (database state unchanged by reconciliation)');
