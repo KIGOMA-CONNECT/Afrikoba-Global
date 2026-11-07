@@ -1,12 +1,14 @@
 /* ============================================================
- * Phase 69 - LEGACY ADMIN_LARGE_REFUND RECONCILIATION SUITE
- * Synthetic legacy fixtures (REF-<approver>-<ms> references) in the disposable
- * isolated phase69_four_eyes_<suffix> database selected explicitly by PHASE69_TEST_DB.
- * Each run uses amounts unique to that run, so
- * fixtures from earlier runs cannot be confused with this run's cases. Fixture writes
- * are one transaction (all-or-nothing). Verifies the read-only reconciler's
- * classification, population completeness, read-only execution, and that the
- * deployment gate refuses unresolved, unbound or self-decided requests.
+ * Phase 70.1 - LEGACY ADMIN_LARGE_REFUND RECONCILIATION SUITE
+ * Synthetic REF-<approver>-<ms> fixtures run only in a fresh, isolated
+ * phase69_four_eyes_<suffix> database explicitly selected by PHASE69_TEST_DB.
+ * The legacy database naming convention is retained for compatibility.
+ * Run-unique amounts are supplementary; database guards, not amount uniqueness,
+ * prevent collision with prior fixture evidence. Fixture writes are one
+ * transaction (all-or-nothing). The harness does not create or drop databases,
+ * and committed fixtures remain in the disposable database after the run.
+ * Verifies reconciliation classifications, population completeness, read-only
+ * execution, and deployment-gate refusal of unresolved or invalid requests.
  * ============================================================ */
 const { spawnSync } = require('child_process');
 const path = require('path');
@@ -32,16 +34,6 @@ function expect(cond, label, extra) {
 }
 function section(label) { console.log('\n--- ' + label + ' ---'); }
 
-const cfg = {
-  host: process.env.DB_HOST || 'localhost',
-  port: Number(process.env.DB_PORT || 5432),
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  database: EXPECTED_DB,
-};
-const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'p70-'));
-const LEGACY_DESC = 'Malipo ya marejesho (four-eyes)';
-
 async function counts(c) {
   const ops = (await c.query('SELECT COUNT(*)::int AS n FROM financial_operations')).rows[0].n;
   const jn = (await c.query('SELECT COUNT(*)::int AS n FROM journal_entries')).rows[0].n;
@@ -59,6 +51,18 @@ async function counts(c) {
   };
 }
 
+const cfg = {
+  host: process.env.DB_HOST || 'localhost',
+  port: Number(process.env.DB_PORT || 5432),
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+  database: EXPECTED_DB,
+};
+const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'p70-'));
+const LEGACY_DESC = 'Malipo ya marejesho (four-eyes)';
+
+let fixtureClient = null;
+
 function runNode(args, env) {
   const r = spawnSync(process.execPath, args, { cwd: ROOT, env: { ...process.env, ...env }, encoding: 'utf8', timeout: 120000 });
   return { status: r.status, out: `${r.stdout || ''}${r.stderr || ''}` };
@@ -66,10 +70,39 @@ function runNode(args, env) {
 
 async function main() {
   const c = new Client(cfg);
+  fixtureClient = c;
   await c.connect();
   const id = (await c.query('SELECT current_database() AS db')).rows[0].db;
-  if (id !== EXPECTED_DB) { console.error(`REFUSING: connected database '${id}'`); process.exit(2); }
+  if (id !== EXPECTED_DB) {
+    throw new Error(`REFUSING: connected database '${id}' does not match expected '${EXPECTED_DB}'`);
+  }
   console.log(`[guard] connected database verified: ${id}`);
+
+  const existing = Number((await c.query(
+    "SELECT COUNT(*)::int AS n FROM four_eyes_requests WHERE action_code = 'ADMIN_LARGE_REFUND'"
+  )).rows[0].n);
+  if (existing !== 0) {
+    throw new Error(`REFUSING: disposable database already contains ${existing} ADMIN_LARGE_REFUND requests; use a fresh isolated database`);
+  }
+  console.log('[guard] no pre-existing ADMIN_LARGE_REFUND requests');
+
+  const legacyEvidence = (await c.query(
+    `SELECT
+       (SELECT COUNT(*)::int FROM financial_operations
+         WHERE reference_id LIKE 'REF-%'
+           AND created_at >= NOW() - INTERVAL '5 minutes') AS recent_operations,
+       (SELECT COUNT(*)::int FROM journal_entries
+         WHERE (reference_id LIKE 'REF-%' OR entry_group_id LIKE 'REF-%')
+           AND posted_at >= NOW() - INTERVAL '5 minutes') AS recent_journals`
+  )).rows[0];
+  if (Number(legacyEvidence.recent_operations) !== 0 ||
+      Number(legacyEvidence.recent_journals) !== 0) {
+    throw new Error(
+      `REFUSING: disposable database contains recent legacy evidence ` +
+      `(operations=${legacyEvidence.recent_operations}, journals=${legacyEvidence.recent_journals}); use a fresh isolated database`
+    );
+  }
+  console.log('[guard] no pre-existing REF-% operations or journal evidence in the fixture window');
 
   const acct = await c.query("SELECT id, account_code FROM ledger_accounts WHERE account_code IN ('SUSPENSE','CUSTOMER_WALLET')");
   const acctId = Object.fromEntries(acct.rows.map((r) => [r.account_code, Number(r.id)]));
@@ -91,13 +124,16 @@ async function main() {
   const base = Date.now();
   // Run-unique amounts: 1e8 + (seconds mod 1e7)*10, plus a case offset 1..7.
   const unit = 100000000 + (Math.floor(base / 1000) % 10000000) * 10;
-  const A = { F1: unit + 1, F2: unit + 2, F3: unit + 3, F4: unit + 4, F5: unit + 5, F6: unit + 6, F7: unit + 7, F0: unit + 9 };
+  const A = { F1: unit + 1, F2: unit + 2, F3: unit + 3, F4: unit + 4, F5: unit + 5, F6: unit + 6, F7: unit + 7, F8: unit + 8, F9: unit + 9, F10: unit + 14, C1: unit + 11, C2: unit + 12, C3: unit + 13, F0: unit + 10 };
 
   section('Fixtures (one transaction; all-or-nothing)');
   const before = await counts(c);
   const fx = {};
   let seq = 0;
-  const ref = (approverId) => `REF-${approverId}-${base + (seq++)}`;
+  const ref = (approverId) => {
+    const value = `REF-${approverId}-${base + (seq++)}`;
+    return value;
+  };
   await c.query('BEGIN');
   try {
     async function request({ key, approverId, status = 'APPROVED', amount, withApproval = true }) {
@@ -119,11 +155,19 @@ async function main() {
         `INSERT INTO financial_operations (operation_type, reference_id, transaction_id, user_id, amount, status, attempts, created_at, updated_at)
          VALUES ('CREDIT', $1, NULL, $2, $3, $4, 1, NOW(), NOW())`, [reference, recipient, amount, status]);
     }
-    async function journalPair(reference, amount, approverId, accountB = acctId.CUSTOMER_WALLET) {
+    async function journalPair(reference, amount, approverId, accountB = acctId.CUSTOMER_WALLET, referenceId = reference) {
       await c.query(
         `INSERT INTO journal_entries (entry_group_id, account_id, direction, amount, reference_id, description, posted_by, posted_at)
-         VALUES ($1,$2,'DR',$3,$1,$4,$5,NOW()), ($1,$6,'CR',$3,$1,$4,$5,NOW())`,
-        [reference, acctId.SUSPENSE, amount, LEGACY_DESC, `four-eyes:${approverId}`, accountB]);
+         VALUES ($1,$2,'DR',$3,$7,$4,$5,NOW()), ($1,$6,'CR',$3,$7,$4,$5,NOW())`,
+        [reference, acctId.SUSPENSE, amount, LEGACY_DESC, `four-eyes:${approverId}`, accountB, referenceId]);
+    }
+    async function canonicalJournalPair(reference, amount, approverId) {
+      await c.query(
+        `INSERT INTO journal_entries (entry_group_id, account_id, direction, amount, reference_id, description, posted_by, posted_at)
+         VALUES ($1,$2,'DR',$3,$1,$4,$5,NOW()),
+                ($1,$6,'CR',$3,$1,$4,$5,NOW())`,
+        [reference, acctId.SUSPENSE, amount, LEGACY_DESC,
+          `four-eyes:${approverId}`, acctId.CUSTOMER_WALLET]);
     }
     async function auditCredit(reference, amount, approverId) {
       await c.query(
@@ -142,17 +186,48 @@ async function main() {
     await request({ key: 'F4_two_candidates', approverId: approvers[4], amount: A.F4 });
     { const r1 = ref(approvers[4]); await op(r1, A.F4, 'SUCCESS'); await journalPair(r1, A.F4, approvers[4]); const r2 = ref(approvers[4]); await op(r2, A.F4, 'SUCCESS'); await journalPair(r2, A.F4, approvers[4]); }
     await request({ key: 'F5_unlinked_journal', approverId: approvers[5], amount: A.F5 });
-    { const r = ref(approvers[5]); await journalPair(r, A.F5, approvers[5]); }
+    { const r = ref(approvers[5]); await journalPair(r, A.F5, approvers[5], acctId.CUSTOMER_WALLET, null); }
     await request({ key: 'F6_wrong_accounts', approverId: approvers[6], amount: A.F6 });
     { const r = ref(approvers[6]); await op(r, A.F6, 'SUCCESS'); await journalPair(r, A.F6, approvers[6], other); }
     await request({ key: 'F7_no_approval', approverId: approvers[7], amount: A.F7, withApproval: false });
+    await request({ key: 'F8_partial_journal_linkage', approverId: approvers[0], amount: A.F8 });
+    { const r = ref(approvers[0]); await op(r, A.F8, 'SUCCESS'); await journalPair(r, A.F8, approvers[0], acctId.CUSTOMER_WALLET, null); }
+    await request({ key: 'F9_orphan_wrong_amount_actor', approverId: approvers[7], amount: A.F9 });
+    { const r = ref(approvers[7]); await journalPair(r, A.F9 + 123, decider, acctId.CUSTOMER_WALLET, null); }
+    await request({ key: 'F10_legacy_approver_mismatch', approverId: approvers[0], amount: A.F10 });
+    { const r = ref(approvers[1]); await op(r, A.F10, 'SUCCESS'); await journalPair(r, A.F10, approvers[1]); await auditCredit(r, A.F10, approvers[1]); }
+    const c1 = await request({ key: 'C1_canonical_success', approverId: approvers[1], amount: A.C1 });
+    const c1ref = `FOUR_EYES_REFUND:${c1}`;
+    await c.query(
+      `INSERT INTO financial_operations (operation_type, reference_id, transaction_id, user_id, amount, status, attempts, created_at, updated_at)
+       VALUES ('CREDIT', $1, NULL, $2, $3, 'SUCCESS', 1, NOW(), NOW())`,
+      [c1ref, recipient, A.C1]);
+    await canonicalJournalPair(c1ref, A.C1, approvers[1]);
+    await auditCredit(c1ref, A.C1, approvers[1]);
+
+    const c2 = await request({ key: 'C2_canonical_incomplete', approverId: approvers[2], amount: A.C2 });
+    const c2ref = `FOUR_EYES_REFUND:${c2}`;
+    await c.query(
+      `INSERT INTO financial_operations (operation_type, reference_id, transaction_id, user_id, amount, status, attempts, created_at, updated_at)
+       VALUES ('CREDIT', $1, NULL, $2, $3, 'SUCCESS', 1, NOW(), NOW())`,
+      [c2ref, recipient, A.C2]);
+
+    const c3 = await request({ key: 'C3_canonical_no_approval', approverId: approvers[3], amount: A.C3, withApproval: false });
+    const c3ref = `FOUR_EYES_REFUND:${c3}`;
+    await c.query(
+      `INSERT INTO financial_operations (operation_type, reference_id, transaction_id, user_id, amount, status, attempts, created_at, updated_at)
+       VALUES ('CREDIT', $1, NULL, $2, $3, 'SUCCESS', 1, NOW(), NOW())`,
+      [c3ref, recipient, A.C3]);
+    await canonicalJournalPair(c3ref, A.C3, approvers[3]);
+    await auditCredit(c3ref, A.C3, approvers[3]);
+
     await c.query('COMMIT');
   } catch (e) {
     await c.query('ROLLBACK').catch(() => {});
     throw e;
   }
   const after = await counts(c);
-  console.log(`  fixtures committed: ${Object.keys(fx).length} (1 non-APPROVED control; 7 APPROVED legacy cases), amounts ${unit + 1}..${unit + 7}`);
+  console.log(`  fixtures committed: ${Object.keys(fx).length} (1 non-APPROVED control; 10 legacy + 3 canonical APPROVED cases)`);
 
   section('Reconciler run (read-only transaction)');
   const reconPath = path.join(dir, 'reconciliation.json');
@@ -168,17 +243,23 @@ async function main() {
   expect(recon.population === dbApproved, `population equals every APPROVED ADMIN_LARGE_REFUND request in the database (${dbApproved})`, { population: recon.population, dbApproved });
   const byReq = Object.fromEntries(recon.requests.map((r) => [r.request_id, r]));
   expect(!byReq[fx.F0_status_executed], 'non-APPROVED control request excluded from the legacy population');
-  const fixtureIds = ['F1_executed', 'F2_unexecuted', 'F3_new_operation', 'F4_two_candidates', 'F5_unlinked_journal', 'F6_wrong_accounts', 'F7_no_approval'].map((k) => fx[k]);
+  const fixtureIds = ['F1_executed', 'F2_unexecuted', 'F3_new_operation', 'F4_two_candidates', 'F5_unlinked_journal', 'F6_wrong_accounts', 'F7_no_approval', 'F8_partial_journal_linkage', 'F9_orphan_wrong_amount_actor', 'F10_legacy_approver_mismatch', 'C1_canonical_success', 'C2_canonical_incomplete', 'C3_canonical_no_approval'].map((k) => fx[k]);
   expect(fixtureIds.every((x) => byReq[x]), 'every fixture legacy request is in the reconciled population');
 
   const want = {
     F1_executed: ['EXECUTED', null],
     F2_unexecuted: ['UNEXECUTED', null],
     F3_new_operation: ['INDETERMINATE', /operation status NEW/],
-    F4_two_candidates: ['INDETERMINATE', /2 candidate REF- operations/],
+    F4_two_candidates: ['INDETERMINATE', /2 REF- operations fall within the request time window/],
     F5_unlinked_journal: ['INDETERMINATE', /unlinked journal/],
     F6_wrong_accounts: ['INDETERMINATE', /journal evidence differs from expected SUSPENSE DR \/ CUSTOMER_WALLET CR/],
-    F7_no_approval: ['INDETERMINATE', /no APPROVE approval row/],
+    F7_no_approval: ['INDETERMINATE', /no valid ADMIN APPROVE approval row/],
+    F8_partial_journal_linkage: ['INDETERMINATE', /journal evidence differs from expected SUSPENSE DR \/ CUSTOMER_WALLET CR/],
+    F9_orphan_wrong_amount_actor: ['INDETERMINATE', /unlinked journal/],
+    F10_legacy_approver_mismatch: ['INDETERMINATE', /legacy REF approver .* differs from latest APPROVE approver/],
+    C1_canonical_success: ['EXECUTED', /canonical SUCCESS CREDIT has valid ADMIN approval/],
+    C2_canonical_incomplete: ['INDETERMINATE', /canonical journal evidence is incomplete/],
+    C3_canonical_no_approval: ['INDETERMINATE', /no valid ADMIN APPROVE approval row/],
   };
   section('Classification');
   for (const [k, [cls, reasonRe]] of Object.entries(want)) {
@@ -198,6 +279,13 @@ async function main() {
       Math.abs(e1Candidate.amount - A.F1) < 0.005 &&
       e1Candidate.journal.lines === 2 &&
       e1Candidate.journal.balanced &&
+      e1Candidate.journal.line_evidence.length === 2 &&
+      e1Candidate.journal.line_evidence.every((line) =>
+        line.reference_id === e1Candidate.reference_id &&
+        line.entry_group_id === e1Candidate.reference_id
+      ) &&
+      e1Candidate.journal.transaction_ids.length === 1 &&
+      e1Candidate.journal.transaction_ids[0] === null &&
       !!e1AuditRow &&
       e1AuditRow.account_kind === 'USER_BALANCE' &&
       e1AuditRow.account_id === recipient &&
@@ -207,6 +295,52 @@ async function main() {
       e1AuditRow.actor === `four-eyes:${approver}`,
     'EXECUTED evidence: SUCCESS CREDIT, balanced journal and exact financial audit credit',
     e1Candidate
+  );
+
+  const f8 = byReq[fx.F8_partial_journal_linkage];
+  expect(
+    !!f8 &&
+      f8.candidates.length === 1 &&
+      f8.candidates[0].journal.line_evidence.length === 2 &&
+      f8.candidates[0].journal.line_evidence.every((line) =>
+        line.entry_group_id === f8.candidates[0].reference_id &&
+        line.reference_id === null
+      ) &&
+      f8.unlinked_journal_refs.length === 0,
+    'partial linkage: matching entry_group_id prevents false orphan attribution, while null reference_id remains visible as invalid candidate evidence',
+    f8
+  );
+
+  const f10 = byReq[fx.F10_legacy_approver_mismatch];
+  expect(
+    !!f10 &&
+      f10.candidates.length === 1 &&
+      f10.candidates[0].legacy_approver_id === approvers[1] &&
+      f10.candidates[0].journal.line_evidence.length === 2 &&
+      f10.candidates[0].journal.line_evidence.every((line) =>
+        line.posted_by === `four-eyes:${approvers[1]}`
+      ) &&
+      f10.candidates[0].audit.rows === 1 &&
+      f10.candidates[0].audit.entries[0].actor === `four-eyes:${approvers[1]}` &&
+      f10.reasons.some((reason) =>
+        reason.includes(`legacy REF approver ${approvers[1]} differs from latest APPROVE approver ${approvers[0]}`)
+      ),
+    'approver mismatch: internally consistent legacy ledger and audit evidence cannot override the latest APPROVE identity',
+    f10
+  );
+
+  const f9 = byReq[fx.F9_orphan_wrong_amount_actor];
+  expect(
+    !!f9 &&
+      f9.candidates.length === 0 &&
+      f9.unlinked_journal_refs.length === 1 &&
+      f9.unlinked_journal_refs[0].reference_id === null &&
+      f9.unlinked_journal_refs[0].entry_group_id.startsWith('REF-') &&
+      Math.abs(f9.unlinked_journal_refs[0].dr_total - (A.F9 + 123)) < 0.005 &&
+      Math.abs(f9.unlinked_journal_refs[0].cr_total - (A.F9 + 123)) < 0.005 &&
+      f9.unlinked_journal_refs[0].lines === 2,
+    'orphan journal: evidence retained despite amount and actor mismatch',
+    f9
   );
 
   section('Read-only evidence (database state unchanged by reconciliation)');
@@ -380,11 +514,16 @@ async function main() {
   console.log(`\nLEGACY REFUND RECONCILIATION: ${passed} passed, ${failed} failed`);
   console.log(`evidence: reconciliation sha256=${reconSha} database=${recon.database} snapshot_at=${recon.snapshot_at} population=${recon.population} summary=${JSON.stringify(recon.summary)}`);
   if (failures.length) { console.log('Failures:'); failures.forEach((f) => console.log('  - ' + f)); }
-  await c.end();
-  process.exit(failed === 0 ? 0 : 1);
+  return failed === 0 ? 0 : 1;
 }
 
-main().catch((e) => {
-  console.error('FATAL', e && e.stack ? e.stack : e);
-  process.exit(1);
-});
+main()
+  .then(async (code) => {
+    if (fixtureClient) await fixtureClient.end().catch(() => {});
+    process.exitCode = code;
+  })
+  .catch(async (e) => {
+    console.error('FATAL', e && e.stack ? e.stack : e);
+    if (fixtureClient) await fixtureClient.end().catch(() => {});
+    process.exitCode = 1;
+  });
