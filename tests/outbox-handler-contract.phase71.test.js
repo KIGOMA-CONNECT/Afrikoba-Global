@@ -9,7 +9,8 @@
  *  2. The registered handler set equals the HEAD snapshot
  *     (tests/fixtures/phase71-outbox-handlers.before.json) plus exactly
  *     PROJECT_COMPLETED, PROJECT_LIQUIDATED, PROJECT_RESERVE_RELEASED,
- *     PROJECT_RESIDUAL_RELEASED — nothing lost, nothing unexpected.
+ *     PROJECT_RESIDUAL_RELEASED (Step A) and NOTIFICATION_SMS (Step C)
+ *     — nothing lost, nothing unexpected.
  *  3. src/server.js registers handlers only via src/outbox/handlers.js.
  *  4. The misspelled split-SMS event type (PROJECT_SPLIT_SMS without the
  *     final "S") appears nowhere in src/, db/, scripts/ or tests/.
@@ -38,6 +39,8 @@ const NEW_HANDLERS = [
   'PROJECT_RESERVE_RELEASED',
   'PROJECT_RESIDUAL_RELEASED',
 ];
+// Step C: createNotification enqueues NOTIFICATION_SMS.
+const STEP_C_HANDLERS = ['NOTIFICATION_SMS'];
 // Built by concatenation so this file does not match its own scan.
 const MISSPELLED = 'PROJECT_SPLIT_' + 'SM';
 const MISSPELLED_RE = new RegExp(MISSPELLED + '(?![A-Z0-9_])');
@@ -219,11 +222,11 @@ async function main() {
         calls.filter((c) => c.eventType === et).map((c) => c.where).join(', '));
     }
 
-    section('3. Registered set == HEAD snapshot + 4 new handlers');
+    section('3. Registered set == HEAD snapshot + 4 Step A handlers + Step C NOTIFICATION_SMS');
     const snapshot = JSON.parse(fs.readFileSync(
       path.join(__dirname, 'fixtures', 'phase71-outbox-handlers.before.json'), 'utf8'));
     console.log(`  snapshot @ ${snapshot.sourceCommit.slice(0, 7)}: ${snapshot.handlers.join(', ')}`);
-    const expected = new Set([...snapshot.handlers, ...NEW_HANDLERS]);
+    const expected = new Set([...snapshot.handlers, ...NEW_HANDLERS, ...STEP_C_HANDLERS]);
     const missing = [...expected].filter((h) => !registeredSet.has(h));
     const unexpected = [...registeredSet].filter((h) => !expected.has(h));
     for (const h of snapshot.handlers) {
@@ -231,6 +234,9 @@ async function main() {
     }
     for (const h of NEW_HANDLERS) {
       expect(registeredSet.has(h), `new handler registered: ${h}`);
+    }
+    for (const h of STEP_C_HANDLERS) {
+      expect(registeredSet.has(h), `Step C handler registered: ${h}`);
     }
     expect(missing.length === 0, 'no handler missing', missing.join(', '));
     expect(unexpected.length === 0, 'no unexpected handler', unexpected.join(', '));

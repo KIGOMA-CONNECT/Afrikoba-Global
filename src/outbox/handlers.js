@@ -166,6 +166,47 @@ function registerAll(outbox, deps = {}) {
     throw new Error(`PROJECT_SPLIT_SMS provider failure: ${result.error || 'all providers failed'}`);
   });
 
+  // ---- Phase 71 / Step C: SMS for createNotification ---------------------
+  // Enqueued by createNotification in the same tx as the notification row.
+  // Payload carries ids only; phone and text are read here (SELECT only).
+  // Notification gone / user without phone -> nothing to send, no error.
+  outbox.registerHandler('NOTIFICATION_SMS', async ({ payload, referenceId }) => {
+    const key = typeof referenceId === 'string' ? referenceId.trim() : '';
+    if (!key) throw new Error('NOTIFICATION_SMS: referenceId is required for idempotent delivery');
+    const userId = Number(payload && payload.userId);
+    const notificationId = Number(payload && payload.notificationId);
+    if (!Number.isInteger(userId) || !Number.isInteger(notificationId)) {
+      return { success: true, skipped: 'INVALID_PAYLOAD' };
+    }
+    const n = (await pool.query(
+      'SELECT body FROM notifications WHERE id = $1 AND user_id = $2',
+      [notificationId, userId]
+    )).rows[0];
+    if (!n) return { success: true, skipped: 'NOTIFICATION_NOT_FOUND' };
+    const u = (await pool.query('SELECT phone_number FROM users WHERE id = $1', [userId])).rows[0];
+    const phone = String(u && u.phone_number || '').trim();
+    if (!phone) return { success: true, skipped: 'NO_PHONE' };
+
+    const { sendSMSIdempotent } = require('../services/smsService');
+    const result = await sendSMSIdempotent(key, phone, n.body);
+    if (result.status === 'SENT') {
+      return {
+        success: true, simulated: result.simulated === true,
+        provider: result.provider || null, duplicate: result.duplicate === true,
+      };
+    }
+    if (result.status === 'UNKNOWN') {
+      throw new NonRetryableError(
+        'SMS_DELIVERY_UNKNOWN',
+        `NOTIFICATION_SMS ${key}: provider outcome unknown (${result.error || 'n/a'}); not resent, reconcile with provider`
+      );
+    }
+    if (result.status === 'PENDING') {
+      throw new Error(`NOTIFICATION_SMS ${key}: delivery in progress elsewhere; retry later`);
+    }
+    throw new Error(`NOTIFICATION_SMS provider failure: ${result.error || 'all providers failed'}`);
+  });
+
   // ---- Phase 71 / Step A: verify-only close-out handlers (SELECT only) ---
 
   // project_settlements has no reference column; completeProject stores

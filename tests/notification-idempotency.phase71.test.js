@@ -137,7 +137,14 @@ async function testCreateNotification() {
   expect(id2 !== null && id2 !== undefined, 'replay never returns null', id2);
   expect(id1 === id2, 'replay returns the existing id', `${id1} vs ${id2}`);
   expect((await countFor(a.id)) === 1, 'exactly one row for the reference', await countFor(a.id));
-  expect(smsCalls.length - smsBefore === 1, 'SMS sent once (not on replay)', smsCalls.length - smsBefore);
+  // Step C: the SMS is no longer sent inline; exactly one NOTIFICATION_SMS
+  // outbox event is enqueued, and none on replay.
+  const smsEvents = await safe(() => pool.query(
+    `SELECT COUNT(*)::int AS c FROM outbox_events WHERE event_type = 'NOTIFICATION_SMS' AND reference_id = $1`,
+    [`NOTIF_SMS:${id1}`]));
+  expect(!smsEvents.error && smsEvents.value.rows[0].c === 1 && smsCalls.length === smsBefore,
+    'one NOTIFICATION_SMS event, no inline SMS (not on replay)',
+    smsEvents.error || `events=${smsEvents.value.rows[0].c} inlineSms=${smsCalls.length - smsBefore}`);
   const stored = await safe(() => pool.query('SELECT source_event_reference AS r FROM notifications WHERE id = $1', [id1]));
   expect(!stored.error && stored.value.rows[0] && stored.value.rows[0].r === ref,
     'source_event_reference persisted', stored.error || JSON.stringify(stored.value.rows));

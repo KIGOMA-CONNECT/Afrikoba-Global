@@ -237,3 +237,114 @@ Items raised during the Phase 71 (outbox hardening) review gates that are not ye
 - Step C moves the `createNotification` SMS onto the outbox + `sendSMSIdempotent`; the
   remaining callers (vicoba, wallet, p2p, rosca, family, network, recurrence, events,
   reconciliation cron, pin reset, ...) need their own migration with stable keys.
+
+## 14. Production release order for Steps A–D (+ C)
+
+- **Migrations first:** apply `146_outbox_dispatch_leases.sql`, `147_notification_idempotency.sql`
+  and `148_sms_deliveries.sql` (in that order) **before** deploying any Phase 71 code.
+  The code of A, B, C and D reads/writes `lease_token`/`locked_until`,
+  `notifications.source_event_reference` and `sms_deliveries`, and fails without them.
+- **Then the code of A, B, C and D together, in one deploy.** Within it,
+  `src/services/outboxService.js` (`NonRetryableError`, `referenceId`/`eventId` passed to
+  handlers) must be released **before or together with** `src/outbox/handlers.js`; a
+  handler throwing `NonRetryableError` against an old dispatcher would just be retried.
+- Release blockers from item 12 (Africa's Talking codes, `phone_hash` HMAC decision) still
+  apply.
+- **Rolling back the code of Step C** (old `handlers.js` without `NOTIFICATION_SMS`): the
+  dispatcher marks every due `NOTIFICATION_SMS` event `FAILED` with
+  `No handler registered for NOTIFICATION_SMS`. `FAILED` is **terminal**: it is never
+  claimed again, and `requeueDead` only touches `DEAD`. Those SMS are not sent until
+  someone acts. Procedure:
+  1. Count (SELECT only) before deciding anything:
+     ```sql
+     SELECT status, COUNT(*) AS events, MIN(created_at) AS oldest, MAX(created_at) AS newest
+       FROM outbox_events
+      WHERE event_type = 'NOTIFICATION_SMS'
+      GROUP BY status;
+     SELECT COUNT(*) AS failed_no_handler
+       FROM outbox_events
+      WHERE event_type = 'NOTIFICATION_SMS' AND status = 'FAILED'
+        AND last_error = 'No handler registered for NOTIFICATION_SMS';
+     ```
+  2. Decide (a human decision, recorded) whether these SMS are still worth sending. Old
+     ones may be stale; the in-app notification exists regardless.
+  3. Only **after the handler is deployed again**, return the chosen events to the queue
+     as a reviewed, audited operation, e.g. `UPDATE outbox_events SET status = 'PENDING',
+     attempts = 0, next_attempt_at = NOW(), last_error = NULL, lease_token = NULL,
+     locked_until = NULL, updated_at = NOW() WHERE event_type = 'NOTIFICATION_SMS' AND
+     status = 'FAILED' AND last_error = 'No handler registered for NOTIFICATION_SMS'
+     AND created_at >= <cut-off>;`. `sms_deliveries` keyed by `NOTIF_SMS:<id>` prevents
+     a second send for any event that did get sent before the rollback.
+- **Detect notifications that should have an SMS event but do not** (sms_enabled user
+  with a phone, created since the Step C deploy). Causes: a failed enqueue, which is now
+  logged as `NOTIFICATION_SMS enqueue failed for notificationId=...` and the notification
+  is kept, or a release window. SELECT only:
+  ```sql
+  SELECT n.id AS notification_id, n.user_id, n.created_at
+    FROM notifications n
+    JOIN notification_preferences p ON p.user_id = n.user_id AND p.sms_enabled
+    JOIN users u ON u.id = n.user_id AND btrim(COALESCE(u.phone_number, '')) <> ''
+   WHERE n.created_at >= <step_c_deploy_time>
+     AND NOT EXISTS (
+       SELECT 1 FROM outbox_events e
+        WHERE e.reference_id = 'NOTIF_SMS:' || n.id
+          AND e.event_type = 'NOTIFICATION_SMS')
+   ORDER BY n.created_at;
+  ```
+  The preference and phone are read **now**, not as they were at creation time, so the
+  result is a candidate list to review, not proof of a lost SMS.
+
+## 15. createNotification SMS goes through the outbox (Step C) — timing change
+
+- All 19 `createNotification` callers (eventService ×4, projectFinanceService ×13,
+  projectService ×1, referralService ×1; none changed) now get their SMS via a
+  `NOTIFICATION_SMS` outbox event instead of an inline fire-and-forget `sendSMS`.
+- **SMS timing changes:** the SMS is sent by the outbox dispatcher (cron every minute,
+  `src/jobs/runAll.js`), so expect a delay of **up to about one minute** after the
+  notification (longer on retries: backoff 5/10/20/40 s; `DEAD` after attempt 5).
+  If the dispatcher cron is not running, notification SMS are **not sent** (they stay
+  `PENDING` in `outbox_events`). Monitor the `NOTIFICATION_SMS` backlog.
+- **How the dispatcher works today:** `cron.schedule('* * * * *')` calls
+  `dispatchOutbox({ batchSize: 50 })` **once per tick**. It claims at most 50 due events
+  (`ORDER BY attempts, id ... FOR UPDATE SKIP LOCKED`), handles them **one after another**,
+  and returns. It does **not** loop until the queue is empty; anything above 50 waits for
+  the next minute. The 50 are shared by **all** event types, not only SMS. Ticks are not
+  serialised: a tick slower than 60 s overlaps the next one, which is safe (SKIP LOCKED,
+  leases) but does not raise the per-tick limit.
+- **Maximum throughput:** at most **50 events/minute = 3,000 events/hour** in total.
+  This is also the hard upper bound for notification SMS, and lower in practice because
+  other event types and retries take slots. Each SMS can take up to one provider timeout
+  (15 s, no failover on UNKNOWN), so a few slow sends make one tick take minutes, and the
+  real rate can fall far below 3,000/hour. A burst of N notifications (e.g. a project
+  dividend to many investors) takes at least ceil(N/50) minutes to drain.
+- **Measuring the `NOTIFICATION_SMS` queue** (SELECT only):
+  ```sql
+  SELECT COUNT(*) FILTER (WHERE status = 'PENDING')                         AS pending,
+         COUNT(*) FILTER (WHERE status = 'PENDING' AND next_attempt_at <= NOW()) AS pending_due,
+         COUNT(*) FILTER (WHERE status = 'PROCESSING')                      AS processing,
+         MIN(created_at) FILTER (WHERE status = 'PENDING')                  AS oldest_pending,
+         NOW() - MIN(created_at) FILTER (WHERE status = 'PENDING')          AS oldest_pending_age
+    FROM outbox_events
+   WHERE event_type = 'NOTIFICATION_SMS';
+  ```
+  Alert if `oldest_pending_age` grows past a few minutes or `pending` keeps rising.
+- **RELEASE ITEM (decide before the first production release of Step C):** raise
+  `batchSize`, or run the dispatcher in a loop within a tick until the queue is empty or a
+  time budget is used up, e.g. "repeat while `claimed === batchSize` and elapsed < 50 s".
+  Size it against the largest expected notification burst and the provider rate limits.
+- **Enqueue failure is isolated (SAVEPOINT `notif_sms_enqueue`):** if the SMS enqueue
+  fails, the notification is kept, its id is returned, the caller's transaction stays
+  usable, and the error is logged with `notificationId`. That notification then has
+  **no** SMS; use the detection SELECT in item 14 to find such notifications.
+- **Error contract:** with `client`, other failures are logged and **re-thrown** to the
+  transaction owner; without `client` (all 19 callers today), failures are logged and
+  `null` is returned, as before Step C.
+- `sms_enabled` and the phone number are checked when the notification is created (no
+  event otherwise); the phone and text are re-read by the handler at send time, so a
+  phone change in between sends to the new number.
+- Callers without `client` (all 19 today) now write the notification and the event in
+  their own short transaction (one `pool.connect()` per call). Callers inside a financial
+  transaction (e.g. projectFinanceService refunds) still notify outside that transaction,
+  as before Step C; moving them onto `client` / the handlers is Phase 72 (item 3).
+- `UNKNOWN` outcomes make the event `DEAD` with `SMS_DELIVERY_UNKNOWN` and need the
+  reconciliation in item 12; the DEAD-with-PENDING case from item 12 applies here too.
