@@ -166,6 +166,28 @@ outbox.registerHandler('PROJECT_DIVIDEND_PAID', async ({ payload }) => {
   if (n5 === null) throw new Error('Notification persistence failed for PROJECT_DIVIDEND_PAID');
 });
 
+outbox.registerHandler('PROJECT_SPLIT_SMS', async ({ payload }) => {
+  const { sendSMS } = require('./services/smsService');
+  const phone = String(payload && payload.phone || '').trim();
+  const body = String(payload && payload.body || '').trim();
+  if (!phone || !body) {
+    throw new Error('PROJECT_SPLIT_SMS: phone and body are required');
+  }
+  const result = await sendSMS(phone, body);
+  if (!result || result.success !== true) {
+    throw new Error(
+      `PROJECT_SPLIT_SMS provider failure: ${
+        result && result.error || 'Provider returned success=false'
+      }`
+    );
+  }
+  return {
+    success: true,
+    simulated: result.simulated === true,
+    provider: result.provider || null,
+  };
+});
+
 // H5: Initialize database security settings
 initDbSecurity().catch(() => {});
 

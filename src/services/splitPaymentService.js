@@ -1,7 +1,7 @@
 const pool = require('../config/db');
 const config = require('../config');
 const { generateReference, formatMoney } = require('../utils/helpers');
-const { sendSMS } = require('./smsService');
+const { enqueueOutbox } = require('./outboxService');
 const logger = require('../utils/logger');
 const fin = require('../services/financialEngine');
 
@@ -31,6 +31,7 @@ async function runSplitPayment(projectId, periodMonth, periodYear) {
       [projectId, periodMonth, periodYear]
     );
     if (duplicate.rows.length > 0) {
+      await client.query('ROLLBACK');
       return { success: false, duplicate: true, message: 'Split ya mwezi huu tayari imefanyika.' };
     }
 
@@ -98,10 +99,16 @@ async function runSplitPayment(projectId, periodMonth, periodYear) {
          VALUES ($1, $2, $3, 0, $3, 'SUCCESS', 'INVESTMENT_PAYOUT', $4)`,
         [generateReference('ROI'), inv.investor_user_id, shareOfInvestor, JSON.stringify({ project_id: projectId, period: `${periodYear}-${periodMonth}` })]
       );
-      await sendSMS(
-        inv.phone_number,
-        `Habari ${inv.full_name}, umepokea faida ya ${formatMoney(shareOfInvestor)} kutoka ${project.title} (${periodMonth}/${periodYear}).`
-      );
+      await enqueueOutbox({
+        eventType: 'PROJECT_SPLIT_SMS',
+        aggregateId: String(projectId),
+        reference: `PROJECT_SPLIT_SMS:${projectId}:${periodYear}-${periodMonth}:INV:${inv.investor_user_id}`,
+        payload: {
+          phone: inv.phone_number,
+          body: `Habari ${inv.full_name}, umepokea faida ya ${formatMoney(shareOfInvestor)} kutoka ${project.title} (${periodMonth}/${periodYear}).`,
+        },
+        tx: client,
+      });
     }
 
     // 3. Platform Commission -> company_revenue (+ ledger: fund from the revenue
@@ -138,10 +145,19 @@ async function runSplitPayment(projectId, periodMonth, periodYear) {
       [operationalShare, investorShare, platformShare, projectId]
     );
 
+    await enqueueOutbox({
+      eventType: 'PROJECT_SPLIT_SMS',
+      aggregateId: String(projectId),
+      reference: `PROJECT_SPLIT_SMS:${projectId}:${periodYear}-${periodMonth}:OWNER`,
+      payload: {
+        phone: project.phone_number,
+        body: `Habari ${project.full_name}, mapato ya ${formatMoney(totalRevenue)} yamegawanywa: Wewe ${formatMoney(operationalShare)}, Wawekezaji ${formatMoney(investorShare)}, Jukwaa ${formatMoney(platformShare)}.`,
+      },
+      tx: client,
+    });
+
     await client.query('COMMIT');
 
-    const sms = `Habari ${project.full_name}, mapato ya ${formatMoney(totalRevenue)} yamegawanywa: Wewe ${formatMoney(operationalShare)}, Wawekezaji ${formatMoney(investorShare)}, Jukwaa ${formatMoney(platformShare)}.`;
-    await sendSMS(project.phone_number, sms);
 
     logger.info('SPLIT', `Project ${projectId}: ${formatMoney(totalRevenue)} imegawanywa`, {
       operationalShare,
