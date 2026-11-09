@@ -1,0 +1,14 @@
+{
+  "description": "Outbox handlers registered at HEAD before the Phase 71 Step A refactor (static scan of src/server.js).",
+  "sourceCommit": "a89ac2fe2d5ecda9c69877c1166153ab7fbca1d0",
+  "source": "src/server.js",
+  "handlers": [
+    "MERCHANT_PAYOUT_EXECUTED",
+    "VICOBA_LOAN_APPROVED",
+    "OUTBOX_TEST",
+    "OUTBOX_RETRY",
+    "PROJECT_REVENUE_PROCESSED",
+    "PROJECT_DIVIDEND_PAID",
+    "PROJECT_SPLIT_SMS"
+  ]
+}

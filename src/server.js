@@ -92,7 +92,7 @@ const fourEyesRoutes = require('./routes/fourEyesRoutes');
 const outboxRoutes = require('./routes/outboxRoutes');
 const outbox = require('./services/outboxService');
 const pool = require('./config/db');
-const { createNotification } = require('./services/notificationService');
+const outboxHandlers = require('./outbox/handlers');
 const swaggerUi = require('swagger-ui-express');
 const { swaggerSpec } = require('./config/swagger');
 
@@ -110,83 +110,9 @@ if (config.sentry.dsn) {
 
 const app = express();
 
-// Outbox / event-bus default handlers (transaction-aware fan-out).
-let _outboxRetryCount = 0;
-outbox.registerHandler('MERCHANT_PAYOUT_EXECUTED', async ({ payload }) => {
-  const m = (await pool.query('SELECT user_id FROM merchants WHERE id = $1', [payload.merchantId])).rows[0];
-  const n1 = await createNotification(m ? m.user_id : payload.userId, {
-    title: 'Malipo ya mfanyabiashara yametumwa',
-    body: payload.reference ? `Rejea: ${payload.reference}` : 'Malipo yametumwa.',
-    type: 'FRAUD_TRANSACTION',
-  });
-  if (n1 === null) throw new Error('Notification persistence failed for MERCHANT_PAYOUT_EXECUTED');
-});
-outbox.registerHandler('VICOBA_LOAN_APPROVED', async ({ payload }) => {
-  const n2 = await createNotification(payload.applicantUserId, {
-    title: 'Mkopo wa VICOBA umetolewa',
-    body: `Mkopo wa TZS ${payload.amount} umewekwa kwenye wallet yako.`,
-    type: 'TRANSACTION',
-  });
-  if (n2 === null) throw new Error('Notification persistence failed for VICOBA_LOAN_APPROVED');
-});
-outbox.registerHandler('OUTBOX_TEST', async ({ payload }) => {
-  const n3 = await createNotification(payload.userId, { title: 'Outbox heartbeat', body: 'delivered' });
-  if (n3 === null) throw new Error('Notification persistence failed for OUTBOX_TEST');
-});
-outbox.registerHandler('OUTBOX_RETRY', async () => {
-  _outboxRetryCount += 1;
-  if (_outboxRetryCount % 3 !== 0) throw new Error('sigui bado');
-});
-outbox.registerHandler('PROJECT_REVENUE_PROCESSED', async ({ payload }) => {
-  const { projectId, amount, reference, allocations = [] } = payload;
-  const p = await pool.query('SELECT id, owner_user_id, name FROM projects WHERE id = $1', [projectId]);
-  if (p.rows.length === 0) return;
-  const summary = allocations.map((a) => `${a.step}: ${a.amount}`).join(', ');
-  const n4 = await createNotification(p.rows[0].owner_user_id, {
-    title: 'Mapato na mgawanyo kwenye waterfall',
-    body: `Mradi "${p.rows[0].name}": TZS ${amount} yamegawanywa (${summary}).`,
-    type: 'PROJECT',
-    entityType: 'PROJECT',
-    entityId: projectId,
-  });
-  if (n4 === null) throw new Error('Notification persistence failed for PROJECT_REVENUE_PROCESSED');
-});
-outbox.registerHandler('PROJECT_DIVIDEND_PAID', async ({ payload }) => {
-  const { projectId, name, reference, paid = [] } = payload;
-  const p = await pool.query('SELECT owner_user_id FROM projects WHERE id = $1', [projectId]);
-  if (p.rows.length === 0) return;
-  const total = paid.reduce((s, x) => s + Number(x.amount || 0), 0);
-  const n5 = await createNotification(p.rows[0].owner_user_id, {
-    title: 'Mgawanyo wa faida umetolewa',
-    body: `Wawekezaji ${paid.length} wa mradi "${name}" wamelipwa jumla ya TZS ${total}. Rejea: ${reference}`,
-    type: 'PROJECT',
-    entityType: 'PROJECT',
-    entityId: projectId,
-  });
-  if (n5 === null) throw new Error('Notification persistence failed for PROJECT_DIVIDEND_PAID');
-});
-
-outbox.registerHandler('PROJECT_SPLIT_SMS', async ({ payload }) => {
-  const { sendSMS } = require('./services/smsService');
-  const phone = String(payload && payload.phone || '').trim();
-  const body = String(payload && payload.body || '').trim();
-  if (!phone || !body) {
-    throw new Error('PROJECT_SPLIT_SMS: phone and body are required');
-  }
-  const result = await sendSMS(phone, body);
-  if (!result || result.success !== true) {
-    throw new Error(
-      `PROJECT_SPLIT_SMS provider failure: ${
-        result && result.error || 'Provider returned success=false'
-      }`
-    );
-  }
-  return {
-    success: true,
-    simulated: result.simulated === true,
-    provider: result.provider || null,
-  };
-});
+// Outbox / event-bus handlers (transaction-aware fan-out).
+// All handlers live in src/outbox/handlers.js (Phase 71 / Step A).
+outboxHandlers.registerAll(outbox);
 
 // H5: Initialize database security settings
 initDbSecurity().catch(() => {});

@@ -13,6 +13,10 @@ function registerHandler(eventType, handler) {
   handlers.set(eventType, handler);
 }
 
+function listRegisteredHandlers() {
+  return [...handlers.keys()].sort();
+}
+
 async function enqueueOutbox({ eventType, aggregateId = null, payload = {}, reference, tx, maxAttempts }) {
   if (!eventType || !reference) throw new Error('eventType na reference zinahitajika.');
   const serialized = JSON.stringify(payload || {});
@@ -323,6 +327,7 @@ async function requeueDead(batchSize = 100) {
 
 module.exports = {
   registerHandler,
+  listRegisteredHandlers,
   enqueueOutbox,
   dispatchOutbox,
   getOutboxStats,
