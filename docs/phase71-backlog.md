@@ -137,3 +137,103 @@ Items raised during the Phase 71 (outbox hardening) review gates that are not ye
   size. If the table is large, decide separately whether to build the index
   `CONCURRENTLY` outside the runner before applying 147 (the `IF NOT EXISTS` makes 147 a
   no-op for an index that already exists).
+
+## 9. Step D guarantee: fewer duplicate SMS, NOT exactly-once
+
+- **Origin:** Step D.
+- `sendSMSIdempotent` + `sms_deliveries` **reduce** duplicate sends; they do **not**
+  provide exactly-once delivery. When a provider call times out, resets, or returns 5xx,
+  the SMS may or may not have reached the handset. Such outcomes are recorded as `UNKNOWN`
+  and are never resent automatically, so the residual risk becomes a possibly *missing*
+  SMS (to be reconciled), instead of a possible *duplicate*.
+- Failover to another provider happens only after a **definite** failure (connection never
+  established, HTTP 4xx, explicit provider rejection).
+
+## 10. Rollback procedure for migration 148 (sms_deliveries)
+
+- **Revert the Step D code first** (`sendSMSIdempotent`, the `PROJECT_SPLIT_SMS` handler);
+  otherwise every `PROJECT_SPLIT_SMS` event fails on the missing table.
+- **Export `UNKNOWN` and `PENDING` rows first**: they are the only record of SMS whose
+  outcome still needs reconciliation.
+
+  ```sql
+  SELECT * FROM sms_deliveries WHERE status IN ('UNKNOWN', 'PENDING') ORDER BY updated_at;
+  DROP TABLE IF EXISTS sms_deliveries;          -- also drops its indexes
+  DELETE FROM schema_migrations WHERE version = '148_sms_deliveries.sql';
+  ```
+
+## 11. Production release order for Step D
+
+1. Apply migration `148_sms_deliveries.sql` (new table only; harmless to the old code).
+2. Deploy the Step D code **together**: `smsService.js`, `outboxService.js` and
+   `src/outbox/handlers.js`.
+- **`outboxService` must be released before or together with the new handler.** On the
+  old `outboxService`, `NonRetryableError` is not recognised and is treated as an ordinary
+  error: an `UNKNOWN` SMS event would be retried with backoff until `max_attempts` and then
+  `DEAD`. No SMS would be resent (each retry finds `UNKNOWN`), but the event would take
+  minutes instead of one attempt to reach `DEAD`, with misleading retry noise.
+- Code before migration: every `PROJECT_SPLIT_SMS` event fails (missing table) and retries.
+
+## 12. Reconcile `UNKNOWN` SMS with provider delivery reports
+
+- **Find them (read-only):**
+
+  ```sql
+  SELECT d.idempotency_key, d.provider, d.phone_last4, d.last_error, d.updated_at,
+         e.id AS outbox_event_id, e.status AS outbox_status
+    FROM sms_deliveries d
+    LEFT JOIN outbox_events e ON e.reference_id = d.idempotency_key
+   WHERE d.status = 'UNKNOWN'
+   ORDER BY d.updated_at;
+
+  SELECT id, reference_id, last_error FROM outbox_events
+   WHERE status = 'DEAD' AND last_error LIKE 'SMS_DELIVERY_UNKNOWN%';
+
+  -- Stale PENDING: claimed, outcome never recorded (process stopped mid-send).
+  -- Same threshold as smsService.STALE_PENDING_MS (10 minutes).
+  SELECT d.idempotency_key, d.provider, d.phone_last4, d.attempts, d.updated_at,
+         e.id AS outbox_event_id, e.status AS outbox_status, e.last_error
+    FROM sms_deliveries d
+    LEFT JOIN outbox_events e ON e.reference_id = d.idempotency_key
+   WHERE d.status = 'PENDING'
+     AND d.updated_at < NOW() - INTERVAL '10 minutes'
+   ORDER BY d.updated_at;
+  ```
+
+- **DEAD outbox event with a PENDING `sms_deliveries` row:** if a sender stops after the
+  claim (row `PENDING`), redeliveries of the event see a *fresh* `PENDING` and throw an
+  ordinary error ("delivery in progress elsewhere"). The outbox backoff (5 s, 10 s, 20 s,
+  40 s; `DEAD` after attempt 5, roughly 75 s plus dispatcher ticks) ends **before** the
+  10-minute stale threshold, so the event goes `DEAD` while the row is still `PENDING`
+  (not yet `UNKNOWN`). These rows appear in the stale-PENDING query above. A later
+  `requeueDead` (after 10 minutes) turns the row into `UNKNOWN` and the event into
+  `DEAD` with `SMS_DELIVERY_UNKNOWN`; in both cases nothing is resent automatically, and
+  the row must be reconciled like any `UNKNOWN`.
+
+- **Action:** match each `UNKNOWN` row against the provider's delivery reports / message
+  logs (Beem, Africa's Talking, Twilio) by provider, time window and `phone_last4`; then
+  record a decision (delivered -> mark `SENT`; not delivered -> explicit re-send) as a
+  reviewed, audited operation. No automatic resend.
+- **Also:** ingest provider delivery-report callbacks (DLR) so `provider_message_id` can
+  be confirmed automatically.
+- **RELEASE BLOCKER (first production release of Step D) — Africa's Talking codes:** the
+  per-recipient `statusCode` mapping in `smsService.classifyProviderResponse`
+  (accepted 100/101/102; rejected 401–407, 409, 502; UNKNOWN 500/501 and unrecognised)
+  was written from memory of the AT documentation and must be verified against AT's
+  **current** documentation before release. A wrong "rejected" code would allow a
+  failover that can double-send.
+- **RELEASE BLOCKER (first production release of Step D) — phone hash:** `phone_hash` is
+  a plain SHA-256 of the normalised number; the phone-number space is small enough to
+  brute-force, so it is effectively reversible. Decide before release whether to switch
+  to an HMAC with a server-side secret (and how that secret is managed/rotated). The
+  decision must be recorded before `sms_deliveries` holds production data.
+
+## 13. Direct `sendSMS` callers are not migrated
+
+- Only `PROJECT_SPLIT_SMS` uses `sendSMSIdempotent`. **36 direct `sendSMS` callers**
+  (37 call sites including the old split handler before Step D; roughly the "~38" estimated)
+  still use the original failover, which can double-send on a timeout.
+- `sendSMS` stays as-is for OTP (short-lived, user can request again).
+- Step C moves the `createNotification` SMS onto the outbox + `sendSMSIdempotent`; the
+  remaining callers (vicoba, wallet, p2p, rosca, family, network, recurrence, events,
+  reconciliation cron, pin reset, ...) need their own migration with stable keys.

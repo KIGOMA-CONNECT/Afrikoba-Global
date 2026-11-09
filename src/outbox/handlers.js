@@ -16,6 +16,7 @@
  */
 
 const defaultPool = require('../config/db');
+const { NonRetryableError } = require('../services/outboxService');
 const {
   createNotification: defaultCreateNotification,
   SOURCE_EVENT_REFERENCE_MAX,
@@ -129,26 +130,40 @@ function registerAll(outbox, deps = {}) {
     if (n5 === null) throw new Error('Notification persistence failed for PROJECT_DIVIDEND_PAID');
   });
 
-  outbox.registerHandler('PROJECT_SPLIT_SMS', async ({ payload }) => {
-    const { sendSMS } = require('../services/smsService');
+  // Step D: idempotent delivery keyed by the outbox referenceId.
+  //  SENT    -> success (also on redelivery; nothing is resent)
+  //  UNKNOWN -> NonRetryableError('SMS_DELIVERY_UNKNOWN') -> event DEAD at once
+  //  PENDING -> another worker is sending; ordinary error, retried later
+  //  FAILED  -> ordinary error, retried with backoff (a FAILED key may be re-attempted)
+  outbox.registerHandler('PROJECT_SPLIT_SMS', async ({ payload, referenceId }) => {
+    const { sendSMSIdempotent } = require('../services/smsService');
     const phone = String(payload && payload.phone || '').trim();
     const body = String(payload && payload.body || '').trim();
     if (!phone || !body) {
       throw new Error('PROJECT_SPLIT_SMS: phone and body are required');
     }
-    const result = await sendSMS(phone, body);
-    if (!result || result.success !== true) {
-      throw new Error(
-        `PROJECT_SPLIT_SMS provider failure: ${
-          result && result.error || 'Provider returned success=false'
-        }`
+    const key = typeof referenceId === 'string' ? referenceId.trim() : '';
+    if (!key) throw new Error('PROJECT_SPLIT_SMS: referenceId is required for idempotent delivery');
+
+    const result = await sendSMSIdempotent(key, phone, body);
+    if (result.status === 'SENT') {
+      return {
+        success: true,
+        simulated: result.simulated === true,
+        provider: result.provider || null,
+        duplicate: result.duplicate === true,
+      };
+    }
+    if (result.status === 'UNKNOWN') {
+      throw new NonRetryableError(
+        'SMS_DELIVERY_UNKNOWN',
+        `PROJECT_SPLIT_SMS ${key}: provider outcome unknown (${result.error || 'n/a'}); not resent, reconcile with provider`
       );
     }
-    return {
-      success: true,
-      simulated: result.simulated === true,
-      provider: result.provider || null,
-    };
+    if (result.status === 'PENDING') {
+      throw new Error(`PROJECT_SPLIT_SMS ${key}: delivery in progress elsewhere; retry later`);
+    }
+    throw new Error(`PROJECT_SPLIT_SMS provider failure: ${result.error || 'all providers failed'}`);
   });
 
   // ---- Phase 71 / Step A: verify-only close-out handlers (SELECT only) ---

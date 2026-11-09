@@ -8,6 +8,20 @@ const DEFAULT_MAX_ATTEMPTS = 5;
 const LEASE_MS = 120000;
 const HEARTBEAT_MS = 30000;
 
+/**
+ * A handler failure that must not be retried (e.g. an SMS whose provider
+ * outcome is UNKNOWN: retrying could deliver it twice). The dispatcher marks
+ * the event DEAD immediately with last_error = `${code}: ${message}`.
+ * Recognised by class (instanceof), never by message text.
+ */
+class NonRetryableError extends Error {
+  constructor(code, message) {
+    super(message);
+    this.name = 'NonRetryableError';
+    this.code = code;
+  }
+}
+
 function registerHandler(eventType, handler) {
   if (typeof handler !== 'function') throw new Error('Handler lazima iwe function.');
   handlers.set(eventType, handler);
@@ -152,7 +166,7 @@ async function updateOwnedEvent(row, sql, values) {
 async function dispatchOutbox({ batchSize = 20, now = new Date() } = {}) {
   const summary = {
     claimed: 0, delivered: 0, failed: 0, dead: 0,
-    unregistered: 0, processed: 0, lostLease: 0,
+    unregistered: 0, processed: 0, lostLease: 0, nonRetryable: 0,
     acknowledgementFailed: 0,
   };
 
@@ -223,15 +237,21 @@ async function dispatchOutbox({ batchSize = 20, now = new Date() } = {}) {
         continue;
       }
 
-      const exceeded = row.attempts >= row.max_attempts;
+      // NonRetryableError (recognised by class, never by message text) goes
+      // DEAD at once; every other error keeps the backoff/max_attempts policy.
+      const nonRetryable = handlerError instanceof NonRetryableError;
+      const exceeded = nonRetryable || row.attempts >= row.max_attempts;
       const next = new Date(Date.now() + backoffDelayMs(row.attempts));
+      const lastError = nonRetryable
+        ? `${handlerError.code}: ${handlerError.message}`
+        : String(handlerError && (handlerError.message || handlerError));
       const updated = await updateOwnedEvent(
         row,
         "UPDATE outbox_events SET status = $1, next_attempt_at = $2, lease_token = NULL, locked_until = NULL, last_error = $3, updated_at = NOW() WHERE id = $4 AND status = 'PROCESSING' AND lease_token = $5",
         [
           exceeded ? 'DEAD' : 'PENDING',
           next,
-          String(handlerError && (handlerError.message || handlerError)),
+          lastError,
           row.id,
           token,
         ]
@@ -241,6 +261,7 @@ async function dispatchOutbox({ batchSize = 20, now = new Date() } = {}) {
         summary.lostLease += 1;
       } else if (exceeded) {
         summary.dead += 1;
+        if (nonRetryable) summary.nonRetryable += 1;
       } else {
         summary.failed += 1;
       }
@@ -328,6 +349,7 @@ async function requeueDead(batchSize = 100) {
 }
 
 module.exports = {
+  NonRetryableError,
   registerHandler,
   listRegisteredHandlers,
   enqueueOutbox,
