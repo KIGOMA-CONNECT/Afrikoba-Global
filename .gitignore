@@ -46,3 +46,6 @@ _ci_artifacts/
 *.pre-restore-*
 *.clean.js
 F01_git_crontab.txt
+
+# Phase 71: local editor/backup snapshots
+*.bak
