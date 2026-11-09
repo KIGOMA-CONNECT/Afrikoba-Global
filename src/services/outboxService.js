@@ -206,6 +206,8 @@ async function dispatchOutbox({ batchSize = 20, now = new Date() } = {}) {
         eventType: row.event_type,
         aggregateId: row.aggregate_id,
         payload: row.payload,
+        referenceId: row.reference_id,
+        eventId: row.id,
       });
     } catch (error) {
       handlerFailed = true;

@@ -16,7 +16,10 @@
  */
 
 const defaultPool = require('../config/db');
-const { createNotification: defaultCreateNotification } = require('../services/notificationService');
+const {
+  createNotification: defaultCreateNotification,
+  SOURCE_EVENT_REFERENCE_MAX,
+} = require('../services/notificationService');
 
 // Event type -> project_reserve_releases.reserve_type
 // (mirrors CLOSE_OUT_FUNDS in src/services/projectFinanceService.js).
@@ -35,34 +38,57 @@ function requireReference(eventType, payload) {
   return { reference, projectId };
 }
 
+// Phase 71 / Step B: idempotency key for notifications created by a handler.
+// One notification per (outbox event, user); a redelivery returns the existing one.
+function sourceEventReference(eventType, referenceId, userId) {
+  const ref = typeof referenceId === 'string' ? referenceId.trim() : '';
+  if (!ref) throw new Error(`${eventType}: referenceId is required for an idempotent notification`);
+  const value = `${ref}:u${userId}`;
+  const length = Array.from(value).length;
+  if (length > SOURCE_EVENT_REFERENCE_MAX) {
+    throw new Error(
+      `${eventType}: sourceEventReference exceeds ${SOURCE_EVENT_REFERENCE_MAX} characters (got ${length})`
+    );
+  }
+  return value;
+}
+
 function registerAll(outbox, deps = {}) {
   const pool = deps.pool || defaultPool;
   const createNotification = deps.createNotification || defaultCreateNotification;
   let outboxRetryCount = 0;
 
-  // ---- Handlers moved unchanged from src/server.js ----------------------
+  // ---- Handlers moved from src/server.js (Step A); notifying handlers ----
+  // ---- pass sourceEventReference since Step B ---------------------------
 
-  outbox.registerHandler('MERCHANT_PAYOUT_EXECUTED', async ({ payload }) => {
+  outbox.registerHandler('MERCHANT_PAYOUT_EXECUTED', async ({ payload, referenceId }) => {
     const m = (await pool.query('SELECT user_id FROM merchants WHERE id = $1', [payload.merchantId])).rows[0];
-    const n1 = await createNotification(m ? m.user_id : payload.userId, {
+    const userId = m ? m.user_id : payload.userId;
+    const n1 = await createNotification(userId, {
       title: 'Malipo ya mfanyabiashara yametumwa',
       body: payload.reference ? `Rejea: ${payload.reference}` : 'Malipo yametumwa.',
       type: 'FRAUD_TRANSACTION',
+      sourceEventReference: sourceEventReference('MERCHANT_PAYOUT_EXECUTED', referenceId, userId),
     });
     if (n1 === null) throw new Error('Notification persistence failed for MERCHANT_PAYOUT_EXECUTED');
   });
 
-  outbox.registerHandler('VICOBA_LOAN_APPROVED', async ({ payload }) => {
+  outbox.registerHandler('VICOBA_LOAN_APPROVED', async ({ payload, referenceId }) => {
     const n2 = await createNotification(payload.applicantUserId, {
       title: 'Mkopo wa VICOBA umetolewa',
       body: `Mkopo wa TZS ${payload.amount} umewekwa kwenye wallet yako.`,
       type: 'TRANSACTION',
+      sourceEventReference: sourceEventReference('VICOBA_LOAN_APPROVED', referenceId, payload.applicantUserId),
     });
     if (n2 === null) throw new Error('Notification persistence failed for VICOBA_LOAN_APPROVED');
   });
 
-  outbox.registerHandler('OUTBOX_TEST', async ({ payload }) => {
-    const n3 = await createNotification(payload.userId, { title: 'Outbox heartbeat', body: 'delivered' });
+  outbox.registerHandler('OUTBOX_TEST', async ({ payload, referenceId }) => {
+    const n3 = await createNotification(payload.userId, {
+      title: 'Outbox heartbeat',
+      body: 'delivered',
+      sourceEventReference: sourceEventReference('OUTBOX_TEST', referenceId, payload.userId),
+    });
     if (n3 === null) throw new Error('Notification persistence failed for OUTBOX_TEST');
   });
 
@@ -71,7 +97,7 @@ function registerAll(outbox, deps = {}) {
     if (outboxRetryCount % 3 !== 0) throw new Error('sigui bado');
   });
 
-  outbox.registerHandler('PROJECT_REVENUE_PROCESSED', async ({ payload }) => {
+  outbox.registerHandler('PROJECT_REVENUE_PROCESSED', async ({ payload, referenceId }) => {
     const { projectId, amount, reference, allocations = [] } = payload;
     const p = await pool.query('SELECT id, owner_user_id, name FROM projects WHERE id = $1', [projectId]);
     if (p.rows.length === 0) return;
@@ -82,11 +108,12 @@ function registerAll(outbox, deps = {}) {
       type: 'PROJECT',
       entityType: 'PROJECT',
       entityId: projectId,
+      sourceEventReference: sourceEventReference('PROJECT_REVENUE_PROCESSED', referenceId, p.rows[0].owner_user_id),
     });
     if (n4 === null) throw new Error('Notification persistence failed for PROJECT_REVENUE_PROCESSED');
   });
 
-  outbox.registerHandler('PROJECT_DIVIDEND_PAID', async ({ payload }) => {
+  outbox.registerHandler('PROJECT_DIVIDEND_PAID', async ({ payload, referenceId }) => {
     const { projectId, name, reference, paid = [] } = payload;
     const p = await pool.query('SELECT owner_user_id FROM projects WHERE id = $1', [projectId]);
     if (p.rows.length === 0) return;
@@ -97,6 +124,7 @@ function registerAll(outbox, deps = {}) {
       type: 'PROJECT',
       entityType: 'PROJECT',
       entityId: projectId,
+      sourceEventReference: sourceEventReference('PROJECT_DIVIDEND_PAID', referenceId, p.rows[0].owner_user_id),
     });
     if (n5 === null) throw new Error('Notification persistence failed for PROJECT_DIVIDEND_PAID');
   });

@@ -79,3 +79,61 @@ Items raised during the Phase 71 (outbox hardening) review gates that are not ye
   so the verify-only handlers confirm each reference, or to close them out with a recorded
   disposition. Any requeue must be a separate, reviewed, audited change. It is not part of
   Step A.
+
+## 6. Rollback procedure for migration 147 (notification idempotency)
+
+- **Origin:** Step B.
+- **Order matters:** drop the index first, then the column.
+
+  ```sql
+  DROP INDEX IF EXISTS uq_notifications_user_source_event_ref;
+  ALTER TABLE notifications DROP COLUMN IF EXISTS source_event_reference;
+  DELETE FROM schema_migrations WHERE version = '147_notification_idempotency.sql';
+  ```
+
+- **Before rolling back:** revert the Step B code first (`createNotification` writes
+  `source_event_reference`, and the five notifying outbox handlers pass it); otherwise every
+  handler notification will fail on the missing column. After rollback, outbox redeliveries
+  can create duplicate notifications again.
+- **Operational note:** `CREATE UNIQUE INDEX` (non-concurrent, because the runner wraps each
+  migration in a transaction) takes a lock that blocks writes to `notifications` while the
+  index is built. Existing rows are all `NULL` for the new column, but the table is still
+  scanned. Schedule the production run accordingly.
+
+## 7. Register `OUTBOX_TEST` and `OUTBOX_RETRY` only in test environments
+
+- **Origin:** Step B review.
+- **Problem:** `src/outbox/handlers.js` registers the diagnostic handlers `OUTBOX_TEST`
+  (creates a notification for `payload.userId`) and `OUTBOX_RETRY` (fails twice out of three)
+  in every environment, including production.
+- **Action:** Register them only when `NODE_ENV` is `test`/`development` (or behind an
+  explicit flag), and update `tests/fixtures/phase71-outbox-handlers.before.json` and the
+  contract test's expected set accordingly, so production cannot process these event types.
+
+## 8. Production release order for Step B: migration 147 first, then code
+
+- **Origin:** Step B review.
+- **Order:** apply migration `147_notification_idempotency.sql` **before** deploying the
+  Step B code.
+- **Why:** the Step B code makes the five notifying outbox handlers
+  (`MERCHANT_PAYOUT_EXECUTED`, `VICOBA_LOAN_APPROVED`, `OUTBOX_TEST`,
+  `PROJECT_REVENUE_PROCESSED`, `PROJECT_DIVIDEND_PAID`) always pass `sourceEventReference`,
+  so `createNotification` writes `notifications.source_event_reference` with
+  `ON CONFLICT (user_id, source_event_reference)`. Without the column and the partial unique
+  index, that INSERT fails, `createNotification` returns `null`, and **all five handlers
+  throw** and retry until `DEAD`. Direct callers (no reference) are unaffected.
+  The migration is backward-compatible with the old code (nullable column, partial index),
+  so migration-first is safe.
+- **Before building the index, size the table (read-only):**
+
+  ```sql
+  SELECT COUNT(*) AS notification_rows,
+         pg_size_pretty(pg_total_relation_size('notifications')) AS total_size
+    FROM notifications;
+  ```
+
+  The index is built non-concurrently inside the runner's transaction and blocks writes to
+  `notifications` while it builds (see item 6); choose a low-traffic window based on this
+  size. If the table is large, decide separately whether to build the index
+  `CONCURRENTLY` outside the runner before applying 147 (the `IF NOT EXISTS` makes 147 a
+  no-op for an index that already exists).

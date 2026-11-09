@@ -176,13 +176,14 @@ async function main() {
       PROJECT_DIVIDEND_PAID: { projectId: 1, name: 'X', reference: 'R', paid: [] },
     };
     for (const [type, payload] of Object.entries(notifying)) {
-      const out = await rejects(() => hn.get(type)({ eventType: type, payload }),
+      // Step B: dispatcher always passes referenceId; notifying handlers require it.
+      const out = await rejects(() => hn.get(type)({ eventType: type, payload, referenceId: `P71-CLOSEOUT-${type}` }),
         new RegExp(`^Notification persistence failed for ${type}$`));
       expect(out.threw && out.matched, `${type}: null notification -> throws`, out.message);
     }
     const hOk = collect({ pool: stubPool, createNotification: async () => 42 });
     for (const [type, payload] of Object.entries(notifying)) {
-      const out = await rejects(() => hOk.get(type)({ eventType: type, payload }));
+      const out = await rejects(() => hOk.get(type)({ eventType: type, payload, referenceId: `P71-CLOSEOUT-${type}` }));
       expect(!out.threw, `${type}: persisted notification -> resolves`, out.message);
     }
   } catch (e) {
