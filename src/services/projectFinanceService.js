@@ -2641,26 +2641,62 @@ async function forceCloseFunding(userId, role, projectId, { action } = {}) {
     throw new ValidityError('Urefu wa urejeshaji unaruhusu hali ya FUNDING/PUBLISHED/EXPIRED tu.');
   }
 
-  const invRes = await pool.query(
-    "SELECT id, investor_user_id, amount FROM project_investments WHERE project_id = $1 AND status = 'CONFIRMED'", [projectId]
-  );
-  if (invRes.rows.length === 0) throw new ValidityError('Hakuna uwekezaji uliothibitishwa kurejeshwa.');
-
   const client = await pool.connect();
+  let committed = false; // errors after COMMIT are never mapped to 409
+  let stage = 'start';   // last step entered; logged when a refund is refused
+  let invRes;
   try {
     await client.query('BEGIN');
+    // Phase 71 / E0b. Lock order, the same in refundInvestment
+    // (src/services/projectService.js), always:
+    //   1. the project row FOR UPDATE,
+    //   2. the project's CONFIRMED investments FOR UPDATE ORDER BY id,
+    //   3. the investors' users rows ORDER BY id FOR UPDATE,
+    // all before the first creditWallet. A parallel refund of the same project
+    // (either path) waits at step 1 and then re-checks the project status and
+    // the CONFIRMED rows under the lock, so nothing is refunded twice. Taking
+    // the users rows first means creditWallet's KEY SHARE -> FOR UPDATE upgrade
+    // cannot deadlock against another refund of the same investor.
+    stage = 'project-lock';
+    const locked = await client.query('SELECT id, status FROM projects WHERE id = $1 FOR UPDATE', [projectId]);
+    if (locked.rows.length === 0) throw new ValidityError('Mradi haupatikani.', 404);
+    if (!['FUNDING', 'PUBLISHED', 'EXPIRED'].includes(locked.rows[0].status)) {
+      throw new ValidityError('Urefu wa urejeshaji unaruhusu hali ya FUNDING/PUBLISHED/EXPIRED tu.');
+    }
+    stage = 'investments-lock';
+    invRes = await client.query(
+      `SELECT id, investor_user_id, amount FROM project_investments
+       WHERE project_id = $1 AND status = 'CONFIRMED'
+       ORDER BY id
+       FOR UPDATE`,
+      [projectId]
+    );
+    if (invRes.rows.length === 0) throw new ValidityError('Hakuna uwekezaji uliothibitishwa kurejeshwa.');
+    stage = 'users-lock';
+    await client.query(
+      'SELECT id FROM users WHERE id = ANY($1::int[]) ORDER BY id FOR UPDATE',
+      [[...new Set(invRes.rows.map((inv) => inv.investor_user_id))]]
+    );
     for (const inv of invRes.rows) {
       const amt = Number(inv.amount);
       const ref = generateReference('PREF');
-      await client.query(
-        "UPDATE project_investments SET refund_reference = $1, refunded_at = NOW(), status = 'REFUNDED' WHERE id = $2",
+      stage = 'mark-refunded';
+      const marked = await client.query(
+        "UPDATE project_investments SET refund_reference = $1, refunded_at = NOW(), status = 'REFUNDED' WHERE id = $2 AND status = 'CONFIRMED'",
         [ref, inv.id]
       );
+      // The row is locked and was read CONFIRMED: exactly one row must flip.
+      if (marked.rowCount !== 1) {
+        const changed = new ValidityError('Hali ya uwekezaji imebadilika wakati wa kurejesha; hakuna kilichorejeshwa, jaribu tena.', 409);
+        changed.code = 'FUNDING_REFUND_STATE_CHANGED';
+        throw changed;
+      }
       await client.query('UPDATE projects SET amount_raised = GREATEST(amount_raised - $1, 0) WHERE id = $2', [amt, projectId]);
       await client.query(
         `UPDATE controlled_project_accounts SET remaining_balance = GREATEST(remaining_balance - $1, 0), updated_at = NOW()
          WHERE project_id = $2`, [amt, projectId]
       );
+      stage = 'credit';
       await fin.creditWallet({ client, userId: inv.investor_user_id, amount: amt, reference: ref, fromAccount: INVESTMENT_ACCOUNT, description: 'Funding cancelled refund' });
       await client.query(
         `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
@@ -2674,6 +2710,7 @@ async function forceCloseFunding(userId, role, projectId, { action } = {}) {
       }).catch(() => {});
     }
 
+    stage = 'close-project';
     await client.query("UPDATE projects SET status = 'CANCELLED', amount_raised = 0, updated_at = NOW() WHERE id = $1", [projectId]);
     await client.query("UPDATE controlled_project_accounts SET remaining_balance = 0, status = 'CLOSED', updated_at = NOW() WHERE project_id = $1", [projectId]);
     await client.query(
@@ -2682,8 +2719,20 @@ async function forceCloseFunding(userId, role, projectId, { action } = {}) {
       [projectId, userId, JSON.stringify({ refunded_count: invRes.rows.length })]
     );
     await client.query('COMMIT');
+    committed = true;
   } catch (e) {
     await client.query('ROLLBACK').catch(() => {});
+    if (!committed && e && (e.code === '55P03' || e.code === '40P01')) {
+      require('../utils/logger').warn(
+        'PROJECT_FUNDING_REFUND',
+        `forceCloseFunding refund for project ${projectId} not completed at stage ${stage} (${e.code}): ${e.message}`,
+        { code: e.code, projectId, path: 'forceCloseFunding', stage, table: e.table || null, routine: e.routine || null }
+      );
+      const busy = new ValidityError(
+        'Urejeshaji wa uwekezaji haukukamilika kwa sababu ya shughuli nyingine zinazoendelea. Hakuna kilichorejeshwa. Jaribu tena baadaye.', 409);
+      busy.code = 'FUNDING_REFUND_IN_PROGRESS';
+      throw busy;
+    }
     throw e;
   } finally {
     client.release();

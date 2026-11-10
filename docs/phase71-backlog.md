@@ -669,9 +669,76 @@ Items raised during the Phase 71 (outbox hardening) review gates that are not ye
   errors. The client retries later, and the retry either pays once or returns
   `already_paid`.
 
-## 22. P1, NOT VERIFIED: other money paths that may refund or pay twice (E0b)
+## 22. P1: other money paths that may refund or pay twice (E0b: refunds CONFIRMED and fixed)
 
-**Status: NOT VERIFIED. No test proves these yet.** This is a code reading of
+**Status after E0b:**
+- **Investment refund: CONFIRMED by test and FIXED in E0b.** This covers
+  `forceCloseFunding` (REFUND) and `refundInvestment`
+  (`src/services/projectService.js`), which has the same pattern and is reachable by
+  any investor (`POST /projects/:id/investments/:investmentId/refund`).
+- **`completeProject` and `processIncomingRevenue`: still NOT VERIFIED** (the code
+  reading below). They were not changed in E0b.
+
+**Evidence** (`tests/project-refund-concurrency.phase71.test.js`, real gate before
+COMMIT, disposable DB). The code at HEAD f18b88d failed the suite with 70 passed and
+80 failed:
+- **Two parallel forceCloseFunding REFUND calls:** every investor was refunded twice
+  (100 → 200, 250.5 → 501, 40 → 80), with 2 CREDIT, 4 journal rows and 2
+  `PROJECT_REFUND` transactions each. Both calls returned `refunded_count: 3`.
+- **Two parallel refundInvestment calls on one investment:** +600 instead of +300, and
+  `amount_raised` and escrow were reduced twice (380 → 0 instead of 80).
+- **refundInvestment and forceCloseFunding together on one EXPIRED project:** the
+  investor was refunded twice, in either order.
+- **Refunded rows were not re-checked:** an investment cancelled by another writer
+  while the refund waited was refunded anyway, and so was a row flipped in the same
+  transaction (the rowCount case).
+- **Other failures:** two refunds sharing an investor deadlocked (`40P01`). A lock wait
+  over 3 s returned raw `55P03`, which reached HTTP as `500 {"code":"55P03"}`.
+
+**False protection: `uq_project_investment_refund_reference`.** This is a UNIQUE index
+on `project_investments(refund_reference) WHERE refund_reference IS NOT NULL`
+(migration 133). It does **not** stop a second refund. Each call generates a new random
+`generateReference('PREF')`, and the second call's
+`UPDATE ... SET refund_reference = <new>` simply **overwrites** the first reference on
+the same row, so there is never a conflict. The test shows the first reference
+disappearing from the investment row, although both credits stay in
+`financial_operations` and `transactions`. The comment on `refundInvestment`
+("Idempotent via refund_reference UNIQUE") is **not true**. E0b keeps the index, but
+the actual protection is now the locks and the status re-check.
+
+**Fix (E0b): the same lock order on both paths, explained in a comment in each.**
+- **Lock order:**
+  1. `projects` row `FOR UPDATE`;
+  2. the investments `FOR UPDATE ORDER BY id` (forceCloseFunding: all `CONFIRMED`
+     ones of the project, read **inside** the transaction after the project lock;
+     refundInvestment: the one investment);
+  3. the investors' `users` rows `ORDER BY id FOR UPDATE`;
+  4. only then the first `creditWallet`.
+- **Re-checks under the lock:** the project status, and for refundInvestment the
+  investment's owner, status and `refund_reference`, are checked again with the same
+  400 messages as before.
+- **Refund UPDATE:** it now has `AND status = 'CONFIRMED'` and must change exactly one
+  row. Otherwise it returns 409 `FUNDING_REFUND_STATE_CHANGED` ("Hali ya uwekezaji
+  imebadilika wakati wa kurejesha; hakuna kilichorejeshwa, jaribu tena.") and the whole
+  refund is rolled back.
+- **Lock timeouts:** `55P03` / `40P01` before COMMIT become 409
+  `FUNDING_REFUND_IN_PROGRESS` ("Urejeshaji wa uwekezaji haukukamilika kwa sababu ya
+  shughuli nyingine zinazoendelea. Hakuna kilichorejeshwa. Jaribu tena baadaye.").
+  `logger.warn` (scope `PROJECT_FUNDING_REFUND`) records `path`, `stage`
+  (`project-lock` / `investments-lock` or `investment-lock` / `users-lock` /
+  `mark-refunded` / `credit` / `close-project`), `table` and `routine`. Other errors and
+  errors after COMMIT are not mapped.
+- **Unchanged:** references (`generateReference('PREF')`), refund amounts, the 400
+  messages, `lock_timeout` 3000, and the schema (no migration).
+- **Behaviour change:** refundInvestment's audit row is now written inside the
+  transaction (item 26).
+- **After the fix:** a parallel second call waits on the project lock and then gets the
+  existing 400 (project no longer refundable / investment already REFUNDED), or refunds
+  only what is still `CONFIRMED`. Each investor is refunded exactly once, and the
+  investment's `refund_reference` equals the single credit reference.
+
+**Original code reading (HEAD f18b88d line numbers), kept for the two unverified
+paths.** This is a code reading of
 `src/services/projectFinanceService.js` (line numbers from the working tree with E0). It
 follows the same pattern as B2 (item 16): a read with no lock, a loop that moves money
 with a **random** reference (so `creditWallet` cannot dedup), and a state UPDATE that
@@ -745,3 +812,115 @@ in E0, and no test for it is in the E0 commit.**
   3. Mutations that remove each guard, and the suites rerun, as in E0.
   4. Production check (read-only, run by the owner) for past double refunds or
      settlements, in the style of item 16.
+
+## 23. forceCloseFunding ACTIVATE vs REFUND on the same project (not fixed)
+
+Backlog only; no code change in E0b.
+
+**ACTIVATE is unchanged.** It reads the project with `pool.query` outside any
+transaction, checks `status = 'FUNDING'` and ≥ 50 % funded in memory, then runs
+`UPDATE projects SET status = 'ACTIVE' WHERE id = $1` with no status condition, plus
+`UPDATE controlled_project_accounts ... status = 'ACTIVE', escrow_balance =
+remaining_balance` (`src/services/projectFinanceService.js`, the ACTIVATE branch).
+
+**REFUND now locks the project row and re-checks its status** (E0b). That makes one
+interleaving safe:
+- ACTIVATE commits first and REFUND then refuses with the existing 400.
+
+The reverse is still open:
+- REFUND commits (project `CANCELLED`, all investments refunded, escrow 0 and `CLOSED`).
+- An ACTIVATE that already passed its stale status check then sets the project to
+  `ACTIVE` and the escrow account to `ACTIVE` with a 0 balance.
+
+No money is duplicated, but the project state is wrong. ACTIVATE should take the same
+project lock and re-check `FUNDING` (and the funded percentage) inside its transaction.
+This needs its own failing test first.
+
+## 24. `invest` between the refund's read and its writes (side effect of E0b, needs its own test)
+
+Before E0b, `forceCloseFunding` REFUND read the `CONFIRMED` investments **before**
+`BEGIN`, without a lock, and only touched the `projects` row later, inside the refund
+loop. `invest` (`src/services/projectService.js`) does lock `projects FOR UPDATE` and
+re-check the status, but that did not help. An investment committed **between** that
+read and the refund's first `UPDATE projects` was never refunded. The refund then set
+the project to `CANCELLED`, `amount_raised = 0` and the escrow to 0 / `CLOSED`, leaving
+that investor's money `CONFIRMED` in a cancelled project.
+
+After E0b, REFUND locks the project row **first** and reads the investments inside the
+transaction under that lock. `invest` also takes the project lock first, so the two now
+serialise:
+- an investment committed before the refund's lock is included and refunded;
+- an `invest` arriving later waits, then sees `CANCELLED` and is refused.
+
+This is a **side effect** of the E0b lock order, not a fix that was tested. It needs its
+own parallel test (`invest` held before COMMIT vs REFUND, and the reverse) before it is
+counted as fixed.
+
+## 25. Refund notifications sent before COMMIT, on their own connection (not fixed)
+
+`forceCloseFunding` calls `createNotification(...).catch(() => {})` **inside the refund
+loop, before `COMMIT`** (`src/services/projectFinanceService.js`, after the
+`INSERT INTO transactions ... 'PROJECT_REFUND'` of each investor). There is no `client`,
+so each notification runs in its own short transaction on another pool connection.
+- **Told "refunded" although the refund was rolled back.** The test's forced 40P01 at
+  the second investor's credit rolled the whole refund back, and nothing was refunded.
+  The first investor had already received the "Uwekezaji umerudishwa" notification
+  (count 1, with a `PREF-` reference that no longer exists).
+- **Lost after 3 s.** The notification INSERT's FK check needs `KEY SHARE` on the
+  investor's `users` row, which the refund's own transaction holds `FOR UPDATE` (taken
+  by `creditWallet`, and since E0b at the users-lock stage). It therefore waits until
+  the refund COMMITs. If that takes more than `lock_timeout` (3 s), it fails with
+  `55P03`, `createNotification` logs it and returns null, and the notification is
+  lost. Test evidence: the refund was held 4.5 s before COMMIT and committed; the
+  investor got 0 notifications, and `logger.error` showed `NOTIFICATION: Failed to
+  create notification: canceling statement due to lock timeout`. A large force-close
+  (many investors, over 3 s) loses the notifications of the early investors.
+- **To do:** send these notifications after `COMMIT`, as `refundInvestment` already
+  does, or move them to the outbox as in Step C.
+
+## 26. refundInvestment audit was lost on every refund since it was introduced (fixed in E0b; behaviour change)
+
+**Cause.** `refundInvestment` called `logAudit({...})` **without `client`**, so it ran
+through `pool`, on another connection, before `COMMIT`. `audit_logs.user_id` has an FK
+to `users` (migration 088), so that INSERT needs `KEY SHARE` on the investor's `users`
+row. The refund's own transaction holds that row `FOR UPDATE` (`creditWallet`). The
+audit INSERT therefore waited for its own caller until `lock_timeout` (3 s), failed with
+`55P03`, and `writeAudit` **swallowed** the error (`AUDIT_LOG_FAILURE`, no rethrow
+without a client). The refund then committed.
+
+**Consequence.**
+- **No `refundInvestment` refund has ever been written to `audit_logs`.**
+- **Every call took at least 3 s** while holding the investor's row lock.
+- Measured on HEAD f18b88d: 3070 ms per call, 0 `audit_logs` rows (`action =
+  'PROJECT_REFUND'`), and `logger.error AUDIT_LOG_FAILURE: canceling statement due to
+  lock timeout`.
+
+The record of the money movement still exists in `financial_operations`, `transactions`
+(`PROJECT_REFUND`) and `journal_entries`. Past refunds can be found from
+`transactions WHERE type = 'PROJECT_REFUND'`, joined to `project_investments` via
+`meta->>'investment_id'`. An audit backfill, if wanted, is a separate decision.
+
+**Fix (E0b).** `logAudit({ ..., client })`: the audit row is written in the refund's
+transaction.
+
+**Behaviour change.** If the audit INSERT fails, `writeAudit` rethrows (it does so
+whenever a `client` is given), and the **whole refund is rolled back**: no credit, no
+status change. The error propagates as-is; it is not a 409. Before, the refund went
+through and the audit was silently dropped.
+
+**Tests:**
+- One refund writes exactly 1 `audit_logs` `PROJECT_REFUND` row for the investment and
+  takes under 1000 ms (13 ms measured).
+- A forced audit failure rolls the refund back with no money moved and no audit row.
+
+**`forceCloseFunding` checked, not changed.** Its audit is written with
+`client.query(INSERT INTO audit_log ...)`, so it is inside the transaction, and this
+self-wait does not happen. Difference:
+- It writes to the **`audit_log`** table (event-sourced project log, migration 004;
+  `user_id` has no FK).
+- `refundInvestment` writes to **`audit_logs`** through `logAudit`.
+- Both are merged by `listAudit`, but a query on only one table will miss the other
+  path's refunds.
+
+**Other `logAudit` calls without `client` inside a transaction that holds the same
+user's row `FOR UPDATE` may lose their audit the same way.** Not surveyed in E0b.

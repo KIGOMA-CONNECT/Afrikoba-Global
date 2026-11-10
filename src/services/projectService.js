@@ -559,12 +559,51 @@ async function refundInvestment(projectId, investmentId, userId) {
   const amt = Number(inv.amount);
 
   const client = await pool.connect();
+  let committed = false; // errors after COMMIT are never mapped to 409
+  let stage = 'start';   // last step entered; logged when a refund is refused
   try {
     await client.query('BEGIN');
-    await client.query(
-      `UPDATE project_investments SET refund_reference = $1, refunded_at = NOW(), status = 'REFUNDED' WHERE id = $2`,
+    // Phase 71 / E0b. Lock order, the same as forceCloseFunding
+    // (src/services/projectFinanceService.js), always:
+    //   1. the project row FOR UPDATE,
+    //   2. the investment(s) FOR UPDATE ORDER BY id,
+    //   3. the investor's users row ORDER BY id FOR UPDATE,
+    // all before creditWallet. The checks made above, outside the transaction,
+    // are repeated here under the locks: a parallel refund (either path) of
+    // the same investment waits at step 1 and then sees it REFUNDED.
+    stage = 'project-lock';
+    const lockedProject = await client.query('SELECT id, status FROM projects WHERE id = $1 FOR UPDATE', [projectId]);
+    if (lockedProject.rows.length === 0) throw new ValidityError('Mradi haupatikani.', 404);
+    if (lockedProject.rows[0].status !== 'EXPIRED') throw new ValidityError('Mradi haujaexpira; not yet eligible for refund.');
+    stage = 'investment-lock';
+    const lockedInv = await client.query(
+      `SELECT * FROM project_investments WHERE id = $1 AND project_id = $2
+       ORDER BY id
+       FOR UPDATE`,
+      [investmentId, projectId]
+    );
+    if (lockedInv.rows.length === 0) throw new ValidityError('Uwekezaji haujapatikana.', 404);
+    const cur = lockedInv.rows[0];
+    if (cur.investor_user_id !== userId) throw new ValidityError('Huna ruhusa ya kurejesha uwekezaji huu.', 403);
+    if (cur.status !== 'CONFIRMED') throw new ValidityError(`Hali ya uwekezaji (${cur.status}) hairuhusu kurejeshwa.`);
+    if (cur.refund_reference) {
+      await client.query('COMMIT');
+      committed = true;
+      return { success: true, refund_reference: cur.refund_reference, refunded_at: cur.refunded_at, already_refunded: true };
+    }
+    stage = 'users-lock';
+    await client.query('SELECT id FROM users WHERE id = ANY($1::int[]) ORDER BY id FOR UPDATE', [[userId]]);
+    stage = 'mark-refunded';
+    const marked = await client.query(
+      `UPDATE project_investments SET refund_reference = $1, refunded_at = NOW(), status = 'REFUNDED' WHERE id = $2 AND status = 'CONFIRMED'`,
       [refundRef, investmentId]
     );
+    // The row is locked and was read CONFIRMED: exactly one row must flip.
+    if (marked.rowCount !== 1) {
+      const changed = new ValidityError('Hali ya uwekezaji imebadilika wakati wa kurejesha; hakuna kilichorejeshwa, jaribu tena.', 409);
+      changed.code = 'FUNDING_REFUND_STATE_CHANGED';
+      throw changed;
+    }
     await client.query(
       `UPDATE projects SET amount_raised = GREATEST(amount_raised - $1, 0) WHERE id = $2`,
       [amt, projectId]
@@ -575,16 +614,34 @@ async function refundInvestment(projectId, investmentId, userId) {
        WHERE project_id = $2`,
       [amt, projectId]
     );
+    stage = 'credit';
     await fin.creditWallet({ client, userId, amount: amt, reference: refundRef, fromAccount: PROJECT_ACCOUNT, description: 'Project investment refund' });
     await client.query(
       `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
        VALUES ($1,$2,$3,0,$3,'SUCCESS','PROJECT_REFUND',$4)`,
       [refundRef, userId, amt, JSON.stringify({ project_id: projectId, investment_id: inv.id, refund_reference: refundRef })]
     );
-    await logAudit({ eventType: 'PROJECT_REFUND', action: 'REFUND', entityType: 'PROJECT_INVESTMENT', userId, entityId: investmentId, referenceId: refundRef, amount: amt });
+    // On the refund's own client (Phase 71 / E0b): audit_logs.user_id has an FK
+    // to users, and this transaction holds the investor's users row FOR UPDATE,
+    // so a separate pool connection waited lock_timeout (3 s) and the audit row
+    // was silently lost. Inside the transaction, an audit failure now rolls the
+    // whole refund back (writeAudit rethrows when given a client).
+    await logAudit({ eventType: 'PROJECT_REFUND', action: 'REFUND', entityType: 'PROJECT_INVESTMENT', userId, entityId: investmentId, referenceId: refundRef, amount: amt, client });
     await client.query('COMMIT');
+    committed = true;
   } catch (e) {
     await client.query('ROLLBACK').catch(() => {});
+    if (!committed && e && (e.code === '55P03' || e.code === '40P01')) {
+      require('../utils/logger').warn(
+        'PROJECT_FUNDING_REFUND',
+        `refundInvestment ${investmentId} for project ${projectId} not completed at stage ${stage} (${e.code}): ${e.message}`,
+        { code: e.code, projectId, investmentId, path: 'refundInvestment', stage, table: e.table || null, routine: e.routine || null }
+      );
+      const busy = new ValidityError(
+        'Urejeshaji wa uwekezaji haukukamilika kwa sababu ya shughuli nyingine zinazoendelea. Hakuna kilichorejeshwa. Jaribu tena baadaye.', 409);
+      busy.code = 'FUNDING_REFUND_IN_PROGRESS';
+      throw busy;
+    }
     throw e;
   } finally {
     client.release();
