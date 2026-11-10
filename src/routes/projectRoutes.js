@@ -86,7 +86,7 @@ router.post('/projects/:id/waterfall-rules/:ruleId/unfreeze', requireRoles('ADMI
 router.post('/projects/:id/revenue/process-incoming', async (req, res, next) => {
   try {
     const { amount, revenue_type, unique_reference, description } = req.body;
-    const result = await projectFinance.processIncomingRevenue(req.user.id, parseInt(req.params.id, 10), { amount, revenue_type, unique_reference, description });
+    const result = await projectFinance.processIncomingRevenue(req.user.id, parseInt(req.params.id, 10), { amount, revenue_type, unique_reference, description }, req.user.role);
     return res.status(201).json({ success: true, ...result });
   } catch (e) { next(e); }
 });

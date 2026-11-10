@@ -292,10 +292,15 @@ async function onFundingReceived({ projectId, amount, firstFunding }) {
  *      full lineage in waterfall_allocation_records.
  * Percentages come exclusively from the ACTIVE/FROZEN rule (never code).
  */
-async function processIncomingRevenue(userId, projectId, { amount, revenue_type, unique_reference, description } = {}) {
+async function processIncomingRevenue(userId, projectId, { amount, revenue_type, unique_reference, description } = {}, actorRole = null) {
   const amt = Number(amount);
   if (!amt || amt <= 0) throw new ValidityError('Kiasi si sahihi.');
   const p = await getProject(projectId);
+  // Phase 71 / E0d: revenue becomes investor entitlements that payProjectDividends
+  // pays out, so only the project owner or ADMIN/MODERATOR/EXPERT may record it.
+  if (p.owner_user_id !== userId && !isExpert(actorRole)) {
+    throw new ValidityError('Huna ruhusa za mradi huu.', 403);
+  }
 
   const rule = await getEffectiveRule(projectId);
   if (!rule) throw new ValidityError('Waterfall rules hazijawekwa kwa mradi huu.');

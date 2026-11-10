@@ -765,9 +765,17 @@ in E0, and no test for it is in the E0 commit.**
     refund that is later rolled back.
 - **`completeProject`, may return the escrow twice.**
   - `:1900` checks for an existing settlement with `pool.query`, outside the
-    transaction, with no lock. `project_settlements` has **no UNIQUE on `project_id`**,
-    only an index (migration 134). `:1898` checks `status = 'ACTIVE'` on a read made
+    transaction, with no lock. `:1898` checks `status = 'ACTIVE'` on a read made
     outside the transaction.
+  - **Correction (found in E0c Part 1, verified in E0d):** an earlier version of this item
+    said `project_settlements` has no UNIQUE on `project_id`. **That was wrong.**
+    Migration 134 line 24 declares `UNIQUE (project_id)`
+    (`project_settlements_project_id_key`, confirmed in `pg_constraint` on a fresh test
+    DB), as well as the index `ix_project_settlements_project`. The second settlement
+    INSERT therefore fails. The protection is still fragile: it acts only after the
+    credits have run inside the transaction (so it relies on the whole transaction
+    rolling back), it is matched by a `'duplicate key'` string, and a lock wait surfaces
+    as a raw `55P03`. Hardening belongs to E0c.
   - `:1910` reads investors inside the transaction with no lock (`ORDER BY id ASC`,
     investment id rather than user id). `:1920` reads `remaining_balance` with **no
     `FOR UPDATE`**.
@@ -780,7 +788,10 @@ in E0, and no test for it is in the E0 commit.**
     and `:2033` `UPDATE projects SET status = 'COMPLETED' WHERE id = $1`, with no status
     condition.
   - Two parallel calls both see no settlement and the same escrow. Both credit it. The
-    second's escrow UPDATE changes 0 rows unnoticed, and it commits a second settlement.
+    second's escrow UPDATE changes 0 rows unnoticed. ~~It commits a second settlement.~~
+    (Corrected: the `UNIQUE (project_id)` above makes its settlement INSERT fail, so the
+    second transaction rolls back, as long as nothing swallows that error. Not yet shown
+    by a parallel test; see E0c.)
 - **`processIncomingRevenue`, may record entitlements twice (paid twice later) and may
   deadlock.**
   - Replay is protected **only when the caller sends `unique_reference`**: `claimOperation`
@@ -805,8 +816,9 @@ in E0, and no test for it is in the E0 commit.**
        / `project_investments` `FOR UPDATE`, in a fixed order).
      - Move the reads inside the transaction.
      - Re-check the old state in every UPDATE (`AND status = 'CONFIRMED'`,
-       `AND status = 'ACTIVE'`), and check the row count, or a UNIQUE on
-       `project_settlements(project_id)` through a migration.
+       `AND status = 'ACTIVE'`), and check the row count. (A UNIQUE on
+       `project_settlements(project_id)` already exists, migration 134:24; no migration
+       is needed for it.)
      - Lock users `ORDER BY id` before crediting.
      - Map 55P03/40P01 to 409 as in item 17.
   3. Mutations that remove each guard, and the suites rerun, as in E0.
@@ -924,3 +936,95 @@ self-wait does not happen. Difference:
 
 **Other `logAudit` calls without `client` inside a transaction that holds the same
 user's row `FOR UPDATE` may lose their audit the same way.** Not surveyed in E0b.
+
+## 27. P0 (access): anyone could record project revenue (fixed in E0d)
+
+**Problem (HEAD a5f3f7b).** `POST /projects/:id/revenue/process-incoming`
+(`src/routes/projectRoutes.js:86-92`) is behind `authRequired` only, and
+`processIncomingRevenue` (`src/services/projectFinanceService.js:295`) never checked who
+the caller was. **Any authenticated user**, including an investor in the project, could
+record revenue for **any** project that has an ACTIVE or FROZEN waterfall rule.
+
+**Impact: money with no source.** The revenue is split by the waterfall and written as
+`PENDING` `project_investor_payouts` entitlements. `payProjectDividends` then pays those
+entitlements into investors' wallets. No cash had to arrive for this. An investor could
+therefore credit themselves (and the other investors) out of nothing, in two calls.
+
+Measured on HEAD a5f3f7b, new test `tests/project-revenue-access.phase71.test.js`, DB
+`phase71_financial_audit_e0d_head`:
+- A regular user (not owner, not investor): **HTTP 201**, 1 `project_revenue`, 1
+  `financial_operations` claim, 1 `transactions`, 6 `journal_entries`, 2
+  `waterfall_allocation_records`, 2 `PENDING` payouts totalling **600** out of 1000.
+- An investor of the project (not owner): **HTTP 201**, the same rows, 600 in entitlements.
+- The service called directly by a non-owner with no role: accepted.
+- Result: 24 passed, 12 failed.
+
+**Fix (E0d).**
+- In the service, right after `getProject` (so a missing project is still 404) and
+  before the rule lookup, the claim and `BEGIN`:
+  `if (p.owner_user_id !== userId && !isExpert(actorRole)) throw new ValidityError('Huna ruhusa za mradi huu.', 403)`.
+  Same pattern as `listDrawdowns` and the same message as `getOwnerOnly` /
+  `getProjectForOwner`.
+- The role is a new 4th positional argument `actorRole` (default `null`). It is not read
+  from the request body or the options object, so it cannot be spoofed. The route passes
+  `req.user.role` from the authenticated token.
+- Reference handling, arithmetic, waterfall, journal and notifications are unchanged.
+  **No migration.**
+- After the fix: regular user and investor get 403 with nothing written; owner and
+  ADMIN/MODERATOR/EXPERT get 201 with the same allocations (DIVIDEND 600 / OWNER_RESIDUAL
+  400, entitlements 360/240) as before. 36 passed, 0 failed.
+- Mutations: removing the owner check fails 9 checks; removing the expert check fails 18
+  checks.
+- The 403 body has `code: "VALIDATION_ERROR"`, like every other `ValidityError` 403 in this
+  service (errorHandler maps by class, not status).
+
+**Can ship to production early, on its own.** Two files, no migration, no schema or data
+change, no change for owners and experts. It does not depend on E0c, E1 or E2. It can be
+cherry-picked onto the production base before the rest of Phase 71. Only callers that
+are neither owner nor expert see a change (201 → 403), and those are exactly the calls
+that must stop. No other code calls `processIncomingRevenue` (searched: only
+`projectRoutes.js:89`).
+
+**Production check (read-only, run by the owner, not by Claude Code).** Past revenue
+recorded by someone who was neither owner nor expert. `project_revenue` has no caller
+column; the caller is in `financial_operations.user_id` (written by `claimOperation`,
+`reference_id` = `project_revenue.unique_reference`). Ids only:
+```sql
+SELECT pr.id AS revenue_id, pr.project_id, fo.user_id, pr.created_at
+FROM project_revenue pr
+JOIN projects p ON p.id = pr.project_id
+LEFT JOIN financial_operations fo
+       ON fo.reference_id = pr.unique_reference
+      AND fo.operation_type = 'PROJECT_REVENUE_PROCESS'
+LEFT JOIN users u ON u.id = fo.user_id
+WHERE fo.user_id IS DISTINCT FROM p.owner_user_id
+  AND COALESCE(u.role, '') NOT IN ('ADMIN','MODERATOR','EXPERT')
+ORDER BY pr.id;
+```
+- Syntax- and logic-tested **only on test DBs**:
+  - `phase71_financial_audit_e0d_head` returned exactly the 4 revenues the test made as a
+    non-owner (regular user, investor, direct service call, spoofed option).
+  - `phase71_financial_audit_e0d_after` returned 0 rows (owner and expert revenues
+    excluded).
+- **NOT run on production.**
+- Limits:
+  - `users.role` is the role **today**, not at the time of the call.
+  - Revenue recorded by other code paths without a `PROJECT_REVENUE_PROCESS` claim would
+    show with `user_id` NULL.
+- Any row found needs a manual decision on its `project_investor_payouts`, especially
+  those already `PAID`.
+
+**Still open (not changed in E0d):**
+- **The owner can still record fake revenue for their own project.** E0d limits *who*,
+  not *whether the cash exists*. An owner who is also an investor (or colludes with one)
+  can create entitlements with no money behind them. Tying revenue to a verified inflow
+  (escrow / controlled account credit, or expert approval of owner-entered revenue) is a
+  **future business decision**.
+- **Revenue is accepted for any project status**, including `COMPLETED`, `CANCELLED` and
+  `LIQUIDATED` (valid values of `projects_status_check`, migration 136). Only the waterfall
+  rule status (ACTIVE / FROZEN) is checked.
+- **`unique_reference` is optional.** Without it `:309` generates a random reference, so a
+  client retry records a second revenue and second entitlements (item 22). Making it
+  mandatory changes the API and is left for E0c / a decision.
+- Concurrency of `processIncomingRevenue` (unordered investor read, FK lock order) remains
+  in item 22 / E0c.
