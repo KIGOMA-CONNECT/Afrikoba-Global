@@ -1638,9 +1638,32 @@ async function payProjectDividends({ projectId, actorUserId, actorRole }) {
     throw new ValidityError('Huna mamlaka ya kufanya malipo ya mgawanyo.', 403);
   }
   const client = await pool.connect();
+  let committed = false; // errors after COMMIT are never mapped to 409
+  let stage = 'start';  // last step entered; logged when a payout is refused
   try {
     await client.query('BEGIN');
     const p = await getProject(projectId, client);
+
+    // Phase 71 / E0 (B2). Lock order, always the same:
+    //   1. this project's PENDING payout rows (payouts table only), ORDER BY
+    //      investor_user_id: a parallel payout waits here; once the first one
+    //      commits, the rows are re-evaluated, nothing is PENDING, and it
+    //      returns already_paid;
+    //   2. the investors' users rows, ORDER BY id (below, before the first
+    //      creditWallet): avoids the FOR KEY SHARE -> FOR UPDATE upgrade
+    //      deadlock inside creditWallet between payouts of different projects
+    //      that share investors.
+    // A lock wait over lock_timeout (55P03, src/config/db.js 3000 ms) or a
+    // deadlock (40P01) before COMMIT becomes 409 DIVIDEND_PAYOUT_IN_PROGRESS
+    // (catch block); every other database error propagates unchanged.
+    stage = 'payout-lock';
+    await client.query(
+      `SELECT id FROM project_investor_payouts
+       WHERE project_id = $1 AND status = 'PENDING'
+       ORDER BY investor_user_id, id
+       FOR UPDATE OF project_investor_payouts`,
+      [projectId]
+    );
 
     const pendingRes = await client.query(
       `SELECT investor_user_id, SUM(entitlement)::numeric AS total_entitlement, COUNT(*)::int AS row_count
@@ -1655,11 +1678,18 @@ async function payProjectDividends({ projectId, actorUserId, actorRole }) {
       return { paid: [], total: 0, already_paid: true };
     }
 
+    stage = 'users-lock';
+    await client.query(
+      'SELECT id FROM users WHERE id = ANY($1::int[]) ORDER BY id FOR UPDATE',
+      [pending.map((row) => row.investor_user_id)]
+    );
+
     const txnRef = `${generateReference('PROJECT_DIVIDEND_PAYOUT')}-${projectId}`;
     const paid = [];
     for (const row of pending) {
       const amt = Number(row.total_entitlement);
       if (amt <= 0) continue;
+      stage = 'credit';
       const res = await fin.creditWallet({
         client,
         userId: row.investor_user_id,
@@ -1671,15 +1701,25 @@ async function payProjectDividends({ projectId, actorUserId, actorRole }) {
         productRef: String(projectId),
       });
       if (res.dedup) continue;
-      await client.query(
+      stage = 'mark-paid';
+      const marked = await client.query(
         `UPDATE project_investor_payouts SET status = 'PAID', paid_at = NOW(), payout_setting_reference = $1
          WHERE project_id = $2 AND investor_user_id = $3 AND status = 'PENDING'`,
         [txnRef, projectId, row.investor_user_id]
       );
+      // Every PENDING row summed for this investor must flip to PAID, no more
+      // and no fewer; otherwise roll back the whole payout (credits included).
+      if (marked.rowCount !== Number(row.row_count)) {
+        const changed = new ValidityError(
+          'Hali ya malipo ya mgawanyo imebadilika wakati wa kulipa; hakuna kilicholipwa, jaribu tena.', 409);
+        changed.code = 'DIVIDEND_STATE_CHANGED';
+        throw changed;
+      }
       paid.push({ investor_user_id: row.investor_user_id, amount: amt });
     }
 
     await client.query('COMMIT');
+    committed = true;
 
     await logAudit({
       eventType: 'PROJECT_DIVIDEND_PAID', action: 'CREATE', entityType: 'PROJECT',
@@ -1708,6 +1748,17 @@ async function payProjectDividends({ projectId, actorUserId, actorRole }) {
     return { paid, total: round2(paid.reduce((s, x) => s + Number(x.amount), 0)), already_paid: paid.length === 0 };
   } catch (e) {
     await client.query('ROLLBACK').catch(() => {});
+    if (!committed && e && (e.code === '55P03' || e.code === '40P01')) {
+      require('../utils/logger').warn(
+        'PROJECT_DIVIDEND_PAYOUT',
+        `payout for project ${projectId} not completed at stage ${stage} (${e.code}): ${e.message}`,
+        { code: e.code, projectId, stage, table: e.table || null, routine: e.routine || null }
+      );
+      const busy = new ValidityError(
+        'Malipo hayakukamilika kwa sababu ya shughuli nyingine zinazoendelea. Hakuna kilicholipwa. Jaribu tena baadaye.', 409);
+      busy.code = 'DIVIDEND_PAYOUT_IN_PROGRESS';
+      throw busy;
+    }
     throw e;
   } finally {
     client.release();
