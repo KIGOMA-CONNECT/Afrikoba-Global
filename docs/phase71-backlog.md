@@ -679,6 +679,56 @@ Items raised during the Phase 71 (outbox hardening) review gates that are not ye
 - **`completeProject` and `processIncomingRevenue`: still NOT VERIFIED** (the code
   reading below). They were not changed in E0b.
 
+**Status after E0c (`completeProject` only; `processIncomingRevenue` still NOT VERIFIED):**
+- **Two parallel completions: no double payment, even on HEAD 8ac5c01.** The second
+  call credited every investor again inside its own transaction, and was rolled back
+  only by `UNIQUE (project_id)` on `project_settlements` (`23505`, matched by the
+  text `'duplicate key'`). That constraint acts last, after all credits.
+  - Real RED on HEAD:
+    - a lock wait over 3 s returned raw `55P03` (HTTP `500 {"code":"55P03"}`);
+    - two completions sharing an investor deadlocked (`40P01`, one completion lost);
+    - no 409 mapping.
+  - The constraint is confirmed in `pg_constraint`: `project_settlements_project_id_key`
+    = `UNIQUE (project_id)`.
+- **Money without a source: CONFIRMED on HEAD and FIXED in E0c (N1).** The escrow was
+  read with no lock and later set to 0 regardless of what was read.
+  - **With `executeDisbursement`:** the completion read escrow 1000, a disbursement of
+    300 to the owner committed meanwhile, and the completion still returned 1000 to
+    the investors. Total out **1300** from an escrow of 1000.
+  - **With any other escrow writer:** same pattern, 1000 returned while only 700 was
+    left.
+- **State overwritten: CONFIRMED on HEAD and FIXED.**
+  - A project CANCELLED by another transaction during the completion was set to
+    `COMPLETED` and its escrow paid out. The project UPDATE had no status condition.
+  - Escrow and project UPDATEs changing 0 rows (or the wrong row) went unnoticed.
+- **Fix (E0c):**
+  - Lock order: project → CONFIRMED investments `ORDER BY id` → users (investors and
+    owner) `ORDER BY id` → escrow, all `FOR UPDATE`, before the first `creditWallet`.
+  - Settlement and status are re-checked under the project lock.
+  - The escrow UPDATE requires the balance that was read, and its rowCount must be 1
+    (or 0 if there was no escrow row). The project UPDATE adds `AND status = 'ACTIVE'`
+    and requires rowCount 1. Otherwise: 409 `PROJECT_COMPLETE_STATE_CHANGED` and full
+    rollback.
+  - `55P03` / `40P01` before COMMIT become 409 `PROJECT_COMPLETE_IN_PROGRESS`, with
+    `logger.warn` (stage, table, routine).
+  - `23505` on `project_settlements_project_id_key` (by constraint name) stays only as
+    the last line of defence.
+  - References, arithmetic, outbox, `lock_timeout` unchanged. No migration.
+- **Why the owner is in the users lock:** `executeDisbursement` locks the owner's users
+  row before the escrow. Without the owner in the completion's lock set, a completion
+  started by the owner deadlocked with a disbursement: the completion held the escrow,
+  then its audit row needed `KEY SHARE` on the owner. The "no users lock" mutation
+  reproduces this as `40P01`.
+- **Remaining (pre-existing, not new, not fixed; `executeDisbursement` unchanged):**
+  - **Condition:** the disbursement **executor** is also an investor of the project,
+    and the owner is an investor with a lower user id.
+  - **Cycle:** `executeDisbursement` holds `KEY SHARE` on the executor (its claim)
+    while it waits for the owner. The completion holds the owner and waits for the
+    executor.
+  - **Result:** `40P01`. The completion side now maps it to 409 and rolls back fully.
+  - **Status on HEAD:** the same cycle exists on HEAD, with investment-id order instead
+    of user-id order.
+
 **Evidence** (`tests/project-refund-concurrency.phase71.test.js`, real gate before
 COMMIT, disposable DB). The code at HEAD f18b88d failed the suite with 70 passed and
 80 failed:
@@ -763,7 +813,9 @@ in E0, and no test for it is in the E0 commit.**
   - Side note: `createNotification(...)` at `:2670` runs inside the loop, before
     `COMMIT`. It uses its own connection, so an investor can be told "refunded" for a
     refund that is later rolled back.
-- **`completeProject`, may return the escrow twice.**
+- **`completeProject`, may return the escrow twice.** (E0b-era code reading, kept for
+  history. Verified and fixed in E0c; see "Status after E0c" above. Line numbers refer to
+  the code before E0c.)
   - `:1900` checks for an existing settlement with `pool.query`, outside the
     transaction, with no lock. `:1898` checks `status = 'ACTIVE'` on a read made
     outside the transaction.
@@ -790,8 +842,9 @@ in E0, and no test for it is in the E0 commit.**
   - Two parallel calls both see no settlement and the same escrow. Both credit it. The
     second's escrow UPDATE changes 0 rows unnoticed. ~~It commits a second settlement.~~
     (Corrected: the `UNIQUE (project_id)` above makes its settlement INSERT fail, so the
-    second transaction rolls back, as long as nothing swallows that error. Not yet shown
-    by a parallel test; see E0c.)
+    second transaction rolls back, as long as nothing swallows that error. Shown by the
+    E0c parallel test on HEAD 8ac5c01: the second call credited all investors in its
+    transaction, hit `23505 project_settlements_project_id_key` and was rolled back.)
 - **`processIncomingRevenue`, may record entitlements twice (paid twice later) and may
   deadlock.**
   - Replay is protected **only when the caller sends `unique_reference`**: `claimOperation`
@@ -1028,3 +1081,60 @@ ORDER BY pr.id;
   mandatory changes the API and is left for E0c / a decision.
 - Concurrency of `processIncomingRevenue` (unordered investor read, FK lock order) remains
   in item 22 / E0c.
+
+## 28. P1: completeProject and an investor with two CONFIRMED investments (not fixed)
+
+**Cause.**
+- **Two CONFIRMED investments per investor are possible.**
+  `project_investments` is unique on `(project_id, investor_user_id, status,
+  agreement_version)`, and `agreement_version` is a nullable INTEGER. NULLs are
+  distinct, so an investor who calls `invest` twice without `agreement_version` (or
+  with two different versions) holds **two CONFIRMED investments** in one project.
+- **The credit reference is per investor, not per investment.** `completeProject`
+  credits each investment with the reference `${settleRef}-u<userId>`, so both
+  investments of one investor share a reference. `creditWallet` claims it with shape
+  validation (`claimOperation(validateShape)`, `src/services/financialEngine.js`).
+
+**Effect** (measured by `tests/project-complete-concurrency.phase71.test.js`, section
+n; identical before and after E0c):
+- **Equal amounts: money lost silently.**
+  - Setup: x invests 150 + 150, y invests 300; escrow 600.
+  - The second claim has the same shape, so it returns `dedup` and the loop runs
+    `committed += amt; continue`.
+  - x is paid **150** (owns 300), y is paid 300, owner 0. **Total paid 450; 150 lost.**
+  - Yet the escrow is set to 0 / CLOSED, the project is COMPLETED, and the settlement
+    records `escrow_balance 600`, `returned_to_investors 450`.
+- **Different amounts: completion impossible.**
+  - Setup: x invests 100 + 200, y invests 300; escrow 600.
+  - The second claim has the same reference with a different amount:
+    `409 OPERATION_SHAPE_MISMATCH`, and the whole completion rolls back.
+  - Nothing is paid, the escrow keeps 600, and the project stays ACTIVE. It can never
+    be completed this way.
+- **The last investment absorbs rounding.** If the duplicate investment is the last one
+  in id order, the rounding remainder is lost or blocked with it.
+- **Correction to the E0c Part 1 report:** it described only the silent loss.
+
+**Not fixed in E0c** (by decision): the fix changes references (per investment, or
+grouping by investor before crediting) or arithmetic.
+- Decide one of:
+  - group CONFIRMED investments by investor before crediting (one credit per
+    investor, same reference format);
+  - reference per investment, e.g. `${settleRef}-i<investmentId>` (changes the
+    format; a reconciliation note is needed);
+  - forbid a second CONFIRMED investment per investor and project
+    (`invest` check plus a constraint, which is a migration).
+- **Same pattern, not verified:** `processIncomingRevenue`
+  (`payoutRef = ${ref}-div-<step>-u<investor>`, `ON CONFLICT (payout_reference) DO
+  NOTHING`) would record only the first investment's entitlement.
+
+**Production check** (read-only, run by the owner only, ids only). It was tested only
+on the test DB `phase71_financial_audit_e0c_after`, where it returned exactly the two
+section-n projects (13/46 and 14/49). **NOT run on production.**
+```sql
+SELECT project_id, investor_user_id, COUNT(*) AS confirmed_investments
+FROM project_investments
+WHERE status = 'CONFIRMED'
+GROUP BY project_id, investor_user_id
+HAVING COUNT(*) > 1
+ORDER BY project_id, investor_user_id;
+```

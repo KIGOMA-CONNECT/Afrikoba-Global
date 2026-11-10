@@ -1909,22 +1909,61 @@ async function completeProject({ projectId, actorUserId, actorRole }) {
   }
 
   const client = await pool.connect();
+  let txCommitted = false; // errors after COMMIT are never mapped to 409
+  let stage = 'start';   // last step entered; logged when a completion is refused
+  const stateChanged = () => {
+    const e = new ValidityError('Hali ya mradi imebadilika wakati wa kukamilisha; hakuna kilichofanyika, jaribu tena.', 409);
+    e.code = 'PROJECT_COMPLETE_STATE_CHANGED';
+    return e;
+  };
   try {
     await client.query('BEGIN');
+    // Phase 71 / E0c. Lock order, always (the same family as the E0b refunds;
+    // executeDisbursement takes the owner's users row before the escrow too):
+    //   1. the project row FOR UPDATE,
+    //   2. the project's CONFIRMED investments FOR UPDATE ORDER BY id,
+    //   3. the investors' and the owner's users rows ORDER BY id FOR UPDATE,
+    //   4. the controlled_project_accounts (escrow) row FOR UPDATE,
+    // all before the first creditWallet. A parallel completion waits at step 1
+    // and is answered under the lock; the escrow is read under its lock, so a
+    // disbursement or refund cannot take money from it between the read and the
+    // UPDATE. Taking the users rows first means creditWallet's KEY SHARE ->
+    // FOR UPDATE upgrade cannot deadlock against another credit of the same user.
+    stage = 'project-lock';
+    const locked = await client.query('SELECT id, status FROM projects WHERE id = $1 FOR UPDATE', [projectId]);
+    if (locked.rows.length === 0) throw new ValidityError('Mradi haupatikani.', 404);
+    const settled = await client.query('SELECT * FROM project_settlements WHERE project_id = $1', [projectId]);
+    if (settled.rows.length > 0) {
+      await client.query('ROLLBACK');
+      return { success: true, already_completed: true, settlement: settled.rows[0] };
+    }
+    if (locked.rows[0].status !== 'ACTIVE') {
+      throw new ValidityError(`Mradi lazima uwe ACTIVE kwa kukamilika. (sasa: ${locked.rows[0].status})`);
+    }
 
+    stage = 'investments-lock';
     const invRes = await client.query(
       `SELECT investor_user_id, amount, participation_pct
        FROM project_investments WHERE project_id = $1 AND status = 'CONFIRMED'
-       ORDER BY id ASC`,
+       ORDER BY id ASC
+       FOR UPDATE`,
       [projectId]
     );
     const investors = invRes.rows;
     const totalRaised = round2(investors.reduce((s, i) => s + Number(i.amount), 0));
 
+    stage = 'users-lock';
+    await client.query(
+      'SELECT id FROM users WHERE id = ANY($1::int[]) ORDER BY id FOR UPDATE',
+      [[...new Set([p.owner_user_id, ...investors.map((i) => i.investor_user_id)])]]
+    );
+
+    stage = 'escrow-lock';
     const escrowRes = await client.query(
-      `SELECT remaining_balance FROM controlled_project_accounts WHERE project_id = $1 AND status <> 'CLOSED' LIMIT 1`,
+      `SELECT remaining_balance FROM controlled_project_accounts WHERE project_id = $1 AND status <> 'CLOSED' LIMIT 1 FOR UPDATE`,
       [projectId]
     );
+    const escrowRaw = escrowRes.rows.length > 0 ? escrowRes.rows[0].remaining_balance : null;
     const escrow = escrowRes.rows.length > 0 ? Number(escrowRes.rows[0].remaining_balance || 0) : 0;
     // Control total so retained items never exceed escrow.
     const reserveRes = await client.query(
@@ -1938,6 +1977,7 @@ async function completeProject({ projectId, actorUserId, actorRole }) {
     let returnedToInvestors = 0;
     let ownerShare = 0;
 
+    stage = 'credit';
     if (escrow > 0 && investors.length > 0) {
       // Pro-rata return by participation (weight), last investor absorbs rounding.
       let committed = 0;
@@ -2011,13 +2051,18 @@ async function completeProject({ projectId, actorUserId, actorRole }) {
        FROM project_milestones WHERE project_id = $1`, [projectId]
     );
 
-    await client.query(
+    // The escrow row is locked and was read above: it must still hold exactly
+    // that balance, and exactly that row (or none, if there was none) closes.
+    stage = 'close-escrow';
+    const escUpd = await client.query(
       `UPDATE controlled_project_accounts
        SET remaining_balance = 0, status = 'CLOSED', updated_at = NOW()
-       WHERE project_id = $1 AND status <> 'CLOSED'`,
-      [projectId]
+       WHERE project_id = $1 AND status <> 'CLOSED' AND remaining_balance IS NOT DISTINCT FROM $2::numeric`,
+      [projectId, escrowRaw]
     );
+    if (escUpd.rowCount !== escrowRes.rows.length) throw stateChanged();
 
+    stage = 'settlement';
     await client.query(
       `INSERT INTO project_settlements
          (project_id, invested_total, escrow_balance, returned_to_investors, owner_received,
@@ -2034,11 +2079,13 @@ async function completeProject({ projectId, actorUserId, actorRole }) {
        }), actorUserId]
     );
 
+    stage = 'complete-project';
     const upd = await client.query(
       `UPDATE projects SET status = 'COMPLETED', completed_at = NOW(), updated_at = NOW()
-       WHERE id = $1 RETURNING *`,
+       WHERE id = $1 AND status = 'ACTIVE' RETURNING *`,
       [projectId]
     );
+    if (upd.rowCount !== 1) throw stateChanged();
 
     await logAudit({
       eventType: 'PROJECT_COMPLETED', action: 'COMPLETE', entityType: 'PROJECT',
@@ -2048,6 +2095,7 @@ async function completeProject({ projectId, actorUserId, actorRole }) {
     });
 
     await client.query('COMMIT');
+    txCommitted = true;
 
     // Transactional notifications after COMMIT.
     await createNotification(p.owner_user_id, {
@@ -2072,7 +2120,20 @@ async function completeProject({ projectId, actorUserId, actorRole }) {
     return { success: true, project: upd.rows[0], settlement: { invested_total: totalRaised, escrow_balance: escrow, returned_to_investors: returnedToInvestors, owner_received: ownerShare, reserve_released: reserveTotal } };
   } catch (e) {
     await client.query('ROLLBACK').catch(() => {});
-    if (String(e.message || '').toLowerCase().includes('duplicate key')) {
+    if (!txCommitted && e && (e.code === '55P03' || e.code === '40P01')) {
+      require('../utils/logger').warn(
+        'PROJECT_COMPLETE',
+        `completeProject for project ${projectId} not completed at stage ${stage} (${e.code}): ${e.message}`,
+        { code: e.code, projectId, path: 'completeProject', stage, table: e.table || null, routine: e.routine || null }
+      );
+      const busy = new ValidityError(
+        'Ukamilishaji wa mradi haukukamilika kwa sababu ya shughuli nyingine zinazoendelea. Hakuna kilichofanyika. Jaribu tena baadaye.', 409);
+      busy.code = 'PROJECT_COMPLETE_IN_PROGRESS';
+      throw busy;
+    }
+    // Last line of defence only (the settlement is checked under the project
+    // lock above): UNIQUE (project_id) on project_settlements, migration 134.
+    if (!txCommitted && e && e.code === '23505' && e.constraint === 'project_settlements_project_id_key') {
       const s = await pool.query('SELECT * FROM project_settlements WHERE project_id = $1', [projectId]);
       if (s.rows.length > 0) return { success: true, already_completed: true, settlement: s.rows[0] };
     }
