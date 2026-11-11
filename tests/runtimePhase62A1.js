@@ -1,10 +1,19 @@
 const assert = require('assert');
 
-process.env.DB_HOST = '127.0.0.1';
-process.env.DB_PORT = '5436';
-process.env.DB_NAME = 'afrikoba_regression';
-process.env.DB_USER = 'afrikoba_r';
-process.env.DB_PASSWORD = 'afrikoba_ro_strong';
+// R26 (#7): no credentials or DB target in source. The target is read from the
+// environment and must be a disposable Phase 71 database on 127.0.0.1.
+{
+  const DB_GUARD = /^phase71_financial_audit_[a-z0-9_]+$/;
+  for (const k of ['DB_HOST', 'DB_PORT', 'DB_NAME', 'DB_USER', 'DB_PASSWORD']) {
+    if (!process.env[k]) { console.error(`REFUSING: ${k} must be set in the environment.`); process.exit(2); }
+  }
+  if (!DB_GUARD.test(process.env.DB_NAME)) {
+    console.error(`REFUSING: DB_NAME must match ${DB_GUARD} (got '${process.env.DB_NAME}').`); process.exit(2);
+  }
+  if (process.env.DB_HOST !== '127.0.0.1') {
+    console.error('REFUSING: DB_HOST must be 127.0.0.1 (disposable local test database).'); process.exit(2);
+  }
+}
 
 const pg = require('pg');
 
