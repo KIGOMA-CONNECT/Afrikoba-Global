@@ -239,32 +239,75 @@ async function unfreezeWaterfallRule(userId, ruleId) {
 }
 
 /**
- * Called after a successful investment. Ensures the project's controlled
- * account balance projection tracks the ledger, and freezes the active
- * waterfall rule from the moment funding begins (Phase 0/1 locking).
+ * Phase 71 / OBS-7. Escrow projection and waterfall freeze for ONE investment,
+ * written INSIDE projectService.invest's transaction. The caller must already
+ * hold the projects row FOR UPDATE, have re-checked PUBLISHED/FUNDING, debited
+ * the wallet and incremented amount_raised. Lock order (the same as refunds and
+ * completion): projects -> controlled_project_accounts -> waterfall_allocation_rules.
+ * Any failure throws, so the whole investment rolls back.
  */
-async function onFundingReceived({ projectId, amount, firstFunding }) {
-  const p = await getProject(projectId);
-  const raised = Number(p.amount_raised) || 0;
+async function recordFundingInTransaction({ client, projectId, amount }) {
+  if (!client) throw new Error('recordFundingInTransaction: a transaction client is required');
+  const amt = Number(amount);
+  if (!Number.isFinite(amt) || amt <= 0) throw new ValidityError('Kiasi si sahihi.');
+  const p = (await client.query('SELECT * FROM projects WHERE id = $1', [projectId])).rows[0];
+  if (!p) throw new ValidityError('Mradi haupatikani.', 404);
+  const raisedAfter = Number(p.amount_raised) || 0;
+  const raisedBefore = round2(raisedAfter - amt);
   const target = Number(p.capital_required) || 0;
-  const cur = p.currency_code || 'TZS';
 
-  await pool.query(
-    `INSERT INTO controlled_project_accounts
-       (project_id, escrow_balance, remaining_balance, funding_target, currency, is_locked, status)
-     VALUES ($1, $2, $2, $3, $4, TRUE, 'ACTIVE')
-     ON CONFLICT (project_id) DO UPDATE
-       SET escrow_balance = $2, remaining_balance = $2, funding_target = $3,
-           updated_at = NOW()`,
-    [projectId, raised, target, cur]
+  const esc = await client.query(
+    'SELECT status FROM controlled_project_accounts WHERE project_id = $1 FOR UPDATE', [projectId]
   );
+  if (esc.rows.length === 0) {
+    // No escrow yet: open it with the verified total raised (read under the lock).
+    await client.query(
+      `INSERT INTO controlled_project_accounts
+         (project_id, escrow_balance, remaining_balance, funding_target, currency, is_locked, status)
+       VALUES ($1, $2, $2, $3, $4, TRUE, 'ACTIVE')`,
+      [projectId, raisedAfter, target, p.currency_code || 'TZS']
+    );
+  } else {
+    if (esc.rows[0].status === 'CLOSED') {
+      throw new ValidityError('Akaunti ya escrow ya mradi imefungwa; uwekezaji haukubaliki.', 409);
+    }
+    // First funding of a row that already exists (e.g. a legacy pre-created row
+    // holding no money): start from this investment. Otherwise add exactly it.
+    const u = await client.query(
+      `UPDATE controlled_project_accounts
+          SET escrow_balance    = CASE WHEN $3::numeric = 0 THEN $2::numeric ELSE escrow_balance + $2::numeric END,
+              remaining_balance = CASE WHEN $3::numeric = 0 THEN $2::numeric ELSE remaining_balance + $2::numeric END,
+              funding_target = $4, updated_at = NOW()
+        WHERE project_id = $1 AND status <> 'CLOSED'`,
+      [projectId, amt, raisedBefore, target]
+    );
+    if (u.rowCount !== 1) throw new ValidityError('Akaunti ya escrow ya mradi imebadilika; jaribu tena.', 409);
+  }
 
-  if (firstFunding) {
-    const rule = await getEffectiveRule(projectId);
-    if (rule && ['ACTIVE'].includes(rule.status)) {
-      await setWaterfallFrozen(rule.id, true);
+  // Freeze the approved rule from the moment funding begins (once per project).
+  const frozen = await client.query(
+    "SELECT 1 FROM waterfall_allocation_rules WHERE project_id = $1 AND status = 'FROZEN' LIMIT 1", [projectId]
+  );
+  if (frozen.rows.length === 0) {
+    const rule = await getEffectiveRule(projectId, client);
+    if (rule && rule.status === 'ACTIVE') {
+      const f = await client.query(
+        "UPDATE waterfall_allocation_rules SET status = 'FROZEN', updated_at = NOW() WHERE id = $1 AND status = 'ACTIVE'",
+        [rule.id]
+      );
+      if (f.rowCount !== 1) throw new ValidityError('Waterfall rule imebadilika wakati wa uwekezaji; jaribu tena.', 409);
     }
   }
+}
+
+/**
+ * Called AFTER a committed investment: owner notification only. It must not
+ * write escrow or waterfall state (Phase 71 / OBS-7): those are written inside
+ * the investment transaction by recordFundingInTransaction, so a late, repeated
+ * or failed call here can never restore or skip money state.
+ */
+async function onFundingReceived({ projectId, amount }) {
+  const p = await getProject(projectId);
 
   const owner = await pool.query('SELECT id FROM users WHERE id = $1', [p.owner_user_id]);
   if (owner.rows.length > 0) {
@@ -9585,6 +9628,7 @@ module.exports = {
   WATERFALL_STEPS,
   isExpert,
   onFundingReceived,
+  recordFundingInTransaction,
   listWaterfallRules,
   createInitialRules,
   proposeWaterfallRules,

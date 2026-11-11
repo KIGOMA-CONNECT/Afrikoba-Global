@@ -234,6 +234,10 @@ async function invest(userId, projectId, { amount, unique_reference, agreement_v
       [amt, projectId]
     );
 
+    // Phase 71 / OBS-7: escrow projection and waterfall freeze in THIS transaction,
+    // under the projects row lock taken above (never after COMMIT).
+    await projectFinance.recordFundingInTransaction({ client, projectId, amount: amt });
+
     await client.query(
       `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
        VALUES ($1, $2, $3, 0, $3, 'SUCCESS', 'PROJECT_INVEST', $4)`,
@@ -244,14 +248,9 @@ async function invest(userId, projectId, { amount, unique_reference, agreement_v
 
     await client.query('COMMIT');
 
-    // Phase 0: keep the controlled-account projection synced and freeze the
-    // waterfall rule from the moment funding begins. Best-effort after commit.
+    // Owner notification only (escrow and freeze were committed above).
     try {
-      const cur = await pool.query(
-        'SELECT amount_raised FROM projects WHERE id = $1', [projectId]
-      );
-      const firstFunding = Number(cur.rows[0]?.amount_raised || 0) <= amt;
-      await projectFinance.onFundingReceived({ projectId, amount: amt, firstFunding });
+      await projectFinance.onFundingReceived({ projectId, amount: amt });
     } catch (e) {
       console.error('PROJECT_FINANCE', 'onFundingReceived failed:', e.message);
     }
