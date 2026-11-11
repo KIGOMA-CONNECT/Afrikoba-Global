@@ -526,17 +526,29 @@ async function getBulkBatch(batchId, userId) {
 }
 
 async function processBulkBatch(batchId) {
-  const batch = await pool.query('SELECT * FROM bulk_payment_batches WHERE id = $1', [batchId]);
-  if (!batch.rows.length) throw Object.assign(new Error('Batch hajapatikana.'), { statusCode: 404 });
-  const b = batch.rows[0];
-  if (b.status === 'COMPLETED') return { message: 'Batch tayari imechakatwa.' };
-  const items = await pool.query('SELECT * FROM bulk_payment_items WHERE batch_id = $1 AND status = $2', [batchId, 'PENDING']);
   let success = 0, failed = 0;
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    // R25-05: claim the batch under a row lock inside the transaction and read
+    // its items after the lock. Previously the batch and items were read before
+    // BEGIN, so concurrent calls each processed every PENDING item (duplicate
+    // SUCCESS transactions; items paid by one run were flipped to FAILED by the
+    // others' OPERATION_SHAPE_MISMATCH).
+    const batch = await client.query('SELECT * FROM bulk_payment_batches WHERE id = $1 FOR UPDATE', [batchId]);
+    if (!batch.rows.length) throw Object.assign(new Error('Batch hajapatikana.'), { statusCode: 404 });
+    const b = batch.rows[0];
+    if (b.status === 'COMPLETED') {
+      await client.query('ROLLBACK');
+      return { message: 'Batch tayari imechakatwa.' };
+    }
+    const items = await client.query('SELECT * FROM bulk_payment_items WHERE batch_id = $1 AND status = $2 ORDER BY id FOR UPDATE', [batchId, 'PENDING']);
     await client.query("UPDATE bulk_payment_batches SET status = 'PROCESSING' WHERE id = $1", [batchId]);
     for (const item of items.rows) {
+      // R25-05: per-item savepoint. A failing item rolls back its own writes
+      // (SUCCESS transaction row, operation claim, balances) before it is
+      // marked FAILED; previously those writes stayed committed with the batch.
+      await client.query('SAVEPOINT bulk_item');
       try {
         const sender = await client.query('SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE', [b.user_id]);
         const recipient = await client.query('SELECT id, wallet_balance FROM users WHERE phone_number = $1', [item.recipient_phone.trim()]);
@@ -551,8 +563,11 @@ async function processBulkBatch(batchId) {
         );
         await fin.internalTransfer({ client, fromUserId: b.user_id, toUserId: recipient.rows[0].id, amount: Number(item.amount), reference: `NET:${item.id}:TR`, description: 'Bulk transfer', transactionId: txResult.rows[0].id });
         await client.query("UPDATE bulk_payment_items SET status = 'SUCCESS', transaction_id = (SELECT id FROM transactions WHERE reference_id = $1) WHERE id = $2", [reference, item.id]);
+        await client.query('RELEASE SAVEPOINT bulk_item');
         success++;
       } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT bulk_item');
+        await client.query('RELEASE SAVEPOINT bulk_item');
         await client.query('UPDATE bulk_payment_items SET status = $1, failure_reason = $2 WHERE id = $3', ['FAILED', e.message, item.id]);
         failed++;
       }
@@ -560,6 +575,9 @@ async function processBulkBatch(batchId) {
     await client.query("UPDATE bulk_payment_batches SET status = 'COMPLETED', completed_at = NOW() WHERE id = $1", [batchId]);
     await client.query('COMMIT');
     return { success, failed, message: 'Batch imechakatwa.' };
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
   } finally { client.release(); }
 }
 
