@@ -7,6 +7,7 @@ const express = require('express');
 const { authRequired, requireRoles } = require('../middleware/auth');
 const business = require('../services/businessService');
 const governanceService = require('../services/governanceService');
+const { fourEyesGate } = require('../middleware/fourEyesGate');
 
 const router = express.Router();
 
@@ -137,7 +138,8 @@ router.post('/admin/loans/:id/approve', authRequired, requireRoles('ADMIN'), asy
   try { res.json({ success: true, loan: await business.adminApproveLoan(req.params.id, req.user.id, req.body.note) }); }
   catch (e) { next(e); }
 });
-router.post('/admin/loans/:id/disburse', authRequired, requireRoles('ADMIN'), async (req, res, next) => {
+// R26-C1: when four-eyes is active for BUSINESS_LOAN_DISBURSE the direct route is refused (403 FOUR_EYES_REQUIRED).
+router.post('/admin/loans/:id/disburse', authRequired, requireRoles('ADMIN'), fourEyesGate('BUSINESS_LOAN_DISBURSE', (req) => ({ loanId: parseInt(req.params.id, 10) })), async (req, res, next) => {
   try {
     const loanId = parseInt(req.params.id, 10);
     const pool = require('../config/db');
