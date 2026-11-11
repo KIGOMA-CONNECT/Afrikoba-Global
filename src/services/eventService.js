@@ -798,6 +798,12 @@ async function executeEventWithdrawal({ withdrawalId, flowId = null, ...claimed 
     if (c.reference != null && String(c.reference) !== String(row.reference_id)) mismatched.push('reference');
     if (mismatched.length) throw refuse(`Taarifa za idhini hazilingani na uondoaji uliorekodiwa (${mismatched.join(', ')}).`);
     if (!reference) throw refuse('Uondoaji huu hauna kumbukumbu (reference).');
+    // R28 F2b: a cancelled (REJECTED) or FAILED withdrawal cannot be executed by its approval
+    // flow; refusing keeps the flow PENDING (it can still be rejected) instead of the dedup
+    // branch below reporting it APPROVED/executed with no money moved. PAID stays a dedup.
+    if (flowId != null && (row.status === 'REJECTED' || row.status === 'FAILED')) {
+      throw refuse('Uondoaji huu umeghairiwa au umeshindwa; idhini haiwezi kuutekeleza.');
+    }
 
     const updated = await client.query(
       `UPDATE event_withdrawals
