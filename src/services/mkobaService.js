@@ -480,11 +480,14 @@ async function approveTransfer(approverUserId, transferId, { approved, note }) {
   try {
     await client.query('BEGIN');
 
+    // R28 S3: lock the transfer row (as verifyTransfer does) so the VERIFIED check below and
+    // the COMPLETED/REJECTED claims (now conditional) cannot be raced by a second approval.
     const transferRes = await client.query(
       `SELECT ft.*, vm.role_in_group
        FROM vicoba_fund_transfers ft
        JOIN vicoba_members vm ON vm.group_id = ft.group_id AND vm.user_id = $1
-       WHERE ft.id = $2`,
+       WHERE ft.id = $2
+       FOR UPDATE OF ft`,
       [approverUserId, transferId]
     );
     if (transferRes.rows.length === 0) throw Object.assign(new Error('Uhamisho haupatikani.'), { statusCode: 404 });
@@ -499,10 +502,11 @@ async function approveTransfer(approverUserId, transferId, { approved, note }) {
     }
 
     if (!approved) {
-      await client.query(
-        "UPDATE vicoba_fund_transfers SET status = 'REJECTED', approved_by = $1, approver_note = $2, approved_at = NOW() WHERE id = $3",
+      const rejected = await client.query(
+        "UPDATE vicoba_fund_transfers SET status = 'REJECTED', approved_by = $1, approver_note = $2, approved_at = NOW() WHERE id = $3 AND status = 'VERIFIED'",
         [approverUserId, note || 'Imekataliwa', transferId]
       );
+      if (rejected.rowCount !== 1) throw Object.assign(new Error('Uhamisho hauko katika hali sahihi ya kuthibitishwa.'), { statusCode: 400 });
       await client.query('COMMIT');
       return { success: true, message: 'Uhamisho umekataliwa na Mwenyekiti.' };
     }
@@ -554,10 +558,11 @@ async function approveTransfer(approverUserId, transferId, { approved, note }) {
       });
     }
 
-    await client.query(
-      "UPDATE vicoba_fund_transfers SET status = 'COMPLETED', approved_by = $1, approver_note = $2, approved_at = NOW(), completed_at = NOW() WHERE id = $3",
+    const completed = await client.query(
+      "UPDATE vicoba_fund_transfers SET status = 'COMPLETED', approved_by = $1, approver_note = $2, approved_at = NOW(), completed_at = NOW() WHERE id = $3 AND status = 'VERIFIED'",
       [approverUserId, note || null, transferId]
     );
+    if (completed.rowCount !== 1) throw Object.assign(new Error('Uhamisho hauko katika hali sahihi ya kuthibitishwa.'), { statusCode: 400 });
 
     await client.query('COMMIT');
     await logAudit({ eventType: 'VICOBA_TRANSFER', action: 'APPROVE', entityType: 'VICOBA_FUND_TRANSFER', userId: approverUserId, entityId: transferId, referenceId: transfer.reference_id, amount: transfer.amount, afterData: { group_id: transfer.group_id, recipient: transfer.recipient_user_id } });
