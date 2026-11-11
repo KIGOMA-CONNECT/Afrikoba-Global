@@ -921,7 +921,11 @@ This is a **side effect** of the E0b lock order, not a fix that was tested. It n
 own parallel test (`invest` held before COMMIT vs REFUND, and the reverse) before it is
 counted as fixed.
 
-## 25. Refund notifications sent before COMMIT, on their own connection (not fixed)
+*Update (remediation OBS-7):* `tests/project-escrow-funding.phase71.test.js` sections 1/6
+(investment committed, then REFUND), 1b (REFUND first, then invest is refused) and 1c
+(true race on 5 projects) now cover this. They pass on the fixed code.
+
+## 25. Refund notifications sent before COMMIT, on their own connection (fixed, remediation R2)
 
 `forceCloseFunding` calls `createNotification(...).catch(() => {})` **inside the refund
 loop, before `COMMIT`** (`src/services/projectFinanceService.js`, after the
@@ -942,6 +946,13 @@ so each notification runs in its own short transaction on another pool connectio
   (many investors, over 3 s) loses the notifications of the early investors.
 - **To do:** send these notifications after `COMMIT`, as `refundInvestment` already
   does, or move them to the outbox as in Step C.
+
+*Update (remediation R2):* the notifications are collected in the loop and sent only after
+`COMMIT` and `client.release()`, as `refundInvestment` does. A rolled-back refund sends
+none, and a refund held for 4.5 s before COMMIT no longer loses them. Delivery is still
+best-effort after COMMIT (a crash between COMMIT and the send loses the notification);
+the outbox route remains the stronger option. Tests:
+`tests/project-residuals-f1-f4-n25.phase71.test.js` sections #25a–d.
 
 ## 26. refundInvestment audit was lost on every refund since it was introduced (fixed in E0b; behaviour change)
 
@@ -1138,3 +1149,238 @@ GROUP BY project_id, investor_user_id
 HAVING COUNT(*) > 1
 ORDER BY project_id, investor_user_id;
 ```
+
+## 29. P0 (SoD): VICOBA social fund self-approval and non-member requests (fixed, remediation OBS-5)
+
+**Problem (HEAD f419969).**
+- `approveSocialFundDisbursement` (`src/services/vicobaService.js`) checked only that
+  the approver is MWENYEKITI or MWEKAHAZINA. It never checked that the approver is
+  not the requester.
+- An officer could request a social fund disbursement and approve it themselves. One
+  person moved group funds into their own wallet (`fin.groupToWallet` to
+  `requester_id`, transaction `SUCCESS`, request `DISBURSED`).
+- Both callers were affected: `POST /vicoba/social-fund-requests/:requestId/approve`
+  and the four-eyes executor `VICOBA_SOCIAL_FUND_DISBURSE`, whose `actorId` defaults
+  to the payload's officer.
+- `requestSocialFundDisbursement` never checked membership. Any VICOBA subscriber
+  could file a request against any group's fund.
+- AFK-INST-16 §1 item 4 requires maker-checker with "no self-approval".
+
+**Fix (service level, covers both callers; no migration):**
+- request: 403 `Hauko kwenye kikundi hiki.` unless a `vicoba_members` row exists for
+  (group, user). This runs before the INSERT.
+- approve: 403 `Huwezi kuidhinisha ombi lako mwenyewe.` when
+  `requester_id === actorUserId`. This runs after the row lock and role check, before
+  any write.
+- Amounts, references, journal (DR VICOBA_GROUP / CR CUSTOMER_WALLET) and SMS are
+  unchanged.
+
+**Tests** (`tests/vicoba-socialfund-sod.phase71.test.js`, disposable
+`phase71_financial_audit_*` DBs, 127.0.0.1:55471 only, axios and SMS stubbed):
+- before, on HEAD f419969: 22 passed / 16 failed. Treasurer and chair each
+  self-approved 20000 into their own wallet. A non-member's request was stored.
+- after: 38 passed / 0 failed:
+  - self-approval returns 403, with no transaction, journal, claim, wallet, fund or
+    SMS change;
+  - a different officer disburses once;
+  - a duplicate approval returns 400;
+  - two concurrent approvals produce one disbursement;
+  - an injected failure after `groupToWallet` rolls back fully.
+- mutations: self-approval guard removed gives 26/12; membership guard removed gives
+  36/2. Each was restored and the file SHA is identical.
+
+**Still open:**
+- the direct route still bypasses four-eyes (decision D-25 / D-32);
+- a group whose only officer is the requester can no longer pay that request, which
+  is intended by the no-self-approval rule;
+- historical rows are not changed.
+
+**Production check** (read-only, run by the owner only, ids only). It was tested only
+on the test DB `phase71_financial_audit_r1_inc1_before`, where it returned exactly the
+three defect rows created by the before-run (1 non-member, 2 self-approved).
+**NOT run on production.**
+```sql
+SELECT r.id AS request_id, r.group_id, r.requester_id, r.approved_by, r.status,
+       (r.approved_by IS NOT NULL AND r.approved_by = r.requester_id) AS self_approved,
+       NOT EXISTS (SELECT 1 FROM vicoba_members m
+                    WHERE m.group_id = r.group_id AND m.user_id = r.requester_id) AS requester_not_member
+FROM vicoba_social_fund_requests r
+WHERE (r.approved_by IS NOT NULL AND r.approved_by = r.requester_id)
+   OR NOT EXISTS (SELECT 1 FROM vicoba_members m
+                   WHERE m.group_id = r.group_id AND m.user_id = r.requester_id)
+ORDER BY r.id;
+```
+
+## 30. decompose: any user, any project id, escrow row from a request amount (fixed, remediation OBS-6 / OBS-1a)
+
+**Problem (HEAD f419969).**
+- `POST /social/projects/:id/decompose` (`src/routes/socialFundRoutes.js`) was behind
+  `authRequired` only. `decomposeProject`
+  (`src/services/projectIntelligenceService.js`) ran for any authenticated user and
+  for any project id, including ids that do not exist.
+- It inserted the 4-phase template and also
+  `controlled_project_accounts (project_id, escrow_balance) VALUES (id, total_budget)`
+  with `ON CONFLICT DO NOTHING`.
+- On the test DB, a stranger created an escrow row of 999999 for an unfunded project,
+  and an admin created a row of 5000 for a non-existent project.
+- Budgets of 0, negative values, `abc` and `NaN` were stored as template costs.
+  `Infinity` returned a 500 error.
+- Money paths read `remaining_balance` (left at 0), and the first funding overwrites
+  both columns, so no value creation was found at source level. The row was still a
+  fabricated escrow record.
+
+**Fix (no migration):**
+- The service checks that the project exists (404) and that the caller is the owner or
+  ADMIN/MODERATOR/EXPERT (403). This is the E0d rule. The check runs before BEGIN. The
+  route passes `req.user.id` and `req.user.role`.
+- `total_budget` must be a finite positive number (400).
+- decompose no longer writes `controlled_project_accounts`. Escrow comes only from
+  `invest` -> `onFundingReceived`.
+- The template split (10/30/35/25) is unchanged.
+
+**Tests** (`tests/project-decompose-escrow.phase71.test.js`):
+- before: 22 passed / 15 failed;
+- after: 37 passed / 0 failed;
+- mutations: guard removed gives 32/5; escrow insert restored gives 35/2; budget check
+  removed gives 31/6.
+
+**Still open:**
+- the calculation endpoint `POST /social/projects/:id/waterfall` (OBS-1b/1c, next
+  increment);
+- item 31.
+
+## 31. P1: escrow projection synced after COMMIT, best-effort, from an unlocked read (fixed, remediation OBS-7)
+
+`projectService.invest` commits, then calls `projectFinance.onFundingReceived`. That
+function runs outside any transaction: it reads `amount_raised` without a lock, upserts
+`controlled_project_accounts` with `escrow_balance = remaining_balance = amount_raised`
+as an absolute value, and freezes the waterfall rule on first funding. Errors are only
+logged.
+
+Reproduced on test DB `phase71_financial_audit_r1_obs7c` (probe in the remediation
+scratchpad, not a repo test):
+- **P1, stale overwrite:**
+  1. A invests 300.
+  2. B invests 200 and commits; B's sync reads 500 and is paused.
+  3. `forceCloseFunding REFUND` refunds both investors (wallets back to 1000/1000),
+     sets the project to CANCELLED and the escrow to 0/CLOSED.
+  4. B's sync resumes and sets `remaining_balance = 500` on the CLOSED escrow of the
+     cancelled project.
+
+  `getPlatformPfeBook` sums `remaining_balance` without a status filter, so escrow held
+  is overstated. No payout path from this row was found: `requestDisbursement` needs a
+  CONFIRMED investment, and `completeProject` skips CLOSED rows. This was not traced
+  exhaustively.
+- **P2, sync failure:** an injected error in the upsert left `invest` returning
+  success with `amount_raised = 400`, **no escrow row**, and the waterfall rule still
+  **ACTIVE** (not FROZEN) after first funding.
+- **Related (not verified as intended):** `approveWaterfallRule` supersedes every
+  non-SUPERSEDED rule, including FROZEN ones, although its comment says "non-frozen".
+  An owner proposal approved by an expert therefore replaces a frozen rule.
+
+**Fix (remediation OBS-7, authorized by the owner; not committed at the time of writing):**
+- New `projectFinanceService.recordFundingInTransaction({ client, projectId, amount })`,
+  called by `invest` **inside** its transaction, after `UPDATE projects SET amount_raised`
+  and therefore under the `projects` row lock that `invest`, REFUND (E0b) and
+  `completeProject` (E0c) all take first.
+  - It locks the escrow row (`FOR UPDATE`). If there is no row, it inserts one with
+    `amount_raised`. If the row is `CLOSED`, it refuses with 409. Otherwise it applies an
+    **increment** (the first funding of a pre-created row sets the amount), guarded by
+    `WHERE status <> 'CLOSED'` and `rowCount = 1`.
+  - Freeze: while the project has no FROZEN rule, the effective ACTIVE rule becomes
+    FROZEN (`WHERE status = 'ACTIVE'`, `rowCount = 1`).
+  - Any error rolls back the whole investment: wallet, investment, journal and
+    `amount_raised`.
+- `onFundingReceived` now only sends the owner notification after COMMIT. It no longer
+  writes escrow or rule status, so no stale post-commit write can restore escrow.
+- Tests: `tests/project-escrow-funding.phase71.test.js` (48 assertions). They cover
+  investment vs REFUND in both orders and a true race, a callback after closure, an
+  escrow or freeze failure, duplicate callbacks and references, concurrent investors with
+  full reconciliation (raised = CONFIRMED = ledger = escrow remaining = escrow gross),
+  an expiry refund followed by a delayed sync, failure injection at 11 write boundaries,
+  and a CLOSED escrow guard. Before the fix: 31 passed, 17 failed. After: 48 passed,
+  0 failed.
+- Behaviour change: the freeze now happens on any investment while no FROZEN rule exists
+  (before, only on the first funding, and only when the sync succeeded).
+- Not changed: `forceCloseFunding` and `refundInvestment` still use `GREATEST(..., 0)`,
+  which can hide drift. Escrow rows that drifted before this fix are not repaired; an
+  owner-only read-only check is in the remediation evidence (05).
+
+## 32. P1: a FROZEN waterfall rule could be superseded, unfrozen or bypassed (fixed, remediation OBS-7c)
+
+Owner decision: a FROZEN waterfall rule is immutable. Expert approval alone cannot change
+it. An approved change creates a new version with an effective date, an approval record
+and a full audit trail. Funded investments keep their original allocation terms.
+
+Before the fix (test DB `phase71_financial_audit_r1_obs7c_before`, 12 passed, 15 failed):
+- `approveWaterfallRule` superseded every non-SUPERSEDED rule, including FROZEN ones.
+- Revenue after an amendment was allocated with the new version (DIVIDEND 500 instead
+  of 600 on 1000).
+- Unfreezing a FROZEN rule returned 200.
+- "Freezing" a PROPOSED rule activated it without approval.
+
+Fix (`src/services/projectFinanceService.js`):
+- The supersede step excludes FROZEN rows. Activation only moves DRAFT or PROPOSED to
+  ACTIVE (`rowCount = 1`, else 409).
+- The approval audit is written inside the same transaction. It records project,
+  previous rule, version and status, the new version, the effective date, the proposer
+  and time, and the approver and time.
+- `getAllocationRule` is used by `processIncomingRevenue`. While a FROZEN rule exists
+  with a lower version than the ACTIVE amendment, revenue uses the FROZEN terms.
+- `setWaterfallFrozen` only allows ACTIVE to FROZEN.
+- `unfreezeWaterfallRule` is refused with 409. The refusal is audited
+  (`WATERFALL_RULES_UNFREEZE_REFUSED`).
+- No new roles, percentages or migrations.
+
+Tests: `tests/project-waterfall-frozen.phase71.test.js` (27 assertions, 27 passed,
+0 failed). Mutation runs (supersede, alloc, unfreeze, freezeany, audit) all fail it.
+
+**Open (BLOCKED, owner decision required):** cohort policy, meaning which terms apply to
+investments made **after** an approved amendment. The allocation engine is project-level,
+with no per-investment binding, so today all revenue stays on the FROZEN version. There is
+also no DB-level trigger for immutability; it is enforced in the service only.
+
+## 33. P0: money left a project's escrow without escrow controls (fixed, remediation F2 + F7; owner decisions F2 and "F2 + F7")
+
+Found in the independent review (06) and while tracing F2 (07). All of it was already
+present at HEAD. Reproduced on disposable test DBs.
+
+| Path | Before | After |
+|---|---|---|
+| Disbursement (`requestDisbursement`, `executeDisbursement`) | No project status check. A disbursement while FUNDING followed by a refund paid out 1600 against 1000 paid in | Only for an ACTIVE project. `executeDisbursement` locks `projects FOR UPDATE` first (the same lock order as invest, refunds and completion) and re-checks. 409 `DISBURSEMENT_PROJECT_NOT_ACTIVE` |
+| Refund (`refundInvestment`, `forceCloseFunding` REFUND) | `GREATEST(x - amt, 0)` floored a shortfall to 0 and hid it | New `applyRefundToEscrow` makes a guarded decrement of `amount_raised` and the escrow `remaining_balance` (`>= amt`, `rowCount = 1`). Otherwise 409 `FUNDING_REFUND_ESCROW_INSUFFICIENT` and the whole refund rolls back (all-or-nothing for forceClose) |
+| Payroll (`recordPayroll`) | Any project owner (any status, even DRAFT and unfunded) paid anyone from `PROJECT_INVESTMENT_ACCOUNT`, the investor capital shared by all projects. No escrow decrement | Funding source verified as investor capital, so escrow controls apply: ACTIVE only; paid only from this project's escrow (guarded decrement, `status <> 'CLOSED'`); lock order projects, then payee user, then escrow; audit inside the transaction. 409 `PAYROLL_PROJECT_NOT_ACTIVE` / `PAYROLL_ESCROW_INSUFFICIENT` |
+| Profit distribution (`computeDistribution`, legacy) | Paid investors from investor capital using a request-supplied `gross_profit`, with no link to recorded revenue (5000 paid on a 1000 investment) | Refused, 409 `PROJECT_DISTRIBUTION_UNSUPPORTED`. Nothing is written. Defining distributable profit is an owner decision |
+
+Not changed:
+- `disbursed_total` still counts only milestone disbursements. Payroll is reconciled from `project_payroll`.
+- No approval workflow was added to payroll (owner-only, as before).
+- `web-dashboard/src/pages/Projects.jsx` still calls `/distribution`. It now receives 409; frontend changes were not authorized.
+
+Tests: `tests/project-f2-f7-escrow-controls.phase71.test.js`.
+
+## 34. P0 (OPEN, not fixed): waterfall dividends are paid in real wallet money from revenue that is only declared (F8)
+
+`processIncomingRevenue` and `recordRevenue` post `DR PROJECT_REVENUE_RECEIVABLE / CR PROJECT_REVENUE_ACCOUNT`. No code
+ever credits the receivable (it is never collected). The waterfall then allocates into
+`PROJECT_DIVIDEND_ACCOUNT`, and `payProjectDividends` credits investor wallets from it.
+
+Reproduced on a disposable DB: revenue of 10000 was declared by the owner, 6000 was paid to the
+investor's wallet, and the owner paid nothing; the receivable stayed at 10000.
+
+Who may declare revenue is limited by E0d (owner or ADMIN/MODERATOR/EXPERT). Whether revenue must be
+collected (or evidenced) before dividends are paid is an OWNER DECISION. Production exposure is NOT VERIFIED.
+
+## 35. Open review findings from remediation review 06 (F1 and F4 fixed in R2; F3 open)
+
+- **F1:** `invest`'s PROJECT_INVEST audit row is always lost. The pool insert waits on the investor's users row
+  lock until `lock_timeout` (3 s), then the error is swallowed. Suggested correction: pass `client`, as E0b did.
+  *Fixed (R2):* `client` is passed. Behaviour change: an audit failure now rolls the investment back. Side effect
+  found while testing: before the fix every invest held the project row lock for about 3 s, so 4 of 6 parallel
+  invests on one project were refused with a lock timeout (rolled back cleanly). After the fix all 6 commit.
+- **F3:** a pending proposal at first funding skips the freeze, and a later approval replaces the funded terms.
+- **F4:** `getInvestorStatement` shows the latest rule version, not the version used for allocation.
+  *Fixed (R2):* the statement shows `getAllocationRule` (the FROZEN terms after an amendment, OBS-7c) and only when
+  it is ACTIVE or FROZEN; an unapproved draft or proposal is no longer shown as the investor's terms (empty
+  `waterfall_config` instead). While a proposal is pending above a FROZEN rule, the statement is empty and
+  revenue is refused: that follows from F3 and the amendment policy, which is an owner decision.
