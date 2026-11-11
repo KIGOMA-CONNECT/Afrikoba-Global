@@ -44,23 +44,30 @@ async function listApprovalFlows(status = null, limit = 100) {
 async function decideApprovalFlow(flowId, approverId, action, comment) {
   if (!['APPROVE', 'REJECT'].includes(action)) throw new Error('Hatua si sahihi.');
 
-  const flow = await pool.query(`SELECT * FROM approval_flows WHERE id = $1`, [flowId]);
-  if (flow.rows.length === 0) throw new Error('Ombi la idhini halipatikani.');
-  const f = flow.rows[0];
-  if (f.status !== 'PENDING') throw new Error('Ombi hili tayari limeamuliwa.');
-  if (f.requester_id === approverId) throw new Error('Huwezi kuidhinisha ombi lako mwenyewe (four-eyes).');
-
+  // R26-#3: the PENDING check, the decision record and the status claim happen
+  // under a row lock in one transaction, and the claim is conditional. Only the
+  // approver whose claim succeeds runs the executor; every concurrent or later
+  // approver gets the same 409. (Previously an unlocked read + unconditional
+  // UPDATE let concurrent approvers each run the executor.)
+  const alreadyDecided = () => Object.assign(new Error('Ombi hili tayari limeamuliwa.'), { statusCode: 409, code: 'APPROVAL_ALREADY_DECIDED' });
+  let f;
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    const flow = await client.query(`SELECT * FROM approval_flows WHERE id = $1 FOR UPDATE`, [flowId]);
+    if (flow.rows.length === 0) throw new Error('Ombi la idhini halipatikani.');
+    f = flow.rows[0];
+    if (f.status !== 'PENDING') throw alreadyDecided();
+    if (f.requester_id === approverId) throw new Error('Huwezi kuidhinisha ombi lako mwenyewe (four-eyes).');
     await client.query(
       `INSERT INTO approval_actions (flow_id, approver_id, action, comment) VALUES ($1, $2, $3, $4)`,
       [flowId, approverId, action, comment || null]
     );
-    await client.query(
-      `UPDATE approval_flows SET status = $1, decided_at = NOW() WHERE id = $2`,
+    const claimed = await client.query(
+      `UPDATE approval_flows SET status = $1, decided_at = NOW() WHERE id = $2 AND status = 'PENDING'`,
       [action === 'APPROVE' ? 'APPROVED' : 'REJECTED', flowId]
     );
+    if (claimed.rowCount !== 1) throw alreadyDecided();
     await client.query('COMMIT');
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {});
@@ -80,7 +87,7 @@ async function decideApprovalFlow(flowId, approverId, action, comment) {
         execResult = await executor(f.data || {}, approverId, f);
       } catch (execError) {
         await pool.query(
-          `UPDATE approval_flows SET status = 'PENDING', decided_at = NULL WHERE id = $1`,
+          `UPDATE approval_flows SET status = 'PENDING', decided_at = NULL WHERE id = $1 AND status = 'APPROVED'`,
           [flowId]
         );
         const err = execError;
