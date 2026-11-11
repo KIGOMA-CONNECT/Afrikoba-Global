@@ -753,24 +753,56 @@ async function requestEventWithdrawal(actorId, eventId, { amount, mode, toUserId
   };
 }
 
-async function executeEventWithdrawal({ eventId, withdrawalId, mode, amount, userId, reference }) {
+// R27 IV-A-6: the event, amount, recipient, mode and reference all come from the
+// event_withdrawals row locked inside this transaction, never from the caller.
+// eventId/mode/amount/userId/reference are only claims (an approval flow's data, or
+// the direct path's own values) and must match that row. A row bound to an approval
+// flow can only be executed by that flow (flowId null = direct path, allowed only for
+// a row with no bound flow). A refusal here is a 409 that leaves the withdrawal
+// untouched (it is not marked FAILED). The call signature is unchanged for the
+// direct path in requestEventWithdrawal.
+async function executeEventWithdrawal({ withdrawalId, flowId = null, ...claimed }) {
+  const refuse = (message) => Object.assign(new Error(message), {
+    statusCode: 409, code: 'EVENT_WITHDRAWAL_FLOW_MISMATCH', keepWithdrawalState: true,
+  });
   const client = await pool.connect();
+  let reference = null;
+  let eventId = null;
   try {
     await client.query('BEGIN');
+    const locked = await client.query('SELECT * FROM event_withdrawals WHERE id = $1 FOR UPDATE', [withdrawalId]);
+    if (locked.rows.length === 0) throw refuse('Uondoaji huu haupatikani.');
+    const row = locked.rows[0];
+    reference = row.reference_id;
+    eventId = row.event_id;
+    const boundFlow = row.approval_flow_id == null ? null : Number(row.approval_flow_id);
+    if (flowId == null ? boundFlow != null : (boundFlow != null && boundFlow !== Number(flowId))) {
+      throw refuse('Idhini hii haihusiani na uondoaji huu.');
+    }
+    const c = claimed || {};
+    const mismatched = [];
+    if (c.eventId != null && Number(c.eventId) !== Number(row.event_id)) mismatched.push('eventId');
+    if (c.amount != null && Number(c.amount) !== Number(row.amount)) mismatched.push('amount');
+    if (c.userId != null && Number(c.userId) !== Number(row.user_id)) mismatched.push('userId');
+    if (c.mode != null && String(c.mode).toUpperCase() !== String(row.mode).toUpperCase()) mismatched.push('mode');
+    if (c.reference != null && String(c.reference) !== String(row.reference_id)) mismatched.push('reference');
+    if (mismatched.length) throw refuse(`Taarifa za idhini hazilingani na uondoaji uliorekodiwa (${mismatched.join(', ')}).`);
+    if (!reference) throw refuse('Uondoaji huu hauna kumbukumbu (reference).');
+
     const updated = await client.query(
       `UPDATE event_withdrawals
-          SET status = 'PAID', paid_at = NOW(), reference_id = $3, updated_at = NOW()
-        WHERE id = $1 AND event_id = $2 AND status IN ('PENDING','APPROVED')
+          SET status = 'PAID', paid_at = NOW(), updated_at = NOW()
+        WHERE id = $1 AND status IN ('PENDING','APPROVED')
         RETURNING *`,
-      [withdrawalId, eventId, reference]
+      [withdrawalId]
     );
-    if (updated.rows.length === 0) {
+    if (updated.rows.length !== 1) {
       await client.query('ROLLBACK');
       return { dedup: true, reference };
     }
-    const modeUp = String(mode || updated.rows[0].mode).toUpperCase();
-    const amountN = Number(amount != null ? amount : updated.rows[0].amount);
-    const toUserId = userId != null ? Number(userId) : updated.rows[0].user_id;
+    const modeUp = String(row.mode).toUpperCase();
+    const amountN = Number(row.amount);
+    const toUserId = Number(row.user_id);
     const col = modeUp === 'SAVINGS' ? 'savings_amount' : 'collected_amount';
     const moved = await fin.groupToWallet({
       client,
@@ -795,10 +827,15 @@ async function executeEventWithdrawal({ eventId, withdrawalId, mode, amount, use
     return { success: true, withdrawalId, reference, amount: amountN, paidTo: toUserId };
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {});
-    await pool.query(
-      `UPDATE event_withdrawals SET status = 'FAILED', updated_at = NOW() WHERE id = $1`,
-      [withdrawalId]
-    ).catch(() => {});
+    if (!error.keepWithdrawalState) {
+      // R27: conditional, so a failed/timed-out concurrent attempt can never turn a
+      // row another attempt already PAID into FAILED.
+      await pool.query(
+        `UPDATE event_withdrawals SET status = 'FAILED', updated_at = NOW()
+          WHERE id = $1 AND status IN ('PENDING','APPROVED')`,
+        [withdrawalId]
+      ).catch(() => {});
+    }
     logger.error('EVENT_WITHDRAWAL_FAIL', error.message, { eventId, withdrawalId, reference });
     throw error;
   } finally {

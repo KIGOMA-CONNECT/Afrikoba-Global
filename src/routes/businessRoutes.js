@@ -12,8 +12,21 @@ const { fourEyesGate, recordDirectExecution } = require('../middleware/fourEyesG
 const router = express.Router();
 
 // Register executor for four-eyes loan disbursement.
-governanceService.registerExecutor('BUSINESS_LOAN_DISBURSE', async (payload) => {
-  return await business.adminDisburseLoan(payload.loanId, payload.requesterId);
+// R27 IV-A-7: the acting admin is the flow's requester (approval_flows.requester_id,
+// set from req.user when the flow was created), never data.requesterId; the loan is
+// flow.ref_id, and data.loanId may only repeat it.
+governanceService.registerExecutor('BUSINESS_LOAN_DISBURSE', async (payload, approverId, flow) => {
+  const refuse = (message) => Object.assign(new Error(message), { statusCode: 409, code: 'APPROVAL_FLOW_TARGET_MISMATCH' });
+  if (!flow || !flow.requester_id) throw refuse('Idhini haina mwombaji.');
+  const claimed = payload && payload.loanId != null ? Number(payload.loanId) : null;
+  let loanId = claimed;
+  if (flow.ref_id != null) {
+    if (flow.ref_type !== 'BUSINESS_LOAN') throw refuse('Idhini hii si ya mkopo wa biashara.');
+    if (claimed != null && claimed !== Number(flow.ref_id)) throw refuse('Idhini hii haihusiani na mkopo huu.');
+    loanId = Number(flow.ref_id);
+  }
+  if (!Number.isInteger(loanId) || loanId <= 0) throw refuse('Mkopo wa idhini hii haujulikani.');
+  return await business.adminDisburseLoan(loanId, Number(flow.requester_id));
 });
 
 // Helper for high-value threshold
