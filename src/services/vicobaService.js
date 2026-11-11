@@ -935,6 +935,14 @@ async function requestSocialFundDisbursement(groupId, userId, { reasonType, reas
   if (!Number.isFinite(amount) || amount <= 0) {
     throw Object.assign(new Error('Kiasi cha ombi lazima kiwe chanya na halali.'), { statusCode: 400 });
   }
+  // Only a member of the group may request from its social fund.
+  const memberRes = await pool.query(
+    'SELECT 1 FROM vicoba_members WHERE group_id = $1 AND user_id = $2',
+    [groupId, userId]
+  );
+  if (memberRes.rows.length === 0) {
+    throw Object.assign(new Error('Hauko kwenye kikundi hiki.'), { statusCode: 403 });
+  }
   const fundRes = await pool.query('SELECT * FROM vicoba_social_fund WHERE group_id = $1', [groupId]);
   if (fundRes.rows.length === 0) {
     throw Object.assign(new Error('Familia ya kijamii haipo.'), { statusCode: 404 });
@@ -976,6 +984,11 @@ async function approveSocialFundDisbursement(actorUserId, requestId, approvedAmo
     );
     if (roleRes.rows.length === 0 || !['MWENYEKITI', 'MWEKAHAZINA'].includes(roleRes.rows[0].role_in_group)) {
       throw Object.assign(new Error('Mwenyekiti au Mwekahazina pekee anaweza kuthibitisha.'), { statusCode: 403 });
+    }
+    // Maker-checker: no self-approval (AFK-INST-16 §1 item 4). Applies to the
+    // direct route and to the four-eyes executor, which both call this function.
+    if (Number(request.requester_id) === Number(actorUserId)) {
+      throw Object.assign(new Error('Huwezi kuidhinisha ombi lako mwenyewe.'), { statusCode: 403 });
     }
 
     const finalAmount = approvedAmount == null
