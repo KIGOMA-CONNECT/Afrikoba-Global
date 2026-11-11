@@ -118,6 +118,24 @@ async function getEffectiveRule(projectId, client = pool) {
   return r.rows[0] || null;
 }
 
+/**
+ * Rule used to allocate revenue. Phase 71 / OBS-7c: when an amendment was
+ * approved after funding (a FROZEN version exists below the current ACTIVE one),
+ * the funded investments keep their original terms: the latest FROZEN version.
+ * Otherwise this is getEffectiveRule (unchanged behaviour).
+ */
+async function getAllocationRule(projectId, client = pool) {
+  const eff = await getEffectiveRule(projectId, client);
+  if (!eff || eff.status !== 'ACTIVE') return eff;
+  const frozen = await client.query(
+    `SELECT * FROM waterfall_allocation_rules
+     WHERE project_id = $1 AND status = 'FROZEN' AND version < $2
+     ORDER BY version DESC LIMIT 1`,
+    [projectId, eff.version]
+  );
+  return frozen.rows[0] || eff;
+}
+
 /** Rules list for a project (all versions). */
 async function listWaterfallRules(projectId) {
   const r = await pool.query(
@@ -174,6 +192,10 @@ async function proposeWaterfallRules(userId, projectId, data) {
 /**
  * Expert/admin approves a DRAFT or PROPOSED rule → ACTIVE. Marks any prior
  * non-frozen rule SUPERSEDED. If a later version already took effect, skip.
+ * Phase 71 / OBS-7c (owner decision): a FROZEN rule is immutable. Approving an
+ * amendment never changes a FROZEN row; it only activates the new version, and
+ * revenue for the funded investments keeps using the FROZEN terms
+ * (getAllocationRule). The audit row is written in the same transaction.
  */
 async function approveWaterfallRule(userId, ruleId, { effective_date } = {}) {
   const rule = await pool.query('SELECT * FROM waterfall_allocation_rules WHERE id = $1', [ruleId]);
@@ -196,16 +218,29 @@ async function approveWaterfallRule(userId, ruleId, { effective_date } = {}) {
     await client.query(
       `UPDATE waterfall_allocation_rules
        SET status = 'SUPERSEDED', updated_at = NOW()
-       WHERE project_id = $1 AND id <> $2 AND status NOT IN ('SUPERSEDED')`,
+       WHERE project_id = $1 AND id <> $2 AND status NOT IN ('SUPERSEDED', 'FROZEN')`,
       [cur.project_id, cur.id]
     );
-    await client.query(
+    const activated = await client.query(
       `UPDATE waterfall_allocation_rules
        SET status = 'ACTIVE', approved_by = $2, approved_at = NOW(), effective_date = $3, updated_at = NOW()
-       WHERE id = $1`,
+       WHERE id = $1 AND status IN ('DRAFT', 'PROPOSED')
+       RETURNING approved_at`,
       [cur.id, userId, effective]
     );
-    await logAudit({ eventType: 'WATERFALL_RULES_APPROVED', action: 'APPROVE', entityType: 'WATERFALL_RULE', userId, entityId: cur.id, afterData: { project_id: cur.project_id, version: cur.version, effective_date: effective } });
+    if (activated.rowCount !== 1) throw new ValidityError('Rule imebadilika wakati wa kuidhinisha; jaribu tena.', 409);
+    const prev = cur.supersedes_rule_id
+      ? (await client.query('SELECT id, version, status FROM waterfall_allocation_rules WHERE id = $1', [cur.supersedes_rule_id])).rows[0]
+      : null;
+    await logAudit({
+      client,
+      eventType: 'WATERFALL_RULES_APPROVED', action: 'APPROVE', entityType: 'WATERFALL_RULE', userId, entityId: cur.id,
+      afterData: {
+        project_id: cur.project_id, version: cur.version, new_version: cur.version, effective_date: String(effective).slice(0, 10),
+        previous_rule_id: prev ? prev.id : null, previous_version: prev ? prev.version : null, previous_status: prev ? prev.status : null,
+        proposed_by: cur.proposed_by, proposed_at: cur.proposed_at, approved_by: userId, approved_at: activated.rows[0].approved_at,
+      },
+    });
     await client.query('COMMIT');
   } catch (e) {
     await client.query('ROLLBACK').catch(() => {});
@@ -216,26 +251,36 @@ async function approveWaterfallRule(userId, ruleId, { effective_date } = {}) {
   return (await pool.query('SELECT * FROM waterfall_allocation_rules WHERE id = $1', [ruleId])).rows[0];
 }
 
-async function setWaterfallFrozen(ruleId, frozen) {
+// Phase 71 / OBS-7c: the only allowed transition is ACTIVE -> FROZEN. A FROZEN
+// rule is immutable (owner decision); DRAFT/PROPOSED rules become effective only
+// through approveWaterfallRule, which records the approver.
+async function setWaterfallFrozen(ruleId) {
   const r = await pool.query(
-    `UPDATE waterfall_allocation_rules SET status = $2, updated_at = NOW()
-     WHERE id = $1 RETURNING *`,
-    [ruleId, frozen ? 'FROZEN' : 'ACTIVE']
+    `UPDATE waterfall_allocation_rules SET status = 'FROZEN', updated_at = NOW()
+     WHERE id = $1 AND status = 'ACTIVE' RETURNING *`,
+    [ruleId]
   );
-  if (r.rows.length === 0) throw new ValidityError('Waterfall rule haipatikani.', 404);
+  if (r.rows.length === 0) {
+    const cur = await pool.query('SELECT status FROM waterfall_allocation_rules WHERE id = $1', [ruleId]);
+    if (cur.rows.length === 0) throw new ValidityError('Waterfall rule haipatikani.', 404);
+    throw new ValidityError(`Rule iko katika hali '${cur.rows[0].status}'; ni rule ACTIVE pekee inayoweza kugandishwa.`, 409);
+  }
   return r.rows[0];
 }
 
 async function freezeWaterfallRule(userId, ruleId) {
-  const rule = await setWaterfallFrozen(ruleId, true);
+  const rule = await setWaterfallFrozen(ruleId);
   await logAudit({ eventType: 'WATERFALL_RULES_FROZEN', action: 'FREEZE', entityType: 'WATERFALL_RULE', userId, entityId: ruleId });
   return rule;
 }
 
 async function unfreezeWaterfallRule(userId, ruleId) {
-  const rule = await setWaterfallFrozen(ruleId, false);
-  await logAudit({ eventType: 'WATERFALL_RULES_UNFROZEN', action: 'UNFREEZE', entityType: 'WATERFALL_RULE', userId, entityId: ruleId });
-  return rule;
+  // Phase 71 / OBS-7c: FROZEN rules are immutable (owner decision). Changes go
+  // through a new version (proposeWaterfallRules + approveWaterfallRule).
+  const cur = await pool.query('SELECT status FROM waterfall_allocation_rules WHERE id = $1', [ruleId]);
+  if (cur.rows.length === 0) throw new ValidityError('Waterfall rule haipatikani.', 404);
+  await logAudit({ eventType: 'WATERFALL_RULES_UNFREEZE_REFUSED', action: 'UNFREEZE_REFUSED', entityType: 'WATERFALL_RULE', userId, entityId: ruleId, afterData: { status: cur.rows[0].status } });
+  throw new ValidityError('Rule iliyogandishwa haiwezi kubadilishwa; pendekeza toleo jipya litakaloidhinishwa.', 409);
 }
 
 /**
@@ -345,7 +390,7 @@ async function processIncomingRevenue(userId, projectId, { amount, revenue_type,
     throw new ValidityError('Huna ruhusa za mradi huu.', 403);
   }
 
-  const rule = await getEffectiveRule(projectId);
+  const rule = await getAllocationRule(projectId);
   if (!rule) throw new ValidityError('Waterfall rules hazijawekwa kwa mradi huu.');
   if (!['ACTIVE', 'FROZEN'].includes(rule.status)) throw new ValidityError('Waterfall rules bado hazijaidhinishwa.');
 

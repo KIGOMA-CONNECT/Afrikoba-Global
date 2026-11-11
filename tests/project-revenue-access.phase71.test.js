@@ -251,8 +251,10 @@ function testStatic() {
   const fn = src.slice(start, src.indexOf('\n}\n', start));
   const guard = fn.search(/if \(p\.owner_user_id !== userId && !isExpert\(actorRole\)\)/);
   expect(start >= 0 && guard > 0, 'service: owner-or-expert guard present');
-  expect(guard > 0 && guard < fn.indexOf('getEffectiveRule(') && guard < fn.indexOf("client.query('BEGIN')"),
-    'service: guard runs before getEffectiveRule and before BEGIN');
+  // Remediation OBS-7c renamed the lookup to getAllocationRule (FROZEN terms); either name counts.
+  const ruleLookup = fn.search(/get(Effective|Allocation)Rule\(/);
+  expect(guard > 0 && ruleLookup > guard && guard < fn.indexOf("client.query('BEGIN')"),
+    'service: guard runs before the rule lookup and before BEGIN');
   expect(/async function processIncomingRevenue\(userId, projectId, \{ amount, revenue_type, unique_reference, description \} = \{\}, actorRole = null\)/.test(src),
     'service: role is a separate argument (not read from the request options)');
   const routes = fs.readFileSync(ROUTES_FILE, 'utf8');
