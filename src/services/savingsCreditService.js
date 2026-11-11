@@ -547,6 +547,15 @@ async function respondGuarantor(userId, loanId, accept) {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
+      // R28 F2c: a guarantee can only be held while the loan can still be disbursed
+      // (guarantees are released only by adminDisburseMicroLoan). FOR SHARE on the loan
+      // (same order as disbursement: loan, then invitation, then wallet) waits for an
+      // in-flight disbursement and then sees ACTIVE.
+      const loanRow = await client.query(
+        `SELECT status FROM micro_loans WHERE id = $1 AND status IN ('PENDING','APPROVED') FOR SHARE`,
+        [loanId]
+      );
+      if (!loanRow.rows.length) throw badge('Mkopo huu tayari umetolewa au haupo; dhamana haiwezi kukubaliwa.', 409);
       const lockedInv = await client.query(
         `SELECT * FROM loan_guarantors WHERE id = $1 AND status = 'PENDING' FOR UPDATE`,
         [inv.rows[0].id]
