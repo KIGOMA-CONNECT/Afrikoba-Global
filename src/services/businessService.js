@@ -473,16 +473,21 @@ async function adminDisburseLoan(loanId, adminId) {
 async function repayLoan(userId, loanId, amount) {
   const amountNum = Number(amount);
   if (!amountNum || amountNum <= 0) throw Object.assign(new Error('Kiasi si sahihi.'), { statusCode: 400 });
-  const loan = await pool.query("SELECT * FROM business_loans WHERE id = $1 AND status = 'DISBURSED'", [loanId]);
-  if (!loan.rows.length) throw Object.assign(new Error('Mkopo haupatikani au haujatolewa.'), { statusCode: 404 });
-  const l = loan.rows[0];
-  const biz = await pool.query('SELECT owner_id, balance FROM business_accounts WHERE id = $1', [l.business_id]);
-  if (!biz.rows.length || biz.rows[0].owner_id !== userId) throw Object.assign(new Error('Biashara haipatikani au sio yako.'), { statusCode: 403 });
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    // R25-02: loan and business rows are read and locked inside the transaction.
+    // They were read before BEGIN, so concurrent repayments each wrote
+    // paid_amount = stale + amount (lost update) and each debited the business
+    // against a stale balance (business balance could go negative).
+    const loan = await client.query("SELECT * FROM business_loans WHERE id = $1 AND status = 'DISBURSED' FOR UPDATE", [loanId]);
+    if (!loan.rows.length) throw Object.assign(new Error('Mkopo haupatikani au haujatolewa.'), { statusCode: 404 });
+    const l = loan.rows[0];
+    const biz = await client.query('SELECT owner_id, balance FROM business_accounts WHERE id = $1 FOR UPDATE', [l.business_id]);
+    if (!biz.rows.length || biz.rows[0].owner_id !== userId) throw Object.assign(new Error('Biashara haipatikani au sio yako.'), { statusCode: 403 });
     if (Number(biz.rows[0].balance) < amountNum) throw Object.assign(new Error('Salio la biashara halitoshi.'), { statusCode: 400 });
-    await client.query('UPDATE business_accounts SET balance = balance - $1 WHERE id = $2', [amountNum, l.business_id]);
+    const debited = await client.query('UPDATE business_accounts SET balance = balance - $1 WHERE id = $2 AND balance >= $1', [amountNum, l.business_id]);
+    if (debited.rowCount !== 1) throw Object.assign(new Error('Salio la biashara halitoshi.'), { statusCode: 400 });
     const newPaid = Number(l.paid_amount) + amountNum;
     const status = newPaid >= Number(l.due_amount) ? 'REPAID' : 'DISBURSED';
     await client.query('UPDATE business_loans SET paid_amount = $1, status = $2 WHERE id = $3', [newPaid, status, loanId]);
