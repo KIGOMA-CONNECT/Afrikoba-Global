@@ -593,8 +593,8 @@ async function listTransfers(groupId, status) {
 // ==========================================
 
 async function processCrossNetworkTopUp(groupId, userId, { amount, provider, externalRef, phone }) {
-  const amountNum = parseFloat(amount);
-  if (amountNum <= 0) throw Object.assign(new Error('Kiasi lazima iwe zaidi ya 0.'), { statusCode: 400 });
+  const amountNum = Number(amount);
+  if (!Number.isFinite(amountNum) || amountNum <= 0) throw Object.assign(new Error('Kiasi lazima iwe zaidi ya 0.'), { statusCode: 400 });
 
   const validProviders = ['M-PESA', 'AIRTEL', 'TIGO', 'HALOPESA', 'AZAMPAY', 'CRDB', 'NMB'];
   const providerUpper = (provider || 'AZAMPAY').toUpperCase();
@@ -602,53 +602,32 @@ async function processCrossNetworkTopUp(groupId, userId, { amount, provider, ext
     throw Object.assign(new Error(`Mtandao ${provider} haujaidhinishwa. Matumizi: ${validProviders.join(', ')}`), { statusCode: 400 });
   }
 
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
+  const memberRes = await pool.query(
+    'SELECT 1 FROM vicoba_members WHERE group_id = $1 AND user_id = $2',
+    [groupId, userId]
+  );
+  if (memberRes.rows.length === 0) throw Object.assign(new Error('Hauko kwenye kikundi hiki.'), { statusCode: 403 });
 
-    const memberRes = await client.query(
-      'SELECT vm.*, u.phone_number, u.full_name FROM vicoba_members vm JOIN users u ON u.id = vm.user_id WHERE vm.group_id = $1 AND vm.user_id = $2 FOR UPDATE',
-      [groupId, userId]
-    );
-    if (memberRes.rows.length === 0) throw Object.assign(new Error('Hauko kwenye kikundi hiki.'), { statusCode: 403 });
-
-    const referenceId = generateReference('CN');
-    await fin.postJournal({
-      client,
-      lines: [
-        { accountCode: 'MNO_CLEARING', direction: 'DR', amount: amountNum },
-        { accountCode: 'VICOBA_GROUP', direction: 'CR', amount: amountNum },
-      ],
-      referenceId: `${referenceId}:GTOP`,
-      description: 'Cross-network Group Top-up',
-    });
-    await client.query(
-      'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance + $1 WHERE id = $2',
-      [amountNum, groupId]
-    );
-
-    await client.query(
-      'UPDATE vicoba_members SET contribution_balance = contribution_balance + $1 WHERE group_id = $2 AND user_id = $3',
-      [amountNum, groupId, userId]
-    );
-
-    await client.query(
-      `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
-       VALUES ($1, $2, $3, 0, $3, 'SUCCESS', 'VICOBA_SHARE', $4)`,
-      [referenceId, userId, amountNum, JSON.stringify({ group_id: groupId, provider: providerUpper, external_ref: externalRef, phone, cross_network: true })]
-    );
-
-    await client.query('COMMIT');
-
-    logger.info('VICOBA', `Cross-network top-up: TSh ${formatMoney(amountNum)} via ${providerUpper} from ${phone || 'unknown'}`);
-
-    return { success: true, referenceId, amount: amountNum, provider: providerUpper, message: `TSh ${formatMoney(amountNum)} zimeongezwa kupitia ${providerUpper}.` };
-  } catch (error) {
-    await client.query('ROLLBACK').catch(() => {});
-    throw error;
-  } finally {
-    client.release();
-  }
+  // R24-N3: amount, provider and externalRef are declared by the caller and
+  // nothing here proves the provider settled the funds. Crediting the group
+  // (DR MNO_CLEARING / CR VICOBA_GROUP) on that declaration alone created
+  // unbacked group money. Same rule as wallet deposits: the request is
+  // recorded as PENDING and nothing is credited, journaled or added to the
+  // member's contribution until a provider-confirmed settlement exists.
+  const referenceId = generateReference('CN');
+  await pool.query(
+    `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
+     VALUES ($1, $2, $3, 0, $3, 'PENDING', 'VICOBA_SHARE', $4)`,
+    [referenceId, userId, amountNum, JSON.stringify({
+      group_id: groupId, provider: providerUpper, external_ref: externalRef || null, phone: phone || null,
+      cross_network: true, awaiting_provider_confirmation: true,
+    })]
+  );
+  logger.info('VICOBA', `Cross-network top-up PENDING (not credited): TSh ${formatMoney(amountNum)} via ${providerUpper}`);
+  return {
+    success: true, status: 'PENDING', credited: false, referenceId, amount: amountNum, provider: providerUpper,
+    message: `Ombi la TSh ${formatMoney(amountNum)} kupitia ${providerUpper} limepokelewa na linasubiri uthibitisho wa mtoa huduma. Kikundi hakijaongezewa pesa bado.`,
+  };
 }
 
 // ==========================================
