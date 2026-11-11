@@ -49,7 +49,7 @@ router.post('/cases/:id/payout', requireRoles('ADMIN'), async (req, res, next) =
 router.post('/projects/:id/decompose', async (req, res, next) => {
   try {
     const { project_name, total_budget } = req.body;
-    const result = await projectIntelligence.decomposeProject(parseInt(req.params.id, 10), project_name, total_budget);
+    const result = await projectIntelligence.decomposeProject(parseInt(req.params.id, 10), project_name, total_budget, req.user.id, req.user.role);
     res.json({ success: true, ...result });
   } catch (err) { next(err); }
 });

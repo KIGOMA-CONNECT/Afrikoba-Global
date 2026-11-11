@@ -5,9 +5,29 @@
 
 const pool = require('../config/db');
 const { generateReference } = require('../utils/helpers');
+const { isExpert } = require('./projectFinanceService');
 
-async function decomposeProject(projectId, projectName, totalBudget) {
+function httpError(message, statusCode) {
+  return Object.assign(new Error(message), { statusCode });
+}
+
+// Who may write project-finance records: the project owner or
+// ADMIN / MODERATOR / EXPERT (same rule as processIncomingRevenue, Phase 71 E0d).
+// actorRole must come from req.user (loaded by authRequired), never the body.
+async function assertProjectWriter(projectId, userId, actorRole) {
+  const r = await pool.query('SELECT id, owner_user_id FROM projects WHERE id = $1', [projectId]);
+  if (r.rows.length === 0) throw httpError('Mradi haupatikani.', 404);
+  const p = r.rows[0];
+  if (p.owner_user_id !== userId && !isExpert(actorRole)) throw httpError('Huna ruhusa za mradi huu.', 403);
+  return p;
+}
+
+async function decomposeProject(projectId, projectName, totalBudget, userId = null, actorRole = null) {
+  await assertProjectWriter(projectId, userId, actorRole);
   const budget = Number(totalBudget);
+  if (totalBudget === null || totalBudget === undefined || totalBudget === '' || !Number.isFinite(budget) || budget <= 0) {
+    throw httpError('Bajeti (total_budget) lazima iwe namba chanya.', 400);
+  }
   // Automated WBS decomposition into standard phases
   const phases = [
     { phase: 'Phase 1: Planning & Permits', pct: 0.10, days: 30 },
@@ -30,11 +50,9 @@ async function decomposeProject(projectId, projectName, totalBudget) {
       createdTasks.push(res.rows[0]);
     }
 
-    await client.query(
-      `INSERT INTO controlled_project_accounts (project_id, escrow_balance) VALUES ($1, $2)
-       ON CONFLICT (project_id) DO NOTHING`,
-      [projectId, budget]
-    );
+    // No controlled_project_accounts write here: escrow comes only from verified
+    // funding (projectService.invest -> projectFinance.onFundingReceived), never
+    // from a request amount.
 
     await client.query('COMMIT');
     return { success: true, phases: createdTasks };
