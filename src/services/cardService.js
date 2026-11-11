@@ -57,8 +57,8 @@ async function assertCardOwner(cardId, userId, mode) {
   return card;
 }
 
-async function todaySpend(cardId) {
-  const r = await pool.query(
+async function todaySpend(cardId, db = pool) {
+  const r = await db.query(
     `SELECT COALESCE(SUM(amount),0)::numeric AS s FROM card_transactions
      WHERE card_id = $1 AND status IN ('AUTH_HOLD','SETTLED') AND created_at::date = CURRENT_DATE`,
     [cardId]
@@ -152,11 +152,6 @@ async function authorizeCard(userId, cardId, data) {
   if (!merchant_name) throw createAppError('CARD_MERCHANT_REQUIRED');
   if (!amountNum || amountNum <= 0) throw createAppError('CARD_AMOUNT_INVALID');
 
-  const card = await pool.query('SELECT * FROM virtual_cards WHERE id = $1 FOR UPDATE', [cardId]);
-  if (!card.rows.length) throw createAppError('CARD_NOT_FOUND');
-  const c = card.rows[0];
-  if (c.user_id !== userId) throw createAppError('CARD_NOT_OWNER');
-
   const authRef = 'AUTH-' + generateReference().replace('undefined-', '');
 
   const declineWith = async (reason) => {
@@ -165,50 +160,61 @@ async function authorizeCard(userId, cardId, data) {
       await rc.query('BEGIN');
       await logCardTx(rc, userId, cardId, merchant_name, amountNum, 'DECLINED', authRef, reason);
       await rc.query('COMMIT');
+    } catch (e) {
+      await rc.query('ROLLBACK').catch(() => {});
+      throw e;
     } finally { rc.release(); }
     return null;
   };
 
-  if (card.rows[0].status !== 'ACTIVE') {
-    await declineWith(card.rows[0].status === 'FROZEN' ? 'CARD_FROZEN' : 'CARD_BLOCKED');
-    throw createAppError('CARD_INACTIVE');
-  }
-  if (!cvv || sha256(String(cvv).trim()) !== c.cvv_hash) {
-    await declineWith('INVALID_CVV');
-    throw createAppError('CARD_INVALID_CVV');
-  }
-  if (c.per_txn_limit && amountNum > Number(c.per_txn_limit)) {
-    await declineWith('OVER_TRANSACTION_LIMIT');
-    throw createAppError('CARD_OVER_PER_TXN_LIMIT');
-  }
-  const spend = await todaySpend(cardId);
-  if (c.daily_limit && (spend + amountNum) > Number(c.daily_limit)) {
-    await declineWith('OVER_DAILY_LIMIT');
-    throw createAppError('CARD_OVER_DAILY_LIMIT');
-  }
-
+  // R25-04: the card row lock, the card checks and the daily-spend read happen
+  // inside the authorization transaction. Previously the lock was taken with
+  // pool.query (autocommit, released immediately) and today's spend was read
+  // outside the transaction, so concurrent authorizations each passed the
+  // daily limit. A decline is recorded only after this transaction has rolled
+  // back and released the card lock (the decline row references the card).
+  let decline = null;
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const u = await client.query('SELECT wallet_balance, locked_balance FROM users WHERE id = $1 FOR UPDATE', [userId]);
-    if (Number(u.rows[0].wallet_balance) < amountNum) {
-      await client.query('ROLLBACK').catch(() => {});
-      const rc = await pool.connect();
-      await rc.query('BEGIN');
-      await logCardTx(rc, userId, cardId, merchant_name, amountNum, 'DECLINED', authRef, 'INSUFFICIENT_FUNDS');
-      await rc.query('COMMIT');
-      rc.release();
-      throw createAppError('WALLET_INSUFFICIENT_FUNDS');
+    const card = await client.query('SELECT * FROM virtual_cards WHERE id = $1 FOR UPDATE', [cardId]);
+    if (!card.rows.length) throw createAppError('CARD_NOT_FOUND');
+    const c = card.rows[0];
+    if (c.user_id !== userId) throw createAppError('CARD_NOT_OWNER');
+
+    if (c.status !== 'ACTIVE') {
+      decline = { reason: c.status === 'FROZEN' ? 'CARD_FROZEN' : 'CARD_BLOCKED', error: 'CARD_INACTIVE' };
+    } else if (!cvv || sha256(String(cvv).trim()) !== c.cvv_hash) {
+      decline = { reason: 'INVALID_CVV', error: 'CARD_INVALID_CVV' };
+    } else if (c.per_txn_limit && amountNum > Number(c.per_txn_limit)) {
+      decline = { reason: 'OVER_TRANSACTION_LIMIT', error: 'CARD_OVER_PER_TXN_LIMIT' };
+    } else {
+      const spend = await todaySpend(cardId, client);
+      if (c.daily_limit && (spend + amountNum) > Number(c.daily_limit)) {
+        decline = { reason: 'OVER_DAILY_LIMIT', error: 'CARD_OVER_DAILY_LIMIT' };
+      }
     }
-    await fin.lockWallet({ client, userId, amount: amountNum, reference: `${authRef}:LOCK`, description: 'Card authorization hold' });
-    await logCardTx(client, userId, cardId, merchant_name, amountNum, 'AUTH_HOLD', authRef, null);
-    const after = await client.query('SELECT wallet_balance, locked_balance FROM users WHERE id = $1', [userId]);
-    await client.query('COMMIT');
-    return { success: true, status: 'AUTH_HOLD', auth_reference: authRef, locked_balance: Number(after.rows[0].locked_balance), wallet_balance: Number(after.rows[0].wallet_balance), message: 'Miamala imeidhinishwa (hold).' };
+
+    if (!decline) {
+      const u = await client.query('SELECT wallet_balance, locked_balance FROM users WHERE id = $1 FOR UPDATE', [userId]);
+      if (Number(u.rows[0].wallet_balance) < amountNum) {
+        decline = { reason: 'INSUFFICIENT_FUNDS', error: 'WALLET_INSUFFICIENT_FUNDS' };
+      } else {
+        await fin.lockWallet({ client, userId, amount: amountNum, reference: `${authRef}:LOCK`, description: 'Card authorization hold' });
+        await logCardTx(client, userId, cardId, merchant_name, amountNum, 'AUTH_HOLD', authRef, null);
+        const after = await client.query('SELECT wallet_balance, locked_balance FROM users WHERE id = $1', [userId]);
+        await client.query('COMMIT');
+        return { success: true, status: 'AUTH_HOLD', auth_reference: authRef, locked_balance: Number(after.rows[0].locked_balance), wallet_balance: Number(after.rows[0].wallet_balance), message: 'Miamala imeidhinishwa (hold).' };
+      }
+    }
+    await client.query('ROLLBACK');
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
     throw err;
   } finally { client.release(); }
+
+  await declineWith(decline.reason);
+  throw createAppError(decline.error);
 }
 
 // ====================================================================
