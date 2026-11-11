@@ -346,6 +346,37 @@ async function recordFundingInTransaction({ client, projectId, amount }) {
 }
 
 /**
+ * Phase 71 / F2 (owner decision): a refund is rejected whenever the available
+ * escrow is insufficient. Replaces GREATEST(x - amt, 0), which floored a
+ * shortfall to 0 and hid it. Both amount_raised and the escrow's
+ * remaining_balance must cover the refund; otherwise 409 and the caller's
+ * transaction rolls back (no wallet credit, no investment change, no journal).
+ * The caller must hold the projects row FOR UPDATE (refund lock order).
+ */
+async function applyRefundToEscrow({ client, projectId, amount }) {
+  if (!client) throw new Error('applyRefundToEscrow: a transaction client is required');
+  const amt = Number(amount);
+  const raised = await client.query(
+    'UPDATE projects SET amount_raised = amount_raised - $1, updated_at = NOW() WHERE id = $2 AND amount_raised >= $1',
+    [amt, projectId]
+  );
+  const escrow = raised.rowCount === 1
+    ? await client.query(
+      `UPDATE controlled_project_accounts
+          SET remaining_balance = remaining_balance - $1, updated_at = NOW()
+        WHERE project_id = $2 AND remaining_balance >= $1`,
+      [amt, projectId]
+    )
+    : { rowCount: 0 };
+  if (raised.rowCount !== 1 || escrow.rowCount !== 1) {
+    const short = new ValidityError(
+      'Salio la escrow la mradi halitoshi kurejesha uwekezaji huu; hakuna kilichorejeshwa.', 409);
+    short.code = 'FUNDING_REFUND_ESCROW_INSUFFICIENT';
+    throw short;
+  }
+}
+
+/**
  * Called AFTER a committed investment: owner notification only. It must not
  * write escrow or waterfall state (Phase 71 / OBS-7): those are written inside
  * the investment transaction by recordFundingInTransaction, so a late, repeated
@@ -669,7 +700,15 @@ async function requestDisbursement(
   try {
     if (ownsTransaction) await client.query('BEGIN');
 
-    await getOwnerOnly(projectId, userId, client);
+    const ownedProject = await getOwnerOnly(projectId, userId, client);
+    // Phase 71 / F2 (owner decision): disbursements only for an ACTIVE project.
+    // executeDisbursement re-checks this under the project row lock.
+    if (ownedProject.status !== 'ACTIVE') {
+      const notActive = new ValidityError(
+        `Malipo ya mradi yanaruhusiwa tu mradi ukiwa ACTIVE (sasa: ${ownedProject.status}).`, 409);
+      notActive.code = 'DISBURSEMENT_PROJECT_NOT_ACTIVE';
+      throw notActive;
+    }
 
     const funded = await client.query(
       `SELECT 1
@@ -1059,6 +1098,21 @@ async function executeDisbursement(userId, projectId, requestId) {
 
   try {
     await client.query('BEGIN');
+
+    /*
+     * Phase 71 / F2 (owner decision): a disbursement is executed only for an
+     * ACTIVE project. The project row is locked FIRST, the same lock order as
+     * invest, refunds (E0b), forceCloseFunding and completeProject (E0c), so a
+     * refund, cancellation or completion of this project cannot interleave.
+     */
+    const lockedProject = await client.query('SELECT id, status FROM projects WHERE id = $1 FOR UPDATE', [projectId]);
+    if (lockedProject.rows.length === 0) throw new ValidityError('Mradi haupatikani.', 404);
+    if (lockedProject.rows[0].status !== 'ACTIVE') {
+      const notActive = new ValidityError(
+        `Malipo ya mradi yanaruhusiwa tu mradi ukiwa ACTIVE (sasa: ${lockedProject.rows[0].status}).`, 409);
+      notActive.code = 'DISBURSEMENT_PROJECT_NOT_ACTIVE';
+      throw notActive;
+    }
 
     /*
      * Lock the exact request before checking or executing it.
@@ -2845,11 +2899,8 @@ async function forceCloseFunding(userId, role, projectId, { action } = {}) {
         changed.code = 'FUNDING_REFUND_STATE_CHANGED';
         throw changed;
       }
-      await client.query('UPDATE projects SET amount_raised = GREATEST(amount_raised - $1, 0) WHERE id = $2', [amt, projectId]);
-      await client.query(
-        `UPDATE controlled_project_accounts SET remaining_balance = GREATEST(remaining_balance - $1, 0), updated_at = NOW()
-         WHERE project_id = $2`, [amt, projectId]
-      );
+      stage = 'escrow';
+      await applyRefundToEscrow({ client, projectId, amount: amt });
       stage = 'credit';
       await fin.creditWallet({ client, userId: inv.investor_user_id, amount: amt, reference: ref, fromAccount: INVESTMENT_ACCOUNT, description: 'Funding cancelled refund' });
       await client.query(
@@ -9674,6 +9725,7 @@ module.exports = {
   isExpert,
   onFundingReceived,
   recordFundingInTransaction,
+  applyRefundToEscrow,
   listWaterfallRules,
   createInitialRules,
   proposeWaterfallRules,

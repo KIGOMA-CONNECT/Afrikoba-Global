@@ -397,24 +397,56 @@ async function recordRevenue(userId, projectId, { revenue_type, amount, unique_r
 async function recordPayroll(userId, projectId, { payee_user_id, role, amount, unique_reference }) {
   const amt = Number(amount);
   if (!amt || amt <= 0) throw new ValidityError('Kiasi si sahihi.');
-  const p = await getProjectForOwner(projectId, userId);
+  await getProjectForOwner(projectId, userId);
+  const payee = Number(payee_user_id);
+  if (!Number.isInteger(payee) || payee <= 0) throw new ValidityError('Mlipwaji si sahihi.');
   const ref = unique_reference || generateReference('PPAY');
 
+  // Phase 71 / F7 + F2 (owner decision): payroll is paid from
+  // PROJECT_INVESTMENT_ACCOUNT, i.e. this project's investor capital held in
+  // escrow, so it follows the escrow controls: ACTIVE project only, paid only
+  // from THIS project's escrow remaining_balance (never another project's money
+  // in the shared ledger account), decremented under lock, fail-closed.
+  // Lock order (same as refunds / completion / disbursement):
+  //   projects FOR UPDATE -> payee users row FOR UPDATE -> escrow row.
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    const locked = await client.query('SELECT id, status, owner_user_id FROM projects WHERE id = $1 FOR UPDATE', [projectId]);
+    if (locked.rows.length === 0) throw new ValidityError('Mradi haupatikani.', 404);
+    if (locked.rows[0].owner_user_id !== userId) throw new ValidityError('Huna ruhusa za mradi huu.', 403);
+    if (locked.rows[0].status !== 'ACTIVE') {
+      const notActive = new ValidityError(`Malipo ya payroll yanaruhusiwa tu mradi ukiwa ACTIVE (sasa: ${locked.rows[0].status}).`, 409);
+      notActive.code = 'PAYROLL_PROJECT_NOT_ACTIVE';
+      throw notActive;
+    }
+    const payeeRow = await client.query('SELECT id FROM users WHERE id = $1 FOR UPDATE', [payee]);
+    if (payeeRow.rows.length === 0) throw new ValidityError('Mlipwaji hapatikani.', 404);
     await client.query(
       `INSERT INTO project_payroll (project_id, payee_user_id, role, amount, unique_reference)
        VALUES ($1,$2,$3,$4,$5)`,
-      [projectId, payee_user_id, role, amt, ref]
+      [projectId, payee, role, amt, ref]
     );
-    await fin.creditWallet({ client, userId: payee_user_id, amount: amt, reference: ref, fromAccount: PROJECT_ACCOUNT, description: `Project payroll: ${role || 'staff'}` });
+    const escrow = await client.query(
+      `UPDATE controlled_project_accounts
+          SET remaining_balance = remaining_balance - $2, updated_at = NOW()
+        WHERE project_id = $1 AND status <> 'CLOSED' AND remaining_balance >= $2`,
+      [projectId, amt]
+    );
+    if (escrow.rowCount !== 1) {
+      const short = new ValidityError('Salio la escrow la mradi huu halitoshi kwa malipo haya; hakuna kilicholipwa.', 409);
+      short.code = 'PAYROLL_ESCROW_INSUFFICIENT';
+      throw short;
+    }
+    const credited = await fin.creditWallet({ client, userId: payee, amount: amt, reference: ref, fromAccount: PROJECT_ACCOUNT, description: `Project payroll: ${role || 'staff'}` });
+    if (credited && credited.dedup) throw new ValidityError('Malipo haya tayari yamefanywa.', 409);
     await client.query(
       `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
        VALUES ($1, $2, $3, 0, $3, 'SUCCESS', 'PROJECT_PAYROLL', $4)`,
-      [ref, payee_user_id, amt, JSON.stringify({ project_id: projectId, unique_reference: ref })]
+      [ref, payee, amt, JSON.stringify({ project_id: projectId, unique_reference: ref })]
     );
-    await logAudit({ eventType: 'PROJECT_PAYROLL', action: 'PAY', entityType: 'PROJECT', userId, entityId: projectId, referenceId: ref, amount: amt });
+    // Inside the transaction (an audit failure rolls the payment back).
+    await logAudit({ eventType: 'PROJECT_PAYROLL', action: 'PAY', entityType: 'PROJECT', userId, entityId: projectId, referenceId: ref, amount: amt, afterData: { payee_user_id: payee, source: 'ESCROW' }, client });
 
     await client.query('COMMIT');
     return { success: true, payroll_id: ref, amount: amt };
@@ -433,70 +465,21 @@ async function recordPayroll(userId, projectId, { payee_user_id, role, amount, u
 // DISTRIBUTION ENGINE
 // ============================================================================
 
-async function computeDistribution(userId, projectId, { gross_profit, period_label = null }) {
-  const p = await getProjectForOwner(projectId, userId);
+async function computeDistribution(userId, projectId, { gross_profit } = {}) {
+  await getProjectForOwner(projectId, userId);
   const gross = Number(gross_profit);
   if (!gross || gross <= 0) throw new ValidityError('Faida si sahihi.');
-
-  const reinvest = Number(p.reinvestment_pct) || 0;
-  const reserve = Number(p.reserve_pct) || 0;
-  const ownerPct = Number(p.owner_equity_pct) || 0;
-  const investorPct = Math.max(0, 100 - reinvest - reserve - ownerPct);
-
-  const toInvestors = round2(gross * (investorPct / 100));
-  const toReinvest = round2(gross * (reinvest / 100));
-  const toReserve = round2(gross * (reserve / 100));
-  const toOwner = round2(gross * (ownerPct / 100));
-
-  const invs = await pool.query(
-    'SELECT investor_user_id, participation_pct, amount FROM project_investments WHERE project_id = $1 AND status = $2',
-    [projectId, 'CONFIRMED']
-  );
-
-  const totalParticipation = invs.rows.reduce((s, i) => s + (Number(i.participation_pct) || 0), 0) || 1;
-
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    const distributions = [];
-    for (const inv of invs.rows) {
-      const sharePct = (Number(inv.participation_pct) || 0) / totalParticipation;
-      const amount = round2(toInvestors * sharePct);
-      const ref = generateReference('PDIST');
-      await client.query(
-        `INSERT INTO project_distributions (project_id, investor_user_id, period_label, gross_profit, investor_pct, amount, status, unique_reference)
-         VALUES ($1,$2,$3,$4,$5,$6,'CALCULATED',$7)`,
-        [projectId, inv.investor_user_id, period_label, gross, round2(sharePct * 100), amount, ref]
-      );
-      await fin.creditWallet({ client, userId: inv.investor_user_id, amount, reference: ref, fromAccount: PROJECT_ACCOUNT, description: `Project distribution (${period_label || 'period'})` });
-      await client.query(
-        `UPDATE project_distributions SET status = 'PAID', txn_id = (SELECT MAX(id) FROM transactions WHERE reference_id = $1) WHERE unique_reference = $1`,
-        [ref]
-      );
-      await client.query(
-        `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
-         VALUES ($1, $2, $3, 0, $3, 'SUCCESS', 'PROJECT_DISTRIBUTION', $4)`,
-        [ref, inv.investor_user_id, amount, JSON.stringify({ project_id: projectId, unique_reference: ref })]
-      );
-      distributions.push({ investor_user_id: inv.investor_user_id, amount, unique_reference: ref });
-    }
-
-    await client.query(
-      `INSERT INTO project_reserves (project_id, reserve_type, amount) VALUES ($1, 'DISTRIBUTION_RESERVE', $2)
-       ON CONFLICT (project_id, reserve_type) DO UPDATE SET amount = project_reserves.amount + EXCLUDED.amount, updated_at = NOW()`,
-      [projectId, toReserve]
-    );
-
-    await logAudit({ eventType: 'PROJECT_DISTRIBUTION', action: 'DISTRIBUTE', entityType: 'PROJECT', userId, entityId: projectId, amount: toInvestors, afterData: { gross, reinvest: reinvest, reserve, owner: toOwner, investors: toInvestors } });
-
-    await client.query('COMMIT');
-    return { success: true, period_label, toInvestors, toReinvest, toReserve, toOwner, distributions };
-  } catch (e) {
-    await client.query('ROLLBACK').catch(() => {});
-    throw e;
-  } finally {
-    client.release();
-  }
+  // Phase 71 / F7 (owner decision): profit distribution must be supported by
+  // evidence of revenue and of distributable profit. This legacy path paid
+  // investors from PROJECT_INVESTMENT_ACCOUNT (investor capital, shared by all
+  // projects) using a request-supplied gross_profit, with no link to any
+  // recorded revenue or profit. It is therefore refused (fail-closed) and moves
+  // no money; nothing is written. Defining distributable profit is an owner
+  // decision and is not implemented here.
+  const refused = new ValidityError(
+    'Mgawanyo huu wa faida umezuiwa: hauungwi mkono na ushahidi wa mapato na faida inayostahili kugawanywa. Hakuna kilicholipwa.', 409);
+  refused.code = 'PROJECT_DISTRIBUTION_UNSUPPORTED';
+  throw refused;
 }
 
 // ============================================================================
@@ -603,16 +586,10 @@ async function refundInvestment(projectId, investmentId, userId) {
       changed.code = 'FUNDING_REFUND_STATE_CHANGED';
       throw changed;
     }
-    await client.query(
-      `UPDATE projects SET amount_raised = GREATEST(amount_raised - $1, 0) WHERE id = $2`,
-      [amt, projectId]
-    );
-    await client.query(
-      `UPDATE controlled_project_accounts
-         SET remaining_balance = GREATEST(remaining_balance - $1, 0), updated_at = NOW()
-       WHERE project_id = $2`,
-      [amt, projectId]
-    );
+    // Phase 71 / F2: rejected (409) when the escrow cannot cover the refund;
+    // no GREATEST(..., 0) floor that would hide a shortfall.
+    stage = 'escrow';
+    await projectFinance.applyRefundToEscrow({ client, projectId, amount: amt });
     stage = 'credit';
     await fin.creditWallet({ client, userId, amount: amt, reference: refundRef, fromAccount: PROJECT_ACCOUNT, description: 'Project investment refund' });
     await client.query(
