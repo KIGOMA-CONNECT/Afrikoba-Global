@@ -5,6 +5,7 @@ const limitService = require('../services/limitService');
 const fraudDetectionService = require('../services/fraudDetectionService');
 const walletFreezesService = require('../services/walletFreezesService');
 const governanceService = require('../services/governanceService');
+const { writeAudit } = require('../services/auditService');
 const { authRequired, requireKycLevel } = require('../middleware/auth');
 const { enforceDeviceTrust } = require('../middleware/deviceGuard');
 const { validate } = require('../middleware/validate');
@@ -29,7 +30,20 @@ router.get('/pending-approvals', async (req, res, next) => {
 
 // Register executors for four-eyes maker-checker operations handled by wallet.
 // On approval of a high-value WALLET_TRANSFER, actually run the transfer.
-governanceService.registerExecutor('WALLET_TRANSFER', async (payload) => {
+governanceService.registerExecutor('WALLET_TRANSFER', async (payload, approverId, flow) => {
+  // C1RV-01 (owner decision): only the wallet owner's own transfer may run. A flow
+  // whose requester is not the sender (e.g. made by an admin) is refused before
+  // any money moves, whoever approves it.
+  if (!flow || flow.requester_id == null || String(flow.requester_id) !== String(payload.fromUserId)) {
+    await writeAudit({
+      userId: approverId,
+      action: 'WALLET_TRANSFER_PROHIBITED',
+      entityType: 'APPROVAL_FLOW',
+      entityId: flow ? Number(flow.id) : null,
+      meta: { route: 'approval executor', flow_id: flow ? Number(flow.id) : null, maker_id: flow ? flow.requester_id : null, from_user_id: payload.fromUserId ?? null, checker_id: approverId },
+    });
+    throw Object.assign(new Error('Msimamizi haruhusiwi kuhamisha fedha kutoka wallet ya mteja.'), { statusCode: 403, code: 'WALLET_TRANSFER_PROHIBITED' });
+  }
   const result = await walletService.transferWallet(payload.fromUserId, payload.toPhoneNumber, payload.amount, payload.note);
   return result;
 });

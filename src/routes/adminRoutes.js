@@ -395,7 +395,27 @@ router.get('/approvals/requester', async (req, res, next) => {
 
 router.post('/approvals', async (req, res, next) => {
   try {
-    const flow = await governanceService.createApprovalFlow({ requesterId: req.user.id, ...req.body });
+    const body = req.body || {};
+    // C1RV-01 (owner decision): an admin may never start a WALLET_TRANSFER out of a
+    // customer's wallet, whoever approves it. Refused before anything is written.
+    if (String(body.actionType || '').trim().toUpperCase() === 'WALLET_TRANSFER') {
+      const data = body.data && typeof body.data === 'object' ? body.data : {};
+      await logAction(req.user.id, 'WALLET_TRANSFER_PROHIBITED', 'WALLET_TRANSFER', null, {
+        route: 'POST /admin/approvals',
+        from_user_id: data.fromUserId ?? null,
+        to_phone: data.toPhoneNumber ?? null,
+        amount: data.amount ?? null,
+        body_requester_id: body.requesterId ?? null,
+      }, req);
+      return res.status(403).json({
+        success: false,
+        code: 'WALLET_TRANSFER_PROHIBITED',
+        message: 'Msimamizi haruhusiwi kuhamisha fedha kutoka wallet ya mteja.',
+      });
+    }
+    // C1RV-01: the authenticated admin is always the requester (maker). The body
+    // must not be able to name someone else, or the same admin could approve it.
+    const flow = await governanceService.createApprovalFlow({ ...body, requesterId: req.user.id });
     await logAction(req.user.id, 'APPROVAL_REQUESTED', flow.ref_type || 'GENERIC', flow.ref_id, { action_type: flow.action_type }, req);
     res.json({ success: true, flow });
   } catch (error) { next(error); }
