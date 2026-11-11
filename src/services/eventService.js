@@ -669,12 +669,22 @@ async function isAdminUser(userId) {
   return rows.length > 0 && rows[0].role === 'ADMIN';
 }
 
+// R28 R27RV-01: money amount rounded to 2 decimals the way NUMERIC(…,2) rounds it (half away
+// from zero on the decimal text node-postgres sends). Non-finite and exponent-form values
+// (outside any valid money range) give NaN; the caller refuses NaN and <= 0.
+function money2(value) {
+  return Number(`${Math.round(Number(`${String(Number(value))}e2`))}e-2`);
+}
+
 async function requestEventWithdrawal(actorId, eventId, { amount, mode, toUserId, comment }) {
   const event = await findEventById(eventId);
   assertOwner(actorId, event);
   const modeUp = String(mode || 'FUNDRAISING').toUpperCase();
   if (!VALID_MODES.includes(modeUp)) throw badge('Njia ya uondoaji haijulikani.', 400);
-  const amountN = Number(amount);
+  // R28 R27RV-01: round to NUMERIC(18,2) before the INSERT (decimal half-up, as Postgres
+  // rounds the value it receives), so the row, the flow data, the wallet credit, the pool
+  // debit and the journal all carry the same amount.
+  const amountN = money2(amount);
   if (!Number.isFinite(amountN) || amountN <= 0) throw badge('Kiasi cha uondoaji ni lazima kiwe chanya na halali.', 400);
   const recipient = toUserId != null ? Number(toUserId) : actorId;
 
