@@ -510,6 +510,13 @@ async function processRoundUps(userId) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    // R25-03: serialize round-up runs per user on the rule row. Without it,
+    // concurrent runs each selected the same un-logged transfers and each
+    // debited the spare (roundup_log has no unique constraint on transaction_id).
+    // The SELECT below runs after the lock, so it sees rows logged by a run
+    // that committed while this one waited.
+    const lockedRule = await client.query('SELECT id FROM roundup_rules WHERE id = $1 AND is_active = TRUE FOR UPDATE', [r.id]);
+    if (!lockedRule.rows.length) throw Object.assign(new Error('Hamna kanuni ya round-up.'), { statusCode: 400 });
     const txs = await client.query(
       `SELECT t.* FROM transactions t
        LEFT JOIN roundup_log rl ON rl.transaction_id = t.id
@@ -538,6 +545,9 @@ async function processRoundUps(userId) {
     }
     await client.query('COMMIT');
     return { success: true, roundup_saved: totalRound, message: `Round-up imeokoa TZS ${formatMoney(totalRound)}.` };
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
   } finally { client.release(); }
 }
 
