@@ -2853,6 +2853,7 @@ async function forceCloseFunding(userId, role, projectId, { action } = {}) {
   let committed = false; // errors after COMMIT are never mapped to 409
   let stage = 'start';   // last step entered; logged when a refund is refused
   let invRes;
+  const refundNotices = []; // sent only after COMMIT (backlog #25)
   try {
     await client.query('BEGIN');
     // Phase 71 / E0b. Lock order, the same in refundInvestment
@@ -2908,11 +2909,8 @@ async function forceCloseFunding(userId, role, projectId, { action } = {}) {
          VALUES ($1,$2,$3,0,$3,'SUCCESS','PROJECT_REFUND',$4)`,
         [ref, inv.investor_user_id, amt, JSON.stringify({ project_id: projectId, investment_id: inv.id, refund_reference: ref })]
       );
-      createNotification(inv.investor_user_id, {
-        title: 'Uwekezaji umerudishwa',
-        body: `Uwekezaji wako TZS ${amt.toLocaleString('en-US')} katika mradi umerejeshwa kwa kufuta ufadhili. Rejea: ${ref}`,
-        type: 'PROJECT', entityType: 'PROJECT', entityId: projectId,
-      }).catch(() => {});
+      // Phase 71 / #25: notified only after COMMIT (below), as refundInvestment.
+      refundNotices.push({ userId: inv.investor_user_id, amt, ref });
     }
 
     stage = 'close-project';
@@ -2941,6 +2939,16 @@ async function forceCloseFunding(userId, role, projectId, { action } = {}) {
     throw e;
   } finally {
     client.release();
+  }
+
+  // After COMMIT and after the refund's locks are released: a rolled-back refund
+  // sends nothing, and the FK check no longer waits on the investors' users rows.
+  for (const n of refundNotices) {
+    await createNotification(n.userId, {
+      title: 'Uwekezaji umerudishwa',
+      body: `Uwekezaji wako TZS ${n.amt.toLocaleString('en-US')} katika mradi umerejeshwa kwa kufuta ufadhili. Rejea: ${n.ref}`,
+      type: 'PROJECT', entityType: 'PROJECT', entityId: projectId,
+    }).catch(() => {});
   }
 
   return { success: true, status: 'CANCELLED', refunded_count: invRes.rows.length };
@@ -2977,13 +2985,15 @@ async function getInvestorStatement({ userId, role }, projectId) {
     return row ? Number(row.amount || 0) : 0;
   })();
 
-  const ruleRes = await pool.query(
-    `SELECT ${RULE_COLUMNS.join(', ')}
-       FROM waterfall_allocation_rules WHERE project_id = $1 ORDER BY version DESC LIMIT 1`,
-    [projectId]
-  );
-  const waterfallConfig = ruleRes.rows[0]
-    ? Object.fromEntries(WATERFALL_STEPS.map((s) => [s.key, Number(ruleRes.rows[0][s.column] || 0)]))
+  // Phase 71 / F4: show the rule revenue is allocated with (getAllocationRule,
+  // OBS-7c: the FROZEN terms of the funded investments), and only when
+  // processIncomingRevenue would accept it (ACTIVE or FROZEN). Previously the
+  // highest version was shown, even an unapproved draft/proposal or an amendment
+  // that does not apply to the funded investments.
+  const allocRule = await getAllocationRule(projectId);
+  const shownRule = allocRule && ['ACTIVE', 'FROZEN'].includes(allocRule.status) ? allocRule : null;
+  const waterfallConfig = shownRule
+    ? Object.fromEntries(WATERFALL_STEPS.map((s) => [s.key, Number(shownRule[s.column] || 0)]))
     : {};
 
   const invested = invRes.rows.filter((r) => r.status === 'CONFIRMED')

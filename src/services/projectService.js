@@ -244,7 +244,11 @@ async function invest(userId, projectId, { amount, unique_reference, agreement_v
       [ref, userId, amt, JSON.stringify({ project_id: projectId, unique_reference: ref })]
     );
 
-    await logAudit({ eventType: 'PROJECT_INVEST', action: 'INVEST', entityType: 'PROJECT', userId, entityId: projectId, referenceId: ref, amount: amt });
+    // Phase 71 / F1: written in THIS transaction (as refundInvestment, E0b). On the
+    // pool it waited on the investor's users row that debitWallet holds here,
+    // hit lock_timeout after 3 s and was silently lost. With `client` an audit
+    // failure rolls the investment back (no investment without its audit row).
+    await logAudit({ eventType: 'PROJECT_INVEST', action: 'INVEST', entityType: 'PROJECT', userId, entityId: projectId, referenceId: ref, amount: amt, client });
 
     await client.query('COMMIT');
 
