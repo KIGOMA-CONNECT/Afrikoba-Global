@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { authRequired, requireRoles } = require('../middleware/auth');
-const { writeAudit } = require('../services/auditService');
+const { logAction, writeAudit } = require('../services/auditService'); // R26: logAction import lost in b993f1c (17 call sites)
 const fe = require('../services/fourEyesService');
 const pool = require('../config/db');
 const fin = require('../services/financialEngine');
