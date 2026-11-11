@@ -1,9 +1,14 @@
+const crypto = require('crypto');
 const pool = require('../config/db');
 const config = require('../config');
 const { generateReference, formatMoney } = require('../utils/helpers');
 const { enqueueOutbox } = require('./outboxService');
 const logger = require('../utils/logger');
 const fin = require('../services/financialEngine');
+const { writeAudit } = require('./auditService');
+
+const MAX_IDEMPOTENCY_KEY_LENGTH = 200;
+const SPLIT_TRIGGERS = new Set(['CRON', 'MANUAL']);
 
 /**
  * AUTOMATED SPLIT PAYMENT ENGINE
@@ -12,7 +17,8 @@ const fin = require('../services/financialEngine');
  *   - Investor Returns (28%)   -> wawekezaji kulingana na hisa
  *   - Platform Commission (2%) -> company_revenue
  */
-async function runSplitPayment(projectId, periodMonth, periodYear) {
+async function runSplitPayment(projectId, periodMonth, periodYear, { actorUserId = null, trigger = 'CRON' } = {}) {
+  if (!SPLIT_TRIGGERS.has(trigger)) throw new Error(`Split trigger si sahihi: ${trigger}`);
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -58,35 +64,49 @@ async function runSplitPayment(projectId, periodMonth, periodYear) {
     const operationalShare = Math.round(totalRevenue * opPct * 100) / 100;
     const investorShare = Math.round(totalRevenue * invPct * 100) / 100;
     const platformShare = Math.round((totalRevenue - operationalShare - investorShare) * 100) / 100;
+    // A negative leg means the settlement rules exceed 100 %: refuse rather than
+    // post a reversed leg. Zero legs are simply not posted (nothing to move).
+    if (operationalShare < 0 || investorShare < 0 || platformShare < 0) {
+      throw Object.assign(new Error('Kanuni za mgawanyo zinazidi 100% au si sahihi.'), { statusCode: 422 });
+    }
 
     // 1. Operational -> wallet ya mjasiriamali
-    await fin.creditWallet({
-      client,
-      userId: project.owner_user_id,
-      amount: Number(operationalShare),
-      reference: `SPLIT:${projectId}:${periodYear}-${periodMonth}:OP`,
-      fromAccount: 'SUSPENSE',
-      description: 'Operational share split payout',
-    });
+    if (operationalShare > 0) {
+      await fin.creditWallet({
+        client,
+        userId: project.owner_user_id,
+        amount: Number(operationalShare),
+        reference: `SPLIT:${projectId}:${periodYear}-${periodMonth}:OP`,
+        fromAccount: 'SUSPENSE',
+        description: 'Operational share split payout',
+      });
+    }
 
-    // 2. Investor Returns -> kwa wawekezaji kulingana na hisa zao
+    // 2. Investor Returns -> kwa wawekezaji kulingana na hisa zao.
+    // One investor may hold several ACTIVE investment rows (repeat or auto-invest
+    // purchases). The payout reference is per investor, so the rows are summed
+    // per investor: one credit for all of the investor's shares.
     const investors = await client.query(
-      `SELECT i.investor_user_id, i.shares_bought, u.full_name, u.phone_number,
-              p.raised_amount AS total_raised
+      `SELECT i.investor_user_id, SUM(i.shares_bought)::bigint AS shares_bought,
+              u.full_name, u.phone_number
        FROM investments i
        JOIN users u ON u.id = i.investor_user_id
-       JOIN investment_projects p ON p.id = i.project_id
-       WHERE i.project_id = $1 AND i.status = 'ACTIVE'`,
+       WHERE i.project_id = $1 AND i.status = 'ACTIVE'
+       GROUP BY i.investor_user_id, u.full_name, u.phone_number
+       ORDER BY i.investor_user_id`,
       [projectId]
     );
-    const totalShares = investors.rows.reduce((sum, inv) => sum + inv.shares_bought, 0);
+    const investorRows = investors.rows.map((r) => ({ ...r, shares_bought: Number(r.shares_bought) }));
+    const totalShares = investorRows.reduce((sum, inv) => sum + inv.shares_bought, 0);
+    let investorsPaid = 0;
+    let investorPaidTotal = 0;
 
-    for (const inv of investors.rows) {
-      if (totalShares === 0) break;
+    for (const inv of investorRows) {
+      if (totalShares === 0 || investorShare === 0) break;
       const shareOfInvestor = Math.round((inv.shares_bought / totalShares) * investorShare * 100) / 100;
       if (shareOfInvestor <= 0) continue;
 
-      await fin.creditWallet({
+      const res = await fin.creditWallet({
         client,
         userId: inv.investor_user_id,
         amount: Number(shareOfInvestor),
@@ -94,6 +114,17 @@ async function runSplitPayment(projectId, periodMonth, periodYear) {
         fromAccount: 'SUSPENSE',
         description: 'Investor return split payout',
       });
+      // The reference is unique per investor and period, so a dedup here means
+      // the credit already exists outside this run: fail closed instead of
+      // recording a SUCCESS payout row for money that was not credited now.
+      if (res.dedup) {
+        throw Object.assign(
+          new Error(`Malipo ya mwekezaji tayari yapo kwa kipindi hiki (${res.reference}).`),
+          { statusCode: 409, code: 'SPLIT_INVESTOR_ALREADY_CREDITED' }
+        );
+      }
+      investorsPaid += 1;
+      investorPaidTotal = Math.round((investorPaidTotal + shareOfInvestor) * 100) / 100;
       await client.query(
         `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
          VALUES ($1, $2, $3, 0, $3, 'SUCCESS', 'INVESTMENT_PAYOUT', $4)`,
@@ -113,18 +144,20 @@ async function runSplitPayment(projectId, periodMonth, periodYear) {
 
     // 3. Platform Commission -> company_revenue (+ ledger: fund from the revenue
     //    booked into SUSPENSE at recordProjectRevenue time)
-    await fin.postJournal({
-      client,
-      lines: [
-        { accountCode: 'SUSPENSE', direction: 'DR', amount: platformShare },
-        { accountCode: 'PLATFORM_FEES', direction: 'CR', amount: platformShare },
-      ],
-      referenceId: `SPLIT:${projectId}:${periodYear}-${periodMonth}:PF`, description: 'Platform commission split from project revenue',
-    });
-    await client.query(
-      `UPDATE company_revenue SET total_platform_fees = total_platform_fees + $1, updated_at = NOW() WHERE id = 1`,
-      [platformShare]
-    );
+    if (platformShare > 0) {
+      await fin.postJournal({
+        client,
+        lines: [
+          { accountCode: 'SUSPENSE', direction: 'DR', amount: platformShare },
+          { accountCode: 'PLATFORM_FEES', direction: 'CR', amount: platformShare },
+        ],
+        referenceId: `SPLIT:${projectId}:${periodYear}-${periodMonth}:PF`, description: 'Platform commission split from project revenue',
+      });
+      await client.query(
+        `UPDATE company_revenue SET total_platform_fees = total_platform_fees + $1, updated_at = NOW() WHERE id = 1`,
+        [platformShare]
+      );
+    }
 
     // 4. Rekodi ya split
     await client.query(
@@ -156,6 +189,22 @@ async function runSplitPayment(projectId, periodMonth, periodYear) {
       tx: client,
     });
 
+    // Audit inside the transaction: the split and its audit row commit together.
+    await writeAudit({
+      client,
+      userId: actorUserId,
+      action: 'P2P_PROJECT_SPLIT_RUN',
+      entityType: 'P2P_PROJECT',
+      entityId: projectId,
+      meta: {
+        referenceId: `SPLIT:${projectId}:${periodYear}-${periodMonth}`,
+        details: {
+          trigger, periodMonth, periodYear, totalRevenue, operationalShare, investorShare, platformShare,
+          investorsPaid, investorPaidTotal,
+        },
+      },
+    });
+
     await client.query('COMMIT');
 
 
@@ -176,14 +225,36 @@ async function runSplitPayment(projectId, periodMonth, periodYear) {
 /**
  * Ingiza mapato ya mradi kwenye Project Business Wallet
  */
-async function recordProjectRevenue(projectId, amount, description) {
+async function recordProjectRevenue(projectId, amount, description, { actorUserId = null, idempotencyKey = null } = {}) {
   const amountNum = parseFloat(amount);
   if (!amountNum || amountNum <= 0) {
     throw Object.assign(new Error('Kiasi cha mapato si sahihi.'), { statusCode: 400 });
   }
+  let keyedRef = null;
+  if (idempotencyKey !== null && idempotencyKey !== undefined && idempotencyKey !== '') {
+    if (typeof idempotencyKey !== 'string' || idempotencyKey.length > MAX_IDEMPOTENCY_KEY_LENGTH) {
+      throw Object.assign(new Error('Idempotency-Key si sahihi.'), { statusCode: 400 });
+    }
+    // Durable per-project key: same declaration replayed -> recorded once.
+    const digest = crypto.createHash('sha256').update(idempotencyKey).digest('hex').slice(0, 40);
+    keyedRef = `REV:${projectId}:K:${digest}`;
+  }
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    if (keyedRef) {
+      // Claims the key before any mutation; a concurrent duplicate waits on the
+      // unique reference and then sees it as already claimed. A reused key with
+      // a different amount raises OPERATION_SHAPE_MISMATCH (409).
+      const op = await fin.claimOperation({
+        client, operationType: 'PROJECT_REVENUE', reference: keyedRef, amount: amountNum, validateShape: true,
+      });
+      if (!op.claimed) {
+        await client.query('ROLLBACK');
+        const current = await pool.query('SELECT * FROM project_business_wallets WHERE project_id = $1', [projectId]);
+        return { ...(current.rows[0] || {}), replay: true, reference: keyedRef };
+      }
+    }
     const result = await client.query(
       `UPDATE project_business_wallets
        SET total_revenue_collected = total_revenue_collected + $1
@@ -191,7 +262,7 @@ async function recordProjectRevenue(projectId, amount, description) {
       [amountNum, projectId]
     );
     if (result.rows.length === 0) throw new Error('Project Business Wallet haijapatikana.');
-    const ref = `REV:${projectId}:${Date.now()}`;
+    const ref = keyedRef || `REV:${projectId}:${Date.now()}`;
     await fin.postJournal({
       client,
       lines: [
@@ -199,6 +270,15 @@ async function recordProjectRevenue(projectId, amount, description) {
         { accountCode: 'SUSPENSE', direction: 'CR', amount: amountNum },
       ],
       referenceId: ref, description: `Project revenue booked into suspense (${description || 'sales'})`,
+    });
+    if (keyedRef) await fin.setOperationState({ client, reference: keyedRef, status: 'SUCCESS' });
+    await writeAudit({
+      client,
+      userId: actorUserId,
+      action: 'P2P_PROJECT_REVENUE_RECORDED',
+      entityType: 'P2P_PROJECT',
+      entityId: projectId,
+      meta: { referenceId: ref, amount: amountNum, details: { description: description || null, idempotent: !!keyedRef } },
     });
     await client.query('COMMIT');
     logger.info('REVENUE', `Project ${projectId} mapato +${amountNum}`, { description, reference: ref });
@@ -226,7 +306,7 @@ async function runDueSplitPayments() {
   const processed = [];
   for (const row of result.rows) {
     try {
-      const res = await runSplitPayment(row.project_id, month, year);
+      const res = await runSplitPayment(row.project_id, month, year, { trigger: 'CRON' });
       if (res.success) processed.push(row.project_id);
     } catch (e) {
       logger.error('SPLIT-CRON', `Project ${row.project_id}: ${e.message}`);

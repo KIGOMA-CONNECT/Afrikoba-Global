@@ -133,8 +133,10 @@ router.post('/projects/:projectId/revenue', validate(schemas.p2p.revenue), async
   try {
     const { amount, description } = req.body;
     const { recordProjectRevenue } = require('../services/splitPaymentService');
-    const wallet = await recordProjectRevenue(parseInt(req.params.projectId, 10), amount, description);
-    res.json({ success: true, wallet });
+    const wallet = await recordProjectRevenue(parseInt(req.params.projectId, 10), amount, description,
+      { actorUserId: req.user.id, idempotencyKey: req.get('Idempotency-Key') || null });
+    const { replay, ...walletRow } = wallet;
+    res.json({ success: true, wallet: walletRow, ...(replay ? { replay: true } : {}) });
   } catch (error) {
     next(error);
   }
@@ -178,7 +180,8 @@ router.post('/projects/:projectId/split', async (req, res, next) => {
     const result = await runSplitPayment(
       parseInt(req.params.projectId, 10),
       now.getMonth() + 1,
-      now.getFullYear()
+      now.getFullYear(),
+      { actorUserId: req.user.id, trigger: 'MANUAL' }
     );
     res.json(result);
   } catch (error) {
