@@ -5,7 +5,7 @@ const { requireRoles, authRequired } = require('../middleware/auth');
 const { requireStepUp } = require('../services/stepUpAuthService');
 const { validate } = require('../middleware/validate');
 const schemas = require('../validations/schemas');
-const { logAction } = require('../services/auditService');
+const { logAction, writeAudit } = require('../services/auditService');
 const governanceService = require('../services/governanceService');
 const observabilityService = require('../services/observabilityService');
 const countryService = require('../services/countryService');
@@ -13,6 +13,17 @@ const fraudService = require('../services/fraudDetectionService');
 const cache = require('../utils/cache');
 
 const router = express.Router();
+
+// Strict positive int4 path id: rejects 'abc', '12abc', '0', '-5' and values
+// beyond int4 with 400 instead of letting them reach SQL (NaN / overflow -> 500).
+function parseProjectId(raw) {
+  const s = String(raw == null ? '' : raw);
+  const n = /^[1-9][0-9]{0,9}$/.test(s) ? Number(s) : NaN;
+  if (!Number.isSafeInteger(n) || n > 2147483647) {
+    throw Object.assign(new Error('Mradi si sahihi.'), { statusCode: 400, code: 'INVALID_PROJECT_ID' });
+  }
+  return n;
+}
 
 router.use(authRequired);
 router.use(requireRoles('ADMIN'));
@@ -131,9 +142,10 @@ router.post('/milestones/:milestoneId/release', async (req, res, next) => {
 // Ingiza mapato ya mradi (Project Revenue)
 router.post('/projects/:projectId/revenue', validate(schemas.p2p.revenue), async (req, res, next) => {
   try {
+    const projectId = parseProjectId(req.params.projectId);
     const { amount, description } = req.body;
     const { recordProjectRevenue } = require('../services/splitPaymentService');
-    const wallet = await recordProjectRevenue(parseInt(req.params.projectId, 10), amount, description,
+    const wallet = await recordProjectRevenue(projectId, amount, description,
       { actorUserId: req.user.id, idempotencyKey: req.get('Idempotency-Key') || null });
     const { replay, ...walletRow } = wallet;
     res.json({ success: true, wallet: walletRow, ...(replay ? { replay: true } : {}) });
@@ -175,10 +187,11 @@ router.get('/transactions', async (req, res, next) => {
 // Endesha Split Payment Engine kwa mradi
 router.post('/projects/:projectId/split', async (req, res, next) => {
   try {
+    const projectId = parseProjectId(req.params.projectId);
     const { runSplitPayment } = require('../services/splitPaymentService');
     const now = new Date();
     const result = await runSplitPayment(
-      parseInt(req.params.projectId, 10),
+      projectId,
       now.getMonth() + 1,
       now.getFullYear(),
       { actorUserId: req.user.id, trigger: 'MANUAL' }
@@ -522,18 +535,52 @@ router.get('/config', async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
+// Keys read as four-eyes amount thresholds (walletRoutes, businessRoutes,
+// creditRoutes, eventService). Their readers silently fall back to a default
+// when the stored value is not a positive number, so such values are refused.
+const THRESHOLD_CONFIG_KEYS = new Set(['HIGH_VALUE_TRANSFER_THRESHOLD', 'EVENT_WITHDRAWAL_THRESHOLD']);
+const CONFIG_KEY_RE = /^[A-Z][A-Z0-9_]{0,79}$/;
+const POSITIVE_DECIMAL_RE = /^(?:0|[1-9][0-9]{0,14})(?:\.[0-9]{1,2})?$/;
+
 router.put('/config/:key', async (req, res, next) => {
+  const client = await pool.connect();
   try {
-    const { value } = req.body;
-    await pool.query(
+    const key = String(req.params.key || '');
+    const { value } = req.body || {};
+    const invalid = (msg) => Object.assign(new Error(msg), { statusCode: 400, code: 'INVALID_CONFIG_SETTING' });
+    if (!CONFIG_KEY_RE.test(key)) throw invalid('Jina la setting si sahihi.');
+    if (value === undefined || value === null || (typeof value === 'object')) throw invalid('Thamani ya setting inahitajika.');
+    const newValue = String(value).trim();
+    if (newValue === '' || newValue.length > 500) throw invalid('Thamani ya setting si sahihi.');
+    if (THRESHOLD_CONFIG_KEYS.has(key) && !(POSITIVE_DECIMAL_RE.test(newValue) && Number(newValue) > 0)) {
+      throw invalid('Kizingiti lazima kiwe namba chanya.');
+    }
+    await client.query('BEGIN');
+    const prev = await client.query('SELECT value FROM config_settings WHERE key = $1 FOR UPDATE', [key]);
+    await client.query(
       `INSERT INTO config_settings (key, value, updated_by, updated_at)
        VALUES ($1, $2, $3, NOW())
        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_by = EXCLUDED.updated_by, updated_at = NOW()`,
-      [req.params.key, String(value), req.user.id]
+      [key, newValue, req.user.id]
     );
-    await logAction(req.user.id, 'CONFIG_SET', 'CONFIG_SETTING', null, { key: req.params.key }, req);
+    // Audit in the same transaction: the change and its evidence commit together.
+    await writeAudit({
+      client,
+      userId: req.user.id,
+      action: 'CONFIG_SET',
+      entityType: 'CONFIG_SETTING',
+      entityId: null,
+      meta: { key, oldValue: prev.rows.length ? prev.rows[0].value : null, newValue },
+      req,
+    });
+    await client.query('COMMIT');
     res.json({ success: true });
-  } catch (error) { next(error); }
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    next(error);
+  } finally {
+    client.release();
+  }
 });
 
 // ===== ANALYTICS DATA WAREHOUSE =====
