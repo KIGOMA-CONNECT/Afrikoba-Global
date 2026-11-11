@@ -3,7 +3,7 @@ const config = require('../config');
 const { sendSMS } = require('./smsService');
 const { generateReference, formatMoney } = require('../utils/helpers');
 const { createAppError } = require('../utils/errorCodes');
-const { logAudit } = require('./auditService');
+const { logAudit, writeAudit } = require('./auditService');
 const logger = require('../utils/logger');
 const fin = require('../services/financialEngine');
 
@@ -525,8 +525,9 @@ async function getBulkBatch(batchId, userId) {
   return { ...batch.rows[0], items: items.rows };
 }
 
-async function processBulkBatch(batchId) {
+async function processBulkBatch(batchId, requesterId) {
   let success = 0, failed = 0;
+  let denied = null;
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -536,7 +537,13 @@ async function processBulkBatch(batchId) {
     // SUCCESS transactions; items paid by one run were flipped to FAILED by the
     // others' OPERATION_SHAPE_MISMATCH).
     const batch = await client.query('SELECT * FROM bulk_payment_batches WHERE id = $1 FOR UPDATE', [batchId]);
-    if (!batch.rows.length) throw Object.assign(new Error('Batch hajapatikana.'), { statusCode: 404 });
+    // R26-C5 (BOLA, OWASP API1): only the batch owner may process it. Checked
+    // on the locked row before any effect; a refusal looks exactly like
+    // getBulkBatch's (404 'Batch hajapatikana.') and is audited after rollback.
+    if (!batch.rows.length || requesterId == null || String(batch.rows[0].user_id) !== String(requesterId)) {
+      denied = { reason: batch.rows.length ? 'NOT_OWNER' : 'NOT_FOUND' };
+      throw Object.assign(new Error('Batch hajapatikana.'), { statusCode: 404 });
+    }
     const b = batch.rows[0];
     if (b.status === 'COMPLETED') {
       await client.query('ROLLBACK');
@@ -577,8 +584,17 @@ async function processBulkBatch(batchId) {
     return { success, failed, message: 'Batch imechakatwa.' };
   } catch (e) {
     await client.query('ROLLBACK').catch(() => {});
-    throw e;
+    if (!denied) throw e;
   } finally { client.release(); }
+  // Reached only for a refused request (R26-C5).
+  await writeAudit({
+    userId: requesterId == null ? null : requesterId,
+    action: 'BULK_BATCH_PROCESS_DENIED',
+    entityType: 'bulk_payment_batch',
+    entityId: Number(batchId),
+    meta: { reason: denied.reason },
+  });
+  throw Object.assign(new Error('Batch hajapatikana.'), { statusCode: 404 });
 }
 
 async function listUserBatches(userId) {

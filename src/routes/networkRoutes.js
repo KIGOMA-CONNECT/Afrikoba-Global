@@ -69,7 +69,7 @@ router.get('/bulk/:id', authRequired, async (req, res, next) => {
   catch (e) { next(e); }
 });
 router.post('/bulk/:id/process', authRequired, async (req, res, next) => {
-  try { res.json({ success: true, result: await networkService.processBulkBatch(req.params.id) }); }
+  try { res.json({ success: true, result: await networkService.processBulkBatch(req.params.id, req.user.id) }); }
   catch (e) { next(e); }
 });
 router.get('/bulk', authRequired, async (req, res, next) => {

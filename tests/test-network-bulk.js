@@ -57,7 +57,7 @@ async function run() {
 
     // Call processBulkBatch (creates its own connection)
     const networkService = require('../src/services/networkService');
-    const result = await networkService.processBulkBatch(batchId);
+    const result = await networkService.processBulkBatch(batchId, uid);
     await expect(result.success === 2 && result.failed === 0, 'Bulk batch processed: 2 success, 0 failed', JSON.stringify(result));
 
     // Verify transaction linkage for each item

@@ -203,7 +203,7 @@ const errs = (r) => r.filter((x) => x.status === 'rejected').map((x) => `${x.rea
     const rc = await user('bulk-r');
     const b = await network.createBulkBatch(s.id, { batch_name: 'R25T bulk', recipients: [
       { phone: rc.phone, amount: 100 }, { phone: rc.phone, amount: -50 }, { phone: rc.phone, amount: 0 }, { phone: '255000000001', amount: 10 }] });
-    const res = await network.processBulkBatch(b.id);
+    const res = await network.processBulkBatch(b.id, s.id);
     const items = (await pool.query('SELECT status FROM bulk_payment_items WHERE batch_id=$1 ORDER BY id', [b.id])).rows.map((x) => x.status);
     const succTx = await num(`SELECT COUNT(*) FROM transactions WHERE type='BULK_PAYMENT' AND status='SUCCESS' AND (meta->>'batch_id')::int=$1`, [b.id]);
     check('result 1 success / 3 failed', res.success === 1 && res.failed === 3, res);
@@ -220,7 +220,7 @@ const errs = (r) => r.filter((x) => x.status === 'rejected').map((x) => `${x.rea
     const r1 = await user('b2r1'); const r2 = await user('b2r2'); const r3 = await user('b2r3');
     const b = await network.createBulkBatch(s.id, { batch_name: 'R25T bulk2', recipients: [
       { phone: r1.phone, amount: 100 }, { phone: r2.phone, amount: 200 }, { phone: r3.phone, amount: 300 }] });
-    const r = await Promise.allSettled([1, 2, 3].map(() => network.processBulkBatch(b.id)));
+    const r = await Promise.allSettled([1, 2, 3].map(() => network.processBulkBatch(b.id, s.id)));
     const vals = r.map((x) => (x.status === 'fulfilled' ? x.value : { err: x.reason.message }));
     const ran = vals.filter((v) => v.success === 3).length;
     const already = vals.filter((v) => v.message === 'Batch tayari imechakatwa.').length;
