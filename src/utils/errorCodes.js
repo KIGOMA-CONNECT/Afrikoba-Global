@@ -95,6 +95,7 @@ const ERROR_CODES = {
   CARD_MERCHANT_REQUIRED:        { status: 400, message: 'Jina la muuzaji ni lazima.' },
   CARD_AMOUNT_INVALID:           { status: 400, message: 'Kiasi si sahihi.' },
   CARD_INVALID_CVV:              { status: 400, message: 'CVV si sahihi.' },
+  CARD_CVV_LOCKED:               { status: 429, message: 'Kadi imesimamishwa kwa muda baada ya majaribio mengi ya CVV yasiyo sahihi. Jaribu tena baadaye.' },
   CARD_OVER_PER_TXN_LIMIT:       { status: 400, message: 'Kiasi kinazidi kikomo cha miamala (per-txn limit).' },
   CARD_OVER_DAILY_LIMIT:         { status: 400, message: 'Kiasi kinazidi kikomo cha siku (daily limit).' },
   CARD_AUTH_NOT_FOUND:           { status: 404, message: 'Authorization haipatikani au imeshawekwa.' },

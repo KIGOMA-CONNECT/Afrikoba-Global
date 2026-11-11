@@ -146,6 +146,22 @@ async function blockCard(userId, cardId) {
 // J3: AUTHORIZATION (wallet hold)
 // ====================================================================
 
+// R26-C3b: CVV brute-force lockout. CVV_MAX_FAILURES INVALID_CVV declines on
+// a card within CVV_LOCK_WINDOW lock further authorizations on that card
+// until the oldest of them leaves the window. No schema change: the count is
+// derived from card_transactions (idx_card_txn_status covers it).
+const CVV_MAX_FAILURES = 5;
+const CVV_LOCK_WINDOW = '1 hour';
+async function recentInvalidCvv(client, cardId) {
+  const r = await client.query(
+    `SELECT COUNT(*)::int AS n FROM card_transactions
+      WHERE card_id = $1 AND status = 'DECLINED' AND declined_reason = 'INVALID_CVV'
+        AND created_at > NOW() - $2::interval`,
+    [cardId, CVV_LOCK_WINDOW]
+  );
+  return r.rows[0].n;
+}
+
 async function authorizeCard(userId, cardId, data) {
   const { merchant_name, amount, cvv } = data;
   const amountNum = parseAmount(amount);
@@ -184,8 +200,12 @@ async function authorizeCard(userId, cardId, data) {
 
     if (c.status !== 'ACTIVE') {
       decline = { reason: c.status === 'FROZEN' ? 'CARD_FROZEN' : 'CARD_BLOCKED', error: 'CARD_INACTIVE' };
+    } else if ((await recentInvalidCvv(client, cardId)) >= CVV_MAX_FAILURES) {
+      // R26-C3b: CVV lockout, evaluated under the card lock BEFORE any CVV
+      // comparison. The CVV is not compared at all while locked.
+      decline = { reason: 'CVV_LOCKED', error: 'CARD_CVV_LOCKED', inTx: true };
     } else if (!cvv || sha256(String(cvv).trim()) !== c.cvv_hash) {
-      decline = { reason: 'INVALID_CVV', error: 'CARD_INVALID_CVV' };
+      decline = { reason: 'INVALID_CVV', error: 'CARD_INVALID_CVV', inTx: true };
     } else if (c.per_txn_limit && amountNum > Number(c.per_txn_limit)) {
       decline = { reason: 'OVER_TRANSACTION_LIMIT', error: 'CARD_OVER_PER_TXN_LIMIT' };
     } else {
@@ -207,13 +227,22 @@ async function authorizeCard(userId, cardId, data) {
         return { success: true, status: 'AUTH_HOLD', auth_reference: authRef, locked_balance: Number(after.rows[0].locked_balance), wallet_balance: Number(after.rows[0].wallet_balance), message: 'Miamala imeidhinishwa (hold).' };
       }
     }
-    await client.query('ROLLBACK');
+    if (decline.inTx) {
+      // R26-C3b: CVV declines are recorded inside the transaction that holds
+      // the card lock, so the next attempt on this card (which waits for the
+      // lock) already counts this one; concurrent attempts cannot exceed the
+      // limit. Nothing else was written in this transaction.
+      await logCardTx(client, userId, cardId, merchant_name, amountNum, 'DECLINED', authRef, decline.reason);
+      await client.query('COMMIT');
+    } else {
+      await client.query('ROLLBACK');
+    }
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
     throw err;
   } finally { client.release(); }
 
-  await declineWith(decline.reason);
+  if (!decline.inTx) await declineWith(decline.reason);
   throw createAppError(decline.error);
 }
 

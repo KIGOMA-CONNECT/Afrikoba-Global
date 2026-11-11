@@ -7,6 +7,7 @@ const express = require('express');
 const { authRequired, requireRoles } = require('../middleware/auth');
 const cards = require('../services/cardService');
 const { fourEyesGate, recordDirectExecution } = require('../middleware/fourEyesGate');
+const { financialLimiter } = require('../middleware/granularRateLimit');
 
 const router = express.Router();
 
@@ -47,7 +48,8 @@ router.post('/:id/block', authRequired, async (req, res, next) => {
 });
 
 // ===== J3: AUTHORIZATION =====
-router.post('/:id/authorize', authRequired, async (req, res, next) => {
+// R26-C3a: "Financial operations (strict)" limiter in addition to the /cards walletLimiter.
+router.post('/:id/authorize', financialLimiter, authRequired, async (req, res, next) => {
   try { res.json({ success: true, result: await cards.authorizeCard(req.user.id, req.params.id, req.body) }); }
   catch (e) { next(e); }
 });
