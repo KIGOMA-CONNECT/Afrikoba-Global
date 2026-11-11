@@ -5,6 +5,7 @@
  */
 
 const pool = require('../config/db');
+const { writeAudit } = require('./auditService');
 
 // Executor registry: action_type -> async executor(payload, approverId, flow)
 // Enables four-eyes maker-checker to actually run an operation on approval.
@@ -85,6 +86,14 @@ async function decideApprovalFlow(flowId, approverId, action, comment) {
     if (executor) {
       try {
         execResult = await executor(f.data || {}, approverId, f);
+        // R26-C2: record maker (requester) and checker (approver) of the executed operation.
+        await writeAudit({
+          userId: approverId,
+          action: 'APPROVAL_FLOW_EXECUTED',
+          entityType: 'APPROVAL_FLOW',
+          entityId: Number(flowId),
+          meta: { flow_id: Number(flowId), action_type: f.action_type, ref_type: f.ref_type || null, ref_id: f.ref_id || null, maker_id: f.requester_id, checker_id: approverId },
+        });
       } catch (execError) {
         await pool.query(
           `UPDATE approval_flows SET status = 'PENDING', decided_at = NULL WHERE id = $1 AND status = 'APPROVED'`,

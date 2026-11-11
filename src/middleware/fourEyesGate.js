@@ -8,6 +8,11 @@
  *   effect, the attempt is written to audit_logs, and the response tells the
  *   caller how to launch the four-eyes request instead. When four-eyes is not
  *   active, the request passes through unchanged (current behaviour).
+ *
+ * recordDirectExecution(req, actionCode, entityId, meta)
+ *   R26-C2: audit row naming maker and checker for a direct execution that ran
+ *   while four-eyes was not active (maker = the acting admin, no checker).
+ *   Never throws and never changes the response.
  * ============================================================ */
 const pool = require('../config/db');
 const featureFlags = require('../services/featureFlagService');
@@ -55,4 +60,15 @@ function fourEyesGate(actionCode, buildPayload) {
   };
 }
 
-module.exports = { fourEyesGate, isFourEyesRequired };
+async function recordDirectExecution(req, actionCode, entityId, meta = {}) {
+  await writeAudit({
+    userId: req.user && req.user.id,
+    action: 'FINANCIAL_DIRECT_EXECUTED',
+    entityType: actionCode,
+    entityId: Number.isSafeInteger(entityId) ? entityId : null,
+    meta: { action_code: actionCode, maker_id: req.user ? req.user.id : null, checker_id: null, four_eyes: 'NOT_ACTIVE', ...meta },
+    req,
+  }).catch(() => {});
+}
+
+module.exports = { fourEyesGate, isFourEyesRequired, recordDirectExecution };

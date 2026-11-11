@@ -7,6 +7,7 @@
  * the policy explicitly allows it.
  * ============================================================ */
 const pool = require('../config/db');
+const { writeAudit } = require('./auditService');
 
 const executors = {};
 
@@ -573,6 +574,28 @@ async function _dispatch(requestId, approverId) {
 
     await client.query('COMMIT');
     inTransaction = false;
+
+    // R26-C2: record maker (requester) and checker(s) of the executed operation.
+    // After COMMIT and non-throwing, so it can never undo or block the execution.
+    try {
+      const checkers = await pool.query(
+        `SELECT approver_id FROM four_eyes_approvals WHERE request_id = $1 AND decision = 'APPROVE' ORDER BY id`,
+        [requestId]
+      );
+      await writeAudit({
+        userId: approverId,
+        action: 'FOUR_EYES_EXECUTED',
+        entityType: 'FOUR_EYES_REQUEST',
+        entityId: Number(requestId),
+        meta: {
+          request_id: Number(requestId),
+          action_code: request.action_code,
+          maker_id: request.requester_id,
+          checker_ids: checkers.rows.map((r) => r.approver_id),
+          executed_by: approverId,
+        },
+      });
+    } catch (auditError) { /* writeAudit logs its own failures; never block the executed result */ }
 
     return result || {};
   } catch (error) {

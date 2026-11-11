@@ -6,7 +6,7 @@
 const express = require('express');
 const { authRequired, requireRoles } = require('../middleware/auth');
 const cards = require('../services/cardService');
-const { fourEyesGate } = require('../middleware/fourEyesGate');
+const { fourEyesGate, recordDirectExecution } = require('../middleware/fourEyesGate');
 
 const router = express.Router();
 
@@ -62,12 +62,20 @@ router.get('/:id/transactions', authRequired, async (req, res, next) => {
 // R26-C1: when four-eyes is active for CARD_ADMIN_SETTLE / CARD_ADMIN_REFUND the direct routes are refused (403 FOUR_EYES_REQUIRED).
 const cardAuthPayload = (req) => ({ authReference: String((req.body && req.body.auth_reference) || '') });
 router.post('/admin/settle', authRequired, requireRoles('ADMIN'), fourEyesGate('CARD_ADMIN_SETTLE', cardAuthPayload), async (req, res, next) => {
-  try { res.json({ success: true, result: await cards.settleCardAuth(req.user.id, req.body.auth_reference) }); }
+  try {
+    const result = await cards.settleCardAuth(req.user.id, req.body.auth_reference);
+    await recordDirectExecution(req, 'CARD_ADMIN_SETTLE', null, { auth_reference: String(req.body.auth_reference) }); // R26-C2
+    res.json({ success: true, result });
+  }
   catch (e) { next(e); }
 });
 
 router.post('/admin/refund', authRequired, requireRoles('ADMIN'), fourEyesGate('CARD_ADMIN_REFUND', cardAuthPayload), async (req, res, next) => {
-  try { res.json({ success: true, result: await cards.refundCardAuth(req.user.id, req.body.auth_reference) }); }
+  try {
+    const result = await cards.refundCardAuth(req.user.id, req.body.auth_reference);
+    await recordDirectExecution(req, 'CARD_ADMIN_REFUND', null, { auth_reference: String(req.body.auth_reference) }); // R26-C2
+    res.json({ success: true, result });
+  }
   catch (e) { next(e); }
 });
 

@@ -7,7 +7,7 @@ const express = require('express');
 const { authRequired, requireRoles } = require('../middleware/auth');
 const credit = require('../services/savingsCreditService');
 const governanceService = require('../services/governanceService');
-const { fourEyesGate } = require('../middleware/fourEyesGate');
+const { fourEyesGate, recordDirectExecution } = require('../middleware/fourEyesGate');
 
 const router = express.Router();
 
@@ -126,7 +126,9 @@ router.post('/admin/loans/:id/disburse', authRequired, requireRoles('ADMIN'), fo
       });
     }
 
-    res.json({ success: true, result: await credit.adminDisburseMicroLoan(loanId, req.user.id) });
+    const result = await credit.adminDisburseMicroLoan(loanId, req.user.id);
+    await recordDirectExecution(req, 'CREDIT_LOAN_DISBURSE', loanId, { amount }); // R26-C2
+    res.json({ success: true, result });
   }
   catch (e) { next(e); }
 });
