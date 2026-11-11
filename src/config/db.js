@@ -163,6 +163,23 @@ function trackTransactionState(client) {
   };
 }
 
+// R24-N4: a client is "in a transaction" if the SQL text tracker saw BEGIN
+// without COMMIT/ROLLBACK, or if the server's ReadyForQuery status (pg 8.x
+// client._txStatus: 'I' idle, 'T' in transaction, 'E' failed transaction) says
+// so. The protocol status also covers forms the text matcher misses ("begin;").
+function isClientInTx(client) {
+  return client.__afrikobaInTx === true || client._txStatus === 'T' || client._txStatus === 'E';
+}
+
+function logRollbackFailure(rbErr, callerErr) {
+  try {
+    logger.error('DB_ROLLBACK_FAILED', 'ROLLBACK on release failed; client discarded from pool', {
+      error: rbErr && rbErr.message,
+      callerError: callerErr && callerErr.message,
+    });
+  } catch (_) { /* logging must never mask the caller error */ }
+}
+
 function safeRelease(client, origRelease, err) {
   var released = false;
   function doRelease(e) {
@@ -180,7 +197,7 @@ function safeRelease(client, origRelease, err) {
   }
 
   if (err) {
-    if (client.__afrikobaInTx) {
+    if (isClientInTx(client)) {
       try {
         var p = client.query('ROLLBACK');
         if (p && typeof p.then === 'function') {
@@ -192,6 +209,7 @@ function safeRelease(client, origRelease, err) {
             }
           }).catch(function(rbE) {
             var rbErr = rbE || new Error('rollback_failed');
+            logRollbackFailure(rbErr, err);
             try {
               doRelease(rbErr);
             } catch (e) {
@@ -202,6 +220,7 @@ function safeRelease(client, origRelease, err) {
         }
       } catch (e) {
         var rbErr2 = e || new Error('rollback_failed');
+        logRollbackFailure(rbErr2, err);
         doRelease(rbErr2);
         return;
       }
@@ -213,7 +232,7 @@ function safeRelease(client, origRelease, err) {
     return;
   }
 
-  if (client.__afrikobaInTx) {
+  if (isClientInTx(client)) {
     try {
       var p2 = client.query('ROLLBACK');
       if (p2 && typeof p2.then === 'function') {
@@ -226,6 +245,7 @@ function safeRelease(client, origRelease, err) {
           }
         }).catch(function(rbE) {
           var rbErr3 = rbE || new Error('rollback_failed');
+          logRollbackFailure(rbErr3, null);
           try {
             doRelease(rbErr3);
           } catch (e) {
@@ -236,6 +256,7 @@ function safeRelease(client, origRelease, err) {
       }
     } catch (e) {
       var rbErr4 = e || new Error('rollback_failed');
+      logRollbackFailure(rbErr4, null);
       doRelease(rbErr4);
       return;
     }
@@ -248,8 +269,12 @@ function safeRelease(client, origRelease, err) {
 
 function safeConnect() {
   return currentPool.connect().then(function(client) {
-    if (!client || client.__afrikobaSafeRelease) return client;
-    trackTransactionState(client);
+    if (!client) return client;
+    trackTransactionState(client); // idempotent per physical client
+    // R24-N4: pg-pool assigns a fresh client.release on EVERY checkout
+    // (pg-pool _acquireClient). The safe release must therefore be installed
+    // on every checkout; installing it only on the first checkout let a later
+    // checkout return an open/aborted transaction to the pool.
     var origRelease = client.release.bind(client);
     var released = false;
     client.release = function(err) {
