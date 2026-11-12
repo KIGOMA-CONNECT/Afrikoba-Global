@@ -351,9 +351,19 @@ async function decideLoanStep(actorUserId, loanId, { step, decision, reason, app
       if (!Number.isFinite(amount) || amount <= 0) {
         throw loanErr(400, 'VICOBA_LOAN_AMOUNT_INVALID', 'Kiasi cha mkopo lazima kiwe kikubwa kuliko 0.');
       }
-      if (toCents(amount) > toCents(loan.requested_amount)) {
+      if (amount >= 1e16) {
         throw loanErr(400, 'VICOBA_LOAN_AMOUNT_INVALID', 'Kiasi kilichoidhinishwa hakizidi kilichoombwa.');
       }
+      // R35 (1): round with Postgres NUMERIC(18,2), the same rule the column applies on store, and
+      // compare the rounded value with the request; JS float rounding let 10000.005 pass as 10000.01.
+      const rounded = (await client.query(
+        'SELECT ($1::numeric)::numeric(18,2) AS amt, ($1::numeric)::numeric(18,2) > ($2::numeric)::numeric(18,2) AS over',
+        [String(amount), String(loan.requested_amount)]
+      )).rows[0];
+      if (rounded.over || !(Number(rounded.amt) > 0)) {
+        throw loanErr(400, 'VICOBA_LOAN_AMOUNT_INVALID', 'Kiasi kilichoidhinishwa hakizidi kilichoombwa.');
+      }
+      amount = rounded.amt;
     }
     await insertApproval(client, loan, ctx.step, actor, ctx.role, 'APPROVED', null, amount);
 
