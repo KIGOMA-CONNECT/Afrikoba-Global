@@ -784,13 +784,23 @@ async function payPenalty(userId, penaltyId) {
       await client.query('COMMIT');
       return { success: true, referenceId: generateReference('VP'), message: 'Faini tayari imelipwa.' };
     }
+    // R29 D2: a penalty an officer has WAIVED is never paid (checked under the row lock above).
+    if (penalty.status === 'WAIVED') {
+      throw Object.assign(new Error('Faini hii imeondolewa na kiongozi wa kikundi; haihitaji kulipwa.'), { statusCode: 409, code: 'PENALTY_WAIVED' });
+    }
 
     const userRes = await client.query('SELECT phone_number, full_name FROM users WHERE id = $1', [userId]);
     const user = userRes.rows[0];
 
     const referenceId = generateReference('VP');
     await fin.debitWallet({ client, userId, amount: penalty.amount, reference: `${referenceId}:DR`, toAccount: 'PLATFORM_FEES', description: 'VICOBA Penalty Payment' });
-    await client.query("UPDATE vicoba_penalties SET status = 'PAID', paid_at = NOW() WHERE id = $1", [penaltyId]);
+    const marked = await client.query(
+      "UPDATE vicoba_penalties SET status = 'PAID', paid_at = NOW() WHERE id = $1 AND status NOT IN ('PAID', 'WAIVED')",
+      [penaltyId]
+    );
+    if (marked.rowCount !== 1) {
+      throw Object.assign(new Error('Faini hii imeondolewa na kiongozi wa kikundi; haihitaji kulipwa.'), { statusCode: 409, code: 'PENALTY_WAIVED' });
+    }
 
     await client.query(
       `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
