@@ -2,12 +2,18 @@
 'use strict';
 /* R29 D3 (owner decision) — the event owner cannot cancel a withdrawal that has an approval flow.
  * cancelEventWithdrawal must refuse with 409 EVENT_WITHDRAWAL_APPROVAL_OPEN while a related
- * EVENT_WITHDRAWAL flow is PENDING, APPROVED or REJECTED (no auto-reject of the flow); the
+ * EVENT_WITHDRAWAL flow is PENDING or APPROVED (no auto-reject of the flow). R29 N-D3a (owner
+ * option b): once the related flow is REJECTED the owner may cancel the PENDING withdrawal; the
  * message tells the owner to finish or reject the approval first. The flow check runs inside a
  * transaction under the withdrawal row lock. Before: cancel was an unlocked conditional UPDATE
  * that turned a PENDING row REJECTED even with a live flow (R28 F2b then had to refuse the approval).
  *  [1] flow PENDING -> 409; row PENDING, flow PENDING, nothing moves.
- *  [2] flow REJECTED by an admin -> 409; row PENDING.
+ *  [2] (N-D3a) flow REJECTED by an admin -> cancel succeeds (row REJECTED, flow stays REJECTED,
+ *      nothing moves); approving that flow afterwards -> 409, nothing moves.
+ *  [2b] (N-D3a) one REJECTED flow plus another PENDING flow for the same row -> still 409.
+ *  [2c] (N-D3a) concurrency, 10 rounds cancel || admin REJECT: flow always REJECTED, nothing
+ *      moves, row never PAID; a successful cancel only ever follows a REJECTED flow.
+ *  [2d] (N-D3a) deterministic: admin REJECT paused before COMMIT -> cancel 409; after commit -> cancel ok.
  *  [3] flow APPROVED while the row is still PENDING (executor in flight) -> 409.
  *  [4] flow found by ref_id even when event_withdrawals.approval_flow_id is not set yet -> 409.
  *  [5] deterministic race: the approval has claimed the flow (APPROVED) and its executor is paused
@@ -126,13 +132,61 @@ const EXEC_PAID = 'UPDATE event_withdrawals\n          SET status = \'PAID\'';
     check('[1] row PENDING, flow PENDING, nothing moved', (await wstatus(s.wid)) === 'PENDING' && (await fstatus(s.flow)) === 'PENDING' && (await walletC(s.owner.id)) === o0 && (await poolC(s.ev)) === p0);
   }
 
-  console.log('\n[2] flow REJECTED');
+  console.log('\n[2] (N-D3a) flow REJECTED: the owner may cancel');
   {
-    const s = await bound('o2');
+    const s = await bound('o2'); const o0 = await walletC(s.owner.id); const p0 = await poolC(s.ev);
     const d = await call('POST', `/api/v1/admin/approvals/${s.flow}/decide`, B.token, { action: 'REJECT' });
+    check('[2] setup: admin rejected the flow; row still PENDING (no auto-reject)', d.status === 200 && (await fstatus(s.flow)) === 'REJECTED' && (await wstatus(s.wid)) === 'PENDING', d.status);
     const c = await attempt(eventService.cancelEventWithdrawal(s.owner.id, s.ev, s.wid));
-    check('[2] setup: admin rejected the flow', d.status === 200 && (await fstatus(s.flow)) === 'REJECTED', d.status);
-    check('[2] cancel -> 409; row stays PENDING (no auto-reject)', open409(c) && (await wstatus(s.wid)) === 'PENDING', c);
+    check('[2] cancel -> { success, withdrawal REJECTED }; flow stays REJECTED; nothing moved', c.ok && c.r.success === true && c.r.withdrawal && c.r.withdrawal.status === 'REJECTED' && (await wstatus(s.wid)) === 'REJECTED' && (await fstatus(s.flow)) === 'REJECTED' && (await walletC(s.owner.id)) === o0 && (await poolC(s.ev)) === p0, c);
+    const again = await call('POST', `/api/v1/admin/approvals/${s.flow}/decide`, B.token, { action: 'APPROVE' });
+    check('[2] approving the rejected flow afterwards -> 409; nothing moved', again.status === 409 && (await wstatus(s.wid)) === 'REJECTED' && (await walletC(s.owner.id)) === o0 && (await poolC(s.ev)) === p0, again.status);
+  }
+
+  console.log('\n[2b] (N-D3a) a REJECTED flow and another PENDING flow for the same row');
+  {
+    const s = await bound('o2b');
+    await call('POST', `/api/v1/admin/approvals/${s.flow}/decide`, B.token, { action: 'REJECT' });
+    await q1(`INSERT INTO approval_flows (action_type, ref_type, ref_id, requester_id, data, status) VALUES ('EVENT_WITHDRAWAL','EVENT_WITHDRAWAL',$1,$2,'{}','PENDING') RETURNING id`, [s.wid, s.owner.id]);
+    const c = await attempt(eventService.cancelEventWithdrawal(s.owner.id, s.ev, s.wid));
+    check('[2b] cancel -> 409 while any related flow is still PENDING; row PENDING', open409(c) && (await wstatus(s.wid)) === 'PENDING', c);
+  }
+
+  console.log('\n[2c] (N-D3a) concurrency: cancel || admin REJECT, 10 rounds');
+  {
+    const bad = []; let cancelled = 0; let refused = 0;
+    for (let i = 0; i < 10; i++) {
+      const s = await bound(`o2c_${i}`); const o0 = await walletC(s.owner.id); const p0 = await poolC(s.ev);
+      const [c, d] = await Promise.all([
+        attempt(eventService.cancelEventWithdrawal(s.owner.id, s.ev, s.wid)),
+        call('POST', `/api/v1/admin/approvals/${s.flow}/decide`, B.token, { action: 'REJECT' }),
+      ]);
+      const w = await wstatus(s.wid); const f = await fstatus(s.flow);
+      const moved = (await walletC(s.owner.id)) !== o0 || (await poolC(s.ev)) !== p0;
+      const okCancel = c.ok && w === 'REJECTED';
+      const okRefuse = open409(c) && w === 'PENDING';
+      if (okCancel) cancelled++; if (okRefuse) refused++;
+      if (d.status !== 200 || f !== 'REJECTED' || moved || !(okCancel || okRefuse)) bad.push({ c: c.ok ? 'ok' : c.status, d: d.status, w, f, moved });
+    }
+    check(`[2c] every round consistent (cancelled=${cancelled}, refused-while-pending=${refused}); flow REJECTED; nothing moved`, bad.length === 0, bad);
+  }
+
+  console.log('\n[2d] (N-D3a) race: admin REJECT paused before its COMMIT; owner cancels');
+  {
+    const s = await bound('o2d');
+    const g = await pausedAt('COMMIT');
+    let d; let c1;
+    try {
+      const pD = call('POST', `/api/v1/admin/approvals/${s.flow}/decide`, B.token, { action: 'REJECT' });
+      const didPause = await g.waitPaused();
+      check('[2d] setup: reject paused before COMMIT (flow REJECTED only inside its transaction)', didPause);
+      c1 = await attempt(eventService.cancelEventWithdrawal(s.owner.id, s.ev, s.wid));
+      g.release();
+      d = await pD;
+    } finally { gate.armed = false; g.release(); }
+    check('[2d] cancel during the uncommitted reject -> 409 (sees the committed PENDING flow); row PENDING', open409(c1) && (await wstatus(s.wid)) === 'PENDING', c1);
+    const c2 = await attempt(eventService.cancelEventWithdrawal(s.owner.id, s.ev, s.wid));
+    check('[2d] after the reject commits: cancel succeeds, row REJECTED, flow REJECTED', d.status === 200 && c2.ok && (await wstatus(s.wid)) === 'REJECTED' && (await fstatus(s.flow)) === 'REJECTED', { d: d.status, c2 });
   }
 
   console.log('\n[3] flow APPROVED, row still PENDING');

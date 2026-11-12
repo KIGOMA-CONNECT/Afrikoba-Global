@@ -892,7 +892,8 @@ async function cancelEventWithdrawal(actorId, eventId, withdrawalId) {
   assertOwner(actorId, event);
   const notCancellable = () => badge('Uondoaji haupo au hauwezi kughairiwa (tayari umechakatwa).', 400);
   // R29 D3: under the withdrawal row lock, a withdrawal with a related EVENT_WITHDRAWAL approval
-  // flow (PENDING, APPROVED or REJECTED) is never cancelled here; the flow is not auto-rejected.
+  // flow that is PENDING or APPROVED is never cancelled here; the flow is not auto-rejected.
+  // R29 N-D3a: once every related flow is REJECTED, the owner may cancel the PENDING withdrawal.
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -903,7 +904,7 @@ async function cancelEventWithdrawal(actorId, eventId, withdrawalId) {
     if (locked.rows.length === 0 || locked.rows[0].status !== 'PENDING') throw notCancellable();
     const flows = await client.query(
       `SELECT id FROM approval_flows
-        WHERE action_type = 'EVENT_WITHDRAWAL' AND status IN ('PENDING','APPROVED','REJECTED')
+        WHERE action_type = 'EVENT_WITHDRAWAL' AND status IN ('PENDING','APPROVED')
           AND (id = $1 OR (ref_type = 'EVENT_WITHDRAWAL' AND ref_id = $2))
         LIMIT 1`,
       [locked.rows[0].approval_flow_id, withdrawalId]
