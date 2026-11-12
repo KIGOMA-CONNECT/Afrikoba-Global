@@ -11,6 +11,8 @@
  *  [4] the final step pays exactly the stored 10000.00 (1000000 cents), once.
  *  [5] 10000.004 rounds to 10000.00 -> 200; 2500.125 on a 10000 request is stored as 2500.13.
  *  [6] static: the MHASIBU check rounds in SQL with numeric(18,2) before insertApproval.
+ *  [7] values where JS float rounding and NUMERIC disagree: 5242.8949999999995 on 5242.89 stored and
+ *      paid 5242.89 (JS would pay 5242.90); 1.005 stored 1.01 (JS gives 1.00).
  * Requires a DISPOSABLE database phase71_financial_audit_<suffix> on 127.0.0.1:55481 with migration 149.
  */
 const DB_GUARD = /^phase71_financial_audit_[a-z0-9_]+$/;

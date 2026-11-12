@@ -16,6 +16,8 @@
  *  [7] static: the applicant check precedes the step-order and role checks in assertChainStep, and
  *      the approveLoan self-check precedes the disbursement.
  *  [8] two self-approval attempts at once -> both 403; no approval row.
+ *  [9] officer applicant whose role has a second holder (loan actionable, not ON_HOLD): own KATIBU,
+ *      MHASIBU and MWENYEKITI steps -> 403 with the message; control: the second holder acts (200).
  * R30 D4 [5] (officer creates for a member, chair step at creation) is retired by D(a) and not carried.
  * Every refusal is checked with no DB mutation (11 tables). Needs migration 149.
  * Requires a DISPOSABLE database phase71_financial_audit_<suffix> on 127.0.0.1:55481.
@@ -231,6 +233,30 @@ const svcSelf = (a) => !a.ok && a.status === 403 && a.msg === MSG;
     const s0 = await snap();
     const [a, b] = await Promise.all([decide(lid, s.member, { step: 'KATIBU', decision: 'APPROVE' }), decide(lid, s.member, { step: 'KATIBU', decision: 'APPROVE' })]);
     check('[8] both 403 R30 message; no approval row; no DB mutation', r30self(a) && r30self(b) && (await approvals(lid)).length === 0 && sameSnap(s0, await snap()), { a: a.status, b: b.status });
+  }
+
+  console.log('\n[9] officer applicant whose role has a second holder (loan actionable, not ON_HOLD)');
+  {
+    const s = await group([['chair', 'MWENYEKITI'], ['chair2', 'MWENYEKITI'], ['katibu', 'KATIBU'], ['katibu2', 'KATIBU'],
+      ['treasurer', 'MWEKAHAZINA'], ['treasurer2', 'MWEKAHAZINA'], ['member', 'MJUMBE']]);
+    const lk = (await submit(s, s.katibu)).body.loan;
+    check('[9] KATIBU applies while a second KATIBU exists -> PENDING_KATIBU (actionable)', lk && lk.status === 'PENDING_KATIBU', lk);
+    await refused('[9] KATIBU-applicant approves own KATIBU step -> 403 R30 message', () => decide(lk.id, s.katibu, { step: 'KATIBU', decision: 'APPROVE' }), r30self);
+    await refused('[9] KATIBU-applicant rejects own KATIBU step -> 403 R30 message', () => decide(lk.id, s.katibu, { step: 'KATIBU', decision: 'REJECT', reason: 'mwenyewe' }), r30self);
+    const lt = (await submit(s, s.treasurer)).body.loan;
+    await toMhasibu(s, lt.id);
+    check('[9] MWEKAHAZINA-applicant loan reaches PENDING_MHASIBU (second MWEKAHAZINA exists)', (await loanRow(lt.id)).status === 'PENDING_MHASIBU');
+    await refused('[9] MWEKAHAZINA-applicant approves own MHASIBU step -> 403 R30 message', () => decide(lt.id, s.treasurer, { step: 'MHASIBU', decision: 'APPROVE', approvedAmount: 30000 }), r30self);
+    const lc = (await submit(s, s.chair)).body.loan;
+    await toMwenyekiti(s, lc.id);
+    check('[9] MWENYEKITI-applicant loan reaches PENDING_MWENYEKITI (second MWENYEKITI exists)', (await loanRow(lc.id)).status === 'PENDING_MWENYEKITI');
+    await refused('[9] MWENYEKITI-applicant /approve own loan -> 403 R30 message', () => approveFinal(lc.id, s.chair), r30self);
+    await refused('[9] MWENYEKITI-applicant /decision MWENYEKITI APPROVE own loan -> 403 R30 message', () => decide(lc.id, s.chair, { step: 'MWENYEKITI', decision: 'APPROVE' }), r30self);
+    const k2 = await decide(lk.id, s.katibu2, { step: 'KATIBU', decision: 'APPROVE' });
+    const t2 = await decide(lt.id, s.treasurer2, { step: 'MHASIBU', decision: 'APPROVE', approvedAmount: 30000 });
+    const c2 = await approveFinal(lc.id, s.chair2);
+    check('[9] control: the second holder of each role can act (200), so the refusals above were the self rule, not the state',
+      k2.status === 200 && t2.status === 200 && c2.status === 200 && (await loanRow(lc.id)).status === 'DISBURSED', { k2: k2.status, t2: t2.status, c2: c2.status });
   }
 
   console.log(`\nR35 (3) R30 (1) on the chain: ${passed} passed, ${failed} failed`);
