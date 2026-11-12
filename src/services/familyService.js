@@ -461,6 +461,12 @@ async function syncOfflineOps(userId) {
   const ops = await pool.query("SELECT * FROM offline_operations WHERE user_id = $1 AND status = 'QUEUED' ORDER BY created_at ASC", [userId]);
   let processed = 0, failed = 0;
   for (const op of ops.rows) {
+    // R28 S5: claim the op (QUEUED -> PROCESSING, conditional, autocommitted) BEFORE executing it,
+    // so a concurrent sync that listed the same op skips it instead of executing it again. No
+    // transaction is held open across the op. Marks below only move an op this sync claimed.
+    const claim = await pool.query(
+      "UPDATE offline_operations SET status = 'PROCESSING' WHERE id = $1 AND user_id = $2 AND status = 'QUEUED'", [op.id, userId]);
+    if (claim.rowCount !== 1) continue;
     try {
       const p = op.payload;
       if (op.op_type === 'TRANSFER' && p.toPhone && p.amount) {
@@ -472,10 +478,10 @@ async function syncOfflineOps(userId) {
       } else {
         throw new Error('Aina ya operesheni haijulikani');
       }
-      await pool.query("UPDATE offline_operations SET status = 'PROCESSED', synced_at = NOW() WHERE id = $1", [op.id]);
+      await pool.query("UPDATE offline_operations SET status = 'PROCESSED', synced_at = NOW() WHERE id = $1 AND status = 'PROCESSING'", [op.id]);
       processed++;
     } catch (e) {
-      await pool.query('UPDATE offline_operations SET status = $1, error_message = $2 WHERE id = $3', ['FAILED', e.message, op.id]);
+      await pool.query("UPDATE offline_operations SET status = $1, error_message = $2 WHERE id = $3 AND status = 'PROCESSING'", ['FAILED', e.message, op.id]);
       failed++;
     }
   }
