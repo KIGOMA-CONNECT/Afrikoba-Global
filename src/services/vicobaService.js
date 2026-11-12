@@ -825,16 +825,21 @@ async function waivePenalty(actorUserId, penaltyId) {
       throw Object.assign(new Error('Mwenyekiti au Mwekahazina pekee anaweza kuondoa faini.'), { statusCode: 403 });
     }
 
-    const penaltyRes = await client.query('SELECT * FROM vicoba_penalties WHERE id = $1', [penaltyId]);
+    // R28 S7: lock the penalty (payPenalty locks it too) and waive only if still not PAID, so a
+    // waive racing a payment cannot overwrite PAID with WAIVED.
+    const penaltyRes = await client.query('SELECT * FROM vicoba_penalties WHERE id = $1 FOR UPDATE', [penaltyId]);
     if (penaltyRes.rows.length === 0) throw Object.assign(new Error('Faini haipo.'), { statusCode: 404 });
     if (penaltyRes.rows[0].status === 'PAID') {
       throw Object.assign(new Error('Faini tayari imelipwa, haiwezi kuondolewa.'), { statusCode: 400 });
     }
 
-    await client.query(
-      "UPDATE vicoba_penalties SET status = 'WAIVED', waived_by = $1 WHERE id = $2",
+    const waived = await client.query(
+      "UPDATE vicoba_penalties SET status = 'WAIVED', waived_by = $1 WHERE id = $2 AND status <> 'PAID'",
       [actorUserId, penaltyId]
     );
+    if (waived.rowCount !== 1) {
+      throw Object.assign(new Error('Faini tayari imelipwa, haiwezi kuondolewa.'), { statusCode: 400 });
+    }
 
     await client.query('COMMIT');
     return { success: true, message: 'Faini imeondolewa.' };
