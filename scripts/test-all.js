@@ -662,12 +662,18 @@ async function section(title) { console.log(`\n== ${title} ==`); }
   await expect(sfDetails.data.socialFund.requests.length >= 1, 'Social fund has 1+ disbursement request');
 
   // --- Loan Repayment ---
-  // Approve existing loan from section 4 (MWEKAHAZINA = regE)
+  // Approve existing loan from section 4. regE is the applicant, so since R30 (VICOBA
+  // F-D5-5) regE cannot approve it even as MWEKAHAZINA; a separate MWEKAHAZINA approves.
   const loans = await api('GET', `/api/vicoba/groups/${gId}/loans`, regD.data.token);
   if (loans.data.loans && loans.data.loans.length > 0) {
     const loan = loans.data.loans.find(l => l.status === 'PENDING');
     if (loan) {
-      const approveLoan = await api('POST', `/api/vicoba/loans/${loan.id}/approve`, regE.data.token, {
+      const selfApprove = await api('POST', `/api/vicoba/loans/${loan.id}/approve`, regE.data.token, { approvedAmount: 30000 });
+      await expect(selfApprove.status === 403, 'Applicant cannot approve own loan (403)', `${selfApprove.status}`);
+      const regT = await register('255731' + nowSuffix(), 'Tumaini Mwekahazina');
+      await subscribe(regT.data.token, 'VICOBA');
+      await api('POST', `/api/vicoba/groups/${gId}/members`, regD.data.token, { userId: regT.data.user.id, roleInGroup: 'MWEKAHAZINA' });
+      const approveLoan = await api('POST', `/api/vicoba/loans/${loan.id}/approve`, regT.data.token, {
         approvedAmount: 30000,
       });
       await expect(approveLoan.status === 200 && approveLoan.data.success, 'Loan approved (multi-sig)', JSON.stringify(approveLoan.data));

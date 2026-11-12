@@ -270,15 +270,13 @@ function nowSuffix() { return String(Date.now()).slice(-6); }
   let blReq = await api('GET', `/api/admin/four-eyes/requests/${bl.data.request.id}`, maker);
   await expect(blReq.data.request.status === 'FAILED' && /haupatikani/.test(blReq.data.request.error), 'Unknown business loan -> FAILED', `err=${blReq.data.request?.error}`);
 
+  // R29 D5: VICOBA group operations are never authorised through the admin four-eyes queue.
+  // The launchers refuse with 403 VICOBA_GROUP_AUTHORITY_REQUIRED and create no request.
   let vl = await api('POST', '/api/admin/four-eyes/actions/vicoba-loan-disburse', maker, { loanId: 999999999 });
-  await api('POST', `/api/admin/four-eyes/requests/${vl.data.request.id}/approve`, checker, {});
-  let vlReq = await api('GET', `/api/admin/four-eyes/requests/${vl.data.request.id}`, maker);
-  await expect(vlReq.data.request.status === 'FAILED' && /Hauko kwenye kikundi/.test(vlReq.data.request.error), 'VICOBA loan needs group officer -> FAILED', `err=${vlReq.data.request?.error}`);
+  await expect(vl.status === 403 && vl.data.code === 'VICOBA_GROUP_AUTHORITY_REQUIRED' && !vl.data.request, 'VICOBA loan disburse via admin four-eyes -> 403 VICOBA_GROUP_AUTHORITY_REQUIRED', `status=${vl.status} code=${vl.data?.code}`);
 
   let vs = await api('POST', '/api/admin/four-eyes/actions/vicoba-social-disburse', maker, { requestId: 999999999 });
-  await api('POST', `/api/admin/four-eyes/requests/${vs.data.request.id}/approve`, checker, {});
-  let vsReq = await api('GET', `/api/admin/four-eyes/requests/${vs.data.request.id}`, maker);
-  await expect(vsReq.data.request.status === 'FAILED' && /Ombi halipo/.test(vsReq.data.request.error), 'Unknown social fund request -> FAILED', `err=${vsReq.data.request?.error}`);
+  await expect(vs.status === 403 && vs.data.code === 'VICOBA_GROUP_AUTHORITY_REQUIRED' && !vs.data.request, 'VICOBA social fund disburse via admin four-eyes -> 403 VICOBA_GROUP_AUTHORITY_REQUIRED', `status=${vs.status} code=${vs.data?.code}`);
 
   // ---------- lending circle disbursement via four-eyes ----------
   await section('Lending circle disbursement (four-eyes)');
