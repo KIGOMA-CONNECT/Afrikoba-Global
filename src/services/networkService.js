@@ -637,15 +637,27 @@ async function processDueScheduledPayments() {
   );
   let processed = 0;
   for (const sp of due.rows) {
+    const next = computeNextExecution(sp);
+    // R28 S6: claim this occurrence (conditional, autocommitted) BEFORE transferring, so an
+    // overlapping run that listed the same row skips it. ONCE: the claim is the completion.
+    // Recurring: claimable once per occurrence (not yet executed since scheduled_for).
+    const claim = next
+      ? await pool.query(
+        `UPDATE scheduled_payments SET last_executed = NOW() WHERE id = $1 AND status = 'ACTIVE' AND scheduled_for <= NOW()
+           AND (last_executed IS NULL OR last_executed < scheduled_for)`, [sp.id])
+      : await pool.query(
+        `UPDATE scheduled_payments SET last_executed = NOW(), status = 'COMPLETED' WHERE id = $1 AND status = 'ACTIVE' AND scheduled_for <= NOW()`, [sp.id]);
+    if (claim.rowCount !== 1) continue;
     try {
       if (sp.type === 'TRANSFER' && sp.recipient_phone) {
         await require('./walletService').transferWallet(sp.user_id, sp.recipient_phone, sp.amount, sp.description || 'Malipo yaliyopangwa');
       }
-      const next = computeNextExecution(sp);
-      await pool.query(
-        `UPDATE scheduled_payments SET last_executed = NOW(), ${next ? 'next_execution = $1, scheduled_for = $1, recurrence = $2' : "status = 'COMPLETED'"} WHERE id = $3`,
-        next ? [next, sp.recurrence, sp.id] : [sp.id]
-      );
+      if (next) {
+        await pool.query(
+          'UPDATE scheduled_payments SET last_executed = NOW(), next_execution = $1, scheduled_for = $1, recurrence = $2 WHERE id = $3',
+          [next, sp.recurrence, sp.id]
+        );
+      }
       processed++;
     } catch (e) {
       await pool.query("UPDATE scheduled_payments SET status = 'FAILED' WHERE id = $1", [sp.id]);
