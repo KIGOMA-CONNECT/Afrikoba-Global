@@ -4,7 +4,7 @@
  * withdrawal was cancelled (REJECTED) or has FAILED. Before: executeEventWithdrawal took its
  * "already processed" (dedup) branch, decideApprovalFlow marked the flow APPROVED and wrote
  * APPROVAL_FLOW_EXECUTED although no money moved.
- *  [1] owner cancels a withdrawal bound to a pending flow; an admin approves the flow ->
+ *  [1] a withdrawal bound to a pending flow is REJECTED (legacy cancel, before R29 D3); an admin approves ->
  *      409, flow stays PENDING (an admin can still REJECT it), no APPROVAL_FLOW_EXECUTED, nothing moves.
  *  [2] bound withdrawal FAILED (pool too small at approval) and the pool is refilled; approving
  *      again -> 409, flow PENDING, no APPROVAL_FLOW_EXECUTED, nothing moves.
@@ -85,8 +85,10 @@ async function eventWithMember(owner, collected) {
     const ev = await eventWithMember(owner, 50000);
     const req = await eventService.requestEventWithdrawal(owner.id, ev, { amount: 20000, mode: 'FUNDRAISING' });
     flow1 = req.approvalFlowId;
-    const cancel = await eventService.cancelEventWithdrawal(owner.id, ev, req.withdrawal.id);
-    check('[1] setup: bound flow created, owner cancel succeeds (row REJECTED)', req.requiresApproval && cancel.success && (await wstatus(req.withdrawal.id)) === 'REJECTED');
+    // R29 D3: the owner can no longer cancel a withdrawal with a live flow; a row cancelled
+    // before D3 (legacy data) is set up directly so the executor guard stays covered.
+    await pool.query(`UPDATE event_withdrawals SET status = 'REJECTED' WHERE id = $1 AND status = 'PENDING'`, [req.withdrawal.id]);
+    check('[1] setup: bound flow created, row REJECTED (legacy cancel before R29 D3)', req.requiresApproval && (await wstatus(req.withdrawal.id)) === 'REJECTED');
     const o0 = await walletC(owner.id); const p0 = await poolC(ev);
     const d = await call('POST', `/api/v1/admin/approvals/${flow1}/decide`, B.token, { action: 'APPROVE' });
     check('[1] approve answered 409', d.status === 409, { status: d.status, body: d.body });

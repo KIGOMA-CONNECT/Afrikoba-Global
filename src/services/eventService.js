@@ -890,13 +890,44 @@ async function listEventWithdrawals(eventId, { status } = {}) {
 async function cancelEventWithdrawal(actorId, eventId, withdrawalId) {
   const event = await findEventById(eventId);
   assertOwner(actorId, event);
-  const { rows } = await pool.query(
-    `UPDATE event_withdrawals SET status = 'REJECTED', updated_at = NOW()
-      WHERE id = $1 AND event_id = $2 AND status = 'PENDING' RETURNING *`,
-    [withdrawalId, eventId]
-  );
-  if (rows.length === 0) throw badge('Uondoaji haupo au hauwezi kughairiwa (tayari umechakatwa).', 400);
-  return { success: true, withdrawal: rows[0] };
+  const notCancellable = () => badge('Uondoaji haupo au hauwezi kughairiwa (tayari umechakatwa).', 400);
+  // R29 D3: under the withdrawal row lock, a withdrawal with a related EVENT_WITHDRAWAL approval
+  // flow (PENDING, APPROVED or REJECTED) is never cancelled here; the flow is not auto-rejected.
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const locked = await client.query(
+      'SELECT * FROM event_withdrawals WHERE id = $1 AND event_id = $2 FOR UPDATE',
+      [withdrawalId, eventId]
+    );
+    if (locked.rows.length === 0 || locked.rows[0].status !== 'PENDING') throw notCancellable();
+    const flows = await client.query(
+      `SELECT id FROM approval_flows
+        WHERE action_type = 'EVENT_WITHDRAWAL' AND status IN ('PENDING','APPROVED','REJECTED')
+          AND (id = $1 OR (ref_type = 'EVENT_WITHDRAWAL' AND ref_id = $2))
+        LIMIT 1`,
+      [locked.rows[0].approval_flow_id, withdrawalId]
+    );
+    if (flows.rows.length > 0) {
+      throw Object.assign(
+        badge('Uondoaji huu una ombi la idhini (four-eyes). Kamilisha au kataa idhini kwanza; hauwezi kughairiwa moja kwa moja.', 409),
+        { code: 'EVENT_WITHDRAWAL_APPROVAL_OPEN' }
+      );
+    }
+    const { rows } = await client.query(
+      `UPDATE event_withdrawals SET status = 'REJECTED', updated_at = NOW()
+        WHERE id = $1 AND event_id = $2 AND status = 'PENDING' RETURNING *`,
+      [withdrawalId, eventId]
+    );
+    if (rows.length !== 1) throw notCancellable();
+    await client.query('COMMIT');
+    return { success: true, withdrawal: rows[0] };
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 async function createInvite(actorId, eventId, { maxUses, expiresDays }) {
