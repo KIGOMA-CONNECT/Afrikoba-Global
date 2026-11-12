@@ -18,7 +18,8 @@ router.post('/groups/:groupId/constitution', validate(schemas.mkoba.constitution
   try {
     const constitution = await mkobaService.createConstitution(
       parseInt(req.params.groupId, 10),
-      req.body
+      req.body,
+      req.user.id
     );
     return res.status(201).json({ success: true, constitution });
   } catch (error) { next(error); }
@@ -74,7 +75,7 @@ router.post('/groups/:groupId/profits/calculate', validate(schemas.mkoba.profit)
     const { cycleNumber, totalProfit } = req.body;
     if (!cycleNumber || !totalProfit) return res.status(400).json({ success: false, message: 'Jaza cycleNumber na totalProfit.' });
     const result = await mkobaService.calculateProfitDistribution(
-      parseInt(req.params.groupId, 10), cycleNumber, totalProfit
+      parseInt(req.params.groupId, 10), cycleNumber, totalProfit, req.user.id
     );
     return res.status(201).json({ success: true, ...result });
   } catch (error) { next(error); }

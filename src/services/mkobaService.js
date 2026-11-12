@@ -6,11 +6,21 @@ const { logAudit } = require('./auditService');
 const logger = require('../utils/logger');
 const fin = require('./financialEngine');
 
+const VICOBA_OFFICER_ROLES = ['MWENYEKITI', 'MWEKAHAZINA', 'KATIBU'];
+
 // ==========================================
 // GROUP CONSTITUTION / RULES
 // ==========================================
 
-async function createConstitution(groupId, rules) {
+async function createConstitution(groupId, rules, actorUserId) {
+  // R33 S1 (G-0c): only an officer of THIS group (role from vicoba_members for req.user).
+  const officerRes = await pool.query(
+    'SELECT role_in_group FROM vicoba_members WHERE group_id = $1 AND user_id = $2',
+    [groupId, actorUserId]
+  );
+  if (officerRes.rows.length === 0 || !VICOBA_OFFICER_ROLES.includes(officerRes.rows[0].role_in_group)) {
+    throw Object.assign(new Error('Viongozi wa kikundi pekee wanaweza kuweka katiba ya kikundi.'), { statusCode: 403 });
+  }
   const {
     minSharesPerMember, maxSharesPerMember, sharePrice,
     maxLoanMultiplier, loanInterestRate, maxRepaymentMonths,
@@ -188,10 +198,19 @@ async function getMemberShareSummary(groupId) {
 // PROFIT SHARING ENGINE
 // ==========================================
 
-async function calculateProfitDistribution(groupId, cycleNumber, totalProfit) {
+async function calculateProfitDistribution(groupId, cycleNumber, totalProfit, actorUserId) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+
+    // R33 S1 (G-0b): only an officer of THIS group; member row held FOR SHARE until COMMIT.
+    const officerRes = await client.query(
+      'SELECT role_in_group FROM vicoba_members WHERE group_id = $1 AND user_id = $2 FOR SHARE',
+      [groupId, actorUserId]
+    );
+    if (officerRes.rows.length === 0 || !VICOBA_OFFICER_ROLES.includes(officerRes.rows[0].role_in_group)) {
+      throw Object.assign(new Error('Viongozi wa kikundi pekee wanaweza kukokotoa mgawanyo wa faida.'), { statusCode: 403 });
+    }
 
     const totalSharesRes = await client.query(
       'SELECT COALESCE(SUM(total_shares), 0) as total FROM vicoba_members WHERE group_id = $1',
