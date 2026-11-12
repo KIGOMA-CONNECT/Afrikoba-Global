@@ -28,8 +28,10 @@ async function run() {
     await client.query('BEGIN');
     const uid = (await client.query('SELECT min(id) AS id FROM users')).rows[0].id;
     const uid2 = (await client.query('SELECT id FROM users ORDER BY id OFFSET 1 LIMIT 1')).rows[0].id;
-    // R30 decision 4: the chair who creates a request must not be its applicant -> separate chair user
+    // R34 S5: three-tier chain (KATIBU -> MHASIBU/MWEKAHAZINA -> MWENYEKITI) needs three different
+    // officers who are not the applicant, in a group of more than three members.
     const chairId = (await client.query("INSERT INTO users (full_name, phone_number) VALUES ('R30 Fixture Chair', $1) RETURNING id", ['2559' + String(Date.now()).slice(-8)])).rows[0].id;
+    const katibuId = (await client.query("INSERT INTO users (full_name, phone_number) VALUES ('R34 Fixture Katibu', $1) RETURNING id", ['2558' + String(Date.now()).slice(-8)])).rows[0].id;
 
     // Create group
     const groupRes = await client.query(
@@ -38,21 +40,24 @@ async function run() {
     );
     const groupId = groupRes.rows[0].id;
 
-    // Add chairman (chairId), applicant member (uid) and treasurer (uid2)
+    // Add chairman (chairId), applicant member (uid), treasurer (uid2) and secretary (katibuId): four members
     await client.query("INSERT INTO vicoba_members (group_id, user_id, role_in_group) VALUES ($1, $2, 'MWENYEKITI')", [groupId, chairId]);
     await client.query("INSERT INTO vicoba_members (group_id, user_id, role_in_group) VALUES ($1, $2, 'MJUMBE')", [groupId, uid]);
     await client.query("INSERT INTO vicoba_members (group_id, user_id, role_in_group) VALUES ($1, $2, 'MWEKAHAZINA')", [groupId, uid2]);
+    await client.query("INSERT INTO vicoba_members (group_id, user_id, role_in_group) VALUES ($1, $2, 'KATIBU')", [groupId, katibuId]);
 
     // Fund applicant wallet
     await client.query('UPDATE users SET wallet_balance = wallet_balance + 1000 WHERE id = $1', [uid]);
     await client.query('COMMIT');
 
-    // Request loan (by chairman chairId, for uid as applicant)
-    const loan = await vicobaService.requestLoan(chairId, { groupId, applicantUserId: uid, requestedAmount: 2000, interestRate: 10, repaymentMonths: 3 });
+    // Request loan (the member uid submits their own request; interest comes from the group)
+    const loan = await vicobaService.requestLoan(uid, { groupId, requestedAmount: 2000, repaymentMonths: 3 });
     await expect(loan && loan.id, 'Loan requested', JSON.stringify(loan));
 
-    // Approve loan (by treasurer)
-    const approveResult = await vicobaService.approveLoan(uid2, loan.id, 2000);
+    // KATIBU, then MHASIBU (treasurer verifies the amount), then MWENYEKITI approves and disburses
+    await vicobaService.decideLoanStep(katibuId, loan.id, { step: 'KATIBU', decision: 'APPROVE' });
+    await vicobaService.decideLoanStep(uid2, loan.id, { step: 'MHASIBU', decision: 'APPROVE', approvedAmount: 2000 });
+    const approveResult = await vicobaService.approveLoan(chairId, loan.id, 2000);
     await expect(approveResult.success === true, 'approveLoan succeeded', JSON.stringify(approveResult));
 
     // Verify transaction created
@@ -69,26 +74,24 @@ async function run() {
     const loanStatus = (await client.query('SELECT status FROM vicoba_loan_requests WHERE id = $1', [loan.id])).rows[0].status;
     await expect(loanStatus === 'DISBURSED', 'Loan status DISBURSED', `got ${loanStatus}`);
 
-    // Test: approveLoan by non-treasurer rejected
-    const loan2 = await vicobaService.requestLoan(chairId, { groupId, applicantUserId: uid, requestedAmount: 1000, interestRate: 10, repaymentMonths: 3 });
+    // Test: final approval before the KATIBU and MHASIBU steps rejected (no step skipping)
+    const loan2 = await vicobaService.requestLoan(uid, { groupId, requestedAmount: 1000, repaymentMonths: 3 });
     let nonTreasurerRejected = false;
     try {
       await vicobaService.approveLoan(chairId, loan2.id, 1000);
     } catch (e) {
-      nonTreasurerRejected = true;
+      nonTreasurerRejected = e.statusCode === 409;
     }
     await expect(nonTreasurerRejected, 'Non-treasurer approval rejected');
 
-    // Test: approveLoan with amount exceeding requested rejected
-    const loan3 = await vicobaService.requestLoan(chairId, { groupId, applicantUserId: uid, requestedAmount: 1000, interestRate: 10, repaymentMonths: 3 });
-    // Need chairman approval first
-    await client.query('UPDATE vicoba_loan_requests SET chairman_approval = TRUE, chairman_approved_by = $1 WHERE id = $2', [chairId, loan3.id]);
-    await client.query('COMMIT');
+    // Test: verified amount exceeding requested rejected (MHASIBU step)
+    const loan3 = await vicobaService.requestLoan(uid, { groupId, requestedAmount: 1000, repaymentMonths: 3 });
+    await vicobaService.decideLoanStep(katibuId, loan3.id, { step: 'KATIBU', decision: 'APPROVE' });
     let excessiveAmountRejected = false;
     try {
-      await vicobaService.approveLoan(uid2, loan3.id, 2000);
+      await vicobaService.decideLoanStep(uid2, loan3.id, { step: 'MHASIBU', decision: 'APPROVE', approvedAmount: 2000 });
     } catch (e) {
-      excessiveAmountRejected = true;
+      excessiveAmountRejected = e.statusCode === 400;
     }
     await expect(excessiveAmountRejected, 'Excessive amount rejected');
 

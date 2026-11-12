@@ -350,17 +350,29 @@ async function section(title) { console.log(`\n== ${title} ==`); }
   const gDetails = await api('GET', `/api/vicoba/groups/${groupId}`, regD.data.token, null);
   await expect(Number(gDetails.data.group.group_wallet_balance) === 50000, 'Group Wallet imeongezeka kwa hisa', `${gDetails.data.group.group_wallet_balance}`);
 
-  const loanReq = await api('POST', `/api/vicoba/groups/${groupId}/loans`, regD.data.token, { applicantUserId: regE.data.user.id, requestedAmount: 30000 });
-  await expect(loanReq.status === 201, 'Mwenyekiti anaongeza ombi la mkopo', `${loanReq.status}`);
+  // R34 S5: ngazi tatu (KATIBU -> MHASIBU/MWEKAHAZINA -> MWENYEKITI) zinahitaji watu watatu tofauti
+  // wasio mwombaji, na kikundi chenye wanachama zaidi ya watatu: ongeza Katibu na Mwekahazina.
+  const regK = await register('255732' + nowSuffix(), 'Rehema Katibu');
+  const regM = await register('255733' + nowSuffix(), 'Musa Mwekahazina');
+  await subscribe(regK.data.token, 'VICOBA');
+  await subscribe(regM.data.token, 'VICOBA');
+  const regJ = await register('255734' + nowSuffix(), 'Juma Mjumbe');
+  await subscribe(regJ.data.token, 'VICOBA');
+  await api('POST', `/api/vicoba/groups/${groupId}/members`, regD.data.token, { userId: regJ.data.user.id });
+  await api('POST', `/api/vicoba/groups/${groupId}/members`, regD.data.token, { userId: regK.data.user.id, roleInGroup: 'KATIBU' });
+  await api('POST', `/api/vicoba/groups/${groupId}/members`, regD.data.token, { userId: regM.data.user.id, roleInGroup: 'MWEKAHAZINA' });
+
+  const loanReq = await api('POST', `/api/vicoba/groups/${groupId}/loans`, regE.data.token, { requestedAmount: 30000 });
+  await expect(loanReq.status === 201 && loanReq.data.loan.status === 'PENDING_KATIBU', 'Mwanachama anaanzisha ombi lake la mkopo (PENDING_KATIBU)', `${loanReq.status}`);
   const loanId = loanReq.data.loan.id;
 
-  // Approver lazima awe MWEKAHAZINA/KATIBU — Mjumbe (regE) hawezi
-  const badApprove = await api('POST', `/api/vicoba/loans/${loanId}/approve`, regE.data.token, { approvedAmount: 30000 });
-  await expect(badApprove.status === 403, 'Mjumbe HAWEZI kuidhinisha mkopo (403)', `${badApprove.status}`);
+  // Ngazi ya Katibu inahitaji KATIBU — Mjumbe (regJ) hawezi
+  const badApprove = await api('POST', `/api/vicoba/loans/${loanId}/decision`, regJ.data.token, { step: 'KATIBU', decision: 'APPROVE' });
+  await expect(badApprove.status === 403 && badApprove.data.code === 'VICOBA_LOAN_STEP_ROLE_REQUIRED', 'Mjumbe HAWEZI kuidhinisha mkopo (403)', `${badApprove.status} ${badApprove.data && badApprove.data.code}`);
 
-  // Kuongeza ombi ni Mwenyekiti pekee — Mjumbe hawezi
-  const badLoan = await api('POST', `/api/vicoba/groups/${groupId}/loans`, regE.data.token, { applicantUserId: regE.data.user.id, requestedAmount: 10000 });
-  await expect(badLoan.status === 403, 'Mjumbe HAWEZI kuongeza ombi la mkopo (403)', `${badLoan.status}`);
+  // Mwanachama huanzisha ombi lake tu — hawezi kuomba kwa niaba ya mwingine (applicantUserId ya mwingine)
+  const badLoan = await api('POST', `/api/vicoba/groups/${groupId}/loans`, regJ.data.token, { applicantUserId: regE.data.user.id, requestedAmount: 10000 });
+  await expect(badLoan.status === 403 && badLoan.data.code === 'VICOBA_LOAN_APPLICANT_MUST_BE_SELF', 'Mjumbe HAWEZI kuomba mkopo kwa niaba ya mwingine (403)', `${badLoan.status} ${badLoan.data && badLoan.data.code}`);
 
   // ------------------------------------------------------------
   await section('5. ROSCA — upatu kamili + payout engine (hesabu za fedha)');
@@ -663,17 +675,22 @@ async function section(title) { console.log(`\n== ${title} ==`); }
 
   // --- Loan Repayment ---
   // Approve existing loan from section 4. regE is the applicant, so since R30 (VICOBA
-  // F-D5-5) regE cannot approve it even as MWEKAHAZINA; a separate MWEKAHAZINA approves.
+  // F-D5-5) regE cannot approve it even as MWEKAHAZINA. R34 S5: KATIBU (regK), then a separate
+  // MWEKAHAZINA (regT) verifies, then the MWENYEKITI (regD) gives the final approval and disburses.
   const loans = await api('GET', `/api/vicoba/groups/${gId}/loans`, regD.data.token);
   if (loans.data.loans && loans.data.loans.length > 0) {
-    const loan = loans.data.loans.find(l => l.status === 'PENDING');
+    const loan = loans.data.loans.find(l => l.status === 'PENDING_KATIBU');
     if (loan) {
-      const selfApprove = await api('POST', `/api/vicoba/loans/${loan.id}/approve`, regE.data.token, { approvedAmount: 30000 });
+      const selfApprove = await api('POST', `/api/vicoba/loans/${loan.id}/decision`, regE.data.token, { step: 'KATIBU', decision: 'APPROVE' });
       await expect(selfApprove.status === 403, 'Applicant cannot approve own loan (403)', `${selfApprove.status}`);
+      const katibuStep = await api('POST', `/api/vicoba/loans/${loan.id}/decision`, regK.data.token, { step: 'KATIBU', decision: 'APPROVE' });
+      await expect(katibuStep.status === 200, 'Katibu approves step 1', JSON.stringify(katibuStep.data));
       const regT = await register('255731' + nowSuffix(), 'Tumaini Mwekahazina');
       await subscribe(regT.data.token, 'VICOBA');
       await api('POST', `/api/vicoba/groups/${gId}/members`, regD.data.token, { userId: regT.data.user.id, roleInGroup: 'MWEKAHAZINA' });
-      const approveLoan = await api('POST', `/api/vicoba/loans/${loan.id}/approve`, regT.data.token, {
+      const mhasibuStep = await api('POST', `/api/vicoba/loans/${loan.id}/decision`, regT.data.token, { step: 'MHASIBU', decision: 'APPROVE', approvedAmount: 30000 });
+      await expect(mhasibuStep.status === 200, 'Mhasibu (Mwekahazina) verifies step 2', JSON.stringify(mhasibuStep.data));
+      const approveLoan = await api('POST', `/api/vicoba/loans/${loan.id}/approve`, regD.data.token, {
         approvedAmount: 30000,
       });
       await expect(approveLoan.status === 200 && approveLoan.data.success, 'Loan approved (multi-sig)', JSON.stringify(approveLoan.data));
