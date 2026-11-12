@@ -133,70 +133,20 @@ async function getGovernanceAuditTrail(governance) {
 // ============ AUTO-TRIGGER VICOBA LOAN FROM RESOLUTION ============
 
 /**
- * Given a passed resolution with financial_action_type='LOAN_APPROVAL',
- * auto-create the VICOBA loan workflow, disburse, and record the ledger reference.
- * Chain: Resolution (passed) -> createExecution (PENDING) -> loan request ->
- *        approval (treasurer) -> disbursement -> ledger -> markExecuted.
+ * R35 (2), owner decision D-S5-7 (= R31-1 A1). A VICOBA loan now needs three different people:
+ * the member submits their own request, then Katibu, Mhasibu and Mwenyekiti approve in turn
+ * (R34 S5). One actor triggering a loan from a resolution cannot satisfy that chain, so this
+ * entry point refuses with 409 VICOBA_LOAN_CHAIN_REQUIRED. The resource binding check stays first
+ * (a foreign resolution is still refused as before). The refusal comes before any INSERT, any
+ * governance_financial_executions row and any vicoba call: nothing is written, nothing is marked
+ * FAILED.
  */
-async function triggerVicobaLoan({ actorUserId, resolutionId, groupId, applicantUserId, amount, interestRate, repaymentMonths, governance }) {
-  const vicoba = require('./vicobaService');
-  let executionId = null;
-  try {
-    // Before anything else: the resolution must belong to the group context,
-    // or this chain must not start at all. A foreign resolution never reaches
-    // the INSERT below, and therefore never reaches vicoba.requestLoan /
-    // vicoba.approveLoan either. The client's `groupId` is deliberately not
-    // used — the canonical group comes off the resolution row.
-    const canonical = await binding.assertResourceInContext('RESOLUTION', resolutionId, governance);
-    const canonicalGroupId = Number(canonical.groupId);
-
-    const resolution = (await pool.query(
-      'SELECT * FROM governance_resolutions WHERE id=$1',
-      [resolutionId]
-    )).rows[0];
-    if (!resolution) throw createAppError('GOV_RESOURCE_NOT_FOUND');
-
-    // 1. Register the financial execution intent (PENDING)
-    const execRes = await pool.query(
-      `INSERT INTO governance_financial_executions
-         (resolution_id, group_id, financial_action_type, target_entity_type, amount, status, executed_by)
-       VALUES ($1,$2,'LOAN_APPROVAL','VICOBA_LOAN',$3,'PENDING',$4) RETURNING *`,
-      [resolutionId, canonicalGroupId, amount, actorUserId]
-    );
-    executionId = execRes.rows[0].id;
-
-    // 2. Create the VICOBA loan request (chairman approval step, own tx)
-    const loanRequest = await vicoba.requestLoan(actorUserId, {
-      groupId: canonicalGroupId,
-      applicantUserId,
-      requestedAmount: amount,
-      interestRate: interestRate || 10,
-      repaymentMonths: repaymentMonths || 3,
-    });
-    const loanId = loanRequest.id;
-
-    // 3. Approve the loan (treasurer step, own tx) -> disbursement + ledger transaction
-    await vicoba.approveLoan(actorUserId, loanId, amount);
-    const ledgerRef = `VL-${loanId}`;
-
-    // 4. Mark execution EXECUTED with ledger reference
-    await pool.query(
-      `UPDATE governance_financial_executions
-          SET status='EXECUTED', ledger_reference=$2, target_entity_id=$3, executed_at=NOW()
-        WHERE id=$1`,
-      [executionId, ledgerRef, loanId]
-    );
-    await pool.query(`UPDATE governance_resolutions SET linked_to_workflow=TRUE WHERE id=$1`, [resolutionId]);
-
-    return { success: true, resolutionId, executionId, loanId, ledgerReference: ledgerRef };
-  } catch (err) {
-    // Best-effort mark failed. `executionId` is still null when the binding
-    // check above threw, so a denied request performs no write at all.
-    if (executionId) {
-      await pool.query(`UPDATE governance_financial_executions SET status='FAILED' WHERE id=$1`, [executionId]).catch(() => {});
-    }
-    throw err;
-  }
+async function triggerVicobaLoan({ resolutionId, governance }) {
+  await binding.assertResourceInContext('RESOLUTION', resolutionId, governance);
+  throw Object.assign(
+    new Error('Mkopo wa VICOBA unapitia ngazi tatu (Katibu, Mhasibu, Mwenyekiti); azimio haliwezi kuuanzisha na kuutoa moja kwa moja.'),
+    { statusCode: 409, code: 'VICOBA_LOAN_CHAIN_REQUIRED' }
+  );
 }
 
 module.exports = { createExecution, markExecuted, markFailed, listExecutions, getGovernanceAuditTrail, triggerVicobaLoan };
