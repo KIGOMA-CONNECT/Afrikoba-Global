@@ -129,31 +129,302 @@ async function contributeShares(groupId, userId, amount, sharesCount) {
   }
 }
 
-async function requestLoan(chairmanUserId, { groupId, applicantUserId, requestedAmount, interestRate, repaymentMonths }) {
+// ==========================================
+// R34 S5 — VICOBA loan three-tier approval chain (VICOBA v2.1 §3, §4.1–4.4)
+// Member submits own request -> KATIBU -> MHASIBU (role MWEKAHAZINA) -> MWENYEKITI -> disbursement.
+// The step structure is data (versioned); every rule below reads it from VICOBA_LOAN_CHAINS.
+// Rows created before migration 149 have approval_chain_version NULL and keep the legacy chain
+// (owner decision D-S5-8), only through approveLoan.
+// ==========================================
+const LOAN_CHAIN_VERSION = 1;
+const VICOBA_LOAN_CHAINS = Object.freeze({
+  1: Object.freeze([
+    Object.freeze({ no: 1, code: 'KATIBU', roles: Object.freeze(['KATIBU']), status: 'PENDING_KATIBU' }),
+    Object.freeze({ no: 2, code: 'MHASIBU', roles: Object.freeze(['MWEKAHAZINA']), status: 'PENDING_MHASIBU' }),
+    Object.freeze({ no: 3, code: 'MWENYEKITI', roles: Object.freeze(['MWENYEKITI']), status: 'PENDING_MWENYEKITI' }),
+  ]),
+});
+// Standard Group Governance Mode: more than three members (v2.1 §2.2).
+const STANDARD_MODE_MIN_MEMBERS = 4;
+const LOAN_TERMINAL_STATUSES = ['APPROVED', 'DISBURSED', 'REPAID', 'REJECTED', 'CANCELLED'];
+const SELF_APPROVAL_MSG = 'Huwezi kuidhinisha ombi lako mwenyewe.';
+const DEFAULT_LOAN_INTEREST_RATE = 10; // existing default (schema DEFAULT 10.00, previous `|| 10`)
+
+const loanErr = (statusCode, code, message) => Object.assign(new Error(message), { statusCode, code });
+const toCents = (v) => Math.round(Number(v) * 100);
+
+function loanChain(version) {
+  const chain = VICOBA_LOAN_CHAINS[version];
+  if (!chain) throw loanErr(409, 'VICOBA_LOAN_CHAIN_UNKNOWN', 'Mnyororo wa idhini wa ombi hili haujulikani.');
+  return chain;
+}
+
+// Who may act on `step` for this loan: a member holding one of the step roles, who is not the
+// applicant and has not decided any earlier step of this loan. Returns null when someone is eligible,
+// otherwise the ON_HOLD reason.
+async function holdReasonFor(client, groupId, applicantUserId, step, priorActorIds) {
+  const r = await client.query(
+    'SELECT user_id FROM vicoba_members WHERE group_id = $1 AND role_in_group = ANY($2::text[])',
+    [groupId, step.roles]
+  );
+  const holders = r.rows.map((x) => Number(x.user_id));
+  const prior = new Set(priorActorIds.map(Number));
+  if (holders.some((id) => id !== Number(applicantUserId) && !prior.has(id))) return null;
+  if (holders.includes(Number(applicantUserId))) return 'APPLICANT_IS_STEP_OFFICER';
+  if (holders.length > 0) return 'ACTOR_CONFLICT';
+  return 'APPROVER_MISSING';
+}
+
+async function requestLoan(actorUserId, { groupId, applicantUserId, requestedAmount, interestRate, repaymentMonths }) {
+  // v2.1 §3: the member submits their own request (applicant = initiator = req.user).
+  // A body applicant different from the caller is refused, never silently re-targeted.
+  if (applicantUserId != null && Number(applicantUserId) !== Number(actorUserId)) {
+    throw loanErr(403, 'VICOBA_LOAN_APPLICANT_MUST_BE_SELF', 'Mwanachama huanzisha ombi lake mwenyewe tu.');
+  }
+  // Owner decision D-S5-3: the member never sets the interest rate.
+  if (interestRate != null) {
+    throw loanErr(400, 'VICOBA_LOAN_INTEREST_FROM_GROUP', 'Riba ya mkopo inatoka kwenye sera ya kikundi, si kwenye ombi.');
+  }
+  const amount = Number(requestedAmount);
+  if (requestedAmount == null || requestedAmount === '' || !Number.isFinite(amount) || amount <= 0) {
+    throw loanErr(400, 'VICOBA_LOAN_AMOUNT_INVALID', 'Kiasi cha mkopo lazima kiwe kikubwa kuliko 0.');
+  }
+  const months = repaymentMonths == null ? 3 : Number(repaymentMonths);
+  if (!Number.isInteger(months) || months <= 0) {
+    throw loanErr(400, 'VICOBA_LOAN_MONTHS_INVALID', 'Muda wa marejesho si sahihi.');
+  }
+  const applicant = Number(actorUserId);
+  const gid = Number(groupId);
+
   const { enforceHighValueKyc } = require('./kycDocumentService');
   const config = require('../config');
-  await enforceHighValueKyc({ userId: applicantUserId, amount: requestedAmount, threshold: config.lending.highValueLoanThreshold, requiredLevel: config.lending.highValueKycLevel });
-  const roleRes = await pool.query(
-    'SELECT role_in_group FROM vicoba_members WHERE group_id = $1 AND user_id = $2',
-    [groupId, chairmanUserId]
-  );
-  const allowed = ['MWENYEKITI', 'MWEKAHAZINA', 'KATIBU'];
-  if (roleRes.rows.length === 0 || !allowed.includes(roleRes.rows[0].role_in_group)) {
-    throw Object.assign(new Error('Mwenyekiti au Katibu ndiye anayeweza kuongeza ombi la mkopo.'), { statusCode: 403 });
-  }
-  // R30 F-D5-5 decision 4: the creator (chairman_approved_by) is never the applicant (maker-checker).
-  if (Number(chairmanUserId) === Number(applicantUserId)) {
-    throw Object.assign(new Error('Huwezi kuidhinisha ombi lako mwenyewe.'), { statusCode: 403 });
-  }
+  await enforceHighValueKyc({ userId: applicant, amount, threshold: config.lending.highValueLoanThreshold, requiredLevel: config.lending.highValueKycLevel });
 
-  const result = await pool.query(
-    `INSERT INTO vicoba_loan_requests
-      (group_id, applicant_user_id, requested_amount, interest_rate, repayment_months, chairman_approval, chairman_approved_by)
-     VALUES ($1, $2, $3, $4, $5, TRUE, $6)
-     RETURNING *`,
-    [groupId, applicantUserId, requestedAmount, interestRate || 10, repaymentMonths || 3, chairmanUserId]
+  const chain = loanChain(LOAN_CHAIN_VERSION);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const member = await client.query(
+      'SELECT role_in_group FROM vicoba_members WHERE group_id = $1 AND user_id = $2',
+      [gid, applicant]
+    );
+    if (member.rows.length === 0) {
+      throw loanErr(403, 'VICOBA_NOT_GROUP_MEMBER', 'Hauko kwenye kikundi hiki.');
+    }
+
+    // Owner decision D-S5-4: a group that cannot staff three different people (Standard mode needs
+    // more than three members and a holder for every step role) is refused up front: 409, no row.
+    const structure = await client.query(
+      `SELECT COUNT(*)::int AS members,
+              COALESCE(array_agg(DISTINCT role_in_group) FILTER (WHERE role_in_group IS NOT NULL), '{}') AS roles
+         FROM vicoba_members WHERE group_id = $1`,
+      [gid]
+    );
+    const { members, roles } = structure.rows[0];
+    const staffed = chain.every((s) => s.roles.some((r) => roles.includes(r)));
+    if (members < STANDARD_MODE_MIN_MEMBERS || !staffed) {
+      throw loanErr(409, 'VICOBA_GOVERNANCE_INSUFFICIENT_APPROVERS', 'Kikundi hakina watu wa kutosha kwa ngazi tatu tofauti za idhini.');
+    }
+
+    const constitution = await client.query(
+      'SELECT loan_interest_rate FROM vicoba_group_constitutions WHERE group_id = $1',
+      [gid]
+    );
+    const groupRate = constitution.rows.length && constitution.rows[0].loan_interest_rate != null
+      ? Number(constitution.rows[0].loan_interest_rate)
+      : DEFAULT_LOAN_INTEREST_RATE;
+
+    // v2.1 §4.3/§4.4: when the applicant is the only holder of the first step role, wait (ON_HOLD).
+    const first = chain[0];
+    const hold = await holdReasonFor(client, gid, applicant, first, []);
+    const result = await client.query(
+      `INSERT INTO vicoba_loan_requests
+        (group_id, applicant_user_id, initiated_by_user_id, approval_chain_version, requested_amount,
+         interest_rate, repayment_months, status, hold_reason, hold_step, held_at)
+       VALUES ($1, $2, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       RETURNING *`,
+      [gid, applicant, LOAN_CHAIN_VERSION, amount, groupRate, months,
+        hold ? 'ON_HOLD' : first.status, hold, hold ? first.code : null, hold ? new Date() : null]
+    );
+    await client.query('COMMIT');
+    const row = result.rows[0];
+    await logAudit({ eventType: 'VICOBA_LOAN', action: 'REQUEST', entityType: 'VICOBA_LOAN', userId: applicant, entityId: row.id, amount, afterData: { group_id: gid, status: row.status, hold_reason: hold, chain_version: LOAN_CHAIN_VERSION } });
+    return row;
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+// Checks every v1 chain rule for `actorUserId` acting on `stepCode`, with the loan row already locked
+// FOR UPDATE by the caller. Returns { step, role, priorActorIds }.
+async function assertChainStep(client, loan, actorUserId, stepCode) {
+  const actor = Number(actorUserId);
+  const member = await client.query(
+    'SELECT role_in_group FROM vicoba_members WHERE group_id = $1 AND user_id = $2 FOR SHARE',
+    [loan.group_id, actor]
   );
-  return result.rows[0];
+  if (member.rows.length === 0) throw loanErr(403, 'VICOBA_NOT_GROUP_MEMBER', 'Hauko kwenye kikundi husika.');
+  if (Number(loan.applicant_user_id) === actor) throw loanErr(403, 'VICOBA_LOAN_SELF_APPROVAL', SELF_APPROVAL_MSG);
+  if (LOAN_TERMINAL_STATUSES.includes(loan.status)) throw loanErr(409, 'VICOBA_LOAN_ALREADY_DECIDED', 'Ombi hili tayari limeamuliwa.');
+  if (loan.status === 'ON_HOLD') throw loanErr(409, 'VICOBA_LOAN_ON_HOLD', 'Ombi hili limesimamishwa (ON_HOLD) likisubiri mwidhinishaji aliyeidhinishwa.');
+  const chain = loanChain(loan.approval_chain_version);
+  const current = chain.find((s) => s.status === loan.status);
+  if (!current || current.code !== stepCode) {
+    throw loanErr(409, 'VICOBA_LOAN_STEP_OUT_OF_ORDER', 'Hatua hii si ngazi inayosubiriwa kwa ombi hili.');
+  }
+  const role = member.rows[0].role_in_group;
+  if (!current.roles.includes(role)) {
+    throw loanErr(403, 'VICOBA_LOAN_STEP_ROLE_REQUIRED', 'Huna nafasi inayohitajika kwa ngazi hii ya idhini.');
+  }
+  const prior = await client.query('SELECT actor_user_id FROM vicoba_loan_approvals WHERE loan_id = $1', [loan.id]);
+  const priorActorIds = prior.rows.map((x) => Number(x.actor_user_id));
+  if (priorActorIds.includes(actor)) {
+    throw loanErr(403, 'VICOBA_LOAN_ACTOR_ALREADY_ACTED', 'Umeshashiriki ngazi nyingine ya ombi hili.');
+  }
+  return { step: current, role, priorActorIds, chain };
+}
+
+async function insertApproval(client, loan, step, actorUserId, role, decision, reason, amount) {
+  try {
+    await client.query(
+      `INSERT INTO vicoba_loan_approvals
+        (loan_id, group_id, chain_version, step_no, step_code, actor_user_id, actor_role_at_action, decision, reason, amount)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+      [loan.id, loan.group_id, loan.approval_chain_version, step.no, step.code, actorUserId, role, decision, reason, amount]
+    );
+  } catch (e) {
+    if (e.code === '23505' && /loan_actor/.test(e.constraint || '')) throw loanErr(403, 'VICOBA_LOAN_ACTOR_ALREADY_ACTED', 'Umeshashiriki ngazi nyingine ya ombi hili.');
+    if (e.code === '23505') throw loanErr(409, 'VICOBA_LOAN_ALREADY_DECIDED', 'Ombi hili tayari limeamuliwa.');
+    if (e.code === '23514' && /applicant/.test(e.message || '')) throw loanErr(403, 'VICOBA_LOAN_SELF_APPROVAL', SELF_APPROVAL_MSG);
+    throw e;
+  }
+}
+
+// KATIBU / MHASIBU approval, and rejection at any step. MWENYEKITI approval goes to approveLoan
+// (it disburses in the same transaction).
+async function decideLoanStep(actorUserId, loanId, { step, decision, reason, approvedAmount } = {}) {
+  if (!['APPROVE', 'REJECT'].includes(decision)) {
+    throw loanErr(400, 'VICOBA_LOAN_DECISION_INVALID', 'Uamuzi lazima uwe APPROVE au REJECT.');
+  }
+  if (!loanChain(LOAN_CHAIN_VERSION).some((s) => s.code === step)) {
+    throw loanErr(400, 'VICOBA_LOAN_STEP_INVALID', 'Ngazi ya idhini si sahihi.');
+  }
+  if (decision === 'APPROVE' && step === 'MWENYEKITI') {
+    return approveLoan(actorUserId, loanId, approvedAmount);
+  }
+  const actor = Number(actorUserId);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const loanRes = await client.query('SELECT * FROM vicoba_loan_requests WHERE id = $1 FOR UPDATE', [loanId]);
+    if (loanRes.rows.length === 0) throw loanErr(404, 'VICOBA_LOAN_NOT_FOUND', 'Ombi la mkopo halipatikani.');
+    const loan = loanRes.rows[0];
+    if (loan.approval_chain_version == null) {
+      throw loanErr(409, 'VICOBA_LOAN_LEGACY_CHAIN', 'Ombi hili ni la mnyororo wa zamani; linakamilishwa kwa utaratibu wa zamani.');
+    }
+    const ctx = await assertChainStep(client, loan, actor, step);
+
+    if (decision === 'REJECT') {
+      const why = typeof reason === 'string' ? reason.trim() : '';
+      if (why.length < 3 || why.length > 500) {
+        throw loanErr(400, 'VICOBA_LOAN_REJECT_REASON_REQUIRED', 'Sababu ya kukataa inahitajika (herufi 3 hadi 500).');
+      }
+      await insertApproval(client, loan, ctx.step, actor, ctx.role, 'REJECTED', why, null);
+      const upd = await client.query(
+        `UPDATE vicoba_loan_requests
+            SET status = 'REJECTED', rejection_reason = $2, rejected_step = $3, updated_at = NOW()
+          WHERE id = $1 AND status = $4`,
+        [loan.id, why, ctx.step.code, loan.status]
+      );
+      if (upd.rowCount !== 1) throw loanErr(409, 'VICOBA_LOAN_ALREADY_DECIDED', 'Ombi hili tayari limeamuliwa.');
+      await client.query('COMMIT');
+      await logAudit({ eventType: 'VICOBA_LOAN', action: 'REJECT', entityType: 'VICOBA_LOAN', userId: actor, entityId: loan.id, afterData: { group_id: loan.group_id, step: ctx.step.code, role: ctx.role, reason: why } });
+      return { success: true, loanId: loan.id, status: 'REJECTED', step: ctx.step.code, message: 'Ombi la mkopo limekataliwa.' };
+    }
+
+    let amount = null;
+    if (ctx.step.code === 'MHASIBU') {
+      amount = approvedAmount == null ? Number(loan.requested_amount) : Number(approvedAmount);
+      if (!Number.isFinite(amount) || amount <= 0) {
+        throw loanErr(400, 'VICOBA_LOAN_AMOUNT_INVALID', 'Kiasi cha mkopo lazima kiwe kikubwa kuliko 0.');
+      }
+      if (toCents(amount) > toCents(loan.requested_amount)) {
+        throw loanErr(400, 'VICOBA_LOAN_AMOUNT_INVALID', 'Kiasi kilichoidhinishwa hakizidi kilichoombwa.');
+      }
+    }
+    await insertApproval(client, loan, ctx.step, actor, ctx.role, 'APPROVED', null, amount);
+
+    const next = ctx.chain[ctx.step.no]; // chain is 1-based by `no`; next step object
+    const hold = await holdReasonFor(client, loan.group_id, loan.applicant_user_id, next, [...ctx.priorActorIds, actor]);
+    const nextStatus = hold ? 'ON_HOLD' : next.status;
+    const upd = await client.query(
+      `UPDATE vicoba_loan_requests
+          SET status = $2, hold_reason = $3, hold_step = $4, held_at = $5, updated_at = NOW(),
+              approved_amount = CASE WHEN $6::numeric IS NULL THEN approved_amount ELSE $6::numeric END,
+              treasurer_approval = CASE WHEN $6::numeric IS NULL THEN treasurer_approval ELSE TRUE END,
+              treasurer_approved_by = CASE WHEN $6::numeric IS NULL THEN treasurer_approved_by ELSE $7 END
+        WHERE id = $1 AND status = $8`,
+      [loan.id, nextStatus, hold, hold ? next.code : null, hold ? new Date() : null, amount, actor, loan.status]
+    );
+    if (upd.rowCount !== 1) throw loanErr(409, 'VICOBA_LOAN_ALREADY_DECIDED', 'Ombi hili tayari limeamuliwa.');
+    await client.query('COMMIT');
+    await logAudit({ eventType: 'VICOBA_LOAN', action: 'APPROVE_STEP', entityType: 'VICOBA_LOAN', userId: actor, entityId: loan.id, amount, afterData: { group_id: loan.group_id, step: ctx.step.code, role: ctx.role, next_status: nextStatus, hold_reason: hold } });
+    return { success: true, loanId: loan.id, status: nextStatus, step: ctx.step.code, holdReason: hold, message: hold ? 'Ombi limesimamishwa likisubiri mwidhinishaji aliyeidhinishwa.' : 'Ngazi imeidhinishwa.' };
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+// Owner decision D-S5-5: the applicant may cancel their own request while it is ON_HOLD.
+async function cancelLoanRequest(actorUserId, loanId) {
+  const actor = Number(actorUserId);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const loanRes = await client.query('SELECT * FROM vicoba_loan_requests WHERE id = $1 FOR UPDATE', [loanId]);
+    if (loanRes.rows.length === 0) throw loanErr(404, 'VICOBA_LOAN_NOT_FOUND', 'Ombi la mkopo halipatikani.');
+    const loan = loanRes.rows[0];
+    if (Number(loan.applicant_user_id) !== actor) {
+      throw loanErr(403, 'VICOBA_LOAN_CANCEL_NOT_APPLICANT', 'Mwombaji pekee anaweza kufuta ombi lake.');
+    }
+    if (loan.status !== 'ON_HOLD') {
+      throw loanErr(409, 'VICOBA_LOAN_NOT_ON_HOLD', 'Ombi linaweza kufutwa likiwa ON_HOLD tu.');
+    }
+    const upd = await client.query(
+      `UPDATE vicoba_loan_requests SET status = 'CANCELLED', cancelled_by_user_id = $2, cancelled_at = NOW(), updated_at = NOW()
+        WHERE id = $1 AND status = 'ON_HOLD'`,
+      [loan.id, actor]
+    );
+    if (upd.rowCount !== 1) throw loanErr(409, 'VICOBA_LOAN_NOT_ON_HOLD', 'Ombi linaweza kufutwa likiwa ON_HOLD tu.');
+    await client.query('COMMIT');
+    await logAudit({ eventType: 'VICOBA_LOAN', action: 'CANCEL', entityType: 'VICOBA_LOAN', userId: actor, entityId: loan.id, afterData: { group_id: loan.group_id, hold_reason: loan.hold_reason, hold_step: loan.hold_step } });
+    return { success: true, loanId: loan.id, status: 'CANCELLED', message: 'Ombi la mkopo limefutwa.' };
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function getLoanApprovals(actorUserId, loanId) {
+  const r = await pool.query(
+    `SELECT a.step_no, a.step_code, a.actor_user_id, a.actor_role_at_action, a.decision, a.reason, a.amount, a.decided_at
+       FROM vicoba_loan_requests lr
+       JOIN vicoba_members vm ON vm.group_id = lr.group_id AND vm.user_id = $1
+       LEFT JOIN vicoba_loan_approvals a ON a.loan_id = lr.id
+      WHERE lr.id = $2
+      ORDER BY a.step_no`,
+    [actorUserId, loanId]
+  );
+  if (r.rows.length === 0) throw loanErr(403, 'VICOBA_NOT_GROUP_MEMBER', 'Hauko kwenye kikundi husika.');
+  return r.rows.filter((x) => x.step_no != null);
 }
 
 async function approveLoan(approverUserId, loanId, approvedAmount) {
@@ -162,7 +433,7 @@ async function approveLoan(approverUserId, loanId, approvedAmount) {
     await client.query('BEGIN');
 
     const roleRes = await client.query(
-      `SELECT vm.role_in_group, g.group_name, u.phone_number, u.full_name, u.id as applicant_id
+      `SELECT vm.role_in_group, g.group_name, u.phone_number, u.full_name, u.id as applicant_id, lr.approval_chain_version
        FROM vicoba_loan_requests lr
        JOIN vicoba_members vm ON vm.group_id = lr.group_id AND vm.user_id = $1
        JOIN vicoba_groups g ON g.id = lr.group_id
@@ -175,12 +446,15 @@ async function approveLoan(approverUserId, loanId, approvedAmount) {
       throw Object.assign(new Error('Hauko kwenye kikundi husika.'), { statusCode: 403 });
     }
     const ctx = roleRes.rows[0];
-    if (ctx.role_in_group !== 'MWEKAHAZINA' && ctx.role_in_group !== 'KATIBU') {
+    // R34 S5: a chain-v1 loan is decided here only at its MWENYEKITI step (assertChainStep below);
+    // a legacy loan (chain NULL) keeps the old rule (owner decision D-S5-8).
+    const isChain = ctx.approval_chain_version != null;
+    if (!isChain && ctx.role_in_group !== 'MWEKAHAZINA' && ctx.role_in_group !== 'KATIBU') {
       throw Object.assign(new Error('Mwekahazina au Katibu ndiye anayeidhinisha kiasi.'), { statusCode: 403 });
     }
     // R30 F-D5-5: the applicant never approves their own loan (checked under the loan row lock).
     if (Number(ctx.applicant_id) === Number(approverUserId)) {
-      throw Object.assign(new Error('Huwezi kuidhinisha ombi lako mwenyewe.'), { statusCode: 403 });
+      throw loanErr(403, 'VICOBA_LOAN_SELF_APPROVAL', 'Huwezi kuidhinisha ombi lako mwenyewe.');
     }
 
     const loanRes = await client.query(
@@ -192,6 +466,16 @@ async function approveLoan(approverUserId, loanId, approvedAmount) {
 
     // Idempotent retry after a committed approval.
     if (loan.status === 'DISBURSED') {
+      if (isChain) {
+        // Only the MWENYEKITI who gave the final approval gets the idempotent success.
+        const own = await client.query(
+          "SELECT 1 FROM vicoba_loan_approvals WHERE loan_id = $1 AND step_code = 'MWENYEKITI' AND actor_user_id = $2",
+          [loanId, approverUserId]
+        );
+        if (own.rows.length === 0) {
+          throw loanErr(409, 'VICOBA_LOAN_ALREADY_DECIDED', 'Ombi hili tayari limeamuliwa.');
+        }
+      }
       const existingTx = await client.query(
         `SELECT wallet_amount
          FROM transactions
@@ -216,31 +500,60 @@ async function approveLoan(approverUserId, loanId, approvedAmount) {
       });
     }
 
-    if (loan.status !== 'PENDING') {
-      throw Object.assign(new Error('Ombi hili tayari limechakatwa.'), { statusCode: 400 });
-    }
-    if (!loan.chairman_approval) {
-      throw Object.assign(new Error('Ombi bado halijaidhinishwa na Mwenyekiti.'), { statusCode: 400 });
-    }
+    let finalAmount;
+    if (isChain) {
+      // R34 S5: final (MWENYEKITI) step. All chain rules, then the step row, then the same disbursement.
+      const step = await assertChainStep(client, loan, approverUserId, 'MWENYEKITI');
+      finalAmount = Number(loan.approved_amount);
+      if (approvedAmount != null) {
+        const asked = Number(approvedAmount);
+        if (!Number.isFinite(asked) || asked <= 0) {
+          throw loanErr(400, 'VICOBA_LOAN_AMOUNT_INVALID', 'Kiasi cha mkopo lazima kiwe kikubwa kuliko 0.');
+        }
+        if (toCents(asked) !== toCents(loan.approved_amount)) {
+          throw loanErr(409, 'VICOBA_LOAN_AMOUNT_MISMATCH', 'Kiasi hakilingani na kilichohakikiwa na Mhasibu.');
+        }
+      }
+      if (!Number.isFinite(finalAmount) || finalAmount <= 0) {
+        throw loanErr(409, 'VICOBA_LOAN_AMOUNT_INVALID', 'Kiasi kilichohakikiwa na Mhasibu hakipo.');
+      }
+      await insertApproval(client, loan, step.step, Number(approverUserId), step.role, 'APPROVED', null, finalAmount);
+      const claimed = await client.query(
+        `UPDATE vicoba_loan_requests
+         SET chairman_approval = TRUE, chairman_approved_by = $2, status = 'APPROVED', updated_at = NOW()
+         WHERE id = $1 AND status = 'PENDING_MWENYEKITI'`,
+        [loanId, approverUserId]
+      );
+      if (claimed.rowCount !== 1) {
+        throw loanErr(409, 'VICOBA_LOAN_ALREADY_DECIDED', 'Ombi hili tayari limeamuliwa.');
+      }
+    } else {
+      if (loan.status !== 'PENDING') {
+        throw Object.assign(new Error('Ombi hili tayari limechakatwa.'), { statusCode: 400 });
+      }
+      if (!loan.chairman_approval) {
+        throw Object.assign(new Error('Ombi bado halijaidhinishwa na Mwenyekiti.'), { statusCode: 400 });
+      }
 
-    const finalAmount = approvedAmount == null
-      ? Number(loan.requested_amount)
-      : Number(approvedAmount);
+      finalAmount = approvedAmount == null
+        ? Number(loan.requested_amount)
+        : Number(approvedAmount);
 
-    if (!Number.isFinite(finalAmount) || finalAmount <= 0) {
-      throw Object.assign(new Error('Kiasi cha mkopo lazima kiwe kikubwa kuliko 0.'), { statusCode: 400 });
+      if (!Number.isFinite(finalAmount) || finalAmount <= 0) {
+        throw Object.assign(new Error('Kiasi cha mkopo lazima kiwe kikubwa kuliko 0.'), { statusCode: 400 });
+      }
+
+      if (finalAmount > Number(loan.requested_amount)) {
+        throw Object.assign(new Error('Kiasi kilichoidhinishwa hakizidi kilichoombwa.'), { statusCode: 400 });
+      }
+
+      await client.query(
+        `UPDATE vicoba_loan_requests
+         SET approved_amount = $1, treasurer_approval = TRUE, treasurer_approved_by = $2, status = 'APPROVED', updated_at = NOW()
+         WHERE id = $3`,
+        [finalAmount, approverUserId, loanId]
+      );
     }
-
-    if (finalAmount > Number(loan.requested_amount)) {
-      throw Object.assign(new Error('Kiasi kilichoidhinishwa hakizidi kilichoombwa.'), { statusCode: 400 });
-    }
-
-    await client.query(
-      `UPDATE vicoba_loan_requests
-       SET approved_amount = $1, treasurer_approval = TRUE, treasurer_approved_by = $2, status = 'APPROVED', updated_at = NOW()
-       WHERE id = $3`,
-      [finalAmount, approverUserId, loanId]
-    );
 
     // Create transaction first with canonical reference
     const txRes = await client.query(
@@ -1738,6 +2051,10 @@ module.exports = {
   contributeShares,
   requestLoan,
   approveLoan,
+  decideLoanStep,
+  cancelLoanRequest,
+  getLoanApprovals,
+  VICOBA_LOAN_CHAINS,
   chargeMaintenanceFee,
   getGroupDetails,
   listUserGroups,

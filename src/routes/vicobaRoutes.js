@@ -109,10 +109,10 @@ router.post('/groups/:groupId/contribute', async (req, res, next) => {
   }
 });
 
-// Mwenyekiti: ongeza ombi la mkopo kwa mwanachama
+// R34 S5: mwanachama anaanzisha ombi lake mwenyewe (applicant = req.user). Riba inatoka kwenye kikundi.
 router.post('/groups/:groupId/loans', async (req, res, next) => {
   try {
-    const { applicantUserId, requestedAmount, interestRate, repaymentMonths } = req.body;
+    const { applicantUserId, requestedAmount, interestRate, repaymentMonths } = req.body || {};
     const loan = await vicobaService.requestLoan(req.user.id, {
       groupId: parseInt(req.params.groupId, 10),
       applicantUserId,
@@ -126,7 +126,38 @@ router.post('/groups/:groupId/loans', async (req, res, next) => {
   }
 });
 
-// Mwekahazina/Katibu: idhinisha na kutoa mkopo (2nd Approver)
+// R34 S5: ngazi ya KATIBU / MHASIBU (APPROVE), au kukataa kwa sababu katika ngazi inayosubiriwa.
+router.post('/loans/:loanId/decision', async (req, res, next) => {
+  try {
+    const { step, decision, reason, approvedAmount } = req.body || {};
+    const result = await vicobaService.decideLoanStep(req.user.id, parseInt(req.params.loanId, 10), { step, decision, reason, approvedAmount });
+    return res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// R34 S5 (D-S5-5): mwombaji anafuta ombi lake likiwa ON_HOLD.
+router.post('/loans/:loanId/cancel', async (req, res, next) => {
+  try {
+    const result = await vicobaService.cancelLoanRequest(req.user.id, parseInt(req.params.loanId, 10));
+    return res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// R34 S5: historia ya ngazi za idhini (wanachama wa kikundi pekee).
+router.get('/loans/:loanId/approvals', async (req, res, next) => {
+  try {
+    const approvals = await vicobaService.getLoanApprovals(req.user.id, parseInt(req.params.loanId, 10));
+    return res.json({ success: true, approvals });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// R34 S5: ngazi ya mwisho (MWENYEKITI) + utoaji kwa ombi jipya; ombi la zamani: Mwekahazina/Katibu (D-S5-8).
 router.post('/loans/:loanId/approve', async (req, res, next) => {
   try {
     const { approvedAmount } = req.body;
