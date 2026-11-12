@@ -141,6 +141,10 @@ async function requestLoan(chairmanUserId, { groupId, applicantUserId, requested
   if (roleRes.rows.length === 0 || !allowed.includes(roleRes.rows[0].role_in_group)) {
     throw Object.assign(new Error('Mwenyekiti au Katibu ndiye anayeweza kuongeza ombi la mkopo.'), { statusCode: 403 });
   }
+  // R30 F-D5-5 decision 4: the creator (chairman_approved_by) is never the applicant (maker-checker).
+  if (Number(chairmanUserId) === Number(applicantUserId)) {
+    throw Object.assign(new Error('Huwezi kuidhinisha ombi lako mwenyewe.'), { statusCode: 403 });
+  }
 
   const result = await pool.query(
     `INSERT INTO vicoba_loan_requests
