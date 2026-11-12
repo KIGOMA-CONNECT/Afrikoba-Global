@@ -28,6 +28,8 @@ async function run() {
     await client.query('BEGIN');
     const uid = (await client.query('SELECT min(id) AS id FROM users')).rows[0].id;
     const uid2 = (await client.query('SELECT id FROM users ORDER BY id OFFSET 1 LIMIT 1')).rows[0].id;
+    // R30 decision 4: the chair who creates a request must not be its applicant -> separate chair user
+    const chairId = (await client.query("INSERT INTO users (full_name, phone_number) VALUES ('R30 Fixture Chair', $1) RETURNING id", ['2559' + String(Date.now()).slice(-8)])).rows[0].id;
 
     // Create group
     const groupRes = await client.query(
@@ -36,16 +38,17 @@ async function run() {
     );
     const groupId = groupRes.rows[0].id;
 
-    // Add chairman (uid) and treasurer (uid2)
-    await client.query("INSERT INTO vicoba_members (group_id, user_id, role_in_group, contribution_balance) VALUES ($1, $2, 'MWENYEKITI', 5000)", [groupId, uid]);
+    // Add chairman (chairId), applicant member (uid) and treasurer (uid2)
+    await client.query("INSERT INTO vicoba_members (group_id, user_id, role_in_group, contribution_balance) VALUES ($1, $2, 'MWENYEKITI', 5000)", [groupId, chairId]);
+    await client.query("INSERT INTO vicoba_members (group_id, user_id, role_in_group, contribution_balance) VALUES ($1, $2, 'MJUMBE', 5000)", [groupId, uid]);
     await client.query("INSERT INTO vicoba_members (group_id, user_id, role_in_group, contribution_balance) VALUES ($1, $2, 'MWEKAHAZINA', 5000)", [groupId, uid2]);
 
     // Fund applicant wallet
     await client.query('UPDATE users SET wallet_balance = wallet_balance + 10000 WHERE id = $1', [uid]);
     await client.query('COMMIT');
 
-    // Request loan (by chairman, for uid as applicant)
-    const loan = await vicobaService.requestLoan(uid, { groupId, applicantUserId: uid, requestedAmount: 2000, interestRate: 10, repaymentMonths: 3 });
+    // Request loan (by chairman chairId, for uid as applicant)
+    const loan = await vicobaService.requestLoan(chairId, { groupId, applicantUserId: uid, requestedAmount: 2000, interestRate: 10, repaymentMonths: 3 });
     await expect(loan && loan.id, 'Loan requested', JSON.stringify(loan));
 
     // Approve loan (by treasurer) - this disburses it
@@ -134,7 +137,7 @@ async function run() {
     await expect(nonOwnerRejected, 'Non-owner rejected');
 
     // Test 7: Loan not DISBURSED
-    const loan2 = await vicobaService.requestLoan(uid, { groupId, applicantUserId: uid, requestedAmount: 1000, interestRate: 10, repaymentMonths: 3 });
+    const loan2 = await vicobaService.requestLoan(chairId, { groupId, applicantUserId: uid, requestedAmount: 1000, interestRate: 10, repaymentMonths: 3 });
     let notDisbursedRejected = false;
     try {
       await vicobaService.repayLoan(uid, loan2.id, 100, 'Test');
