@@ -263,7 +263,9 @@ async function testStatic() {
   expect(iSelf > 0 && iFirstWrite > iSelf, 'approve: self-approval check precedes the first write', `${iSelf} / ${iFirstWrite}`);
   const fe = fs.readFileSync(FOUR_EYES_FILE, 'utf8');
   const exec = fe.slice(fe.indexOf("'VICOBA_SOCIAL_FUND_DISBURSE'"), fe.indexOf("'CARD_ADMIN_SETTLE'"));
-  expect(/vicoba\.approveSocialFundDisbursement\(actorId,/.test(exec), 'four-eyes executor calls the guarded service with actorId', exec.slice(0, 120));
+  // R29 D5: the admin four-eyes executor no longer disburses VICOBA social fund at all (group
+  // authority only, on the VICOBA route with req.user); it refuses with VICOBA_GROUP_AUTHORITY_REQUIRED.
+  expect(/throw vicobaGroupAuthorityRequired\(\)/.test(exec) && !/approveSocialFundDisbursement/.test(exec), 'four-eyes executor refuses (VICOBA_GROUP_AUTHORITY_REQUIRED), never calls the service', exec.slice(0, 160));
 }
 
 // ---------------------------------------------------------------------------
