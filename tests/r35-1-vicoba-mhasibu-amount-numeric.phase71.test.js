@@ -205,6 +205,22 @@ const settledWithin = (p, ms) => Promise.race([p.then(() => true, () => true), s
     check('[5] no approvedAmount -> the requested 10000.00', r3.status === 200 && String((await loanRow(l3)).approved_amount) === '10000.00', r3.body);
   }
 
+  console.log('\n[7] values where JS float rounding and NUMERIC rounding disagree (R35 (1) review F-1)');
+  {
+    const s = await group();
+    const l1 = await atMhasibu(s, 5242.89);
+    const r1 = await mh(l1, s, 5242.8949999999995);
+    const row1 = await loanRow(l1); const a1 = await approvals(l1);
+    check('[7] 5242.8949999999995 on 5242.89 -> 200, stored 5242.89 on the loan and the approval (JS Math.round would give 5242.90)',
+      r1.status === 200 && String(row1.approved_amount) === '5242.89' && String(a1[1].amount) === '5242.89', { r1: r1.body, aa: row1.approved_amount, a: a1[1] && a1[1].amount });
+    const w0 = await walletC(s.member.id);
+    const f = await approveFinal(l1, s.chair);
+    check('[7] paid exactly 5242.89 (524289 cents), never a cent above the request', f.status === 200 && (await walletC(s.member.id)) === w0 + 524289 && (await txCount(l1)) === 1, { f: f.body });
+    const l2 = await atMhasibu(s, 2);
+    const r2 = await mh(l2, s, 1.005);
+    check('[7] 1.005 on 2.00 -> stored 1.01 (NUMERIC half up; JS Math.round gives 1.00)', r2.status === 200 && String((await loanRow(l2)).approved_amount) === '1.01', { r2: r2.body });
+  }
+
   console.log('\n[6] static');
   {
     const src = fs.readFileSync(path.join(ROOT, 'src/services/vicobaService.js'), 'utf8');
