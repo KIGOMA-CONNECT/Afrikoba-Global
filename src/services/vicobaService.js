@@ -174,6 +174,10 @@ async function approveLoan(approverUserId, loanId, approvedAmount) {
     if (ctx.role_in_group !== 'MWEKAHAZINA' && ctx.role_in_group !== 'KATIBU') {
       throw Object.assign(new Error('Mwekahazina au Katibu ndiye anayeidhinisha kiasi.'), { statusCode: 403 });
     }
+    // R30 F-D5-5: the applicant never approves their own loan (checked under the loan row lock).
+    if (Number(ctx.applicant_id) === Number(approverUserId)) {
+      throw Object.assign(new Error('Huwezi kuidhinisha ombi lako mwenyewe.'), { statusCode: 403 });
+    }
 
     const loanRes = await client.query(
       'SELECT * FROM vicoba_loan_requests WHERE id = $1 FOR UPDATE',
