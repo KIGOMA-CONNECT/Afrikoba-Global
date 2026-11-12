@@ -321,34 +321,38 @@ async function listFixedDeposits(userId, query = pool) {
 
 async function withdrawFixedDeposit(userId, depositId, data) {
   const allowEarly = !!(data && (data.allow_early === true || data.allow_early === 'true'));
-  const dep = await pool.query("SELECT * FROM fixed_deposits WHERE id = $1 AND user_id = $2 AND status = 'ACTIVE'", [depositId, userId]);
-  if (!dep.rows.length) throw badge('Mchango huu haupatikani au umechukuliwa.', 404);
-  const d = dep.rows[0];
-  const today = new Date();
-  const matured = new Date(d.maturity_date) <= today;
   const client = await pool.connect();
   let deposit;
   let interest = 0;
   let penalty = 0;
   try {
     await client.query('BEGIN');
+    // R28 S1: read the deposit under a row lock inside the transaction, so a concurrent
+    // withdrawal of the same deposit waits and then finds it no longer ACTIVE (404).
+    const dep = await client.query("SELECT * FROM fixed_deposits WHERE id = $1 AND user_id = $2 AND status = 'ACTIVE' FOR UPDATE", [depositId, userId]);
+    if (!dep.rows.length) throw badge('Mchango huu haupatikani au umechukuliwa.', 404);
+    const d = dep.rows[0];
+    const today = new Date();
+    const matured = new Date(d.maturity_date) <= today;
     const amountNum = Number(d.amount);
     if (matured) {
       interest = round2(amountNum * (Number(d.annual_rate) / 100) * (Number(d.term_months) / 12));
       penalty = 0;
       deposit = amountNum + interest;
-      await client.query(
-        `UPDATE fixed_deposits SET status = 'MATURED', interest_accrued = $1, matured_at = NOW(), updated_at = NOW() WHERE id = $2`,
+      const claimed = await client.query(
+        `UPDATE fixed_deposits SET status = 'MATURED', interest_accrued = $1, matured_at = NOW(), updated_at = NOW() WHERE id = $2 AND status = 'ACTIVE'`,
         [interest, depositId]
       );
+      if (claimed.rowCount !== 1) throw badge('Mchango huu haupatikani au umechukuliwa.', 404);
     } else if (allowEarly) {
       penalty = round2(amountNum * 0.02);
       interest = 0;
       deposit = amountNum - penalty;
-      await client.query(
-        `UPDATE fixed_deposits SET status = 'WITHDRAWN_EARLY', penalty_amount = $1, updated_at = NOW() WHERE id = $2`,
+      const claimed = await client.query(
+        `UPDATE fixed_deposits SET status = 'WITHDRAWN_EARLY', penalty_amount = $1, updated_at = NOW() WHERE id = $2 AND status = 'ACTIVE'`,
         [penalty, depositId]
       );
+      if (claimed.rowCount !== 1) throw badge('Mchango huu haupatikani au umechukuliwa.', 404);
     } else {
       throw badge('Mchango huu haujakomaa bado. Tumia allow_early=true kwa kuondoa mapema (penalty 2%).', 400);
     }
