@@ -461,22 +461,6 @@ async function syncOfflineOps(userId) {
   const ops = await pool.query("SELECT * FROM offline_operations WHERE user_id = $1 AND status = 'QUEUED' ORDER BY created_at ASC", [userId]);
   let processed = 0, failed = 0;
   for (const op of ops.rows) {
-    // R28 S5: claim the op under a row lock held until it is marked PROCESSED/FAILED, so a
-    // concurrent sync skips it (SKIP LOCKED) or sees it no longer QUEUED, instead of executing
-    // it again. A crash before the mark still leaves it QUEUED, as before.
-    const claim = await pool.connect();
-    try {
-      await claim.query('BEGIN');
-      const own = await claim.query(
-        "SELECT id FROM offline_operations WHERE id = $1 AND user_id = $2 AND status = 'QUEUED' FOR UPDATE SKIP LOCKED",
-        [op.id, userId]
-      );
-      if (!own.rows.length) { await claim.query('ROLLBACK'); claim.release(); continue; }
-    } catch (e) {
-      await claim.query('ROLLBACK').catch(() => {});
-      claim.release();
-      throw e;
-    }
     try {
       const p = op.payload;
       if (op.op_type === 'TRANSFER' && p.toPhone && p.amount) {
@@ -488,21 +472,11 @@ async function syncOfflineOps(userId) {
       } else {
         throw new Error('Aina ya operesheni haijulikani');
       }
-      await claim.query("UPDATE offline_operations SET status = 'PROCESSED', synced_at = NOW() WHERE id = $1", [op.id]);
-      await claim.query('COMMIT');
+      await pool.query("UPDATE offline_operations SET status = 'PROCESSED', synced_at = NOW() WHERE id = $1", [op.id]);
       processed++;
     } catch (e) {
-      try {
-        await claim.query('UPDATE offline_operations SET status = $1, error_message = $2 WHERE id = $3', ['FAILED', e.message, op.id]);
-        await claim.query('COMMIT');
-      } catch (markErr) {
-        // claim transaction aborted (e.g. the PROCESSED write failed): same as before, mark FAILED directly
-        await claim.query('ROLLBACK').catch(() => {});
-        await pool.query('UPDATE offline_operations SET status = $1, error_message = $2 WHERE id = $3', ['FAILED', e.message, op.id]);
-      }
+      await pool.query('UPDATE offline_operations SET status = $1, error_message = $2 WHERE id = $3', ['FAILED', e.message, op.id]);
       failed++;
-    } finally {
-      claim.release();
     }
   }
   return { processed, failed, message: 'Offline ops zimesawazishwa.' };
