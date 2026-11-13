@@ -11,7 +11,8 @@ const logger = require('../utils/logger');
 
 const REFRESH_TOKEN_EXPIRY = '30d';
 const ACCESS_TOKEN_EXPIRY = '1h';
-const REFRESH_TOKEN_SECRET = config.security.jwtSecret + '_refresh';
+// R37 (4): no refresh key without a real jwtSecret (an empty jwtSecret must not leave the public suffix as the key).
+const REFRESH_TOKEN_SECRET = config.security.jwtSecret ? config.security.jwtSecret + '_refresh' : '';
 
 function hashToken(token) {
   return crypto.createHash('sha256').update(token).digest('hex');
@@ -56,7 +57,7 @@ async function refreshAccessToken(refreshToken) {
   let consumed = false;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const decoded = jwt.verify(refreshToken, REFRESH_TOKEN_SECRET);
+      const decoded = jwt.verify(refreshToken, REFRESH_TOKEN_SECRET, { algorithms: ['HS256'] });
 
     if (decoded.type !== 'refresh') {
       throw Object.assign(new Error('Token si refresh token.'), { statusCode: 401 });
@@ -149,7 +150,7 @@ async function refreshAccessToken(refreshToken) {
  */
 async function revokeRefreshToken(refreshToken) {
   try {
-    const decoded = jwt.verify(refreshToken, REFRESH_TOKEN_SECRET, { ignoreExpiration: true });
+    const decoded = jwt.verify(refreshToken, REFRESH_TOKEN_SECRET, { algorithms: ['HS256'], ignoreExpiration: true });
     if (decoded.jti) {
       await pool.query('DELETE FROM refresh_tokens WHERE token_hash = $1', [hashToken(refreshToken)]);
     }
@@ -179,7 +180,7 @@ async function revokeAllUserTokens(userId) {
  */
 async function revokeToken(token) {
   try {
-    const decoded = jwt.verify(token, config.security.jwtSecret, { ignoreExpiration: true });
+    const decoded = jwt.verify(token, config.security.jwtSecret, { algorithms: ['HS256'], ignoreExpiration: true });
     if (decoded.jti) {
       await pool.query(
         'INSERT INTO revoked_tokens (token_jti, user_id, expires_at) VALUES ($1, $2, to_timestamp($3)) ON CONFLICT (token_jti) DO NOTHING',
@@ -216,7 +217,7 @@ async function validateSession(req, res, next) {
 
   const token = authHeader.split(' ')[1];
   try {
-    const decoded = jwt.verify(token, config.security.jwtSecret, { ignoreExpiration: true });
+    const decoded = jwt.verify(token, config.security.jwtSecret, { algorithms: ['HS256'], ignoreExpiration: true });
 
     // Check if token has been revoked (blacklisted)
     const revoked = await pool.query(

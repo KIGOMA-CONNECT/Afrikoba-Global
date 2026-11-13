@@ -33,7 +33,7 @@ const PLACEHOLDER = (() => { // .env.example JWT_SECRET placeholder (never print
 })();
 const REFRESH_SUFFIX = (() => { // suffix that sessionManager appends to jwtSecret for refresh tokens (never printed)
   const m = fs.readFileSync(path.join(ROOT, 'src/middleware/sessionManager.js'), 'utf8')
-    .match(/REFRESH_TOKEN_SECRET\s*=\s*config\.security\.jwtSecret\s*\+\s*(['"`])(.*?)\1/);
+    .match(/config\.security\.jwtSecret\s*\+\s*(['"`])(.*?)\1/); // R37 (4): REFRESH_TOKEN_SECRET line now guards an empty jwtSecret
   return m ? m[2] : null;
 })();
 
