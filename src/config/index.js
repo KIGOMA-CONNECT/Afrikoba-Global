@@ -2,6 +2,24 @@ require('dotenv').config();
 
 const DEFAULT_JWT = 'afrikoba_dev_secret_change_me';
 
+// R38 (10): a production JWT_SECRET must be at least JWT_MIN_LENGTH characters (after trimming) and must
+// not be a default shipped in the code or the templates. Defaults are compared by sha256 so their values
+// are not repeated here: DEFAULT_JWT (above) and the JWT_SECRET placeholder in .env.example.
+const crypto = require('crypto');
+const JWT_MIN_LENGTH = 32;
+const sha256 = (v) => crypto.createHash('sha256').update(String(v)).digest('hex');
+const KNOWN_DEFAULT_JWT_SHA256 = new Set([
+  sha256(DEFAULT_JWT),
+  'e5ce59bd50cf63c5f565845c5593340d0cd142325bdb40efa9b9712af34f49bb', // .env.example JWT_SECRET placeholder
+]);
+function jwtSecretProblem(secret) {
+  const s = typeof secret === 'string' ? secret.trim() : '';
+  if (!s) return 'haipo';
+  if (KNOWN_DEFAULT_JWT_SHA256.has(sha256(s))) return 'ni thamani ya akiba iliyoandikwa kwenye msimbo au template';
+  if (s.length < JWT_MIN_LENGTH) return `ni fupi kuliko herufi ${JWT_MIN_LENGTH}`;
+  return null;
+}
+
 const config = {
   nodeEnv: process.env.NODE_ENV || 'development',
   port: parseInt(process.env.PORT || '3000', 10),
@@ -134,8 +152,9 @@ function validateConfig() {
     errors.push("PILOT_MODE lazima iwekwe wazi: 'true' (pilot imefungwa) au 'false' (src/config/pilot.js)");
   }
 
-  if (!config.security.jwtSecret || config.security.jwtSecret === DEFAULT_JWT) {
-    errors.push('JWT_SECRET lazima uwe imewekwa na sio default (JWT_SECRET)');
+  const jwtProblem = jwtSecretProblem(process.env.JWT_SECRET);
+  if (jwtProblem) {
+    errors.push(`JWT_SECRET haikubaliki kwenye production: ${jwtProblem} (src/config/index.js, R38 (10)).`);
   }
   if (!config.db.password || config.db.password === 'secret') {
     errors.push('DB_PASSWORD lazima uwe imewekwa na sio default');
@@ -173,3 +192,5 @@ module.exports.validateConfig = validateConfig;
 // unset or any other value (e.g. 'staging', 'pilot') is treated as production-like (fail-closed).
 module.exports.isDevelopmentOrTest = () => process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'test';
 module.exports.DEFAULT_JWT = DEFAULT_JWT;
+module.exports.JWT_MIN_LENGTH = JWT_MIN_LENGTH;
+module.exports.jwtSecretProblem = jwtSecretProblem;
