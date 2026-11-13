@@ -32,20 +32,76 @@ async function diagnoseLockBlockers(sqlState) {
   lastLockDiag = nowTs;
   try {
     const res = await currentPool.query(
-      "SELECT blocked_locks.pid AS blocked_pid, blocked_activity.state AS blocked_state, left(blocked_activity.query, 80) AS blocked_query, blocking_locks.pid AS blocking_pid, blocking_activity.state AS blocking_state, left(blocking_activity.query, 120) AS blocking_query, (now() - blocking_activity.xact_start)::text AS blocking_xact_age FROM pg_locks blocked_locks JOIN pg_stat_activity blocked_activity ON blocked_activity.pid = blocked_locks.pid JOIN pg_locks blocking_locks ON blocking_locks.locktype = blocked_locks.locktype AND blocking_locks.database IS NOT DISTINCT FROM blocked_locks.database AND blocking_locks.relation IS NOT DISTINCT FROM blocked_locks.relation AND blocking_locks.page IS NOT DISTINCT FROM blocked_locks.page AND blocking_locks.tuple IS NOT DISTINCT FROM blocked_locks.tuple AND blocking_locks.virtualxid IS NOT DISTINCT FROM blocked_locks.virtualxid AND blocking_locks.transactionid IS NOT DISTINCT FROM blocked_locks.transactionid AND blocking_locks.classid IS NOT DISTINCT FROM blocked_locks.classid AND blocking_locks.objid IS NOT DISTINCT FROM blocked_locks.objid AND blocking_locks.objsubid IS NOT DISTINCT FROM blocked_locks.objsubid JOIN pg_stat_activity blocking_activity ON blocking_activity.pid = blocking_locks.pid WHERE NOT blocked_locks.granted AND blocking_locks.granted"
+      `SELECT blocked_locks.pid AS blocked_pid,
+              blocked_activity.state AS blocked_state,
+              left(blocked_activity.query, 80) AS blocked_query,
+              blocking_locks.pid AS blocking_pid,
+              blocking_activity.state AS blocking_state,
+              left(blocking_activity.query, 120) AS blocking_query,
+              (now() - blocking_activity.xact_start)::text AS blocking_xact_age
+         FROM pg_locks blocked_locks
+         JOIN pg_stat_activity blocked_activity ON blocked_activity.pid = blocked_locks.pid
+         JOIN pg_locks blocking_locks
+           ON blocking_locks.locktype = blocked_locks.locktype
+          AND blocking_locks.database IS NOT DISTINCT FROM blocked_locks.database
+          AND blocking_locks.relation IS NOT DISTINCT FROM blocked_locks.relation
+          AND blocking_locks.page IS NOT DISTINCT FROM blocked_locks.page
+          AND blocking_locks.tuple IS NOT DISTINCT FROM blocked_locks.tuple
+          AND blocking_locks.virtualxid IS NOT DISTINCT FROM blocked_locks.virtualxid
+          AND blocking_locks.transactionid IS NOT DISTINCT FROM blocked_locks.transactionid
+          AND blocking_locks.classid IS NOT DISTINCT FROM blocked_locks.classid
+          AND blocking_locks.objid IS NOT DISTINCT FROM blocked_locks.objid
+          AND blocking_locks.objsubid IS NOT DISTINCT FROM blocked_locks.objsubid
+         JOIN pg_stat_activity blocking_activity ON blocking_activity.pid = blocking_locks.pid
+        WHERE NOT blocked_locks.granted AND blocking_locks.granted`
     );
     if (res.rows.length) {
       res.rows.forEach((row) => {
-        logger.warn('DB-LOCK-DIAG', 'SQLState ' + sqlState + ': blocked=' + row.blocked_pid + '(' + row.blocked_state + ') <- blocker=' + row.blocking_pid + '(' + row.blocking_state + ', xact_age=' + row.blocking_xact_age + ')');
+        logger.warn('DB-LOCK-DIAG', `SQLState ${sqlState}: blocked=${row.blocked_pid}(${row.blocked_state}) "${row.blocked_query}" <- blocker=${row.blocking_pid}(${row.blocking_state}, xact_age=${row.blocking_xact_age}) "${row.blocking_query}"`);
       });
     }
   } catch (e) {
-    logger.warn('DB-LOCK-DIAG', 'diag query failed: ' + e.message);
+    logger.warn('DB-LOCK-DIAG', `diag query failed: ${e.message}`);
+  }
+  try {
+    const holders = await currentPool.query(
+      `SELECT l.pid, a.state, (now() - a.xact_start)::text AS xact_age,
+              left(a.query, 140) AS q, COUNT(*) AS locks_held
+         FROM pg_locks l
+         JOIN pg_stat_activity a ON a.pid = l.pid
+        WHERE l.granted
+          AND a.pid <> pg_backend_pid()
+          AND a.xact_start IS NOT NULL
+          AND now() - a.xact_start > interval '0.5 seconds'
+        GROUP BY l.pid, a.state, a.xact_start, left(a.query, 140)
+        ORDER BY xact_age DESC`
+    );
+    if (holders.rows.length) {
+      holders.rows.forEach((row) => {
+        logger.warn('DB-LOCK-DIAG', `SQLState ${sqlState} persistent-holder: pid=${row.pid} state=${row.state} xact_age=${row.xact_age} locks=${row.locks_held} "${row.q}"`);
+      });
+    }
+  } catch (e) {
+    logger.warn('DB-LOCK-DIAG', `holder query failed: ${e.message}`);
+  }
+  try {
+    const txs = await currentPool.query(
+      `SELECT pid, state, (now() - xact_start)::text AS xact_age, left(query, 140) AS q
+         FROM pg_stat_activity
+        WHERE xact_start IS NOT NULL AND pid <> pg_backend_pid()
+        ORDER BY xact_start`
+    );
+    if (txs.rows.length) {
+      txs.rows.forEach((row) => {
+        logger.warn('DB-LOCK-DIAG', `SQLState ${sqlState} in-tx: pid=${row.pid} state=${row.state} xact_age=${row.xact_age} "${row.q}"`);
+      });
+    }
+  } catch (e) {
+    logger.warn('DB-LOCK-DIAG', `in-tx query failed: ${e.message}`);
   }
 }
 
-async function terminateStaleLockHolders(graceSeconds) {
-  if (graceSeconds === undefined) graceSeconds = 2;
+async function terminateStaleLockHolders(graceSeconds = 2) {
   if (process.env.CI !== 'true') {
     logger.info('DB-LOCK-DIAG', 'terminateStaleLockHolders skipped (CI=false)');
     return 0;
@@ -64,11 +120,10 @@ async function terminateStaleLockHolders(graceSeconds) {
 }
 
 const origPgQuery = pg.Client.prototype.query;
-pg.Client.prototype.query = function q() {
-  var args = Array.prototype.slice.call(arguments);
+pg.Client.prototype.query = function q(...args) {
   const p = origPgQuery.apply(this, args);
   if (p && typeof p.then === 'function') {
-    p.then(null, function(e) {
+    p.then(null, (e) => {
       if (e && (e.code === '55P03' || e.code === '40P01')) diagnoseLockBlockers(e.code);
     });
   }
@@ -188,11 +243,16 @@ function safeRelease(client, origRelease, err) {
     try {
       origRelease(e);
     } catch (releaseEx) {
-      // Preserve original caller error; do not let release exception mask it
+      // Never let a release exception mask the caller error, and never let it
+      // escape as an unhandled rejection: log and swallow. The client is being
+      // discarded anyway.
+      try { logger.error('DB_RELEASE_FAILED', releaseEx && releaseEx.message); } catch (_) {}
       if (err) {
-        throw err;
+        // caller error is primary; do not throw the release exception
+        return;
       }
-      throw releaseEx;
+      // no caller error: swallow the release exception (already logged)
+      return;
     }
   }
 
