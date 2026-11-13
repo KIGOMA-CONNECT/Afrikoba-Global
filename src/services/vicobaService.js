@@ -177,6 +177,18 @@ async function holdReasonFor(client, groupId, applicantUserId, step, priorActorI
   return 'APPROVER_MISSING';
 }
 
+// R37 (7) / F-R36-3: real storage limit of the VICOBA loan amount columns. vicoba_loan_requests.requested_amount,
+// approved_amount and vicoba_loan_approvals.amount are NUMERIC(15,2) (db/migrations/002, 149), so the largest
+// storable value is 9999999999999.99. Amounts are rounded the way the column rounds (NUMERIC half up) and
+// refused with 400 before any write, instead of a 500 "numeric field overflow" at INSERT/UPDATE.
+const LOAN_AMOUNT_COLUMN_MAX = '9999999999999.99';
+async function assertLoanAmountFitsColumn(db, amount) {
+  const tooBig = () => loanErr(400, 'VICOBA_LOAN_AMOUNT_INVALID', 'Kiasi cha mkopo kinazidi kiwango cha juu kinachoweza kuhifadhiwa.');
+  if (!(Number(amount) < 1e16)) throw tooBig(); // keeps the numeric(18,2) cast below from overflowing
+  const r = (await db.query('SELECT ($1::numeric)::numeric(18,2) > $2::numeric AS over', [String(amount), LOAN_AMOUNT_COLUMN_MAX])).rows[0];
+  if (r.over) throw tooBig();
+}
+
 async function requestLoan(actorUserId, { groupId, applicantUserId, requestedAmount, interestRate, repaymentMonths }) {
   // v2.1 §3: the member submits their own request (applicant = initiator = req.user).
   // A body applicant different from the caller is refused, never silently re-targeted.
@@ -189,6 +201,7 @@ async function requestLoan(actorUserId, { groupId, applicantUserId, requestedAmo
   }
   // R36 Task 3: strict number (no "5000", true, null, NaN, Infinity); same code as before.
   const amount = require('../utils/strictAmount').strictAmount(requestedAmount, { field: 'requestedAmount', code: 'VICOBA_LOAN_AMOUNT_INVALID', message: 'Kiasi cha mkopo lazima kiwe namba kubwa kuliko 0.' });
+  await assertLoanAmountFitsColumn(pool, amount); // R37 (7)
   const months = repaymentMonths == null ? 3 : Number(repaymentMonths);
   if (!Number.isInteger(months) || months <= 0) {
     throw loanErr(400, 'VICOBA_LOAN_MONTHS_INVALID', 'Muda wa marejesho si sahihi.');
@@ -356,6 +369,7 @@ async function decideLoanStep(actorUserId, loanId, { step, decision, reason, app
       if (amount >= 1e16) {
         throw loanErr(400, 'VICOBA_LOAN_AMOUNT_INVALID', 'Kiasi kilichoidhinishwa hakizidi kilichoombwa.');
       }
+      await assertLoanAmountFitsColumn(client, amount); // R37 (7): real column limit, before insertApproval
       // R35 (1): round with Postgres NUMERIC(18,2), the same rule the column applies on store, and
       // compare the rounded value with the request; JS float rounding let 10000.005 pass as 10000.01.
       const rounded = (await client.query(
