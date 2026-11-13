@@ -53,7 +53,12 @@ router.get('/pools', async (req, res, next) => {
 // Maelezo ya pool
 router.get('/pools/:poolId', async (req, res, next) => {
   try {
-    const details = await roscaService.getPoolDetails(parseInt(req.params.poolId, 10));
+    // R37 (5) / L-1, K-18: strict id (parseInt('1;x') would read pool 1), then membership of req.user.
+    const raw = String(req.params.poolId);
+    if (!/^[1-9][0-9]{0,9}$/.test(raw) || Number(raw) > 2147483647) {
+      return res.status(400).json({ success: false, code: 'VALIDATION_ERROR', message: 'poolId si sahihi.' });
+    }
+    const details = await roscaService.getPoolDetails(Number(raw), req.user.id);
     return res.json({ success: true, pool: details });
   } catch (error) {
     next(error);

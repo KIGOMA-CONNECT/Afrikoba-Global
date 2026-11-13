@@ -420,7 +420,13 @@ async function disburseDuePayouts() {
   return { processed };
 }
 
-async function getPoolDetails(poolId) {
+async function getPoolDetails(poolId, viewerUserId) {
+  // R37 (5) / L-1, K-18: only members of the pool may see it (member names, queue numbers, phone numbers).
+  // Checked before the pool lookup, so a pool you are not in and a pool that does not exist look the same.
+  const membership = await pool.query('SELECT 1 FROM rosca_members WHERE pool_id = $1 AND user_id = $2', [poolId, viewerUserId]);
+  if (membership.rows.length === 0) {
+    throw Object.assign(new Error('Wewe si mwanachama wa pool hii.'), { statusCode: 403, code: 'ROSCA_NOT_POOL_MEMBER' });
+  }
   const poolRes = await pool.query('SELECT * FROM rosca_pools WHERE id = $1', [poolId]);
   if (poolRes.rows.length === 0) throw new Error('Pool haijapatikana.');
   const members = await pool.query(
