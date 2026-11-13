@@ -926,6 +926,13 @@ async function cancelEventWithdrawal(actorId, eventId, withdrawalId) {
       [withdrawalId, eventId]
     );
     if (rows.length !== 1) throw notCancellable();
+    // R37 (8b) / ND3-F1: the audit record is written in the same transaction (logAudit with a client throws on
+    // failure), so a cancel is never committed without its audit row.
+    await logAudit({
+      client, eventType: 'EVENT_WITHDRAWAL_CANCELLED', action: 'CANCEL', entityType: 'event_withdrawal',
+      entityId: withdrawalId, userId: actorId, amount: rows[0].amount,
+      afterData: { eventId, withdrawalId, previousStatus: 'PENDING', status: 'REJECTED' },
+    });
     await client.query('COMMIT');
     return { success: true, withdrawal: rows[0] };
   } catch (error) {

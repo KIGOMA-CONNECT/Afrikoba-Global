@@ -116,8 +116,10 @@ const legacyHash = async () => (await q1(`SELECT count(*)::int n, md5(COALESCE(s
   const n8 = Number((await q1('SELECT count(*) n FROM vicoba_loan_approvals WHERE group_id=$1', [g])).n);
   const c8 = await codeOf(() => pool.query('DELETE FROM vicoba_groups WHERE id=$1', [g]));
   const n8b = Number((await q1('SELECT count(*) n FROM vicoba_loan_approvals WHERE group_id=$1', [g])).n);
-  // 23503: RESTRICT FK; 42501: the append-only trigger if a cascade reaches the approvals
-  check('[8] deleting a group that has approvals is refused (23503 FK RESTRICT or 42501 append-only); approvals kept', ['23503', '42501'].includes(c8) && n8 > 0 && n8b === n8, { c8, n8, n8b });
+  // 23503: RESTRICT FK as raised by PostgreSQL 16 (r26-ci-db 16.15); 23001 restrict_violation: the SQLSTATE
+  // newer PostgreSQL raises for ON DELETE RESTRICT (R37 (8a) / F-R36-1); 42501: the append-only trigger if a
+  // cascade reaches the approvals. The property is unchanged: the delete is refused and every approval is kept.
+  check('[8] deleting a group that has approvals is refused (23503/23001 FK RESTRICT or 42501 append-only); approvals kept', ['23503', '23001', '42501'].includes(c8) && n8 > 0 && n8b === n8, { c8, n8, n8b });
 
   console.log('\n[9] concurrency: two open transactions insert the same step / the same actor');
   for (const [label, a2, step2] of [['same step', chair, 1], ['same actor', sec, 2]]) {
