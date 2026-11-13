@@ -5,7 +5,8 @@ const config = require('../config');
 const logger = require('../utils/logger');
 const { hardenedVerify } = require('./jwtHardening');
 
-const JWT_SECRET = config.security.jwtSecret || config.DEFAULT_JWT;
+// R37 (2): only the validated config value; no fallback of its own (config decides, fail-closed).
+const JWT_SECRET = config.security.jwtSecret;
 
 function signToken(user, expiresIn) {
   return jwt.sign(

@@ -20,6 +20,10 @@ function jwtSecretProblem(secret) {
   return null;
 }
 
+// R36/R37 (2): dev-only behaviour (DEFAULT_JWT fallback, devOtp, stack traces) needs an EXPLICIT
+// development/test NODE_ENV; unset or any other value (e.g. 'Production', 'staging') is production-like.
+const isDevelopmentOrTest = () => process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'test';
+
 const config = {
   nodeEnv: process.env.NODE_ENV || 'development',
   port: parseInt(process.env.PORT || '3000', 10),
@@ -83,7 +87,9 @@ const config = {
     baseUrl: process.env.CONTRACT_BASE_URL || 'http://localhost:3000/contracts',
   },
   security: {
-    jwtSecret: process.env.JWT_SECRET || DEFAULT_JWT,
+    // R37 (2): the shipped default exists for explicit test/development only; anywhere else it is empty
+    // (fail-closed: validateConfig refuses, and jsonwebtoken refuses to sign/verify with an empty key).
+    jwtSecret: process.env.JWT_SECRET || (isDevelopmentOrTest() ? DEFAULT_JWT : ''),
     jwtTtl: process.env.JWT_TTL || '7d',
     // '*' ina ruhusu origin zote (development). Katika production weka list halisi.
     corsOrigins: (process.env.CORS_ORIGINS || '*')
@@ -145,17 +151,23 @@ function validateConfig() {
   const errors = [];
   const isProd = config.nodeEnv === 'production';
 
-  if (!isProd) return { valid: true, errors };
+  // R37 (2): the JWT rule applies to every NODE_ENV except an explicit 'test' or 'development'.
+  if (!isDevelopmentOrTest()) {
+    const jwtProblem = jwtSecretProblem(process.env.JWT_SECRET);
+    if (jwtProblem) {
+      errors.push(`JWT_SECRET haikubaliki kwenye production (NODE_ENV si 'test' wala 'development'): ${jwtProblem} (src/config/index.js, R38 (10), R37 (2)).`);
+    }
+  }
+  if (!isProd) {
+    if (errors.length > 0) throw new Error(`Production configuration haijakamilika:\n- ${errors.join('\n- ')}`);
+    return { valid: true, errors };
+  }
 
   // R36: the pilot boundary (src/config/pilot.js) is never left to a silent default in production.
   if (!require('./pilot').pilotModeExplicit()) {
     errors.push("PILOT_MODE lazima iwekwe wazi: 'true' (pilot imefungwa) au 'false' (src/config/pilot.js)");
   }
 
-  const jwtProblem = jwtSecretProblem(process.env.JWT_SECRET);
-  if (jwtProblem) {
-    errors.push(`JWT_SECRET haikubaliki kwenye production: ${jwtProblem} (src/config/index.js, R38 (10)).`);
-  }
   if (!config.db.password || config.db.password === 'secret') {
     errors.push('DB_PASSWORD lazima uwe imewekwa na sio default');
   }
@@ -190,7 +202,7 @@ module.exports = config;
 module.exports.validateConfig = validateConfig;
 // R36: dev-only response behaviour (devOtp, stack traces) needs an EXPLICIT development/test NODE_ENV;
 // unset or any other value (e.g. 'staging', 'pilot') is treated as production-like (fail-closed).
-module.exports.isDevelopmentOrTest = () => process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'test';
+module.exports.isDevelopmentOrTest = isDevelopmentOrTest;
 module.exports.DEFAULT_JWT = DEFAULT_JWT;
 module.exports.JWT_MIN_LENGTH = JWT_MIN_LENGTH;
 module.exports.jwtSecretProblem = jwtSecretProblem;
