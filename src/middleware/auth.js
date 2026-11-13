@@ -120,4 +120,15 @@ function requireKycLevel(level) {
   };
 }
 
-module.exports = { signToken, authRequired, requireRoles, requireKycLevel, JWT_SECRET };
+// R37 (3): the short-lived token issued after the password step for a TOTP-enabled user. It carries
+// totp_pending, which hardenedVerify (authRequired + validateTokenPayload) refuses; only
+// POST /auth/totp-login accepts it.
+function signTotpPendingToken(user) {
+  return jwt.sign(
+    { id: user.id, av: user.auth_version || 0, totp_pending: true, jti: crypto.randomUUID() },
+    JWT_SECRET,
+    { algorithm: 'HS256', expiresIn: '5m' }
+  );
+}
+
+module.exports = { signToken, signTotpPendingToken, authRequired, requireRoles, requireKycLevel, JWT_SECRET };

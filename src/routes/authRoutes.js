@@ -1,7 +1,7 @@
 const express = require('express');
 const authService = require('../services/authService');
 const serviceService = require('../services/serviceService');
-const { signToken, authRequired } = require('../middleware/auth');
+const { signToken, signTotpPendingToken, authRequired } = require('../middleware/auth');
 const { generateTokenPair, refreshAccessToken, revokeToken, revokeRefreshToken, cleanupExpiredRefreshTokens } = require('../middleware/sessionManager');
 const { otpLimiter, authLimiter } = require('../middleware/rateLimiter');
 const { requestSizeGuard } = require('../middleware/requestSizeGuard');
@@ -111,7 +111,7 @@ router.post('/login/password', authLimiter, lockoutGuard(async (req, res, next) 
     const pool = require('../config/db');
     const totpRes = await pool.query('SELECT totp_enabled FROM users WHERE id = $1', [result.user.id]);
     if (totpRes.rows[0]?.totp_enabled) {
-      const tempToken = signToken({ ...result.user, totp_pending: true }, '5m');
+      const tempToken = signTotpPendingToken(result.user); // R37 (3): refused by every route except /totp-login
       return res.json({ success: true, requires2FA: true, tempToken, message: res.t('AUTH_TOTP_REQUIRED') });
     }
 
@@ -134,12 +134,12 @@ router.post('/totp-login', authLimiter, async (req, res, next) => {
     const jwt = require('jsonwebtoken');
     let decoded;
     try {
-      decoded = jwt.verify(tempToken, require('../config').security.jwtSecret);
+      decoded = jwt.verify(tempToken, require('../config').security.jwtSecret, { algorithms: ['HS256'] });
     } catch (e) {
       return res.status(401).json({ success: false, code: 'AUTH_EXPIRED_TOKEN', message: res.t('AUTH_TOTP_TOKEN_EXPIRED') });
     }
 
-    if (!decoded.totp_pending) {
+    if (decoded.totp_pending !== true) {
       return res.status(400).json({ success: false, message: res.t('AUTH_TOTP_BAD_LOGIN') });
     }
 
@@ -148,6 +148,10 @@ router.post('/totp-login', authLimiter, async (req, res, next) => {
     const user = userRes.rows[0];
     if (!user || !user.totp_secret) {
       return res.status(400).json({ success: false, message: res.t('AUTH_TOTP_NOT_SETUP') });
+    }
+    // R37 (3): a tempToken issued before a password change / session revocation is no longer valid.
+    if ((decoded.av || 0) !== (user.auth_version || 0)) {
+      return res.status(401).json({ success: false, code: 'AUTH_EXPIRED_TOKEN', message: res.t('AUTH_TOTP_TOKEN_EXPIRED') });
     }
 
     const { verifyToken } = require('../services/totpService');

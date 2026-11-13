@@ -31,6 +31,12 @@ function hardenedVerify(token, secret) {
       throw new Error('Token missing user ID');
     }
 
+    // R37 (3): a TOTP-pending token (password step done, second factor not yet verified) is never an
+    // access token. Only POST /auth/totp-login accepts it, and that route verifies it separately.
+    if (decoded.payload.totp_pending !== undefined) {
+      throw Object.assign(new Error('Hatua ya TOTP bado haijakamilika.'), { statusCode: 401, code: 'TOTP_PENDING' });
+    }
+
     // Validate issued-at is not in the future (clock skew tolerance: 5 min)
     if (decoded.payload.iat) {
       const now = Math.floor(Date.now() / 1000);

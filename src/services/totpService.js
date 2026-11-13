@@ -1,4 +1,18 @@
-const { authenticator } = require('otplib');
+// R37 (3): the pinned otplib (package-lock 13.5.0) has no `authenticator` export; it exposes
+// generateSecret / generateURI / verifySync. verifySync throws on malformed input, so verification
+// goes through verifyCode(), which never throws and returns a boolean.
+const otp = require('otplib');
+
+function verifyCode(secret, token) {
+  if (!secret || token === undefined || token === null) return false;
+  const code = String(token).trim();
+  if (!/^\d{6}$/.test(code)) return false;
+  try {
+    return otp.verifySync({ secret, token: code }).valid === true;
+  } catch (e) {
+    return false;
+  }
+}
 const pool = require('../config/db');
 const config = require('../config');
 
@@ -12,11 +26,11 @@ const config = require('../config');
  * Returns { secret, otpauthUrl } — client displays otpauthUrl as QR code.
  */
 async function setupTotp(userId) {
-  const secret = authenticator.generateSecret();
+  const secret = otp.generateSecret();
   const user = await pool.query('SELECT phone_number FROM users WHERE id = $1', [userId]);
   if (user.rows.length === 0) throw Object.assign(new Error('Mtumiaji hajapatikana.'), { statusCode: 404 });
 
-  const otpauthUrl = authenticator.keyuri(user.rows[0].phone_number, 'Afrikoba Global', secret);
+  const otpauthUrl = otp.generateURI({ secret, label: user.rows[0].phone_number, issuer: 'Afrikoba Global' });
 
   // Store secret (not enabled yet — must verify first)
   await pool.query(
@@ -38,7 +52,7 @@ async function verifyAndEnable(userId, token) {
   const secret = user.rows[0].totp_secret;
   if (!secret) throw Object.assign(new Error('TOTP haijaanzishwa. Anza na /totp/setup.'), { statusCode: 400 });
 
-  const isValid = authenticator.verify({ token, secret });
+  const isValid = verifyCode(secret, token);
   if (!isValid) throw Object.assign(new Error('Kodi ya TOTP si sahihi.'), { statusCode: 403 });
 
   await pool.query(
@@ -54,8 +68,7 @@ async function verifyAndEnable(userId, token) {
  * Returns true/false.
  */
 function verifyToken(secret, token) {
-  if (!secret) return false;
-  return authenticator.verify({ token, secret });
+  return verifyCode(secret, token);
 }
 
 /**
