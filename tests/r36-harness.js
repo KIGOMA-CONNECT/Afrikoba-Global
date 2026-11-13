@@ -7,6 +7,9 @@ if (!DB_GUARD.test(process.env.DB_NAME || '') || process.env.DB_HOST !== '127.0.
 }
 process.env.JWT_SECRET = require('crypto').randomBytes(32).toString('hex');
 delete process.env.PILOT_MODE;
+// R36B review #3: outside the pilot the catalog decides by NODE_ENV; the harness is always NODE_ENV=test.
+if (!process.env.NODE_ENV) process.env.NODE_ENV = 'test';
+if (process.env.NODE_ENV !== 'test') { console.error(`REFUSING: NODE_ENV must be test (got ${process.env.NODE_ENV})`); process.exit(2); }
 delete process.env.VICOBA_ADD_BONUS_ENABLED;
 const path = require('path');
 const ROOT = path.join(__dirname, '..');

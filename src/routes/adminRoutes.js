@@ -562,6 +562,13 @@ const THRESHOLD_CONFIG_KEYS = new Set(['HIGH_VALUE_TRANSFER_THRESHOLD', 'EVENT_W
 const CONFIG_KEY_RE = /^[A-Z][A-Z0-9_]{0,79}$/;
 const POSITIVE_DECIMAL_RE = /^(?:0|[1-9][0-9]{0,14})(?:\.[0-9]{1,2})?$/;
 
+// R36B OD-3: in the pilot a single admin cannot move the four-eyes amount thresholds.
+function assertThresholdNotLocked(key) {
+  if (THRESHOLD_CONFIG_KEYS.has(key) && require('../config/pilot').isFourEyesLocked()) {
+    throw Object.assign(new Error('Kizingiti cha four-eyes kimefungwa kwa mazingira ya pilot.'), { statusCode: 403, code: 'PILOT_CONFIG_LOCKED' });
+  }
+}
+
 router.put('/config/:key', async (req, res, next) => {
   const client = await pool.connect();
   try {
@@ -572,6 +579,7 @@ router.put('/config/:key', async (req, res, next) => {
     if (value === undefined || value === null || (typeof value === 'object')) throw invalid('Thamani ya setting inahitajika.');
     const newValue = String(value).trim();
     if (newValue === '' || newValue.length > 500) throw invalid('Thamani ya setting si sahihi.');
+    assertThresholdNotLocked(key);
     if (THRESHOLD_CONFIG_KEYS.has(key) && !(POSITIVE_DECIMAL_RE.test(newValue) && Number(newValue) > 0)) {
       throw invalid('Kizingiti lazima kiwe namba chanya.');
     }

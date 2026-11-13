@@ -62,6 +62,15 @@ async function upsertPolicy({ actionCode, description, requiredApprovers, approv
     : base.required_approvers;
   const enabledVal = enabled !== undefined && enabled !== null ? Boolean(enabled) : base.enabled;
   const selfVal = allowSelfApprove !== undefined && allowSelfApprove !== null ? Boolean(allowSelfApprove) : base.allow_self_approve;
+  // R36B OD-3: in the pilot a policy cannot be weakened by one admin (environment lock, before any write).
+  const pilotCfg = require('../config/pilot');
+  if (pilotCfg.isFourEyesLocked()) {
+    if (selfVal === true) throw pilotCfg.fourEyesLockedError('allow_self_approve');
+    const norm = (r) => [...new Set((r || []).map(String))].sort().join(',');
+    if (norm(roles) !== norm(base.approver_roles)) throw pilotCfg.fourEyesLockedError('approver_roles');
+    if (enabledVal === false) throw pilotCfg.fourEyesLockedError('enabled=false');
+    if (previous && Number(required) < Number(previous.required_approvers)) throw pilotCfg.fourEyesLockedError('required_approvers');
+  }
   const result = await client.query(
     `INSERT INTO four_eyes_policies (action_code, description, required_approvers, approver_roles, enabled, allow_self_approve)
      VALUES ($1,$2,$3,$4,$5,$6)
@@ -246,7 +255,8 @@ async function approve(requestId, approverId, role, note) {
     if (request.status !== 'PENDING') {
       throw Object.assign(new Error('Ombi hili tayari limeamuliwa.'), { status: 409 });
     }
-    if (Number(request.requester_id) === Number(approverId) && !policy.allow_self_approve) {
+    // R36B OD-3: in the pilot self-approval is refused whatever the stored policy says.
+    if (Number(request.requester_id) === Number(approverId) && (!policy.allow_self_approve || require('../config/pilot').isFourEyesLocked())) {
       throw Object.assign(new Error('Huwezi kuidhinisha ombi lako mwenyewe (four-eyes).'), { status: 403 });
     }
     if (!policy.approver_roles.includes(role)) {

@@ -34,7 +34,10 @@ const PILOT_DISABLED = Object.freeze({
 const PILOT_ENABLED = Object.freeze([
   'VICOBA shares', 'VICOBA contributions', 'VICOBA three-stage loans', 'VICOBA fines (penalties)',
   'VICOBA community/social fund', 'internal test wallet',
-]);
+]); // R36B: services opened later (ROSCA/Upatu, events, group governance, PIN reset) are in serviceCatalog.js
+
+// Lazy: serviceCatalog has no dependency on this module, but keeping the require lazy avoids load-order traps.
+const catalog = () => require('./serviceCatalog');
 
 function isPilotMode() {
   return process.env.PILOT_MODE === 'true';
@@ -56,13 +59,21 @@ function isFeatureEnabled(feature) {
     throw new Error(`pilot: unknown feature "${feature}"`);
   }
   if (isPilotMode()) return false;
+  // R36B: the feature's catalog service must be enabled too (tier B is off in production unless the
+  // owner activated it; see serviceCatalog.js).
+  const svc = catalog().FEATURE_INDEX[feature];
+  if (!svc || !catalog().isServiceEnabled(svc)) return false;
   return featureOwnFlag(feature);
 }
 
 function featureDisabledError(feature) {
+  // Outside the pilot a feature is off only because its catalog service is off (tier B without owner
+  // activation) or its own flag is off (addBonus): name the tier-B case explicitly.
+  const svc = catalog().FEATURE_INDEX[feature];
+  const tierB = !isPilotMode() && svc && catalog().SERVICES[svc].tier === 'B' && !catalog().isServiceEnabled(svc);
   return Object.assign(
     new Error(`Huduma hii imezimwa kwa sasa (${PILOT_DISABLED[feature]}).`),
-    { statusCode: 403, code: 'PILOT_FEATURE_DISABLED', details: { feature, pilotMode: isPilotMode() } }
+    { statusCode: 403, code: tierB ? 'TIER_B_DISABLED' : 'PILOT_FEATURE_DISABLED', details: { feature, service: svc || null, pilotMode: isPilotMode() } }
   );
 }
 
@@ -102,64 +113,66 @@ const ROUTE_GATES = Object.freeze([
   ['post', '/vicoba/profits/:distributionId/approve', 'annualDividends'],
 ]);
 
-// R36 closure: in pilot mode the API is an ALLOW-LIST. Only these first path segments (after /api or
-// /api/v1) are served; every other service -- ROSCA, circles, business, credit, savings, vaults, family,
-// events, marketplace, governance, crowdfunding projects, and any route added later -- answers
-// 403 PILOT_SERVICE_EXCLUDED. Fail-closed by construction.
-const PILOT_ALLOWED_SERVICES = Object.freeze([
-  'auth', 'totp', 'wallet', 'vicoba', 'services', 'countries', 'devices', 'notifications',
-  'admin', 'ops', 'cache', 'features', 'fraud-ops', 'outbox',
-]);
+// R36 closure / R36B: in pilot mode the API is an ALLOW-LIST derived from the service catalog
+// (src/config/serviceCatalog.js). Whole segments listed here are those whose catalog service runs in the
+// pilot; route-level rules (PIN reset inside /advanced, AI minutes inside /governance, Market inside
+// /social and /admin, ...) are applied by catalog.mountCatalogGates. Everything else -- including any
+// route added later -- answers 403 PILOT_SERVICE_EXCLUDED. Fail-closed by construction.
+const PILOT_ALLOWED_SERVICES = Object.freeze(
+  Object.entries(catalog().SEGMENT_INDEX).filter(([, key]) => catalog().enabledInPilot(key)).map(([seg]) => seg).sort()
+);
 
-function serviceSegment(originalUrl) {
-  const p = String(originalUrl || '').split('?')[0];
-  const rest = p.replace(/^\/api(?:\/v1)?(?=\/|$)/, '');
-  return rest.replace(/^\//, '').split('/')[0];
-}
-
-function pilotServiceGate(req, res, next) {
-  if (!isPilotMode()) return next();
-  const seg = serviceSegment(req.originalUrl);
-  if (seg === '' || PILOT_ALLOWED_SERVICES.includes(seg)) return next();
-  return res.status(403).json({
-    success: false, code: 'PILOT_SERVICE_EXCLUDED',
-    message: 'Huduma hii haipatikani kwenye pilot.', details: { service: seg, pilotMode: true },
-  });
-}
 
 function mountPilotGates(app, prefix) {
   for (const [method, path, feature] of ROUTE_GATES) app[method](`${prefix}${path}`, requireFeature(feature));
-  app.use(prefix, pilotServiceGate);
+  catalog().mountCatalogGates(app, prefix);
 }
 
-// Background jobs: every scheduled job is classified; only these run in pilot mode.
-const PILOT_JOBS = Object.freeze({
-  RECON_PENDING_DEPOSITS: true, DB_MAINTENANCE: true, BALANCE_RECONCILIATION: true, OUTBOX_DISPATCH: true, PARTITIONS: true,
-  ROSCA_PAYOUT: false, SPLIT_PAYMENTS: false, YIELD_PAYOUTS: false, SCHEDULED_PAYMENTS: false, AUTOPILOT_SAVINGS: false,
-  SELLER_VERIFICATION: false, AUTO_INVEST: false, SACCOS_STANDING_ORDERS: false, FX_HISTORY: false, FUNDING_EXPIRY: false,
-  EVENT_REMINDERS: false, EVENT_SERIES: false,
-});
+// Background jobs: every scheduled job is classified in the catalog. Pilot: only jobs of services that run
+// in the pilot. Outside the pilot: tier-B jobs run only where tier B is enabled (never in production
+// without an owner activation record).
+const PILOT_JOBS = Object.freeze(Object.fromEntries(
+  Object.entries(catalog().JOB_INDEX).map(([name, key]) => [name, catalog().enabledInPilot(key)])
+));
 function pilotJobAllowed(name) {
-  if (!Object.prototype.hasOwnProperty.call(PILOT_JOBS, name)) throw new Error(`pilot: unclassified job "${name}"`);
-  return !isPilotMode() || PILOT_JOBS[name] === true;
+  const key = catalog().JOB_INDEX[name];
+  if (!key) throw new Error(`pilot: unclassified job "${name}"`);
+  return catalog().isServiceEnabled(key);
 }
 function pilotJob(name, fn) {
   pilotJobAllowed(name); // classification check at registration time
-  return async (...args) => { if (!pilotJobAllowed(name)) return { skipped: 'PILOT_JOB_DISABLED', job: name }; return fn(...args); };
+  return async (...args) => { if (!pilotJobAllowed(name)) return { skipped: isPilotMode() ? 'PILOT_JOB_DISABLED' : 'TIER_B_JOB_DISABLED', job: name }; return fn(...args); };
 }
 
-// Four-eyes / approval-flow executors: only these may execute in pilot mode.
-const PILOT_ALLOWED_EXECUTORS = Object.freeze([
-  'ADMIN_PROMOTE_ROLE', 'ADMIN_DEMOTE_ROLE', 'WALLET_TRANSFER', 'VICOBA_LOAN_DISBURSE', 'VICOBA_SOCIAL_FUND_DISBURSE',
-]);
+// Four-eyes / approval-flow executors: classified in the catalog. An executor runs only while its service
+// is enabled (pilot: services opened for the pilot; production: tier B needs owner activation). An
+// unclassified executor code is refused in the pilot (fail-closed) and runs elsewhere (test registries).
+const PILOT_ALLOWED_EXECUTORS = Object.freeze(
+  Object.entries(catalog().EXECUTOR_INDEX).filter(([, key]) => catalog().enabledInPilot(key)).map(([code]) => code).sort()
+);
 function guardExecutor(code, fn) {
   return async (...args) => {
-    if (isPilotMode() && !PILOT_ALLOWED_EXECUTORS.includes(code)) {
-      throw Object.assign(new Error('Kitendo hiki hakiruhusiwi kwenye pilot.'),
-        { statusCode: 403, code: 'PILOT_FEATURE_DISABLED', details: { executor: code, pilotMode: true } });
+    const key = catalog().EXECUTOR_INDEX[code];
+    const allowed = key ? catalog().isServiceEnabled(key) : !isPilotMode();
+    if (!allowed) {
+      const pilot = isPilotMode();
+      throw Object.assign(new Error(pilot ? 'Kitendo hiki hakiruhusiwi kwenye pilot.' : 'Kitendo hiki kimezimwa (daraja B).'),
+        { statusCode: 403, code: pilot ? 'PILOT_FEATURE_DISABLED' : 'TIER_B_DISABLED', details: { executor: code, service: key || null, pilotMode: pilot } });
     }
     return fn(...args);
   };
+}
+
+// R36B OD-3: in the pilot, four-eyes cannot be switched off or self-approved by one admin. The lock is the
+// environment (PILOT_MODE), not a DB flag or a policy row: the direct-route gate always requires four-eyes,
+// the four-eyes routes do not depend on the FOUR_EYES flag, policies cannot be weakened
+// (allow_self_approve / enabled=false), self-approval is refused whatever the stored policy says, and the
+// four-eyes amount thresholds cannot be changed by a single admin.
+function isFourEyesLocked() {
+  return isPilotMode();
+}
+function fourEyesLockedError(what) {
+  return Object.assign(new Error(`Four-eyes imefungwa kwa mazingira ya pilot (${what}).`), { statusCode: 403, status: 403, code: 'FOUR_EYES_LOCKED' });
 }
 
 // The pilot runs only as a production-mode process: non-production NODE_ENV enables dev-only behaviour
@@ -168,17 +181,19 @@ function assertPilotEnvironment() {
   if (isPilotMode() && process.env.NODE_ENV !== 'production') {
     throw new Error("PILOT_MODE=true inahitaji NODE_ENV=production (src/config/pilot.js)");
   }
+  // R36B: tier-B activation must be backed by the owner record; never in a pilot.
+  catalog().assertCatalogEnvironment();
 }
 
 function describe() {
   const disabled = {};
   for (const k of Object.keys(PILOT_DISABLED)) disabled[k] = !isFeatureEnabled(k);
-  return { pilotMode: isPilotMode(), enabledInPilot: PILOT_ENABLED, disabledNow: disabled, allowedServicesInPilot: PILOT_ALLOWED_SERVICES };
+  return { pilotMode: isPilotMode(), enabledInPilot: PILOT_ENABLED, disabledNow: disabled, allowedServicesInPilot: PILOT_ALLOWED_SERVICES, catalog: catalog().describe() };
 }
 
 module.exports = {
   PILOT_DISABLED, PILOT_ENABLED, isPilotMode, pilotModeExplicit, isFeatureEnabled, assertFeatureEnabled,
   requireFeature, featureDisabledError, describe, ROUTE_GATES, mountPilotGates,
-  PILOT_ALLOWED_SERVICES, serviceSegment, pilotServiceGate, PILOT_JOBS, pilotJobAllowed, pilotJob,
-  PILOT_ALLOWED_EXECUTORS, guardExecutor, assertPilotEnvironment,
+  PILOT_ALLOWED_SERVICES, PILOT_JOBS, pilotJobAllowed, pilotJob,
+  PILOT_ALLOWED_EXECUTORS, guardExecutor, assertPilotEnvironment, isFourEyesLocked, fourEyesLockedError,
 };

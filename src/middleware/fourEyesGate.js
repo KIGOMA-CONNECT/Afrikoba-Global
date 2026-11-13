@@ -19,6 +19,9 @@ const featureFlags = require('../services/featureFlagService');
 const { writeAudit } = require('../services/auditService');
 
 async function isFourEyesRequired(actionCode, user) {
+  // R36B OD-3: in the pilot the direct route always requires four-eyes; neither the FOUR_EYES flag nor a
+  // disabled policy row (both changeable by one admin) can switch it off.
+  if (require('../config/pilot').isFourEyesLocked()) return true;
   const flagOn = await featureFlags.isEnabled('FOUR_EYES', user || null, { action_code: actionCode, gate: 'direct_route' });
   if (!flagOn) return false;
   const r = await pool.query('SELECT enabled FROM four_eyes_policies WHERE action_code = $1', [actionCode]);

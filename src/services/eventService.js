@@ -188,6 +188,10 @@ async function contribute(userId, eventId, { amount, mode = 'FUNDRAISING', contr
   const cur = String(currency || 'TZS').toUpperCase();
   let effectiveTzs = amountN;
   let currencyAmount = amountN;
+  if (cur !== 'TZS' && require('../config/pilot').isPilotMode()) {
+    // R36B OD-F1 (review #5): FX (service "currency") is not in the pilot; event contributions are TZS only.
+    throw Object.assign(badge('Kwenye pilot michango ni kwa TZS pekee.', 403), { code: 'PILOT_SERVICE_EXCLUDED' });
+  }
   if (cur !== 'TZS') {
     const rate = await currencyService.getExchangeRate(cur, 'TZS');
     if (!rate) {
@@ -720,7 +724,8 @@ async function requestEventWithdrawal(actorId, eventId, { amount, mode, toUserId
   const threshold = Number.isFinite(parsed) && parsed > 0 ? parsed : 5000000;
   let requiresApproval = false;
   let approvalFlowId = null;
-  if (amountN >= threshold && !(await isAdminUser(actorId))) {
+  // R36B OD-3 (review #2): no admin exemption while four-eyes is environment-locked (pilot).
+  if (amountN >= threshold && (require('../config/pilot').isFourEyesLocked() || !(await isAdminUser(actorId)))) {
     const flow = await governanceService.createApprovalFlow({
       requesterId: actorId,
       actionType: 'EVENT_WITHDRAWAL',

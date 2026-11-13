@@ -36,13 +36,28 @@ async function call(method, p, body) {
     }
   }
   // R36 closure: services outside the pilot allow-list are refused server-side on both prefixes, for any method.
-  const EXCLUDED = ['rosca', 'circles', 'business', 'credit', 'savings', 'vaults', 'family', 'events', 'marketplace', 'governance', 'disputes', 'ussd', 'currency', 'referrals', 'projects', 'investors'];
+  // R36B Step 2 (owner): rosca, events and group governance are opened for the pilot (checked below).
+  const EXCLUDED = ['circles', 'business', 'credit', 'savings', 'vaults', 'family', 'marketplace', 'disputes', 'ussd', 'currency', 'referrals', 'projects', 'investors',
+    'advanced', 'ai', 'marketing', 'social', 'field-partners', 'passport', 'eco', 'kilimo', 'secondary']; // cards, p2p: route gates (DISABLED above)
   for (const prefix of ['/api/v1', '/api']) {
     for (const seg of EXCLUDED) {
       for (const m of ['GET', 'POST']) {
         const r = await call(m, `${prefix}/${seg}/r36`, m === 'POST' ? {} : undefined);
         check(`${m} ${prefix}/${seg}/r36 -> 403 PILOT_SERVICE_EXCLUDED`, r.status === 403 && r.body && r.body.code === 'PILOT_SERVICE_EXCLUDED', r);
       }
+    }
+  }
+  // R36B: route-level catalog rules on the real server (pilot): opened routes reach their handlers / auth,
+  // closed routes inside opened or platform segments are refused before auth.
+  for (const prefix of ['/api/v1', '/api']) {
+    for (const [m, p] of [['GET', '/rosca/pools'], ['GET', '/events'], ['GET', '/events/public/r36-no-token'], ['GET', '/governance/meetings'], ['POST', '/advanced/pin-reset/request']]) {
+      const r = await call(m, `${prefix}${p}`, m === 'POST' ? {} : undefined);
+      check(`R36B opened: ${m} ${prefix}${p} not refused by a pilot/tier gate (${r.status})`, !(r.body && /^(PILOT_|TIER_B)/.test(r.body.code || '')) && r.status !== 403, r);
+    }
+    for (const [m, p] of [['GET', '/advanced/credit-score'], ['POST', '/governance/meetings/1/ai-minutes'], ['POST', '/admin/projects/1/revenue'], ['POST', '/admin/milestones/1/release'],
+      ['POST', '/admin/treasury/proposals'], ['GET', '/admin/ai/forecasts'], ['POST', '/admin/countries/quote'], ['POST', '/social/projects/1/waterfall'], ['POST', '/vicoba/groups/1/profits/calculate']]) {
+      const r = await call(m, `${prefix}${p}`, m === 'POST' ? {} : undefined);
+      check(`R36B closed: ${m} ${prefix}${p} -> 403 PILOT_*`, r.status === 403 && r.body && /^PILOT_/.test(r.body.code || ''), r);
     }
   }
   // Error bodies never carry a stack in the pilot process (it is NODE_ENV=production, see r36lpint R36_PROD=1).

@@ -5,9 +5,9 @@
  *  [1] pilot ALLOW-LIST: every service mounted in src/server.js (parsed from the source, plus the root-mounted
  *      projectRoutes paths and an unknown future segment) answers 403 PILOT_SERVICE_EXCLUDED (or the more
  *      specific PILOT_FEATURE_DISABLED) on /api/v1 and /api under PILOT_MODE=true unless it is in
- *      PILOT_ALLOWED_SERVICES; allowed services pass; outside the pilot nothing is gated except addBonus.
+ *      PILOT_ALLOWED_SERVICES; allowed services pass; outside the pilot (NODE_ENV=test) the A services pass; tier B is decided by serviceCatalog (r36-9).
  *  [2] background jobs: node-cron and every job function stubbed; with PILOT_MODE=true only the five
- *      allowed housekeeping/reconciliation jobs execute; outside the pilot all 15 execute; unclassified job
+ *      allowed housekeeping/reconciliation jobs and (R36B) the ROSCA payout execute; outside the pilot all 15 execute; unclassified job
  *      names throw; server.js event schedulers are pilot-guarded.
  *  [3] four-eyes / approval-flow executors: excluded executors throw 403 in pilot mode without running;
  *      allowed ones run; both registries wrap at registration.
@@ -51,10 +51,11 @@ const pilot = require(h.path.join(h.ROOT, 'src/config/pilot'));
         }
       }
     }
-    for (const must of ['rosca', 'circles', 'business', 'credit', 'savings', 'vaults', 'family', 'events', 'marketplace', 'governance', 'disputes', 'ussd', 'network', 'currency', 'referrals', 'projects', 'r36-future-service']) {
+    // R36B Step 2 (owner): rosca, events and governance are opened for the pilot (asserted in r36-9 [B]).
+    for (const must of ['circles', 'business', 'credit', 'savings', 'vaults', 'family', 'marketplace', 'disputes', 'ussd', 'network', 'currency', 'referrals', 'projects', 'advanced', 'ai', 'marketing', 'social', 'r36-future-service']) {
       check(`[1] ${must} is excluded in pilot`, excludedSeen.includes(must));
     }
-    const post = await call('POST', '/api/v1/rosca/groups', null, {});
+    const post = await call('POST', '/api/v1/circles/groups', null, {}); // R36B: was /rosca (now opened)
     check('[1] POST to an excluded service also refused (method-independent)', post.status === 403 && post.body.code === 'PILOT_SERVICE_EXCLUDED', post);
     delete process.env.PILOT_MODE;
     for (const t of targets) {
@@ -96,10 +97,11 @@ const pilot = require(h.path.join(h.ROOT, 'src/config/pilot'));
     check('[2] 15 jobs scheduled', scheduled.length === 15, scheduled.length);
     process.env.PILOT_MODE = 'true';
     for (const fn of scheduled) await fn();
-    const ALLOWED = ['reconcilePendingDeposits', 'runMaintenance', 'runBalanceReconciliation', 'dispatchOutbox', 'ensureAll'];
-    check('[2] PILOT: exactly the 5 allowed jobs executed', [...called].sort().join() === [...ALLOWED].sort().join(), [...called]);
-    check('[2] PILOT: ROSCA payout, split, yield, autopilot, auto-invest, SACCOS standing orders, project expiry did NOT run',
-      ['disburseDuePayouts', 'runDueSplitPayments', 'processYieldPayouts', 'runAutopilotPayouts', 'runAutoInvestCycle', 'runDueStandingOrders', 'expireUnfundedProjects', 'processDueScheduledPayments'].every((n) => !called.has(n)));
+    // R36B Step 2 (owner): ROSCA is opened for the pilot, so its payout job runs too.
+    const ALLOWED = ['reconcilePendingDeposits', 'runMaintenance', 'runBalanceReconciliation', 'dispatchOutbox', 'ensureAll', 'disburseDuePayouts'];
+    check('[2] PILOT: exactly the 6 allowed jobs executed (5 housekeeping + ROSCA payout)', [...called].sort().join() === [...ALLOWED].sort().join(), [...called]);
+    check('[2] PILOT: split, yield, autopilot, auto-invest, SACCOS standing orders, project expiry, scheduled payments did NOT run',
+      ['runDueSplitPayments', 'processYieldPayouts', 'runAutopilotPayouts', 'runAutoInvestCycle', 'runDueStandingOrders', 'expireUnfundedProjects', 'processDueScheduledPayments'].every((n) => !called.has(n)));
     called.clear(); delete process.env.PILOT_MODE;
     for (const fn of scheduled) await fn();
     check('[2] not pilot: all 15 jobs executed (control)', called.size === 15, [...called]);
@@ -114,7 +116,7 @@ const pilot = require(h.path.join(h.ROOT, 'src/config/pilot'));
     let ran = 0;
     const exec = (code) => pilot.guardExecutor(code, async () => { ran++; return 'ran'; });
     process.env.PILOT_MODE = 'true';
-    for (const code of ['CREDIT_LOAN_DISBURSE', 'BUSINESS_LOAN_DISBURSE', 'CARD_ADMIN_SETTLE', 'CARD_ADMIN_REFUND', 'LENDING_CIRCLE_DISBURSE', 'KILIMO_AGRI_LOAN_DISBURSE', 'EVENT_WITHDRAWAL', 'AGENT_SETTLEMENT', 'ADMIN_LARGE_REFUND']) {
+    for (const code of ['CREDIT_LOAN_DISBURSE', 'BUSINESS_LOAN_DISBURSE', 'CARD_ADMIN_SETTLE', 'CARD_ADMIN_REFUND', 'LENDING_CIRCLE_DISBURSE', 'KILIMO_AGRI_LOAN_DISBURSE', 'AGENT_SETTLEMENT', 'ADMIN_LARGE_REFUND']) { // R36B: EVENT_WITHDRAWAL now allowed (events opened)
       ran = 0; const r = await attempt(() => exec(code)());
       check(`[3] PILOT executor ${code} -> 403, not executed`, !r.ok && r.status === 403 && r.code === 'PILOT_FEATURE_DISABLED' && ran === 0, r);
     }

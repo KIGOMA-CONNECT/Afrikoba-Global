@@ -50,7 +50,8 @@ governanceService.registerExecutor('WALLET_TRANSFER', async (payload, approverId
 
 // Resolve live high-value threshold (TZS). Admin override via config_settings.
 async function getHighValueThreshold(req) {
-  if (req.user && req.user.role === 'ADMIN') return Infinity; // admins bypass the gate
+  // R36B OD-3 (review #2): no admin exemption while four-eyes is environment-locked (pilot).
+  if (req.user && req.user.role === 'ADMIN' && !require('../config/pilot').isFourEyesLocked()) return Infinity; // admins bypass the gate
   const stored = await governanceService.getSetting('HIGH_VALUE_TRANSFER_THRESHOLD');
   const parsed = parseFloat(stored);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 5000000;
@@ -102,7 +103,7 @@ router.post('/transfer', enforceDeviceTrust, validate(schemas.wallet.transfer), 
     }
 
     // Four-eyes gate: high-value transfers need a second approver (maker-checker).
-    // A non-admin's transfer above the threshold becomes a pending approval_flow
+    // A transfer above the threshold (a non-admin's; in the pilot also an admin's, R36B OD-3) becomes a pending approval_flow
     // and only executes once an admin (other than the requester) approves it.
     const threshold = await getHighValueThreshold(req);
     if (parseFloat(amount) >= threshold) {

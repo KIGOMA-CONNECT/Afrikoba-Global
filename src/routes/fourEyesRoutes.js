@@ -15,7 +15,9 @@ const network = require('../services/networkService');
 router.use(authRequired, requireRoles('ADMIN'));
 
 const { requireFeature } = require('../services/featureFlagService');
-router.use(requireFeature('FOUR_EYES'));
+// R36B OD-3: in the pilot the four-eyes routes do not depend on the FOUR_EYES flag (environment lock).
+const fourEyesFlagGate = requireFeature('FOUR_EYES');
+router.use((req, res, next) => (require('../config/pilot').isFourEyesLocked() ? next() : fourEyesFlagGate(req, res, next)));
 
 const VALID_ROLES = ['ADMIN', 'MJUMBE', 'OPS', 'COMPLIANCE', 'SUPPORT'];
 const PROMOTABLE = ['ADMIN', 'OPS', 'COMPLIANCE', 'SUPPORT'];
