@@ -702,7 +702,7 @@ async function section(title) { console.log(`\n== ${title} ==`); }
       // Repay first installment (loan applicant = regE)
       const firstInstallment = schedule.data.schedule[0];
       const repay = await api('POST', `/api/vicoba/loans/${loan.id}/repay`, regE.data.token, {
-        amount: firstInstallment.total_amount,
+        amount: Number(firstInstallment.total_amount), // R36 D1 (owner-approved): API returns NUMERIC as a string; the client sends a JSON number
         note: 'Malipo ya kwanza',
       });
       await expect(repay.status === 200 && repay.data.success, 'Loan repayment recorded', JSON.stringify({ remaining: repay.data.remainingBalance, fullyRepaid: repay.data.fullyRepaid }));

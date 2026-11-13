@@ -98,6 +98,8 @@ const { swaggerSpec } = require('./config/swagger');
 
 // Fail-fast: usiendelee na mazingira ya production yenye maadili hatari.
 config.validateConfig();
+// R36: a pilot process must be a production-mode process (no dev-only behaviour).
+require('./config/pilot').assertPilotEnvironment();
 
 // Sentry error monitoring — only in production when DSN is set
 if (config.sentry.dsn) {
@@ -279,6 +281,8 @@ app.use('/api', validateTokenPayload);
 // v1 canonical prefix + backward-compatible /api prefix
 const versionPrefixes = ['/api/v1', '/api'];
 for (const prefix of versionPrefixes) {
+  // R36 Task 4: pilot boundary gates first (src/config/pilot.js); services enforce the same flags.
+  require('./config/pilot').mountPilotGates(app, prefix);
   app.use(`${prefix}/auth`, authLimiter, authRoutes);
   app.use(`${prefix}/wallet`, deviceRateLimit, walletLimiter, walletRoutes);
   app.use(`${prefix}/vicoba`, walletLimiter, vicobaRoutes);
@@ -384,12 +388,12 @@ if (process.env.DISABLE_CRON !== 'true') {
   startRecurrenceScheduler(parseInt(process.env.RECURRENCE_INTERVAL_MS, 10) || 60000);
   // Event reminders (commitment due / upcoming event) — best-effort hourly sweep
   const { runEventReminders } = require('./services/eventService');
-  const runReminders = () => runEventReminders().catch(() => {});
+  const runReminders = require('./config/pilot').pilotJob('EVENT_REMINDERS', () => runEventReminders().catch(() => {}));
   runReminders();
   setInterval(runReminders, parseInt(process.env.EVENT_REMINDER_INTERVAL_MS, 10) || 3600000);
   // Recurring event series (templates + cadence) — generate due events, best-effort hourly
   const { runDueEventSeries } = require('./services/eventService');
-  const runSeries = () => runDueEventSeries().catch(() => {});
+  const runSeries = require('./config/pilot').pilotJob('EVENT_SERIES', () => runDueEventSeries().catch(() => {}));
   runSeries();
   setInterval(runSeries, parseInt(process.env.EVENT_SERIES_INTERVAL_MS, 10) || 3600000);
 }

@@ -82,7 +82,7 @@ async function getConstitution(groupId) {
 // ==========================================
 
 async function buyShares(userId, groupId, sharesCount) {
-  const count = parseInt(sharesCount, 10);
+  const count = require('../utils/strictAmount').strictAmount(sharesCount, { field: 'sharesCount', integer: true }); // R36 Task 3
   if (count <= 0) throw Object.assign(new Error('Idadi ya hisa lazima iwe zaidi ya 0.'), { statusCode: 400 });
 
   const constRes = await pool.query(
@@ -199,6 +199,7 @@ async function getMemberShareSummary(groupId) {
 // ==========================================
 
 async function calculateProfitDistribution(groupId, cycleNumber, totalProfit, actorUserId) {
+  require('../config/pilot').assertFeatureEnabled('annualDividends'); // R36 Task 4
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -285,6 +286,7 @@ async function calculateProfitDistribution(groupId, cycleNumber, totalProfit, ac
 }
 
 async function approveProfitDistribution(distributionId, approverUserId) {
+  require('../config/pilot').assertFeatureEnabled('annualDividends'); // R36 Task 4
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -424,7 +426,7 @@ async function getMyProfitPayouts(userId, groupId) {
 // ==========================================
 
 async function initiateTransfer(userId, groupId, { transferType, recipientUserId, recipientPhone, amount, note }) {
-  const amountNum = parseFloat(amount);
+  const amountNum = require('../utils/strictAmount').strictAmount(amount); // R36 Task 3
   if (amountNum <= 0) throw Object.assign(new Error('Kiasi lazima iwe zaidi ya 0.'), { statusCode: 400 });
 
   const roleRes = await pool.query(
@@ -617,6 +619,7 @@ async function listTransfers(groupId, status) {
 // ==========================================
 
 async function processCrossNetworkTopUp(groupId, userId, { amount, provider, externalRef, phone }) {
+  require('../config/pilot').assertFeatureEnabled('externalPayments'); // R36 Task 4: external MNO top-up
   const amountNum = Number(amount);
   if (!Number.isFinite(amountNum) || amountNum <= 0) throw Object.assign(new Error('Kiasi lazima iwe zaidi ya 0.'), { statusCode: 400 });
 
@@ -658,7 +661,9 @@ async function processCrossNetworkTopUp(groupId, userId, { amount, provider, ext
 // MEETING ATTENDANCE TRACKING
 // ==========================================
 
-async function scheduleMeeting(groupId, meetingDate, notes) {
+async function scheduleMeeting(groupId, meetingDate, notes, actorUserId) {
+  // R36: leader of this group only; refused before any write.
+  await require('../middleware/vicobaMembership').assertGroupLeader(groupId, actorUserId);
   const result = await pool.query(
     `INSERT INTO vicoba_meetings (group_id, meeting_date, notes)
      VALUES ($1, $2, $3)
@@ -669,7 +674,7 @@ async function scheduleMeeting(groupId, meetingDate, notes) {
   return result.rows[0];
 }
 
-async function recordAttendance(meetingId, userId, status, notes) {
+async function recordAttendance(meetingId, userId, status, notes, actorUserId) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -680,6 +685,8 @@ async function recordAttendance(meetingId, userId, status, notes) {
     );
     if (meetingRes.rows.length === 0) throw Object.assign(new Error('Mkutano haupatikani.'), { statusCode: 404 });
     const meeting = meetingRes.rows[0];
+    // R36: attendance can create fines (vicoba_penalties): only a leader of the meeting's group records it.
+    await require('../middleware/vicobaMembership').assertGroupLeader(meeting.group_id, actorUserId, client);
 
     const memberRes = await client.query(
       'SELECT * FROM vicoba_members WHERE group_id = $1 AND user_id = $2',
@@ -757,10 +764,14 @@ async function recordAttendance(meetingId, userId, status, notes) {
   }
 }
 
-async function bulkRecordAttendance(meetingId, attendanceList) {
+async function bulkRecordAttendance(meetingId, attendanceList, actorUserId) {
+  // R36: check the actor once before the first row, so a refused caller writes nothing.
+  const m = await pool.query('SELECT group_id FROM vicoba_meetings WHERE id = $1', [meetingId]);
+  if (m.rows.length === 0) throw Object.assign(new Error('Mkutano haupatikani.'), { statusCode: 404 });
+  await require('../middleware/vicobaMembership').assertGroupLeader(m.rows[0].group_id, actorUserId);
   const results = [];
   for (const entry of attendanceList) {
-    const result = await recordAttendance(meetingId, entry.userId, entry.status, entry.notes);
+    const result = await recordAttendance(meetingId, entry.userId, entry.status, entry.notes, actorUserId);
     results.push({ userId: entry.userId, ...result });
   }
   return results;

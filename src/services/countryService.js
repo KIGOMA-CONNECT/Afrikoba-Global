@@ -215,6 +215,7 @@ async function quoteTransfer(fromCurrency, toCountryCode, amountIn) {
  * posts ledger entries, and records transaction.
  */
 async function executeTransfer(userId, toCountryCode, amountIn, recipientDetails, note = null) {
+  require('../config/pilot').assertFeatureEnabled('remittance'); // R36: cross-border transfer
   const quote = await quoteTransfer('TZS', toCountryCode, amountIn);
   const { fee, amountOut, netAfterFee, country } = quote;
   const fin = require('./financialEngine');

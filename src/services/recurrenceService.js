@@ -244,6 +244,8 @@ async function runDueTasks() {
     // KYC document expiry sweep (best-effort every cycle)
     try { await require('./kycDocumentService').runExpirySweep(); } catch (e) { logger.error('RECURRENCE', `KYC expiry sweep failed: ${e.message}`); }
 
+    // R36 Task 4: recurring payments disabled -> no rule runs (housekeeping above still runs).
+    if (!require('../config/pilot').isFeatureEnabled('recurringPayments')) return { due: 0, skipped: 'PILOT_FEATURE_DISABLED' };
     const due = (await pool.query(
       `SELECT * FROM recurrence_rules WHERE enabled AND next_run_at <= NOW() ORDER BY next_run_at LIMIT 50`
     )).rows;

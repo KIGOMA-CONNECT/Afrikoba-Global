@@ -16,6 +16,8 @@ const { runDueStandingOrders } = require('../services/saccosStandingOrderService
 const { snapshotRateHistory } = require('../services/currencyService');
 const { expireUnfundedProjects } = require('../services/projectService');
 const logger = require('../utils/logger');
+// R36: every job is classified in src/config/pilot.js (PILOT_JOBS); excluded jobs do nothing in pilot mode.
+const { pilotJob } = require('../config/pilot');
 
 /**
  * RUN ALL CRON JOBS
@@ -25,147 +27,147 @@ const logger = require('../utils/logger');
  * - Kila mwezi (siku ya 1, saa 1 asubuhi): Split Payment Engine
  */
 function startAllJobs() {
-  cron.schedule('*/5 * * * *', async () => {
+  cron.schedule('*/5 * * * *', pilotJob('RECON_PENDING_DEPOSITS', async () => {
     try {
       await reconcilePendingDeposits();
     } catch (e) {
       logger.error('CRON-RECON', e.message);
     }
-  });
+  }));
 
-  cron.schedule('*/5 * * * *', async () => {
+  cron.schedule('*/5 * * * *', pilotJob('ROSCA_PAYOUT', async () => {
     try {
       const result = await disburseDuePayouts();
       if (result.processed > 0) logger.info('CRON-ROSCA', `Payouts zilizochakatwa: ${result.processed}`);
     } catch (e) {
       logger.error('CRON-ROSCA', e.message);
     }
-  });
+  }));
 
-  cron.schedule('0 */6 * * *', async () => {
+  cron.schedule('0 */6 * * *', pilotJob('DB_MAINTENANCE', async () => {
     try {
       await runMaintenance();
     } catch (e) {
       logger.error('CRON-DB-MAINT', e.message);
     }
-  });
+  }));
 
-  cron.schedule('0 1 1 * *', async () => {
+  cron.schedule('0 1 1 * *', pilotJob('SPLIT_PAYMENTS', async () => {
     try {
       await runDueSplitPayments();
     } catch (e) {
       logger.error('CRON-SPLIT', e.message);
     }
-  });
+  }));
 
-  cron.schedule('0 0 * * *', async () => {
+  cron.schedule('0 0 * * *', pilotJob('YIELD_PAYOUTS', async () => {
     try {
       await processYieldPayouts();
     } catch (e) {
       logger.error('CRON-YIELD', e.message);
     }
-  });
+  }));
 
   // Daily balance reconciliation - asserts ledger == projection (diff should be 0).
-  cron.schedule('15 0 * * *', async () => {
+  cron.schedule('15 0 * * *', pilotJob('BALANCE_RECONCILIATION', async () => {
     try {
       await runBalanceReconciliation('DAILY');
     } catch (e) {
       logger.error('CRON-BALANCE-RECON', e.message);
     }
-  });
+  }));
 
-  cron.schedule('*/1 * * * *', async () => {
+  cron.schedule('*/1 * * * *', pilotJob('SCHEDULED_PAYMENTS', async () => {
     try {
       const r = await processDueScheduledPayments();
       if (r.processed > 0) logger.info('CRON-SCHEDULED', `Malipo yaliyopangwa yamechakatwa: ${r.processed}`);
     } catch (e) {
       logger.error('CRON-SCHEDULED', e.message);
     }
-  });
+  }));
 
   // Daily autopilot auto-save execution - derives due ACTIVE plans, journals the
   // snapshotted monthly allocation into the savings goal if affordable & funded.
-  cron.schedule('20 0 * * *', async () => {
+  cron.schedule('20 0 * * *', pilotJob('AUTOPILOT_SAVINGS', async () => {
     try {
       const r = await runAutopilotPayouts();
       if (r.processed > 0) logger.info('CRON-AUTOPILOT', `Autopilot savings: ${r.processed} executed, ${r.skipped} skipped`);
     } catch (e) {
       logger.error('CRON-AUTOPILOT', e.message);
     }
-  });
+  }));
 
   // Daily seller verification refresh - 24h badge cache (identity + behaviour).
-  cron.schedule('30 0 * * *', async () => {
+  cron.schedule('30 0 * * *', pilotJob('SELLER_VERIFICATION', async () => {
     try {
       await recomputeSellerVerifications();
     } catch (e) {
       logger.error('CRON-SELLER-VERIFY', e.message);
     }
-  });
+  }));
 
   // Auto-invest sweep - every 30 minutes, sweep enabled rules over ACTIVE P2P projects.
-  cron.schedule('*/30 * * * *', async () => {
+  cron.schedule('*/30 * * * *', pilotJob('AUTO_INVEST', async () => {
     try {
       const projects = await runAutoInvestCycle();
       if (projects > 0) logger.info('CRON-AUTO-INVEST', `Auto-invest cycle done over ${projects} active project(s)`);
     } catch (e) {
       logger.error('CRON-AUTO-INVEST', e.message);
     }
-  });
+  }));
 
   // Outbox dispatcher - kila dakika, chambua due events (SKIP LOCKED) kwa handlers.
-  cron.schedule('* * * * *', async () => {
+  cron.schedule('* * * * *', pilotJob('OUTBOX_DISPATCH', async () => {
     try {
       const mapped = await dispatchOutbox({ batchSize: 50 });
       if (mapped.processed > 0) logger.info('CRON-OUTBOX', `Outbox: ${mapped.processed} processed (${mapped.delivered} delivered)`);
     } catch (e) {
       logger.error('CRON-OUTBOX', e.message);
     }
-  });
+  }));
 
   // Partition future-proofing - kila siku, hakikisha partitions za miezi ijayo zipo.
-  cron.schedule('5 0 * * *', async () => {
+  cron.schedule('5 0 * * *', pilotJob('PARTITIONS', async () => {
     try {
       await ensurePartitions();
       logger.info('CRON-PARTITION', 'Partitions ensured (journal_entries + audit_logs)');
     } catch (e) {
       logger.error('CRON-PARTITION', e.message);
     }
-  });
+  }));
 
   // SACCOS standing orders - kila siku 10:00 asubuhi, tekeleza amri za mara kwa mara
   // (recurring contributions) ambazo zimefikia tarehe yao.
-  cron.schedule('10 2 * * *', async () => {
+  cron.schedule('10 2 * * *', pilotJob('SACCOS_STANDING_ORDERS', async () => {
     try {
       const r = await runDueStandingOrders();
       if (r.executed > 0) logger.info('CRON-STANDING-ORDERS', `SACCOS standing orders executed: ${r.executed} across ${r.entities} entities`);
     } catch (e) {
       logger.error('CRON-STANDING-ORDERS', e.message);
     }
-  });
+  }));
 
   // Daily FX history sampler - 00:45, snapshot effective rates za kila
   // sarafu (vs TZS) ndani ya exchange_rate_history kwa ajili ya chati.
-  cron.schedule('45 0 * * *', async () => {
+  cron.schedule('45 0 * * *', pilotJob('FX_HISTORY', async () => {
     try {
       const r = await snapshotRateHistory();
       logger.info('CRON-FX-HISTORY', `FX rate history sampled (${r.sampled} pairs)`);
     } catch (e) {
       logger.error('CRON-FX-HISTORY', e.message);
     }
-  });
+  }));
 
   // Funding deadline expiry - kila siku saa 00:10, gusa miradi iliyo FUNDING
   // ambayo muda wa ufadhili umepita na haijafikia lengo.
-  cron.schedule('10 0 * * *', async () => {
+  cron.schedule('10 0 * * *', pilotJob('FUNDING_EXPIRY', async () => {
     try {
       const r = await expireUnfundedProjects();
       if (r.expired > 0) logger.info('CRON-FUNDING-EXPIRE', `Miradi iliyoexpire: ${r.expired}`);
     } catch (e) {
       logger.error('CRON-FUNDING-EXPIRE', e.message);
     }
-  });
+  }));
 
   logger.info('CRON', 'Cron Jobs zimeanzishwa (reconciliation, ROSCA payout, DB maintenance, split payment, scheduled payments, autopilot, seller verification, auto-invest, outbox dispatcher, partition future, funding deadline expiry, FX history)');
 }

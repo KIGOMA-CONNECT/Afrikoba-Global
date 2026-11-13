@@ -139,7 +139,7 @@ async function payRequest(payerId, requestId, note) {
   const transfer = await walletService.transferWallet(
     payerId,
     requesterPhone,
-    request.amount,
+    Number(request.amount), // R36: stored NUMERIC -> number for the strict transfer check
     note || `Malipo ya ombi ${request.reference}`
   );
 

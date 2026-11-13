@@ -12,6 +12,7 @@ const AUTH_URL = config.azampay.env === 'production'
   : 'https://authenticator-sandbox.azampay.co.tz/AppAuthentication/Token';
 
 function assertAzamPayEnabled() {
+  require('../config/pilot').assertFeatureEnabled('externalPayments'); // R36 Task 4
   if (!config.azampay.enabled) {
     throw Object.assign(
       new Error('AzamPay haijawezeshwa kwa sasa.'),

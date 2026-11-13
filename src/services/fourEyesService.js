@@ -12,7 +12,7 @@ const { writeAudit } = require('./auditService');
 const executors = {};
 
 function registerExecutor(actionCode, fn) {
-  executors[actionCode] = fn;
+  executors[actionCode] = require('../config/pilot').guardExecutor(actionCode, fn); // R36: pilot executor allow-list
 }
 
 async function getPolicy(actionCode, db = pool) {

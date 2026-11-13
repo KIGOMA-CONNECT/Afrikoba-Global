@@ -85,6 +85,7 @@ async function verifyOtp(phoneNumber, otpCode, purpose = 'LOGIN') {
 }
 
 async function registerUser({ fullName, phoneNumber, email, password, nidaNumber }) {
+  require('../config/pilot').assertFeatureEnabled('publicRegistration'); // R36 Task 4
   const phone = toInternationalFormat(phoneNumber);
   const passwordHash = password ? bcrypt.hashSync(password, 10) : null;
   const countryCode = countryFromPhone(phone, 'TZ');

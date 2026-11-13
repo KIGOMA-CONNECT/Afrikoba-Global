@@ -77,7 +77,9 @@ async function addMember(actorUserId, groupId, userId, roleInGroup = 'MJUMBE') {
 }
 
 async function contributeShares(groupId, userId, amount, sharesCount) {
-  const amountNum = parseFloat(amount);
+  // R36 Task 3: strict number, no coercion; the validated value is the value posted.
+  const amountNum = require('../utils/strictAmount').strictAmount(amount);
+  require('../utils/strictAmount').strictAmount(sharesCount, { field: 'sharesCount', optional: true, integer: true });
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -185,10 +187,8 @@ async function requestLoan(actorUserId, { groupId, applicantUserId, requestedAmo
   if (interestRate != null) {
     throw loanErr(400, 'VICOBA_LOAN_INTEREST_FROM_GROUP', 'Riba ya mkopo inatoka kwenye sera ya kikundi, si kwenye ombi.');
   }
-  const amount = Number(requestedAmount);
-  if (requestedAmount == null || requestedAmount === '' || !Number.isFinite(amount) || amount <= 0) {
-    throw loanErr(400, 'VICOBA_LOAN_AMOUNT_INVALID', 'Kiasi cha mkopo lazima kiwe kikubwa kuliko 0.');
-  }
+  // R36 Task 3: strict number (no "5000", true, null, NaN, Infinity); same code as before.
+  const amount = require('../utils/strictAmount').strictAmount(requestedAmount, { field: 'requestedAmount', code: 'VICOBA_LOAN_AMOUNT_INVALID', message: 'Kiasi cha mkopo lazima kiwe namba kubwa kuliko 0.' });
   const months = repaymentMonths == null ? 3 : Number(repaymentMonths);
   if (!Number.isInteger(months) || months <= 0) {
     throw loanErr(400, 'VICOBA_LOAN_MONTHS_INVALID', 'Muda wa marejesho si sahihi.');
@@ -347,7 +347,9 @@ async function decideLoanStep(actorUserId, loanId, { step, decision, reason, app
 
     let amount = null;
     if (ctx.step.code === 'MHASIBU') {
-      amount = approvedAmount == null ? Number(loan.requested_amount) : Number(approvedAmount);
+      amount = approvedAmount === undefined
+        ? Number(loan.requested_amount)
+        : require('../utils/strictAmount').strictAmount(approvedAmount, { field: 'approvedAmount', code: 'VICOBA_LOAN_AMOUNT_INVALID', message: 'Kiasi cha mkopo lazima kiwe namba kubwa kuliko 0.' });
       if (!Number.isFinite(amount) || amount <= 0) {
         throw loanErr(400, 'VICOBA_LOAN_AMOUNT_INVALID', 'Kiasi cha mkopo lazima kiwe kikubwa kuliko 0.');
       }
@@ -515,8 +517,8 @@ async function approveLoan(approverUserId, loanId, approvedAmount) {
       // R34 S5: final (MWENYEKITI) step. All chain rules, then the step row, then the same disbursement.
       const step = await assertChainStep(client, loan, approverUserId, 'MWENYEKITI');
       finalAmount = Number(loan.approved_amount);
-      if (approvedAmount != null) {
-        const asked = Number(approvedAmount);
+      if (approvedAmount !== undefined) {
+        const asked = require('../utils/strictAmount').strictAmount(approvedAmount, { field: 'approvedAmount', code: 'VICOBA_LOAN_AMOUNT_INVALID', message: 'Kiasi cha mkopo lazima kiwe namba kubwa kuliko 0.' });
         if (!Number.isFinite(asked) || asked <= 0) {
           throw loanErr(400, 'VICOBA_LOAN_AMOUNT_INVALID', 'Kiasi cha mkopo lazima kiwe kikubwa kuliko 0.');
         }
@@ -545,9 +547,9 @@ async function approveLoan(approverUserId, loanId, approvedAmount) {
         throw Object.assign(new Error('Ombi bado halijaidhinishwa na Mwenyekiti.'), { statusCode: 400 });
       }
 
-      finalAmount = approvedAmount == null
+      finalAmount = approvedAmount === undefined
         ? Number(loan.requested_amount)
-        : Number(approvedAmount);
+        : require('../utils/strictAmount').strictAmount(approvedAmount, { field: 'approvedAmount' });
 
       if (!Number.isFinite(finalAmount) || finalAmount <= 0) {
         throw Object.assign(new Error('Kiasi cha mkopo lazima kiwe kikubwa kuliko 0.'), { statusCode: 400 });
@@ -875,6 +877,10 @@ async function getGroupDetails(groupId, requesterUserId) {
     [groupId]
   );
 
+  if (!members.rows.some((m) => m.user_id === requesterUserId)) {
+    // R36 Task 2: service-level refusal too (not only the route guard). Same 403 for any non-member.
+    throw require('../middleware/vicobaMembership').notMember();
+  }
   const detail = { ...group.rows[0], members: members.rows };
   if (requesterUserId) {
     const myRole = members.rows.find((m) => m.user_id === requesterUserId)?.role_in_group;
@@ -931,7 +937,8 @@ async function createContributionSchedule(groupId, cycleNumber, dueDate) {
 }
 
 async function payContribution(groupId, userId, cycleNumber, amount, sharesCount) {
-  const amountNum = parseFloat(amount);
+  const amountNum = require('../utils/strictAmount').strictAmount(amount); // R36 Task 3
+  require('../utils/strictAmount').strictAmount(sharesCount, { field: 'sharesCount', optional: true, integer: true });
   const MAX_ATTEMPTS = 6;
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     const client = await pool.connect();
@@ -1197,7 +1204,7 @@ async function waivePenalty(actorUserId, penaltyId) {
 // ==========================================
 
 async function initSocialFund(groupId, monthlyContribution) {
-  const amount = parseFloat(monthlyContribution);
+  const amount = require('../utils/strictAmount').strictAmount(monthlyContribution, { field: 'monthlyContribution' }); // R36 Task 3
   if (amount <= 0) throw Object.assign(new Error('Kiasi lazima iwe zaidi ya 0.'), { statusCode: 400 });
 
   const existing = await pool.query('SELECT 1 FROM vicoba_social_fund WHERE group_id = $1', [groupId]);
@@ -1271,16 +1278,8 @@ async function contributeSocialFund(groupId, userId, month) {
 }
 
 async function requestSocialFundDisbursement(groupId, userId, { reasonType, reasonDetail, requestedAmount }) {
-  const rawAmount = requestedAmount;
-  const amountText = typeof rawAmount === 'string' ? rawAmount.trim() : '';
-  const amount = typeof rawAmount === 'number'
-    ? rawAmount
-    : (amountText !== '' && /^(?:\d+(?:\.\d*)?|\.\d+)$/.test(amountText)
-      ? Number(amountText)
-      : NaN);
-  if (!Number.isFinite(amount) || amount <= 0) {
-    throw Object.assign(new Error('Kiasi cha ombi lazima kiwe chanya na halali.'), { statusCode: 400 });
-  }
+  // R36 Task 3: numbers only (numeric strings were accepted before; now refused, no coercion).
+  const amount = require('../utils/strictAmount').strictAmount(requestedAmount, { field: 'requestedAmount', message: 'Kiasi cha ombi lazima kiwe chanya na halali.' });
   // Only a member of the group may request from its social fund.
   const memberRes = await pool.query(
     'SELECT 1 FROM vicoba_members WHERE group_id = $1 AND user_id = $2',
@@ -1337,9 +1336,9 @@ async function approveSocialFundDisbursement(actorUserId, requestId, approvedAmo
       throw Object.assign(new Error('Huwezi kuidhinisha ombi lako mwenyewe.'), { statusCode: 403 });
     }
 
-    const finalAmount = approvedAmount == null
+    const finalAmount = approvedAmount === undefined
       ? Number(request.requested_amount)
-      : Number(approvedAmount);
+      : require('../utils/strictAmount').strictAmount(approvedAmount, { field: 'approvedAmount', message: 'Kiasi kilichoidhinishwa lazima kiwe chanya na halali.' });
     if (!Number.isFinite(finalAmount) || finalAmount <= 0) {
       throw Object.assign(new Error('Kiasi kilichoidhinishwa lazima kiwe chanya na halali.'), { statusCode: 400 });
     }
@@ -1510,7 +1509,7 @@ async function generateLoanSchedule(loanId, groupId, amount, interestRate, repay
 }
 
 async function repayLoan(userId, loanId, amount, note, idempotencyKey = null) {
-  const amountNum = Number(amount);
+  const amountNum = require('../utils/strictAmount').strictAmount(amount, { message: 'Kiasi cha malipo lazima kiwe kikubwa kuliko 0.' }); // R36 Task 3
 
   if (!Number.isFinite(amountNum) || amountNum <= 0) {
     throw Object.assign(new Error('Kiasi cha malipo lazima kiwe kikubwa kuliko 0.'), { statusCode: 400 });
@@ -1752,7 +1751,7 @@ async function getLoanRepayments(loanId) {
 // ==========================================
 
 async function requestWithdrawal(userId, groupId, amount) {
-  const amountNum = parseFloat(amount);
+  const amountNum = require('../utils/strictAmount').strictAmount(amount); // R36 Task 3
   if (!amountNum || amountNum <= 0) throw Object.assign(new Error('Kiasi lazima kiwe zaidi ya 0.'), { statusCode: 400 });
 
   const memberRes = await pool.query(
@@ -1933,7 +1932,9 @@ async function listWithdrawals(groupId) {
 // ==========================================
 
 async function addBonus(userId, groupId, { amount, purpose }) {
-  const amountNum = parseFloat(amount);
+  // R36 Task 1: kill switch, default OFF (src/config/pilot.js). Refuses before any read or write.
+  require('../config/pilot').assertFeatureEnabled('vicobaAddBonus');
+  const amountNum = require('../utils/strictAmount').strictAmount(amount); // R36 Task 3
   if (!amountNum || amountNum <= 0) throw Object.assign(new Error('Kiasi cha bonus lazima kiwe zaidi ya 0.'), { statusCode: 400 });
 
   const roleRes = await pool.query(

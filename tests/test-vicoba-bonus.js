@@ -1,5 +1,9 @@
 'use strict';
 const { Pool } = require('pg');
+// R36 Task 1: addBonus is OFF by default; this legacy test exercises the ON path, so it opts in explicitly.
+// The OFF path is proven by tests/r36-1-addbonus-kill-switch.phase71.test.js.
+process.env.VICOBA_ADD_BONUS_ENABLED = 'true';
+delete process.env.PILOT_MODE;
 const vicobaService = require('../src/services/vicobaService');
 
 const DB_NAME = process.env.DB_NAME || '';

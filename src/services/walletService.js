@@ -15,6 +15,7 @@ const logger = require('../utils/logger');
  * - totalCharged = W + F inaenda AzamPay USSD Push
  */
 async function initiateDeposit(userId, amount, provider) {
+  require('../config/pilot').assertFeatureEnabled('externalPayments'); // R36 Task 4
   if (!config.azampay.enabled) {
     throw Object.assign(
       new Error('Deposit kupitia MNO imezimwa kwa sasa.'),
@@ -375,7 +376,7 @@ async function processDepositCallback({ utilityref, transactionstatus, reference
  * - Lock pande zote mbili kwa mpangilio thabiti kuzuia deadlock
  */
 async function transferWallet(fromUserId, toPhoneNumber, amount, note) {
-  const amountNum = parseFloat(amount);
+  const amountNum = require('../utils/strictAmount').strictAmount(amount); // R36 Task 3 (internal test wallet)
   if (!amountNum || amountNum <= 0) {
     throw Object.assign(new Error('Kiasi si sahihi.'), { statusCode: 400 });
   }
@@ -520,6 +521,7 @@ async function recordWithdrawalDispatchException(reference, transactionId, detai
 }
 
 async function withdrawToMno(userId, amount, provider, idempotencyKey = null) {
+  require('../config/pilot').assertFeatureEnabled('externalPayments'); // R36 Task 4
   if (!config.azampay.enabled) {
     throw Object.assign(
       new Error('Withdrawal kwenda MNO imezimwa kwa sasa.'),

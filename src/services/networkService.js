@@ -607,6 +607,7 @@ async function listUserBatches(userId) {
 // ====================================================================
 
 async function createScheduledPayment(userId, data) {
+  require('../config/pilot').assertFeatureEnabled('recurringPayments'); // R36 Task 4
   const { recipient_phone, amount, type, description, scheduled_for, recurrence } = data;
   const amountNum = Number(amount);
   if (!amountNum || amountNum <= 0) throw Object.assign(new Error('Kiasi si sahihi.'), { statusCode: 400 });
@@ -631,6 +632,8 @@ async function cancelScheduledPayment(id, userId) {
 }
 
 async function processDueScheduledPayments() {
+  // R36 Task 4: recurring payments disabled -> the worker executes nothing.
+  if (!require('../config/pilot').isFeatureEnabled('recurringPayments')) return { processed: 0, skipped: 'PILOT_FEATURE_DISABLED' };
   const due = await pool.query(
     `SELECT * FROM scheduled_payments WHERE status = 'ACTIVE' AND scheduled_for <= NOW()`,
     []
@@ -650,7 +653,7 @@ async function processDueScheduledPayments() {
     if (claim.rowCount !== 1) continue;
     try {
       if (sp.type === 'TRANSFER' && sp.recipient_phone) {
-        await require('./walletService').transferWallet(sp.user_id, sp.recipient_phone, sp.amount, sp.description || 'Malipo yaliyopangwa');
+        await require('./walletService').transferWallet(sp.user_id, sp.recipient_phone, Number(sp.amount) /* R36: stored NUMERIC -> number (validated at creation) */, sp.description || 'Malipo yaliyopangwa');
       }
       if (next) {
         await pool.query(
@@ -776,6 +779,7 @@ async function fireRemittanceEvent(eventType, transfer) {
 
 // F4.1: Rate-locked quote (5-minute expiry, RMQ-* reference)
 async function quoteRemittance(userId, data) {
+  require('../config/pilot').assertFeatureEnabled('remittance'); // R36 Task 4
   await ensureCorridors();
   const toCountry = String(data.to_country || data.toCountry || '').toUpperCase();
   const amountNum = Number(data.from_amount ?? data.amount);
@@ -821,6 +825,7 @@ async function listQuotes(userId) {
 }
 
 async function sendRemittance(senderId, data) {
+  require('../config/pilot').assertFeatureEnabled('remittance'); // R36 Task 4
   await ensureCorridors();
   let { recipient_phone, recipient_name, recipient_country, from_amount } = data;
   const amountNum = Number(from_amount);
@@ -943,6 +948,7 @@ async function screenRecipientForSanctions(r) {
 }
 
 async function pickupRemittance(pickupCode, recipientPhone, recipientName) {
+  require('../config/pilot').assertFeatureEnabled('remittance'); // R36 Task 4
   await expireStaleRemittances();
   const res = await pool.query('SELECT * FROM remittance_transfers WHERE pickup_code = $1 AND recipient_phone = $2', [pickupCode, recipientPhone]);
   if (!res.rows.length) throw createAppError('REMITTANCE_TRANSFER_NOT_FOUND');

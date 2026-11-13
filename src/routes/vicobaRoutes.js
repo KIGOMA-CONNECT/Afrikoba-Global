@@ -9,6 +9,8 @@ const router = express.Router();
 
 router.use(authRequired);
 router.use(requireService('VICOBA'));
+// R36 Task 2: membership isolation + minimisation for every GET naming a group/loan/meeting.
+require('../middleware/vicobaMembership').installVicobaReadGuards(router);
 
 // Mialiko yangu (invitation inbox) — kabla ya /groups/:groupId
 router.get('/invitations', async (req, res, next) => {
@@ -206,6 +208,9 @@ router.get('/groups/:groupId', async (req, res, next) => {
 router.post('/groups/:groupId/schedules', validate(schemas.vicoba.createSchedule), async (req, res, next) => {
   try {
     const { cycleNumber, dueDate } = req.body;
+    // R36: leader-only (the service is also used by the system CONTRIBUTION_CYCLE worker, so the HTTP
+    // actor is checked here, before any write).
+    await require('../middleware/vicobaMembership').assertGroupLeader(parseInt(req.params.groupId, 10), req.user.id);
     const schedule = await vicobaService.createContributionSchedule(
       parseInt(req.params.groupId, 10),
       cycleNumber,
@@ -487,7 +492,7 @@ router.post('/withdrawals/:withdrawalId/approve', validate(schemas.vicoba.withdr
 });
 
 // Leader adds a bonus (interest income) to the group fund
-router.post('/groups/:groupId/bonus', validate(schemas.vicoba.bonus), async (req, res, next) => {
+router.post('/groups/:groupId/bonus', require('../config/pilot').requireFeature('vicobaAddBonus'), validate(schemas.vicoba.bonus), async (req, res, next) => {
   try {
     const { amount, purpose } = req.body;
     const result = await vicobaService.addBonus(req.user.id, parseInt(req.params.groupId, 10), { amount, purpose });

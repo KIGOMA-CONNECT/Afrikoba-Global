@@ -129,6 +129,11 @@ function validateConfig() {
 
   if (!isProd) return { valid: true, errors };
 
+  // R36: the pilot boundary (src/config/pilot.js) is never left to a silent default in production.
+  if (!require('./pilot').pilotModeExplicit()) {
+    errors.push("PILOT_MODE lazima iwekwe wazi: 'true' (pilot imefungwa) au 'false' (src/config/pilot.js)");
+  }
+
   if (!config.security.jwtSecret || config.security.jwtSecret === DEFAULT_JWT) {
     errors.push('JWT_SECRET lazima uwe imewekwa na sio default (JWT_SECRET)');
   }
@@ -164,4 +169,7 @@ function validateConfig() {
 
 module.exports = config;
 module.exports.validateConfig = validateConfig;
+// R36: dev-only response behaviour (devOtp, stack traces) needs an EXPLICIT development/test NODE_ENV;
+// unset or any other value (e.g. 'staging', 'pilot') is treated as production-like (fail-closed).
+module.exports.isDevelopmentOrTest = () => process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'test';
 module.exports.DEFAULT_JWT = DEFAULT_JWT;
