@@ -12,8 +12,9 @@
  * Enabled in the pilot (not gated here): VICOBA shares, contributions, the three-stage loan chain,
  * fines (penalties), community/social fund, internal test wallet.
  *
- * VICOBA addBonus is OFF by default everywhere (not only in the pilot). It runs only when
- * VICOBA_ADD_BONUS_ENABLED === 'true' AND the pilot boundary is not enforced.
+ * VICOBA addBonus is OFF by default everywhere (not only in the pilot). It runs only when NODE_ENV is
+ * exactly 'test' or 'development' AND VICOBA_ADD_BONUS_ENABLED === 'true' AND the pilot boundary is not
+ * enforced. In production it is hard-locked OFF (R37 (6)).
  *
  * Flags are read from process.env at call time, so a running process cannot be switched by code
  * paths other than its environment, and tests can set the environment explicitly.
@@ -50,7 +51,13 @@ function pilotModeExplicit() {
 // Feature-specific switches outside the pilot. Only addBonus defaults OFF; the others keep their
 // existing behaviour when the pilot boundary is not enforced.
 function featureOwnFlag(feature) {
-  if (feature === 'vicobaAddBonus') return process.env.VICOBA_ADD_BONUS_ENABLED === 'true';
+  if (feature === 'vicobaAddBonus') {
+    // R37 (6): hard lock. Outside an explicit 'test'/'development' NODE_ENV (production, unset, 'Production',
+    // 'staging', ...) no configuration can switch addBonus on: not VICOBA_ADD_BONUS_ENABLED, not PILOT_MODE,
+    // not AFRIKOBA_TIER_B_ENABLE. Re-enabling it in production needs a reviewed code change.
+    if (!require('./index').isDevelopmentOrTest()) return false;
+    return process.env.VICOBA_ADD_BONUS_ENABLED === 'true';
+  }
   return true;
 }
 
