@@ -243,16 +243,16 @@ function safeRelease(client, origRelease, err) {
     try {
       origRelease(e);
     } catch (releaseEx) {
-      // Never let a release exception mask the caller error, and never let it
-      // escape as an unhandled rejection: log and swallow. The client is being
-      // discarded anyway.
+      // Log the release exception. In sync (direct-call) paths the caller/release
+      // error is re-thrown so it remains observable; async paths wrap doRelease
+      // in try/catch and swallow to avoid unhandled rejections.
       try { logger.error('DB_RELEASE_FAILED', releaseEx && releaseEx.message); } catch (_) {}
       if (err) {
-        // caller error is primary; do not throw the release exception
-        return;
+        // caller error is primary: propagate it (release exception already logged)
+        throw err;
       }
-      // no caller error: swallow the release exception (already logged)
-      return;
+      // no caller error: propagate the release exception so it is observable
+      throw releaseEx;
     }
   }
 

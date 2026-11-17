@@ -538,22 +538,32 @@ async function listMinutesByGroup(groupType, groupId) {
 // ============ GOVERNANCE ANALYTICS ============
 
 async function computeGovernanceAnalytics(groupType, groupId) {
-  const meetings = (await pool.query(
-    `SELECT id, scheduled_at, status FROM governance_meetings WHERE group_type=$1 AND group_id=$2`,
+  // GOV-AN remediation: single aggregation query (R5) instead of N+1 per-meeting queries.
+  const meetingRows = (await pool.query(
+    `SELECT m.id, m.status,
+            COUNT(a.id) FILTER (WHERE a.status = 'ATTENDED')::int AS att,
+            COUNT(a.id)::int AS tot
+       FROM governance_meetings m
+       LEFT JOIN governance_attendees a ON a.meeting_id = m.id
+      WHERE m.group_type = $1 AND m.group_id = $2
+      GROUP BY m.id, m.status`,
     [groupType || 'VICOBA', groupId]
   )).rows;
-  const totalMeetings = meetings.length;
-  const completedMeetings = meetings.filter((m) => m.status === 'COMPLETED').length;
 
+  const totalMeetings = meetingRows.length;
+  const completedMeetings = meetingRows.filter((m) => m.status === 'COMPLETED').length;
+
+  // GOV-AN remediation (R3): only meetings WITH attendance records contribute to
+  // the average. Meetings without attendee records are excluded from the
+  // denominator (not silently treated as 0% attendance).
+  const meetingsWithAttendance = meetingRows.filter((m) => m.tot > 0);
   let attendancePctSum = 0;
-  for (const m of meetings) {
-    const att = (await pool.query(
-      `SELECT COUNT(*) FILTER (WHERE status='ATTENDED')::int AS att, COUNT(*)::int AS tot FROM governance_attendees WHERE meeting_id=$1`,
-      [m.id]
-    )).rows[0];
-    if (att.tot > 0) attendancePctSum += (att.att / att.tot) * 100;
+  for (const m of meetingsWithAttendance) {
+    attendancePctSum += (m.att / m.tot) * 100;
   }
-  const avgAttendance = totalMeetings > 0 ? attendancePctSum / totalMeetings : 0;
+  const avgAttendance = meetingsWithAttendance.length > 0
+    ? attendancePctSum / meetingsWithAttendance.length
+    : 0;
 
   const reso = (await pool.query(
     `SELECT COUNT(*)::int AS total,
@@ -583,25 +593,64 @@ async function computeGovernanceAnalytics(groupType, groupId) {
     computedAt: new Date().toISOString(),
   };
 
-  // Persist snapshot
-  await pool.query(
-    `INSERT INTO governance_analytics
-       (group_type, group_id, snapshot_date, total_meetings, completed_meetings, avg_attendance_percent,
-        total_resolutions, passed_resolutions, avg_decision_time_hours,
-        total_action_items, completed_action_items, open_action_items, overdue_action_items)
-     VALUES ($1,$2,CURRENT_DATE,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
-     ON CONFLICT (group_type, group_id, snapshot_date) DO UPDATE
-       SET total_meetings=EXCLUDED.total_meetings, completed_meetings=EXCLUDED.completed_meetings,
-           avg_attendance_percent=EXCLUDED.avg_attendance_percent, total_resolutions=EXCLUDED.total_resolutions,
-           passed_resolutions=EXCLUDED.passed_resolutions, avg_decision_time_hours=EXCLUDED.avg_decision_time_hours,
-           total_action_items=EXCLUDED.total_action_items, completed_action_items=EXCLUDED.completed_action_items,
-           open_action_items=EXCLUDED.open_action_items, overdue_action_items=EXCLUDED.overdue_action_items`,
-    [groupType || 'VICOBA', groupId, totalMeetings, completedMeetings, Number(avgAttendance.toFixed(2)),
-     reso.total || 0, reso.passed || 0, reso.avg_hours ? Number(reso.avg_hours.toFixed(2)) : 0,
-     action.total || 0, action.done || 0, action.open || 0, action.overdue || 0]
-  );
-
   return analytics;
+}
+
+// GOV-AN remediation (R1): separate write responsibility. This function persists
+// a snapshot and is called ONLY by the POST /analytics/compute (refresh) endpoint,
+// never by GET /analytics (read-only).
+// GOV-AN R4 remediation: insert-only snapshot persistence.
+// - ON CONFLICT DO NOTHING: first snapshot for (group_type, group_id, snapshot_date)
+//   becomes the permanent record. Subsequent attempts do not overwrite.
+// - RETURNING: establishes whether a new row was inserted.
+// - On conflict (no returned row): retrieve the existing snapshot and return
+//   { status: 'already_recorded', snapshot: existing }.
+// - On successful insert: return { status: 'created', snapshot: newRow }.
+// - Throws on insert failure or inconsistent state (conflict but no existing row).
+async function persistAnalyticsSnapshot(groupType, groupId, analytics) {
+  const gt = groupType || 'VICOBA';
+  const gn = groupId;
+
+  // Capture the snapshot date exactly once per persistence operation.
+  // MTC-03 correction: reuse the captured date for both INSERT and fallback SELECT
+  // to ensure deterministic behavior around midnight and consistent date semantics.
+  const dateRes = await pool.query('SELECT CURRENT_DATE AS snapshot_date');
+  const snapshotDate = dateRes.rows[0].snapshot_date;
+
+  const params = [gt, gn, snapshotDate, analytics.meetings.total, analytics.meetings.completed,
+    analytics.meetings.avgAttendancePercent, analytics.resolutions.total, analytics.resolutions.passed,
+    analytics.resolutions.avgDecisionHours, analytics.actionItems.total, analytics.actionItems.completed,
+    analytics.actionItems.open, analytics.actionItems.overdue];
+
+  let insertRes;
+  try {
+    insertRes = await pool.query(
+      `INSERT INTO governance_analytics
+         (group_type, group_id, snapshot_date, total_meetings, completed_meetings, avg_attendance_percent,
+          total_resolutions, passed_resolutions, avg_decision_time_hours,
+          total_action_items, completed_action_items, open_action_items, overdue_action_items)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+       ON CONFLICT (group_type, group_id, snapshot_date) DO NOTHING
+       RETURNING *`,
+      params
+    );
+  } catch (err) {
+    throw new Error('Snapshot persistence failed: ' + (err && err.message ? err.message : String(err)));
+  }
+
+  if (insertRes.rows.length > 0) {
+    return { status: 'created', snapshot: insertRes.rows[0] };
+  }
+
+  // Conflict: retrieve existing snapshot using the same captured date
+  const existing = await pool.query(
+    `SELECT * FROM governance_analytics WHERE group_type=$1 AND group_id=$2 AND snapshot_date=$3`,
+    [gt, gn, snapshotDate]
+  );
+  if (existing.rows.length === 0) {
+    throw new Error('Snapshot conflict but existing record not found (inconsistent state)');
+  }
+  return { status: 'already_recorded', snapshot: existing.rows[0] };
 }
 
 async function getAnalyticsTrend(groupType, groupId, days = 30) {
@@ -620,7 +669,7 @@ module.exports = {
   addAgendaItem,
   getOrCreateChannel, ensureDefaultChannels, postChatMessage, getChannelMessages, searchKnowledge,
   addDocument, listDocuments,
-  computeGovernanceAnalytics, getAnalyticsTrend, parseTranscript,
+  computeGovernanceAnalytics, persistAnalyticsSnapshot, getAnalyticsTrend, parseTranscript,
   setConstitution, getConstitution,
   createProposal, castVote, getProposalResult, passResolution, amendResolution, listResolutions,
   createActionItem, updateActionItem, listActionItems,

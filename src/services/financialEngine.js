@@ -63,7 +63,7 @@ async function claimOperation({ client, operationType, reference, transactionId 
 
   if (validateShape) {
     const existing = await client.query(
-      `SELECT operation_type, transaction_id, user_id, amount
+      `SELECT operation_type, transaction_id, user_id, amount, status
          FROM financial_operations
         WHERE reference_id = $1`,
       [reference]
@@ -74,7 +74,10 @@ async function claimOperation({ client, operationType, reference, transactionId 
       if (String(row.operation_type) !== String(operationType)) mismatch.push('operation_type');
       if (userId != null && row.user_id != null && String(row.user_id) !== String(userId)) mismatch.push('user_id');
       if (amount != null && Number(amount) > 0 && Math.abs(Number(row.amount) - Number(amount)) >= 0.005) mismatch.push('amount');
-      if (transactionId != null && row.transaction_id != null && String(row.transaction_id) !== String(transactionId)) mismatch.push('transaction_id');
+      // GSF-FIN-06: NULL-vs-valid transaction ID mismatch is a conflict
+      const existingTxId = row.transaction_id == null ? null : String(row.transaction_id);
+      const expectedTxId = transactionId == null ? null : String(transactionId);
+      if (existingTxId !== expectedTxId) mismatch.push('transaction_id');
       if (mismatch.length) {
         const error = new Error(`OPERATION_SHAPE_MISMATCH: ${reference} (${mismatch.join(',')})`);
         error.code = 'OPERATION_SHAPE_MISMATCH';
@@ -83,10 +86,12 @@ async function claimOperation({ client, operationType, reference, transactionId 
         error.mismatch = mismatch;
         throw error;
       }
+      // GSF-FIN-06: Return status so callers can distinguish failed vs successful replay
+      return { claimed: false, status: row.status, reference };
     }
   }
 
-  return { claimed: false };
+  return { claimed: false, status: null, reference };
 }
 
 
@@ -331,6 +336,96 @@ async function postJournal({ client, lines, transactionId = null, referenceId, d
     throw new Error(`Financial Engine: unbalanced posting DR=${dr} CR=${cr}`);
   }
   try {
+    // GSF-FIN-09: Check posting registry for exactly-once enforcement
+    // CR-02: Fail-closed when registry is missing — do not silently proceed
+    let registryExists = false;
+    try {
+      const regCheck = await client.query(
+        "SELECT 1 FROM information_schema.tables WHERE table_name = 'journal_posting_registry'"
+      );
+      registryExists = regCheck.rows.length > 0;
+    } catch (e) { registryExists = false; }
+
+    if (!registryExists && referenceId) {
+      // Fail-closed: registry is required for exactly-once posting enforcement
+      const error = new Error('JOURNAL_REGISTRY_MISSING: journal_posting_registry table is required for posting integrity. Apply migration 154 under owner authorization.');
+      error.code = 'JOURNAL_REGISTRY_MISSING';
+      error.statusCode = 503;
+      throw error;
+    }
+
+    // Build canonical payload for replay comparison
+    const crypto = require('crypto');
+    const canonicalPayload = lines.map((l) => ({
+      accountCode: l.accountCode,
+      direction: l.direction,
+      amount: normalizeAmount(l.amount),
+      currency: l.currencyCode || 'TZS',
+    })).sort((a, b) => `${a.accountCode}:${a.direction}`.localeCompare(`${b.accountCode}:${b.direction}`));
+    const payloadJson = JSON.stringify(canonicalPayload);
+    const payloadHash = crypto.createHash('sha256').update(payloadJson).digest('hex');
+
+    if (registryExists && referenceId) {
+      // Check if already posted
+      const existing = await client.query(
+        'SELECT posting_id, status, dr_total, cr_total, entry_count, payload, payload_hash FROM journal_posting_registry WHERE reference_id = $1',
+        [referenceId]
+      );
+      if (existing.rows.length > 0) {
+        const row = existing.rows[0];
+        // Full payload comparison (not just totals)
+        const existingHash = row.payload_hash || '';
+        if (existingHash !== payloadHash) {
+          const error = new Error(`JOURNAL_POSTING_CONFLICT: reference ${referenceId} already posted with different payload`);
+          error.code = 'JOURNAL_POSTING_CONFLICT';
+          error.statusCode = 409;
+          throw error;
+        }
+        // Already posted with same payload — return existing posting_id (idempotent replay)
+        span.end('OK', { groupId: row.posting_id, dedup: true });
+        return row.posting_id;
+      }
+
+      // Register the posting. MTC25-01: use ON CONFLICT DO NOTHING rather than
+      // catching 23505. A caught unique violation aborts the surrounding
+      // transaction (SQLSTATE 25P02), so the loser of a concurrent race could
+      // never read the committed registry row. ON CONFLICT keeps the
+      // transaction usable and blocks until the competing transaction resolves.
+      const claim = await client.query(
+        `INSERT INTO journal_posting_registry (posting_id, reference_id, transaction_id, entry_count, dr_total, cr_total, status, posted_by, payload, payload_hash)
+         VALUES ($1, $2, $3, $4, $5, $6, 'POSTED', $7, $8, $9)
+         ON CONFLICT (reference_id) DO NOTHING
+         RETURNING posting_id`,
+        [groupId, referenceId, transactionId, lines.length, dr, cr, postedBy, payloadJson, payloadHash]
+      );
+
+      if (claim.rows.length === 0) {
+        // A different transaction committed this reference first. Re-read the
+        // committed registry row under READ COMMITTED (fresh statement snapshot).
+        const winner = await client.query(
+          'SELECT posting_id, status, dr_total, cr_total, entry_count, payload, payload_hash FROM journal_posting_registry WHERE reference_id = $1',
+          [referenceId]
+        );
+        if (winner.rows.length === 0) {
+          const error = new Error(`JOURNAL_POSTING_RACE: reference ${referenceId} conflicted but no committed registry row is visible; retry the posting`);
+          error.code = 'JOURNAL_POSTING_RACE';
+          error.statusCode = 503;
+          throw error;
+        }
+        const row = winner.rows[0];
+        const existingHash = row.payload_hash || '';
+        if (existingHash !== payloadHash) {
+          const error = new Error(`JOURNAL_POSTING_CONFLICT: reference ${referenceId} already posted with different payload`);
+          error.code = 'JOURNAL_POSTING_CONFLICT';
+          error.statusCode = 409;
+          throw error;
+        }
+        // Same payload — return existing posting_id (idempotent replay)
+        span.end('OK', { groupId: row.posting_id, dedup: true });
+        return row.posting_id;
+      }
+    }
+
     for (const line of lines) {
       const accId = await accountIdByCode(line.accountCode, client);
       await client.query(
@@ -1095,7 +1190,17 @@ async function debitWallet({ client, userId, amount, reference, toAccount = 'PLA
   const amountN = normalizeAmount(amount);
   assertPositiveAmount(amountN, 'debitWallet');
   const op = await claimOperation({ client, operationType: 'DEBIT', reference, transactionId, userId, amount: amountN, validateShape: true });
-  if (!op.claimed) return { dedup: true, reference };
+  if (!op.claimed) {
+    // GSF-FIN-06: Do not report failed operation as successful replay
+    if (op.status && op.status !== 'SUCCESS') {
+      const error = new Error(`OPERATION_FAILED_REPLAY: ${reference} (status=${op.status})`);
+      error.code = 'OPERATION_FAILED_REPLAY';
+      error.statusCode = 409;
+      error.reference = reference;
+      throw error;
+    }
+    return { dedup: true, reference, status: op.status };
+  }
 
   const { rows } = await client.query(`SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE`, [userId]);
   if (rows.length === 0) {

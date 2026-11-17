@@ -91,7 +91,7 @@ const ROUTE_AUTHZ = [
   ['GET', '/retention-policies', CAP.READ],
   ['POST', '/retention-policies', CAP.GOVERN],
   ['POST', '/can-view', CAP.READ],
-  ['POST', '/analytics/compute', CAP.READ],
+  ['POST', '/analytics/compute', CAP.WRITE],
   ['GET', '/analytics', CAP.READ],
 ];
 
@@ -640,17 +640,27 @@ router.post('/resolutions/:id/trigger-loan', async (req, res, next) => {
 // ============ GOVERNANCE ANALYTICS ============
 router.post('/analytics/compute', async (req, res, next) => {
   try {
-    const { group_type = 'VICOBA', group_id } = req.body;
-    const analytics = await gov().computeGovernanceAnalytics(group_type, parseInt(group_id, 10));
-    res.json({ success: true, analytics });
+    const groupType = req.governance.groupType;
+    const groupId = req.governance.groupId;
+    const analytics = await gov().computeGovernanceAnalytics(groupType, groupId);
+    const persistResult = await gov().persistAnalyticsSnapshot(groupType, groupId, analytics);
+    res.json({
+      success: true,
+      analytics,
+      snapshotStatus: persistResult.status,
+      snapshot: persistResult.snapshot,
+    });
   } catch (error) { next(error); }
 });
 
 router.get('/analytics', async (req, res, next) => {
   try {
-    const { group_type = 'VICOBA', group_id, days } = req.query;
-    const analytics = await gov().computeGovernanceAnalytics(group_type, parseInt(group_id, 10));
-    const trend = await gov().getAnalyticsTrend(group_type, parseInt(group_id, 10), days ? parseInt(days, 10) : 30);
+    const groupType = req.governance.groupType;
+    const groupId = req.governance.groupId;
+    const { days } = req.query;
+    // GOV-AN remediation (R1): read-only — compute only, no snapshot write.
+    const analytics = await gov().computeGovernanceAnalytics(groupType, groupId);
+    const trend = await gov().getAnalyticsTrend(groupType, groupId, days ? parseInt(days, 10) : 30);
     res.json({ success: true, analytics, trend });
   } catch (error) { next(error); }
 });

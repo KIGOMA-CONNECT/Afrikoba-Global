@@ -1,0 +1,101 @@
+{
+  "version": 1,
+  "defaultState": "PENDING_UNAUTHORIZED",
+  "decisions": {
+    "OD-10": "OPEN"
+  },
+  "reconciliation": {
+    "gate": "MTC-29",
+    "authorization": "G2 APPROVED 2026-11-16",
+    "authorizedSet": [
+      "152_social_fund_case_permissions.sql",
+      "153_social_fund_clearing_account.sql",
+      "154_journal_posting_registry.sql"
+    ],
+    "appliedAt": "2026-11-16T14:05:27.031Z",
+    "note": "Existing effects verified against migration definitions; ledger rows recorded only. Migration bodies were not re-executed. 155 remains quarantined under OD-10."
+  },
+  "migrations": {
+    "152_social_fund_case_permissions.sql": {
+      "state": "RECONCILED",
+      "reconciledAt": "2026-11-16T14:05:27.031Z",
+      "reconciliationAuthorization": "MTC-29-G2",
+      "expectedEffects": [
+        {
+          "type": "table",
+          "name": "social_fund_case_permissions"
+        },
+        {
+          "type": "view",
+          "name": "social_fund_active_case_permissions"
+        }
+      ]
+    },
+    "153_social_fund_clearing_account.sql": {
+      "state": "RECONCILED",
+      "reconciledAt": "2026-11-16T14:05:27.031Z",
+      "reconciliationAuthorization": "MTC-29-G2",
+      "expectedEffects": [
+        {
+          "type": "row",
+          "table": "ledger_accounts",
+          "column": "account_code",
+          "value": "SOCIAL_FUND_CLEARING"
+        },
+        {
+          "type": "function",
+          "name": "fn_product_namespace(text)"
+        }
+      ]
+    },
+    "154_journal_posting_registry.sql": {
+      "state": "RECONCILED",
+      "reconciledAt": "2026-11-16T14:05:27.031Z",
+      "reconciliationAuthorization": "MTC-29-G2",
+      "expectedEffects": [
+        {
+          "type": "table",
+          "name": "journal_posting_registry"
+        },
+        {
+          "type": "index",
+          "name": "uq_journal_posting_ref"
+        },
+        {
+          "type": "function",
+          "name": "journal_entries_immutable()"
+        }
+      ]
+    },
+    "155_social_fund_institution_binding.sql": {
+      "state": "BLOCKED",
+      "decision": "OD-10",
+      "reason": "OD-10 OPEN — institution model not authorized",
+      "blockedEffects": [
+        {
+          "type": "column",
+          "table": "social_fund_cases",
+          "column": "institution_id"
+        },
+        {
+          "type": "column",
+          "table": "social_fund_case_permissions",
+          "column": "institution_id"
+        },
+        {
+          "type": "index",
+          "name": "idx_sf_case_perms_institution"
+        }
+      ]
+    },
+    "156_institution_foundation.sql": {
+      "state": "PENDING_UNAUTHORIZED"
+    },
+    "157_social_fund_institution_binding.sql": {
+      "state": "PENDING_UNAUTHORIZED"
+    },
+    "158_institution_fk_hardening.sql": {
+      "state": "PENDING_UNAUTHORIZED"
+    }
+  }
+}
