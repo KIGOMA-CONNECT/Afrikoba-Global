@@ -33,30 +33,24 @@ router.post('/cases/:id/status', async (req, res, next) => {
   try {
     const { new_status, reason } = req.body;
     const caseId = parseInt(req.params.id, 10);
-    // WP-02: if an institution link exists, governance is mandatory (fail closed); no legacy fallback
-    let governed = false;
+    // R1: fail-closed institutional governance. No legacy fallback.
     let link = null;
     try { link = await gsfGov.getCampaignInstitution(gsfPool, caseId); } catch (e) { link = null; }
-    if (link) {
-      // any link (including UNRESOLVED/AMBIGUOUS) -> governed path; fail closed on any error
-      try {
-        await gsfGov.governedCampaignStatusChange(gsfPool, {
-          actorId: req.user.id,
-          institutionId: link.institution_id,
-          campaignId: caseId,
-          newStatus: new_status,
-          correlationId: req.headers['x-correlation-id'] || null,
-        });
-        governed = true;
-      } catch (govErr) {
-        return res.status(403).json({ success: false, code: govErr.code || 'GOVERNANCE_DENIED', message: govErr.message });
-      }
+    if (!link || link.link_status !== 'VERIFIED' || !link.institution_id) {
+      return res.status(403).json({ success: false, code: 'GOVERNANCE_REQUIRED', message: 'Institutional governance authorization required.' });
     }
-    if (!governed) {
-      const result = await socialFund.changeCaseStatus(caseId, req.user.id, new_status, reason);
-      return res.json({ success: true, ...result });
+    try {
+      await gsfGov.governedCampaignStatusChange(gsfPool, {
+        actorId: req.user.id,
+        institutionId: link.institution_id,
+        campaignId: caseId,
+        newStatus: new_status,
+        correlationId: req.headers['x-correlation-id'] || null,
+      });
+      return res.json({ success: true, governed: true });
+    } catch (govErr) {
+      return res.status(403).json({ success: false, code: govErr.code || 'GOVERNANCE_DENIED', message: govErr.message });
     }
-    res.json({ success: true, governed: true });
   } catch (err) { next(err); }
 });
 

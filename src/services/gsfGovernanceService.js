@@ -9,7 +9,22 @@
  */
 
 const { Pool } = require('pg');
-const socialFund = require('./socialFundService');
+const LIFECYCLE_STATES = ['OPEN', 'COLLECTING', 'TARGET_REACHED', 'CLOSED', 'CANCELLED', 'EXPIRED', 'DISBURSEMENT_PENDING', 'PARTIALLY_DISBURSED', 'DISBURSED'];
+const ALLOWED_TRANSITIONS = {
+  OPEN: ['COLLECTING', 'CLOSED', 'CANCELLED', 'EXPIRED'],
+  COLLECTING: ['TARGET_REACHED', 'CLOSED', 'CANCELLED', 'EXPIRED'],
+  TARGET_REACHED: ['CLOSED', 'CANCELLED', 'DISBURSEMENT_PENDING'],
+  CLOSED: ['CANCELLED', 'DISBURSEMENT_PENDING'],
+  CANCELLED: [],
+  EXPIRED: ['CANCELLED'],
+  DISBURSEMENT_PENDING: ['PARTIALLY_DISBURSED', 'DISBURSED', 'CANCELLED'],
+  PARTIALLY_DISBURSED: ['DISBURSED', 'CANCELLED'],
+  DISBURSED: [],
+};
+function canTransition(from, to) {
+  if (!LIFECYCLE_STATES.includes(from) || !LIFECYCLE_STATES.includes(to)) return false;
+  return (ALLOWED_TRANSITIONS[from] || []).includes(to);
+}
 
 function createPool(config) {
   if (config) return new Pool(config);
@@ -50,7 +65,7 @@ async function createInstitution(pool, { name, createdBy }) {
   return r.rows[0];
 }
 
-async function addOwner(pool, { institutionId, userId, verifiedBy }) {
+async function addOwner(pool, { institutionId, userId, verifiedBy, criticalApprover = false }) {
   // hybrid verification: automated consistency (no duplicate) + independent reviewer approval
   const existing = await pool.query('SELECT * FROM gsf_institution_owners WHERE institution_id=$1 AND user_id=$2', [institutionId, userId]);
   if (existing.rows.length) throw new GsfGovernanceError('OWNER_EXISTS', 'owner already exists');
@@ -166,19 +181,37 @@ async function authorizeCampaignAction(pool, { actorId, institutionId, permissio
 }
 
 // Dual-control ownership change (two distinct verified owners; SELECT FOR UPDATE)
-async function requestOwnershipChange(pool, { institutionId, targetUserId, changeType, requestedBy }) {
+async function requestOwnershipChange(pool, { institutionId, targetUserId, changeType, requestedBy, requiredApprovers }) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     const owner = await client.query("SELECT 1 FROM gsf_institution_owners WHERE institution_id=$1 AND user_id=$2 AND status='VERIFIED' FOR UPDATE", [institutionId, requestedBy]);
     if (!owner.rows.length) throw new GsfGovernanceError('NOT_VERIFIED_OWNER', 'requester must be a verified owner');
+    // Resolve required approvers from trusted gsf_critical_approvers table (not caller-controlled)
+    const crit = await client.query("SELECT user_id FROM gsf_critical_approvers WHERE institution_id=$1", [institutionId]);
+    const required = crit.rows.map((r) => Number(r.user_id));
+    if (required.length !== 2 || new Set(required).size !== 2) {
+      throw new GsfGovernanceError('INVALID_REQUIRED_APPROVERS', 'exactly two distinct trusted critical approvers must be configured');
+    }
+    // Validate each is a verified owner
+    for (const aid of required) {
+      const r = await client.query("SELECT 1 FROM gsf_institution_owners WHERE institution_id=$1 AND user_id=$2 AND status='VERIFIED' FOR UPDATE", [institutionId, aid]);
+      if (!r.rows.length) throw new GsfGovernanceError('REQUIRED_APPROVER_NOT_VERIFIED', 'required approver is not a verified owner');
+    }
+    // maker must be distinct from both required approvers
+    if (required.includes(Number(requestedBy))) {
+      throw new GsfGovernanceError('MAKER_CANNOT_BE_APPROVER', 'maker must be distinct from required approvers');
+    }
     const r = await client.query(
-      `INSERT INTO gsf_ownership_change_requests (institution_id, target_user_id, change_type, requested_by, expires_at)
-       VALUES ($1,$2,$3,$4, NOW() + INTERVAL '1 hour') RETURNING *`,
-      [institutionId, targetUserId, changeType, requestedBy]
+      `INSERT INTO gsf_ownership_change_requests (institution_id, target_user_id, change_type, requested_by, expires_at, required_approvers)
+       VALUES ($1,$2,$3,$4, NOW() + INTERVAL '1 hour', $5) RETURNING *`,
+      [institutionId, targetUserId, changeType, requestedBy, JSON.stringify(required)]
+    );
+    await client.query(
+      `INSERT INTO gsf_governance_audit_events (institution_id, actor_id, action, resource_type, resource_id, outcome) VALUES ($1,$2,$3,$4,$5,$6)`,
+      [institutionId, requestedBy, 'OWNERSHIP_CHANGE_REQUESTED', 'ownership', r.rows[0].id, 'PENDING']
     );
     await client.query('COMMIT');
-    await auditEvent(pool, { institutionId, actorId: requestedBy, action: 'OWNERSHIP_CHANGE_REQUESTED', resourceType: 'ownership', resourceId: r.rows[0].id, outcome: 'PENDING' });
     return r.rows[0];
   } catch (e) {
     await client.query('ROLLBACK').catch(() => {});
@@ -202,19 +235,43 @@ async function approveOwnershipChange(pool, { requestId, approverId }) {
     if (!owner.rows.length) throw new GsfGovernanceError('NOT_VERIFIED_OWNER', 'approver must be a verified owner');
     const dup = await client.query('SELECT 1 FROM gsf_ownership_change_approvals WHERE request_id=$1 AND approver_id=$2', [requestId, approverId]);
     if (dup.rows.length) throw new GsfGovernanceError('DUPLICATE_APPROVAL', 'approver already decided');
+
+    // Enforce required approvers (Ayub + Mariana) resolved from trusted records.
+    const required = r.required_approvers ? (typeof r.required_approvers === 'string' ? JSON.parse(r.required_approvers) : r.required_approvers) : null;
+    // Fail closed on missing/malformed/empty/duplicate/non-exact approver set
+    if (!Array.isArray(required) || required.length !== 2) {
+      throw new GsfGovernanceError('INVALID_REQUIRED_APPROVERS', 'required approvers must be an array of exactly two trusted identities');
+    }
+    const normalizedRequired = required.map(Number);
+    if (normalizedRequired.some((x) => !Number.isFinite(x)) || new Set(normalizedRequired).size !== 2) {
+      throw new GsfGovernanceError('INVALID_REQUIRED_APPROVERS', 'required approvers must be two distinct valid identities');
+    }
+    if (normalizedRequired.includes(NaN)) {
+      throw new GsfGovernanceError('INVALID_REQUIRED_APPROVERS', 'required approvers must be valid identities');
+    }
+    if (!normalizedRequired.includes(Number(approverId))) {
+      throw new GsfGovernanceError('APPROVER_NOT_AUTHORIZED', 'approver is not in the required approver set');
+    }
+
     await client.query('INSERT INTO gsf_ownership_change_approvals (request_id, approver_id, decision) VALUES ($1,$2,$3)', [requestId, approverId, 'APPROVED']);
-    // count distinct approvers
-    const cnt = await client.query("SELECT count(DISTINCT approver_id)::int AS n FROM gsf_ownership_change_approvals WHERE request_id=$1 AND decision='APPROVED'", [requestId]);
-    if (cnt.rows[0].n >= 2) {
+    const approvedIds = (await client.query("SELECT approver_id FROM gsf_ownership_change_approvals WHERE request_id=$1 AND decision='APPROVED'", [requestId])).rows.map((x) => Number(x.approver_id));
+
+    // All required approvers must have approved; no fallback to generic count
+    const allRequiredMet = normalizedRequired.every((id) => approvedIds.includes(id));
+
+    if (allRequiredMet) {
       await client.query("UPDATE gsf_ownership_change_requests SET status='APPROVED' WHERE id=$1", [requestId]);
-      // apply effect: revoke target owner
       if (r.change_type === 'REVOKE_OWNER') {
         await client.query("UPDATE gsf_institution_owners SET status='REVOKED', revoked_at=NOW() WHERE institution_id=$1 AND user_id=$2", [r.institution_id, r.target_user_id]);
       }
     }
+    // audit in same transaction
+    await client.query(
+      `INSERT INTO gsf_governance_audit_events (institution_id, actor_id, action, resource_type, resource_id, outcome) VALUES ($1,$2,$3,$4,$5,$6)`,
+      [r.institution_id, approverId, 'OWNERSHIP_CHANGE_APPROVED', 'ownership', requestId, 'APPROVED']
+    );
     await client.query('COMMIT');
-    await auditEvent(pool, { institutionId: r.institution_id, actorId: approverId, action: 'OWNERSHIP_CHANGE_APPROVED', resourceType: 'ownership', resourceId: requestId, outcome: 'APPROVED' });
-    return { requestId, approvers: cnt.rows[0].n, approved: cnt.rows[0].n >= 2 };
+    return { requestId, approvers: approvedIds.length, approved: allRequiredMet, approvedIds };
   } catch (e) {
     await client.query('ROLLBACK').catch(() => {});
     throw e;
@@ -269,9 +326,11 @@ async function governedCampaignStatusChange(pool, { actorId, institutionId, camp
       throw new GsfGovernanceError('CAMPAIGN_NOT_VERIFIED_BOUND', 'campaign not verified-bound to institution');
     }
     // lifecycle state validation + update
-    if (!socialFund.LIFECYCLE_STATES.includes(newStatus)) {
-      throw new GsfGovernanceError('INVALID_STATUS', 'invalid lifecycle status');
-    }
+    const caseRes = await client.query('SELECT status FROM social_fund_cases WHERE id=$1 FOR UPDATE', [campaignId]);
+    if (!caseRes.rows.length) throw new GsfGovernanceError('CASE_NOT_FOUND', 'case not found');
+    const currentStatus = caseRes.rows[0].status;
+    if (!LIFECYCLE_STATES.includes(newStatus)) throw new GsfGovernanceError('INVALID_STATUS', 'invalid lifecycle status');
+    if (!canTransition(currentStatus, newStatus)) throw new GsfGovernanceError('INVALID_TRANSITION', 'invalid lifecycle transition');
     await client.query('UPDATE social_fund_cases SET status=$1, updated_at=NOW() WHERE id=$2', [newStatus, campaignId]);
     // audit event in same transaction
     await client.query(
@@ -288,6 +347,18 @@ async function governedCampaignStatusChange(pool, { actorId, institutionId, camp
     client.release();
   }
 }
+async function designateCriticalApprover(pool, { institutionId, userId, designatedBy }) {
+  // Requires designatedBy to be a verified owner distinct from userId
+  const owner = await pool.query("SELECT 1 FROM gsf_institution_owners WHERE institution_id=$1 AND user_id=$2 AND status='VERIFIED'", [institutionId, designatedBy]);
+  if (!owner.rows.length) throw new GsfGovernanceError('NOT_VERIFIED_OWNER', 'designator must be a verified owner');
+  if (Number(designatedBy) === Number(userId)) throw new GsfGovernanceError('SELF_DESIGNATION_FORBIDDEN', 'cannot designate self');
+  const target = await pool.query("SELECT 1 FROM gsf_institution_owners WHERE institution_id=$1 AND user_id=$2 AND status='VERIFIED'", [institutionId, userId]);
+  if (!target.rows.length) throw new GsfGovernanceError('TARGET_NOT_VERIFIED', 'target must be a verified owner');
+  await pool.query('INSERT INTO gsf_critical_approvers (institution_id, user_id, designated_by) VALUES ($1,$2,$3) ON CONFLICT (institution_id,user_id) DO NOTHING', [institutionId, userId, designatedBy]);
+  await auditEvent(pool, { institutionId, actorId: designatedBy, action: 'CRITICAL_APPROVER_DESIGNATED', resourceType: 'owner', resourceId: String(userId), outcome: 'SUCCESS' });
+  return { institutionId, userId, designatedBy };
+}
+
 module.exports = {
   createPool,
   GsfGovernanceError,
@@ -309,6 +380,7 @@ module.exports = {
   submitInstitutionEvidence,
   reviewInstitution,
   escalateOwnershipChange,
+  designateCriticalApprover,
   createInstitutionService,
 };
 

@@ -530,10 +530,12 @@ async function requestPayout(caseId, adminId, recipientPhone, amount, idempotenc
 // authorized under the institution's role/permission structure."
 // Global ADMIN alone does NOT substitute for the required institution permission.
 async function hasCaseStatusPermission(client, userId, caseData) {
-  // 1. Initiator is always authorized (backward compatibility)
-  if (caseData.initiator_id === userId) return true;
-
-  // 2. Check explicit permission grant in social_fund_case_permissions table
+  // SF10-01: Institution-scoped authorization (not initiator-only, not global-ADMIN-only)
+  // Approved policy: "Campaign status changes may be made by any user explicitly
+  // authorized under the institution's role/permission structure."
+  // Global ADMIN alone does NOT substitute for the required institution permission.
+  // Initiator-only authorization is NOT permitted (OD-10 R1 remediation).
+  // 1. Check explicit permission grant in social_fund_case_permissions table
   //    (institution-scoped: user must have explicit grant for this specific case)
   try {
     const permRes = await client.query(
@@ -546,7 +548,7 @@ async function hasCaseStatusPermission(client, userId, caseData) {
     // Global ADMIN alone does not substitute for institution permission
   }
 
-  // 3. No global ADMIN bypass — institution permission required
+  // 2. No global ADMIN bypass — institution permission required
   return false;
 }
 

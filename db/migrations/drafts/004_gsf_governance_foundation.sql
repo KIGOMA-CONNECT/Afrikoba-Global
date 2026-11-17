@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS gsf_institution_owners (
   user_id INTEGER NOT NULL,
   status VARCHAR(32) NOT NULL DEFAULT 'UNVERIFIED'
     CHECK (status IN ('UNVERIFIED','VERIFIED','REVOKED')),
+  critical_approver BOOLEAN NOT NULL DEFAULT FALSE,
   verified_by INTEGER,
   added_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   revoked_at TIMESTAMPTZ,
@@ -52,9 +53,16 @@ CREATE TABLE IF NOT EXISTS gsf_governance_grants (
   PRIMARY KEY (institution_id, user_id, permission_code, granted_at)
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS uq_gsf_grant_active
-  ON gsf_governance_grants (institution_id, user_id, permission_code)
-  WHERE revoked_at IS NULL;
+CREATE TABLE IF NOT EXISTS gsf_critical_approvers (
+  institution_id UUID NOT NULL REFERENCES institutions(id) ON DELETE RESTRICT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  designated_by INTEGER,
+  designated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (institution_id, user_id)
+);
+
+-- At most 2 critical approvers per institution (enforced by trigger/application)
+CREATE INDEX IF NOT EXISTS idx_gsf_critical_approvers_inst ON gsf_critical_approvers (institution_id);
 
 CREATE TABLE IF NOT EXISTS gsf_ownership_change_requests (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -65,7 +73,8 @@ CREATE TABLE IF NOT EXISTS gsf_ownership_change_requests (
   status VARCHAR(32) NOT NULL DEFAULT 'PENDING'
     CHECK (status IN ('PENDING','APPROVED','REJECTED','EXPIRED','CANCELLED','ESCALATED')),
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  expires_at TIMESTAMPTZ
+  expires_at TIMESTAMPTZ,
+  required_approvers JSONB
 );
 
 CREATE TABLE IF NOT EXISTS gsf_ownership_change_approvals (

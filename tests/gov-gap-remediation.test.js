@@ -11,6 +11,16 @@ async function test(name, fn) {
 }
 
 async function main() {
+  const dbName = process.env.DB_NAME;
+  if (!dbName || !/^gsf_[a-z0-9_]+_test$/.test(dbName)) {
+    console.error('FATAL: DB_NAME must match ^gsf_[a-z0-9_]+_test$');
+    process.exit(1);
+  }
+  const vp = createPool({ host: '127.0.0.1', port: 55432, user: 'postgres', password: '', database: dbName });
+  const vr = await vp.query('SELECT version()');
+  if (!/^PostgreSQL 16\./.test(vr.rows[0].version)) { console.error('FATAL: PG16 required'); await vp.end(); process.exit(1); }
+  await vp.end();
+
   await pool.query('TRUNCATE gsf_governance_audit_events, gsf_campaign_institution_links, gsf_ownership_change_requests, gsf_ownership_change_approvals, gsf_governance_grants, gsf_governance_permissions, gsf_institution_owners, gsf_institution_members, gsf_institution_evidence, institutions, social_fund_cases CASCADE');
   await pool.query("INSERT INTO gsf_governance_permissions (code,description) VALUES ('GSF_CAMPAIGN_STATUS_CHANGE','x') ON CONFLICT (code) DO NOTHING");
   // seed a social_fund_case
@@ -24,10 +34,10 @@ async function main() {
   await bindCampaign(pool, { campaignId: 777, institutionId: inst.id, linkStatus: 'VERIFIED', evidence: 'doc', linkedBy: 1 });
 
   await test('GAP-1 atomic governed status transition', async () => {
-    const r = await governedCampaignStatusChange(pool, { actorId: 5, institutionId: inst.id, campaignId: 777, newStatus: 'IN_REVIEW', correlationId: 'c1' });
+    const r = await governedCampaignStatusChange(pool, { actorId: 5, institutionId: inst.id, campaignId: 777, newStatus: 'COLLECTING', correlationId: 'c1' });
     assert.strictEqual(r.updated, true);
     const c = await pool.query('SELECT status FROM social_fund_cases WHERE id=777');
-    assert.strictEqual(c.rows[0].status, 'IN_REVIEW');
+    assert.strictEqual(c.rows[0].status, 'COLLECTING');
     const a = await pool.query("SELECT count(*)::int AS n FROM gsf_governance_audit_events WHERE action='GSF_CAMPAIGN_STATUS_CHANGE'");
     assert.ok(a.rows[0].n > 0);
   });
@@ -38,7 +48,7 @@ async function main() {
     try { await governedCampaignStatusChange(pool, { actorId: 5, institutionId: '00000000-0000-0000-0000-000000000000', campaignId: 777, newStatus: 'X' }); } catch (e) { err = e; }
     assert.ok(err);
     const c = await pool.query('SELECT status FROM social_fund_cases WHERE id=777');
-    assert.strictEqual(c.rows[0].status, 'IN_REVIEW'); // unchanged
+    assert.strictEqual(c.rows[0].status, 'COLLECTING'); // unchanged
   });
 
   await test('GAP-3 hybrid evidence submission', async () => {

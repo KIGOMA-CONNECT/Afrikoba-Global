@@ -32,6 +32,7 @@ class InstitutionStore {
   constructor() {
     this.institutions = new Map();
     this.owners = new Map();          // institutionId -> Map(ownerId, owner)
+    this.criticalApprovers = new Map(); // institutionId -> Set(userId)
     this.resources = new Map();       // resourceId -> binding
     this.grants = new Map();          // `${institutionId}:${userId}` -> Set(permission)
     this.ownershipRequests = new Map();// requestId -> request
@@ -43,6 +44,9 @@ class InstitutionStore {
 
 class InstitutionDomain {
   constructor(store = new InstitutionStore()) {
+    if (process.env.NODE_ENV === 'production') {
+      throw new InstitutionDomainError('IN_MEMORY_NOT_ALLOWED', 'InstitutionDomain in-memory store is not allowed in production; use gsfGovernanceService (DB-backed).');
+    }
     this.store = store;
   }
 
@@ -104,14 +108,34 @@ class InstitutionDomain {
   }
 
   // --- Critical ownership change (four-eyes) ---
+  designateCriticalApprover({ institutionId, userId, designatedBy }) {
+    const inst = this.getInstitution(institutionId);
+    if (!inst) throw new InstitutionDomainError('INSTITUTION_NOT_FOUND', 'institution not found');
+    if (!this.isVerifiedOwner(institutionId, designatedBy)) throw new InstitutionDomainError('NOT_VERIFIED_OWNER', 'designator must be a verified owner');
+    if (!this.isVerifiedOwner(institutionId, userId)) throw new InstitutionDomainError('TARGET_NOT_VERIFIED', 'target must be a verified owner');
+    if (designatedBy === userId) throw new InstitutionDomainError('SELF_DESIGNATION_FORBIDDEN', 'cannot designate self');
+    if (!this.store.criticalApprovers.has(institutionId)) this.store.criticalApprovers.set(institutionId, new Set());
+    this.store.criticalApprovers.get(institutionId).add(userId);
+    this._audit('CRITICAL_APPROVER_DESIGNATED', { institutionId, actorId: designatedBy, resourceId: userId, outcome: 'SUCCESS' });
+    return { institutionId, userId, designatedBy };
+  }
+
   requestOwnershipChange({ institutionId, targetOwnerId, changeType, requestedBy }) {
     const inst = this.getInstitution(institutionId);
     if (!inst) throw new InstitutionDomainError('INSTITUTION_NOT_FOUND', 'institution not found');
     if (!this.isVerifiedOwner(institutionId, requestedBy)) {
       throw new InstitutionDomainError('NOT_VERIFIED_OWNER', 'requester must be a verified owner');
     }
+    const criticalSet = this.store.criticalApprovers.get(institutionId) || new Set();
+    const required = [...criticalSet];
+    if (required.length !== 2) {
+      throw new InstitutionDomainError('INSUFFICIENT_CRITICAL_APPROVERS', 'exactly two verified critical approvers are required');
+    }
+    if (required.includes(requestedBy)) {
+      throw new InstitutionDomainError('MAKER_CANNOT_BE_APPROVER', 'maker must be distinct from required approvers');
+    }
     const id = newId('ownreq');
-    const req = { id, institutionId, targetOwnerId, changeType, requestedBy, status: 'PENDING', createdAt: nowIso(), approvals: new Map() };
+    const req = { id, institutionId, targetOwnerId, changeType, requestedBy, status: 'PENDING', createdAt: nowIso(), approvals: new Map(), requiredApprovers: required };
     this.store.ownershipRequests.set(id, req);
     this._audit('OWNERSHIP_CHANGE_REQUESTED', { institutionId, actorId: requestedBy, resourceId: targetOwnerId, outcome: 'PENDING', ref: id });
     return req;
@@ -127,7 +151,9 @@ class InstitutionDomain {
     if (approverId === req.requestedBy) {
       throw new InstitutionDomainError('SELF_APPROVAL_FORBIDDEN', 'self-approval is forbidden for critical ownership changes');
     }
-    // duplicate approval guard
+    if (req.requiredApprovers && req.requiredApprovers.length > 0 && !req.requiredApprovers.includes(approverId)) {
+      throw new InstitutionDomainError('APPROVER_NOT_AUTHORIZED', 'approver is not in the required approver set');
+    }
     if (req.approvals.has(approverId)) {
       throw new InstitutionDomainError('DUPLICATE_APPROVAL', 'approver already decided');
     }
@@ -137,13 +163,19 @@ class InstitutionDomain {
       institutionId: req.institutionId, actorId: approverId, resourceId: req.targetOwnerId, outcome: dec, ref: requestId,
     });
 
-    // Check if two distinct approvers approved
-    const approvedCount = [...req.approvals.values()].filter((a) => a.decision === 'APPROVED').length;
+    const approvedIds = [...req.approvals.values()].filter((a) => a.decision === 'APPROVED').map((a) => a.approverId);
+    const required = Array.isArray(req.requiredApprovers) ? req.requiredApprovers.map(Number) : null;
+    if (!required || required.length !== 2 || new Set(required).size !== 2) {
+      throw new InstitutionDomainError('INVALID_REQUIRED_APPROVERS', 'required approvers must be exactly two distinct identities');
+    }
+    if (!required.includes(Number(approverId))) {
+      throw new InstitutionDomainError('APPROVER_NOT_AUTHORIZED', 'approver is not in the required approver set');
+    }
+    const allRequiredMet = required.every((id) => approvedIds.includes(id));
     if (dec === 'REJECTED') {
       req.status = 'REJECTED';
-    } else if (approvedCount >= 2) {
+    } else if (allRequiredMet) {
       req.status = 'APPROVED';
-      // apply effect: revoke target owner if changeType is revoke
       if (req.changeType === 'REVOKE_OWNER') {
         try { this.revokeOwner({ institutionId: req.institutionId, ownerId: req.targetOwnerId, revokedBy: 'four-eyes', reason: `request ${requestId}` }); } catch (e) { /* already revoked */ }
       }

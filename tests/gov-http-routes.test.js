@@ -5,7 +5,11 @@ const express = require('express');
 const jwt = require('jsonwebtoken');
 const { createPool } = require('../src/services/gsfGovernanceService');
 
-const DB = process.env.DB_NAME || 'gsf_gov_test';
+const DB = process.env.DB_NAME;
+if (!DB || !/^gsf_[a-z0-9_]+_test$/.test(DB)) {
+  console.error('FATAL: DB_NAME must match ^gsf_[a-z0-9_]+_test$');
+  process.exit(1);
+}
 const pool = createPool({ host: '127.0.0.1', port: 55432, user: 'postgres', password: '', database: DB });
 const config = require('../src/config');
 const JWT_SECRET = process.env.JWT_SECRET || config.security.jwtSecret;
@@ -29,6 +33,10 @@ async function t(name, fn) {
 function tokenFor(user) { return jwt.sign({ id: user.id, role: user.role, phone: user.phone_number || '0', av: user.auth_version || 0, jti: 'jti-' + user.id }, JWT_SECRET, { expiresIn: '1h' }); }
 
 async function main() {
+  const vp = createPool({ host: '127.0.0.1', port: 55432, user: 'postgres', password: '', database: DB });
+  const vr = await vp.query('SELECT version()');
+  if (!/^PostgreSQL 16\./.test(vr.rows[0].version)) { console.error('FATAL: PG16 required'); await vp.end(); process.exit(1); }
+  await vp.end();
   // clean
   await pool.query('TRUNCATE gsf_governance_audit_events, gsf_campaign_institution_links, gsf_ownership_change_requests, gsf_ownership_change_approvals, gsf_governance_grants, gsf_governance_permissions, gsf_institution_owners, gsf_institution_members, gsf_institution_evidence, institutions, social_fund_cases, users CASCADE');
   await pool.query("INSERT INTO gsf_governance_permissions (code,description) VALUES ('GSF_CAMPAIGN_STATUS_CHANGE','x') ON CONFLICT (code) DO NOTHING");
@@ -147,7 +155,7 @@ async function main() {
     await pool.query(`INSERT INTO social_fund_cases (id,initiator_id,context_type,case_type,beneficiary_name,title,target_amount,deadline,status) VALUES (2005,1,'GROUP','MEDICAL','B','T',100,NOW()+INTERVAL '1 day','OPEN')`);
     const res = await request(app).post('/api/social-fund/cases/2005/status').set('Authorization', 'Bearer ' + tok2).send({ new_status: 'COLLECTING' });
     // user 2 not initiator, no grant, no link -> legacy denies (403) or initiator path
-    assert.ok(res.status === 403 || res.status === 200);
+    assert.strictEqual(res.status, 403);
   });
 
   await t('HTTP-14 invalid transition on governed case -> 400/403', async () => {

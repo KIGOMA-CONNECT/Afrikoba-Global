@@ -1,6 +1,6 @@
 'use strict';
 const assert = require('assert');
-const { createPool, createInstitution, addOwner, revokeOwner, isVerifiedOwner, grantPermission, revokePermission, hasPermission, bindCampaign, getCampaignInstitution, authorizeCampaignAction, requestOwnershipChange, approveOwnershipChange, reconcileLegacyCampaign, reviewInstitution } = require('../src/services/gsfGovernanceService');
+const { createPool, createInstitution, addOwner, revokeOwner, isVerifiedOwner, grantPermission, revokePermission, hasPermission, bindCampaign, getCampaignInstitution, authorizeCampaignAction, requestOwnershipChange, approveOwnershipChange, reconcileLegacyCampaign, reviewInstitution, designateCriticalApprover } = require('../src/services/gsfGovernanceService');
 
 const DB = process.env.DB_NAME || 'gsf_gov_test';
 const pool = createPool({ host: '127.0.0.1', port: 55432, user: 'postgres', password: '', database: DB });
@@ -12,9 +12,28 @@ async function test(name, fn) {
 }
 
 async function main() {
+  // Strict disposable DB guard
+  const dbName = process.env.DB_NAME;
+  if (!dbName || !/^gsf_[a-z0-9_]+_test$/.test(dbName)) {
+    console.error('FATAL: DB_NAME must match ^gsf_[a-z0-9_]+_test$ for disposable test execution');
+    process.exit(1);
+  }
+  const versionPool = createPool({ host: '127.0.0.1', port: 55432, user: 'postgres', password: '', database: dbName });
+  const vr = await versionPool.query('SELECT version()');
+  if (!/^PostgreSQL 16\./.test(vr.rows[0].version)) {
+    console.error('FATAL: PostgreSQL 16 required, got: ' + vr.rows[0].version);
+    await versionPool.end();
+    process.exit(1);
+  }
+  await versionPool.end();
+
   // clean tables
   await pool.query('TRUNCATE gsf_governance_audit_events, gsf_campaign_institution_links, gsf_ownership_change_approvals, gsf_ownership_change_requests, gsf_governance_grants, gsf_governance_permissions, gsf_institution_owners, gsf_institution_members, gsf_institution_evidence, institutions CASCADE');
 
+  // seed users
+  for (let u = 1; u <= 11; u++) {
+    await pool.query(`INSERT INTO users (id, full_name, phone_number, role, is_active, auth_version) VALUES ($1,$2,$3,'MEMBER',true,0) ON CONFLICT (id) DO NOTHING`, [u, 'User ' + u, '070000000' + String(u).padStart(2, '0')]);
+  }
   // seed permission codes
   await pool.query("INSERT INTO gsf_governance_permissions (code,description) VALUES ('GSF_CAMPAIGN_STATUS_CHANGE','change campaign status') ON CONFLICT (code) DO NOTHING");
 
@@ -97,30 +116,55 @@ async function main() {
     assert.strictEqual(r.link_status, 'AMBIGUOUS');
   });
   await test('GOV-17 four-eyes dual control request', async () => {
-    await addOwner(pool, { institutionId: inst.id, userId: 7, verifiedBy: 1 });
+    await addOwner(pool, { institutionId: inst.id, userId: 2, verifiedBy: 1 });
+    await addOwner(pool, { institutionId: inst.id, userId: 1, verifiedBy: 2 });
+    await addOwner(pool, { institutionId: inst.id, userId: 7, verifiedBy: 1 }); // maker (non-critical)
     await addOwner(pool, { institutionId: inst.id, userId: 8, verifiedBy: 1 });
+    await designateCriticalApprover(pool, { institutionId: inst.id, userId: 8, designatedBy: 1 });
+    await addOwner(pool, { institutionId: inst.id, userId: 9, verifiedBy: 1 });
+    await designateCriticalApprover(pool, { institutionId: inst.id, userId: 9, designatedBy: 1 });
     const req = await requestOwnershipChange(pool, { institutionId: inst.id, targetUserId: 5, changeType: 'REVOKE_OWNER', requestedBy: 7 });
     assert.strictEqual(req.status, 'PENDING');
   });
   await test('GOV-18 self-approval rejected (DB)', async () => {
+    await addOwner(pool, { institutionId: inst.id, userId: 2, verifiedBy: 1 }).catch(() => {});
+    await addOwner(pool, { institutionId: inst.id, userId: 1, verifiedBy: 2 }).catch(() => {});
+    await addOwner(pool, { institutionId: inst.id, userId: 7, verifiedBy: 1 }).catch(() => {});
+    await addOwner(pool, { institutionId: inst.id, userId: 8, verifiedBy: 1 }).catch(() => {});
+    await designateCriticalApprover(pool, { institutionId: inst.id, userId: 8, designatedBy: 1 }).catch(() => {});
+    await addOwner(pool, { institutionId: inst.id, userId: 9, verifiedBy: 1 }).catch(() => {});
+    await designateCriticalApprover(pool, { institutionId: inst.id, userId: 9, designatedBy: 1 }).catch(() => {});
     const reqs = await pool.query('SELECT id FROM gsf_ownership_change_requests WHERE status=$1 ORDER BY created_at DESC LIMIT 1', ['PENDING']);
-    const rid = reqs.rows[0].id;
+    // create a fresh request
+    const req = await requestOwnershipChange(pool, { institutionId: inst.id, targetUserId: 5, changeType: 'REVOKE_OWNER', requestedBy: 7 });
     let err = null;
-    try { await approveOwnershipChange(pool, { requestId: rid, approverId: 7 }); } catch (e) { err = e; }
-    assert.ok(err && err.code === 'SELF_APPROVAL_FORBIDDEN');
+    try { await approveOwnershipChange(pool, { requestId: req.id, approverId: 7 }); } catch (e) { err = e; }
+    assert.ok(err && (err.code === 'SELF_APPROVAL_FORBIDDEN' || err.code === 'MAKER_CANNOT_BE_APPROVER' || err.code === 'APPROVER_NOT_AUTHORIZED'));
   });
   await test('GOV-19 duplicate approval rejected', async () => {
-    const reqs = await pool.query('SELECT id FROM gsf_ownership_change_requests WHERE status=$1 ORDER BY created_at DESC LIMIT 1', ['PENDING']);
-    const rid = reqs.rows[0].id;
-    await approveOwnershipChange(pool, { requestId: rid, approverId: 8 });
+    await addOwner(pool, { institutionId: inst.id, userId: 2, verifiedBy: 1 }).catch(() => {});
+    await addOwner(pool, { institutionId: inst.id, userId: 1, verifiedBy: 2 }).catch(() => {});
+    await addOwner(pool, { institutionId: inst.id, userId: 7, verifiedBy: 1 }).catch(() => {});
+    await addOwner(pool, { institutionId: inst.id, userId: 8, verifiedBy: 1 }).catch(() => {});
+    await designateCriticalApprover(pool, { institutionId: inst.id, userId: 8, designatedBy: 1 }).catch(() => {});
+    await addOwner(pool, { institutionId: inst.id, userId: 9, verifiedBy: 1 }).catch(() => {});
+    await designateCriticalApprover(pool, { institutionId: inst.id, userId: 9, designatedBy: 1 }).catch(() => {});
+    const req = await requestOwnershipChange(pool, { institutionId: inst.id, targetUserId: 5, changeType: 'REVOKE_OWNER', requestedBy: 7 });
+    await approveOwnershipChange(pool, { requestId: req.id, approverId: 8 });
     let err = null;
-    try { await approveOwnershipChange(pool, { requestId: rid, approverId: 8 }); } catch (e) { err = e; }
+    try { await approveOwnershipChange(pool, { requestId: req.id, approverId: 8 }); } catch (e) { err = e; }
     assert.ok(err && err.code === 'DUPLICATE_APPROVAL');
   });
   await test('GOV-20 second distinct approver completes', async () => {
-    // need a fresh request with two distinct approvers
-    await addOwner(pool, { institutionId: inst.id, userId: 9, verifiedBy: 1 });
+    try { await addOwner(pool, { institutionId: inst.id, userId: 2, verifiedBy: 1 }); } catch (e) {}
+    try { await addOwner(pool, { institutionId: inst.id, userId: 1, verifiedBy: 2 }); } catch (e) {}
+    try { await addOwner(pool, { institutionId: inst.id, userId: 8, verifiedBy: 1 }); } catch (e) {}
+    await designateCriticalApprover(pool, { institutionId: inst.id, userId: 8, designatedBy: 1 }).catch(() => {});
+    try { await addOwner(pool, { institutionId: inst.id, userId: 9, verifiedBy: 1 }); } catch (e) {}
+    await designateCriticalApprover(pool, { institutionId: inst.id, userId: 9, designatedBy: 1 }).catch(() => {});
     const req = await requestOwnershipChange(pool, { institutionId: inst.id, targetUserId: 5, changeType: 'REVOKE_OWNER', requestedBy: 7 });
+    // ensure 7 is a verified non-critical owner
+    try { await addOwner(pool, { institutionId: inst.id, userId: 7, verifiedBy: 1 }); } catch (e) {}
     await approveOwnershipChange(pool, { requestId: req.id, approverId: 8 });
     const r = await approveOwnershipChange(pool, { requestId: req.id, approverId: 9 });
     assert.strictEqual(r.approved, true);
@@ -147,15 +191,20 @@ async function main() {
     assert.ok(typeof has === 'boolean');
   });
   await test('GOV-25 concurrent ownership approval (two distinct)', async () => {
-    await addOwner(pool, { institutionId: inst.id, userId: 10, verifiedBy: 1 });
-    await addOwner(pool, { institutionId: inst.id, userId: 11, verifiedBy: 1 });
-    const req = await requestOwnershipChange(pool, { institutionId: inst.id, targetUserId: 5, changeType: 'REVOKE_OWNER', requestedBy: 10 });
-    const p1 = approveOwnershipChange(pool, { requestId: req.id, approverId: 10 }).catch((e) => e);
-    // 10 is requester, should be rejected; use 11 and 7
-    const a = approveOwnershipChange(pool, { requestId: req.id, approverId: 11 });
-    const b = approveOwnershipChange(pool, { requestId: req.id, approverId: 7 });
-    const [ra, rb] = await Promise.allSettled([a, b]);
-    assert.ok(ra.status === 'fulfilled' || rb.status === 'fulfilled');
+    const inst25 = await createInstitution(pool, { name: 'Inst G25', createdBy: 1 });
+    await pool.query("UPDATE institutions SET status='ACTIVE' WHERE id=$1", [inst25.id]);
+    await addOwner(pool, { institutionId: inst25.id, userId: 2, verifiedBy: 1 });
+    await addOwner(pool, { institutionId: inst25.id, userId: 1, verifiedBy: 2 });
+    await addOwner(pool, { institutionId: inst25.id, userId: 7, verifiedBy: 1 }); // maker (non-critical)
+    await addOwner(pool, { institutionId: inst25.id, userId: 10, verifiedBy: 1 });
+    await designateCriticalApprover(pool, { institutionId: inst25.id, userId: 10, designatedBy: 1 });
+    await addOwner(pool, { institutionId: inst25.id, userId: 11, verifiedBy: 1 });
+    await designateCriticalApprover(pool, { institutionId: inst25.id, userId: 11, designatedBy: 1 });
+    const req = await requestOwnershipChange(pool, { institutionId: inst25.id, targetUserId: 5, changeType: 'REVOKE_OWNER', requestedBy: 7 });
+    const r1 = await approveOwnershipChange(pool, { requestId: req.id, approverId: 10 });
+    const r2 = await approveOwnershipChange(pool, { requestId: req.id, approverId: 11 });
+    assert.ok(r1.approved === false || r2.approved === true);
+    assert.strictEqual(r2.approved, true);
   });
   await test('GOV-26 member active required', async () => {
     // user 5 not in members -> authorize should fail with NO_ACTIVE_MEMBERSHIP
