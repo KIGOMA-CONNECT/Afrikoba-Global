@@ -40,6 +40,7 @@ jobs:
       DB_USER: postgres
       DB_PASSWORD: postgres
       DB_NAME: phase68_amount_guard_ci
+      PHASE68_TEST_DB: phase68_amount_guard_ci
       WEBHOOK_SECRET: ci-test-webhook-secret
       USSD_SECRET: ci-ussd-secret
     steps:
