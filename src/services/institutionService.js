@@ -3,13 +3,10 @@
 /**
  * OD-08 Phase 1 — Institutional domain foundation.
  *
- * This module establishes the institutional domain model, ownership, four-eyes
- * critical ownership changes, resource-to-institution binding, institution-scoped
- * authorization, explicit role/permission grants, and auditability — WITHOUT
- * executing Migration 155 or modifying OD-10.
- *
- * No database schema changes are made here. State is held in an injectable
- * store so the domain can be exercised and tested without touching the ledger.
+ * NOTE (GAP-5): This in-memory domain remains for backward compatibility and
+ * unit testing. Production/institution persistence should resolve through
+ * src/services/gsfGovernanceService.js (PostgreSQL-backed). New code should
+ * prefer gsfGovernanceService / createInstitutionService(pool).
  */
 
 const crypto = require('crypto');

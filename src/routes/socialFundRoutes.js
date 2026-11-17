@@ -26,11 +26,36 @@ router.get('/cases/:id', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+const gsfGov = require('../services/gsfGovernanceService');
+const gsfPool = gsfGov.createPool();
+
 router.post('/cases/:id/status', async (req, res, next) => {
   try {
     const { new_status, reason } = req.body;
-    const result = await socialFund.changeCaseStatus(parseInt(req.params.id, 10), req.user.id, new_status, reason);
-    res.json({ success: true, ...result });
+    const caseId = parseInt(req.params.id, 10);
+    // GAP-2: institution-scoped governance enforcement when a verified link exists
+    let governed = false;
+    try {
+      const link = await gsfGov.getCampaignInstitution(gsfPool, caseId);
+      if (link && link.link_status === 'VERIFIED' && link.institution_id) {
+        await gsfGov.governedCampaignStatusChange(gsfPool, {
+          actorId: req.user.id,
+          institutionId: link.institution_id,
+          campaignId: caseId,
+          newStatus: new_status,
+          correlationId: req.headers['x-correlation-id'] || null,
+        });
+        governed = true;
+      }
+    } catch (govErr) {
+      // fail closed: if governance link exists, do not fall through
+      if (govErr && govErr.code) { throw govErr; }
+    }
+    if (!governed) {
+      const result = await socialFund.changeCaseStatus(caseId, req.user.id, new_status, reason);
+      return res.json({ success: true, ...result });
+    }
+    res.json({ success: true, governed: true });
   } catch (err) { next(err); }
 });
 
