@@ -26,11 +26,11 @@ jobs:
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: afrikoba_global
+          POSTGRES_DB: phase68_amount_guard_ci
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U postgres -d afrikoba_global"
+          --health-cmd "pg_isready -U postgres -d phase68_amount_guard_ci"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
@@ -39,7 +39,7 @@ jobs:
       DB_PORT: 5432
       DB_USER: postgres
       DB_PASSWORD: postgres
-      DB_NAME: afrikoba_global
+      DB_NAME: phase68_amount_guard_ci
       WEBHOOK_SECRET: ci-test-webhook-secret
       USSD_SECRET: ci-ussd-secret
     steps:
@@ -85,7 +85,7 @@ jobs:
 
       - name: Run Phase 68 dedicated tests
         env:
-          PHASE68_TEST_DB: afrikoba_global
+          PHASE68_TEST_DB: phase68_amount_guard_ci
         run: |
           node tests/test-trigger.js
           node tests/test-merchant-all.js
