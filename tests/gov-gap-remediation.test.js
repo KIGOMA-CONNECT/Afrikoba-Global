@@ -11,12 +11,13 @@ async function test(name, fn) {
 }
 
 async function main() {
-  await pool.query('TRUNCATE gsf_governance_audit_events, gsf_campaign_institution_links, gsf_ownership_change_requests, gsf_ownership_change_approvals, gsf_governance_grants, gsf_governance_permissions, gsf_institution_owners, gsf_institution_members, gsf_institution_evidence, gsf_institutions, social_fund_cases CASCADE');
+  await pool.query('TRUNCATE gsf_governance_audit_events, gsf_campaign_institution_links, gsf_ownership_change_requests, gsf_ownership_change_approvals, gsf_governance_grants, gsf_governance_permissions, gsf_institution_owners, gsf_institution_members, gsf_institution_evidence, institutions, social_fund_cases CASCADE');
   await pool.query("INSERT INTO gsf_governance_permissions (code,description) VALUES ('GSF_CAMPAIGN_STATUS_CHANGE','x') ON CONFLICT (code) DO NOTHING");
   // seed a social_fund_case
   await pool.query(`INSERT INTO social_fund_cases (id,initiator_id,context_type,case_type,beneficiary_name,title,target_amount,deadline,status) VALUES (777,1,'GROUP','MEDICAL','B','T',100,NOW()+INTERVAL '1 day','OPEN')`);
 
   const inst = await createInstitution(pool, { name: 'Inst G', createdBy: 1 });
+  await reviewInstitution(pool, { institutionId: inst.id, reviewerId: 2, decision: 'APPROVE' });
   await pool.query('INSERT INTO gsf_institution_members (institution_id,user_id,membership_status) VALUES ($1,5,$2)', [inst.id,'ACTIVE']);
   await addOwner(pool, { institutionId: inst.id, userId: 5, verifiedBy: 1 });
   await grantPermission(pool, { institutionId: inst.id, userId: 5, permissionCode: 'GSF_CAMPAIGN_STATUS_CHANGE', grantedBy: 1 });
@@ -43,7 +44,7 @@ async function main() {
   await test('GAP-3 hybrid evidence submission', async () => {
     const ev = await submitInstitutionEvidence(pool, { institutionId: inst.id, evidenceType: 'doc', evidenceRef: 'ref1', submittedBy: 5 });
     assert.ok(ev && ev.id);
-    const instRow = await pool.query('SELECT status FROM gsf_institutions WHERE id=$1', [inst.id]);
+    const instRow = await pool.query('SELECT status FROM institutions WHERE id=$1', [inst.id]);
     assert.strictEqual(instRow.rows[0].status, 'PENDING');
   });
 

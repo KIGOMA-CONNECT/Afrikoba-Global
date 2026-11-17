@@ -241,7 +241,7 @@ async function run() {
     assert.strictEqual(result.ok, true, JSON.stringify(result.violations));
     const files = listMigrationFiles(MIGRATIONS_DIR);
     assert.strictEqual(result.fileCount, files.length);
-    assert.strictEqual(result.fileCount, 163);
+    assert.strictEqual(result.fileCount, 164);
     assert.strictEqual(result.manifest.fileCount, files.length);
   });
 

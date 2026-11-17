@@ -9,14 +9,18 @@
  */
 
 const { Pool } = require('pg');
+const socialFund = require('./socialFundService');
 
 function createPool(config) {
-  return new Pool(config || {
+  if (config) return new Pool(config);
+  const db = process.env.DB_NAME || process.env.PGDATABASE;
+  if (!db) throw new Error('DB_NAME (or PGDATABASE) is required for GSF governance service');
+  return new Pool({
     host: process.env.DB_HOST || '127.0.0.1',
     port: Number(process.env.DB_PORT || 55432),
     user: process.env.DB_USER || 'postgres',
     password: process.env.DB_PASSWORD || '',
-    database: process.env.DB_NAME || 'phase68_amount_guard_mtc04',
+    database: db,
   });
 }
 
@@ -39,7 +43,7 @@ async function auditEvent(pool, { institutionId, actorId, action, resourceType, 
 async function createInstitution(pool, { name, createdBy }) {
   if (!name) throw new GsfGovernanceError('INSTITUTION_INVALID', 'name required');
   const r = await pool.query(
-    `INSERT INTO gsf_institutions (name, created_by) VALUES ($1,$2) RETURNING *`,
+    `INSERT INTO institutions (name, created_by) VALUES ($1,$2) RETURNING *`,
     [name, createdBy || null]
   );
   await auditEvent(pool, { institutionId: r.rows[0].id, actorId: createdBy, action: 'INSTITUTION_CREATED', resourceType: 'institution', resourceId: r.rows[0].id, outcome: 'SUCCESS' });
@@ -73,20 +77,46 @@ async function isVerifiedOwner(pool, institutionId, userId) {
 }
 
 async function grantPermission(pool, { institutionId, userId, permissionCode, grantedBy }) {
-  const r = await pool.query(
-    `INSERT INTO gsf_governance_grants (institution_id, user_id, permission_code, granted_by) VALUES ($1,$2,$3,$4) RETURNING *`,
-    [institutionId, userId, permissionCode, grantedBy || null]
-  );
-  await auditEvent(pool, { institutionId, actorId: grantedBy, action: 'ROLE_GRANTED', resourceType: 'permission', resourceId: String(userId), outcome: 'SUCCESS', details: { permissionCode } });
-  return r.rows[0];
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const r = await client.query(
+      `INSERT INTO gsf_governance_grants (institution_id, user_id, permission_code, granted_by) VALUES ($1,$2,$3,$4) RETURNING *`,
+      [institutionId, userId, permissionCode, grantedBy || null]
+    );
+    await client.query(
+      `INSERT INTO gsf_governance_audit_events (institution_id, actor_id, action, resource_type, resource_id, outcome, details) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+      [institutionId, grantedBy || null, 'ROLE_GRANTED', 'permission', String(userId), 'SUCCESS', JSON.stringify({ permissionCode })]
+    );
+    await client.query('COMMIT');
+    return r.rows[0];
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
 }
 
 async function revokePermission(pool, { institutionId, userId, permissionCode, revokedBy }) {
-  await pool.query(
-    `UPDATE gsf_governance_grants SET revoked_at=NOW(), revoked_by=$1 WHERE institution_id=$2 AND user_id=$3 AND permission_code=$4 AND revoked_at IS NULL`,
-    [revokedBy || null, institutionId, userId, permissionCode]
-  );
-  await auditEvent(pool, { institutionId, actorId: revokedBy, action: 'ROLE_REVOKED', resourceType: 'permission', resourceId: String(userId), outcome: 'SUCCESS', details: { permissionCode } });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(
+      `UPDATE gsf_governance_grants SET revoked_at=NOW(), revoked_by=$1 WHERE institution_id=$2 AND user_id=$3 AND permission_code=$4 AND revoked_at IS NULL`,
+      [revokedBy || null, institutionId, userId, permissionCode]
+    );
+    await client.query(
+      `INSERT INTO gsf_governance_audit_events (institution_id, actor_id, action, resource_type, resource_id, outcome, details) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+      [institutionId, revokedBy || null, 'ROLE_REVOKED', 'permission', String(userId), 'SUCCESS', JSON.stringify({ permissionCode })]
+    );
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
 }
 
 async function hasPermission(pool, institutionId, userId, permissionCode) {
@@ -122,7 +152,7 @@ async function authorizeCampaignAction(pool, { actorId, institutionId, permissio
   const mem = await pool.query("SELECT 1 FROM gsf_institution_members WHERE institution_id=$1 AND user_id=$2 AND membership_status='ACTIVE'", [institutionId, actorId]);
   if (!mem.rows.length) return { allowed: false, reason: 'NO_ACTIVE_MEMBERSHIP' };
   // 2. verified institution
-  const inst = await pool.query("SELECT 1 FROM gsf_institutions WHERE id=$1 AND status IN ('ACTIVE','PENDING')", [institutionId]);
+  const inst = await pool.query("SELECT 1 FROM institutions WHERE id=$1 AND status='ACTIVE'", [institutionId]);
   if (!inst.rows.length) return { allowed: false, reason: 'INSTITUTION_NOT_ACTIVE' };
   // 3. explicit active permission grant
   const has = await hasPermission(pool, institutionId, actorId, permissionCode);
@@ -195,15 +225,28 @@ async function approveOwnershipChange(pool, { requestId, approverId }) {
 
 async function reconcileLegacyCampaign(pool, { campaignId, institutionId, status, evidence, linkedBy }) {
   const s = ['VERIFIED','UNRESOLVED','INTENTIONALLY_UNBOUND','AMBIGUOUS'].includes(status) ? status : 'UNRESOLVED';
-  const r = await pool.query(
-    `INSERT INTO gsf_campaign_institution_links (campaign_id, institution_id, link_status, evidence, linked_by)
-     VALUES ($1,$2,$3,$4,$5)
-     ON CONFLICT (campaign_id) DO UPDATE SET institution_id=EXCLUDED.institution_id, link_status=EXCLUDED.link_status, evidence=EXCLUDED.evidence, linked_by=EXCLUDED.linked_by, linked_at=NOW()
-     RETURNING *`,
-    [campaignId, institutionId, s, evidence || null, linkedBy || null]
-  );
-  await auditEvent(pool, { institutionId, actorId: linkedBy, action: 'LEGACY_RECONCILIATION', resourceType: 'campaign', resourceId: String(campaignId), outcome: s });
-  return r.rows[0];
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const r = await client.query(
+      `INSERT INTO gsf_campaign_institution_links (campaign_id, institution_id, link_status, evidence, linked_by)
+       VALUES ($1,$2,$3,$4,$5)
+       ON CONFLICT (campaign_id) DO UPDATE SET institution_id=EXCLUDED.institution_id, link_status=EXCLUDED.link_status, evidence=EXCLUDED.evidence, linked_by=EXCLUDED.linked_by, linked_at=NOW()
+       RETURNING *`,
+      [campaignId, institutionId, s, evidence || null, linkedBy || null]
+    );
+    await client.query(
+      `INSERT INTO gsf_governance_audit_events (institution_id, actor_id, action, resource_type, resource_id, outcome, details) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+      [institutionId, linkedBy || null, 'LEGACY_RECONCILIATION', 'campaign', String(campaignId), s, JSON.stringify({ evidence })]
+    );
+    await client.query('COMMIT');
+    return r.rows[0];
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
 }
 
 // Atomic campaign status transition with governance audit (GAP-1)
@@ -215,7 +258,7 @@ async function governedCampaignStatusChange(pool, { actorId, institutionId, camp
     const mem = await client.query("SELECT 1 FROM gsf_institution_members WHERE institution_id=$1 AND user_id=$2 AND membership_status='ACTIVE' FOR UPDATE", [institutionId, actorId]);
     if (!mem.rows.length) throw new GsfGovernanceError('NO_ACTIVE_MEMBERSHIP', 'no active membership');
     // verified institution
-    const inst = await client.query("SELECT 1 FROM gsf_institutions WHERE id=$1 AND status IN ('ACTIVE','PENDING')", [institutionId]);
+    const inst = await client.query("SELECT 1 FROM institutions WHERE id=$1 AND status='ACTIVE'", [institutionId]);
     if (!inst.rows.length) throw new GsfGovernanceError('INSTITUTION_NOT_ACTIVE', 'institution not active');
     // explicit permission
     const perm = await client.query('SELECT 1 FROM gsf_governance_grants WHERE institution_id=$1 AND user_id=$2 AND permission_code=$3 AND revoked_at IS NULL', [institutionId, actorId, 'GSF_CAMPAIGN_STATUS_CHANGE']);
@@ -226,6 +269,9 @@ async function governedCampaignStatusChange(pool, { actorId, institutionId, camp
       throw new GsfGovernanceError('CAMPAIGN_NOT_VERIFIED_BOUND', 'campaign not verified-bound to institution');
     }
     // lifecycle state validation + update
+    if (!socialFund.LIFECYCLE_STATES.includes(newStatus)) {
+      throw new GsfGovernanceError('INVALID_STATUS', 'invalid lifecycle status');
+    }
     await client.query('UPDATE social_fund_cases SET status=$1, updated_at=NOW() WHERE id=$2', [newStatus, campaignId]);
     // audit event in same transaction
     await client.query(
@@ -269,24 +315,51 @@ module.exports = {
 // --- GAP remediation functions ---
 
 async function submitInstitutionEvidence(pool, { institutionId, evidenceType, evidenceRef, submittedBy }) {
-  const r = await pool.query(
-    `INSERT INTO gsf_institution_evidence (institution_id, evidence_type, evidence_ref, submitted_by) VALUES ($1,$2,$3,$4) RETURNING *`,
-    [institutionId, evidenceType, evidenceRef, submittedBy || null]
-  );
-  await pool.query("UPDATE gsf_institutions SET status='PENDING' WHERE id=$1", [institutionId]);
-  await auditEvent(pool, { institutionId, actorId: submittedBy, action: 'EVIDENCE_SUBMITTED', resourceType: 'institution', resourceId: institutionId, outcome: 'PENDING_REVIEW' });
-  return r.rows[0];
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const r = await client.query(
+      `INSERT INTO gsf_institution_evidence (institution_id, evidence_type, evidence_ref, submitted_by) VALUES ($1,$2,$3,$4) RETURNING *`,
+      [institutionId, evidenceType, evidenceRef, submittedBy || null]
+    );
+    await client.query("UPDATE institutions SET status='PENDING' WHERE id=$1", [institutionId]);
+    await client.query(
+      `INSERT INTO gsf_governance_audit_events (institution_id, actor_id, action, resource_type, resource_id, outcome) VALUES ($1,$2,$3,$4,$5,$6)`,
+      [institutionId, submittedBy || null, 'EVIDENCE_SUBMITTED', 'institution', institutionId, 'PENDING_REVIEW']
+    );
+    await client.query('COMMIT');
+    return r.rows[0];
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
 }
 
 async function reviewInstitution(pool, { institutionId, reviewerId, decision, note }) {
-  await pool.query('UPDATE gsf_institution_evidence SET verified_by=$1, verified_at=NOW() WHERE institution_id=$2 AND verified_by IS NULL', [reviewerId, institutionId]);
-  const status = decision === 'APPROVE' ? 'ACTIVE' : 'SUSPENDED';
-  await pool.query('UPDATE gsf_institutions SET status=$1, updated_at=NOW() WHERE id=$2', [status, institutionId]);
-  await auditEvent(pool, { institutionId, actorId: reviewerId, action: 'INSTITUTION_REVIEWED', resourceType: 'institution', resourceId: institutionId, outcome: decision, details: { note } });
-  return { institutionId, decision, status };
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('UPDATE gsf_institution_evidence SET verified_by=$1, verified_at=NOW() WHERE institution_id=$2 AND verified_by IS NULL', [reviewerId, institutionId]);
+    const status = decision === 'APPROVE' ? 'ACTIVE' : 'SUSPENDED';
+    await client.query('UPDATE institutions SET status=$1, updated_at=NOW() WHERE id=$2', [status, institutionId]);
+    await client.query(
+      `INSERT INTO gsf_governance_audit_events (institution_id, actor_id, action, resource_type, resource_id, outcome, details) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+      [institutionId, reviewerId, 'INSTITUTION_REVIEWED', 'institution', institutionId, decision, JSON.stringify({ note })]
+    );
+    await client.query('COMMIT');
+    return { institutionId, decision, status };
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
 }
 
 async function escalateOwnershipChange(pool, { requestId, escalatedBy, reason }) {
+  await pool.query("UPDATE gsf_ownership_change_requests SET status='ESCALATED' WHERE id=$1", [requestId]);
   await auditEvent(pool, { institutionId: null, actorId: escalatedBy, action: 'OWNERSHIP_CHANGE_ESCALATED', resourceType: 'ownership', resourceId: requestId, outcome: 'ESCALATED', details: { reason } });
   return { requestId, escalated: true, reason };
 }

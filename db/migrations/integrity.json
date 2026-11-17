@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "algorithm": "sha256",
   "canonicalization": "utf8-lf-no-bom",
-  "generatedAt": "2026-11-17T06:55:44.083Z",
+  "generatedAt": "2026-11-17T09:41:54.509Z",
   "generatedBy": "MTC-30-G3",
-  "fileCount": 163,
-  "rootHash": "6f31f1d77e1e47f97a4340d5c38ba5a0b11a2d256293e6f52e75fade6c1bc79a",
+  "fileCount": 164,
+  "rootHash": "4e9ccd35906bd33236218fd7badff009a36cc3f0d1515fa3d0053950606dc3a0",
   "files": {
     "001_services_and_invites.sql": {
       "sha256": "a32c9db9aaafca4d83df8d31ad4095562bfc202b0f9fb0eef453c044b81726eb",
@@ -658,11 +658,15 @@
     "158_institution_fk_hardening.sql": {
       "sha256": "ad1f0e11fbdf563e894a784cec748beebd15301270931f12018cf74b0fa2f0bc",
       "bytes": 1393
+    },
+    "159_gsf_governance_foundation.sql": {
+      "sha256": "b4bdcdb7cc8e0cb6a31286e9ded2dc3c4eae6067ef146ae2952dc21b9ffb6c46",
+      "bytes": 3962
     }
   },
   "authorization": {
     "file": "authorization.json",
-    "sha256": "5e5ced50116f5e76f01de1c39c8851461fc13d8463a044d47fff9fc105127c5b",
-    "bytes": 2826
+    "sha256": "f5e50ffb982f2962a226253c49225abb4f6b56b86009c4688ee8c63ef38ee102",
+    "bytes": 2914
   }
 }

@@ -33,11 +33,13 @@ router.post('/cases/:id/status', async (req, res, next) => {
   try {
     const { new_status, reason } = req.body;
     const caseId = parseInt(req.params.id, 10);
-    // GAP-2: institution-scoped governance enforcement when a verified link exists
+    // WP-02: if an institution link exists, governance is mandatory (fail closed); no legacy fallback
     let governed = false;
-    try {
-      const link = await gsfGov.getCampaignInstitution(gsfPool, caseId);
-      if (link && link.link_status === 'VERIFIED' && link.institution_id) {
+    let link = null;
+    try { link = await gsfGov.getCampaignInstitution(gsfPool, caseId); } catch (e) { link = null; }
+    if (link) {
+      // any link (including UNRESOLVED/AMBIGUOUS) -> governed path; fail closed on any error
+      try {
         await gsfGov.governedCampaignStatusChange(gsfPool, {
           actorId: req.user.id,
           institutionId: link.institution_id,
@@ -46,10 +48,9 @@ router.post('/cases/:id/status', async (req, res, next) => {
           correlationId: req.headers['x-correlation-id'] || null,
         });
         governed = true;
+      } catch (govErr) {
+        return res.status(403).json({ success: false, code: govErr.code || 'GOVERNANCE_DENIED', message: govErr.message });
       }
-    } catch (govErr) {
-      // fail closed: if governance link exists, do not fall through
-      if (govErr && govErr.code) { throw govErr; }
     }
     if (!governed) {
       const result = await socialFund.changeCaseStatus(caseId, req.user.id, new_status, reason);

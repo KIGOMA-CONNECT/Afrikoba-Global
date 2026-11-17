@@ -1,6 +1,6 @@
 'use strict';
 const assert = require('assert');
-const { createPool, createInstitution, addOwner, revokeOwner, isVerifiedOwner, grantPermission, revokePermission, hasPermission, bindCampaign, getCampaignInstitution, authorizeCampaignAction, requestOwnershipChange, approveOwnershipChange, reconcileLegacyCampaign } = require('../src/services/gsfGovernanceService');
+const { createPool, createInstitution, addOwner, revokeOwner, isVerifiedOwner, grantPermission, revokePermission, hasPermission, bindCampaign, getCampaignInstitution, authorizeCampaignAction, requestOwnershipChange, approveOwnershipChange, reconcileLegacyCampaign, reviewInstitution } = require('../src/services/gsfGovernanceService');
 
 const DB = process.env.DB_NAME || 'gsf_gov_test';
 const pool = createPool({ host: '127.0.0.1', port: 55432, user: 'postgres', password: '', database: DB });
@@ -13,7 +13,7 @@ async function test(name, fn) {
 
 async function main() {
   // clean tables
-  await pool.query('TRUNCATE gsf_governance_audit_events, gsf_campaign_institution_links, gsf_ownership_change_approvals, gsf_ownership_change_requests, gsf_governance_grants, gsf_governance_permissions, gsf_institution_owners, gsf_institution_members, gsf_institution_evidence, gsf_institutions CASCADE');
+  await pool.query('TRUNCATE gsf_governance_audit_events, gsf_campaign_institution_links, gsf_ownership_change_approvals, gsf_ownership_change_requests, gsf_governance_grants, gsf_governance_permissions, gsf_institution_owners, gsf_institution_members, gsf_institution_evidence, institutions CASCADE');
 
   // seed permission codes
   await pool.query("INSERT INTO gsf_governance_permissions (code,description) VALUES ('GSF_CAMPAIGN_STATUS_CHANGE','change campaign status') ON CONFLICT (code) DO NOTHING");
@@ -21,10 +21,12 @@ async function main() {
   let inst, inst2;
   await test('GOV-01 institution creation', async () => {
     inst = await createInstitution(pool, { name: 'Inst A', createdBy: 1 });
+    await reviewInstitution(pool, { institutionId: inst.id, reviewerId: 2, decision: 'APPROVE' });
     assert.ok(inst && inst.id);
   });
   await test('GOV-02 second institution', async () => {
     inst2 = await createInstitution(pool, { name: 'Inst B', createdBy: 2 });
+    await reviewInstitution(pool, { institutionId: inst2.id, reviewerId: 1, decision: 'APPROVE' });
     assert.ok(inst2 && inst2.id && inst2.id !== inst.id);
   });
   await test('GOV-03 hybrid verification: self-approval blocked', async () => {

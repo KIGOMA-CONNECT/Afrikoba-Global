@@ -96,6 +96,9 @@
     },
     "158_institution_fk_hardening.sql": {
       "state": "PENDING_UNAUTHORIZED"
+    },
+    "159_gsf_governance_foundation.sql": {
+      "state": "PENDING_UNAUTHORIZED"
     }
   }
 }
