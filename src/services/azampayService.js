@@ -12,6 +12,7 @@ const AUTH_URL = config.azampay.env === 'production'
   : 'https://authenticator-sandbox.azampay.co.tz/AppAuthentication/Token';
 
 function assertAzamPayEnabled() {
+  require('../config/pilot').assertFeatureEnabled('externalPayments'); // R36 Task 4
   if (!config.azampay.enabled) {
     throw Object.assign(
       new Error('AzamPay haijawezeshwa kwa sasa.'),
@@ -120,8 +121,17 @@ async function queryTransactionStatus(referenceId) {
  */
 async function triggerPayout(phoneNumber, amount, referenceId, provider) {
   assertAzamPayEnabled();
+  if (!config.azampay.payoutContractVerified) {
+    return { success: false, ambiguous: false, message: 'PAYOUT_CONTRACT_UNVERIFIED' };
+  }
+  let token;
   try {
-    const token = await getAzamPayToken();
+    token = await getAzamPayToken();
+  } catch (error) {
+    logger.error('AZAMPAY PAYOUT', error.message);
+    return { success: false, ambiguous: false, message: error.message };
+  }
+  try {
     const payload = {
       accountNumber: toLocalFormat(phoneNumber),
       amount: String(amount),
@@ -140,7 +150,14 @@ async function triggerPayout(phoneNumber, amount, referenceId, provider) {
     return { success: true, data: response.data };
   } catch (error) {
     logger.error('AZAMPAY PAYOUT', error.response ? JSON.stringify(error.response.data) : error.message);
-    return { success: false, message: error.response?.data?.message || error.message };
+    const status = error.response?.status;
+    const refused = status !== undefined && status >= 400 && status < 500;
+    return {
+      success: false,
+      ambiguous: !refused,
+      message: error.response?.data?.message || error.message,
+      data: error.response?.data,
+    };
   }
 }
 

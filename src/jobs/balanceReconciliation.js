@@ -96,6 +96,82 @@ async function expectedBalance(client, accountCode, projection) {
 }
 
 /**
+ * Ledger coverage: every business-ledger (`wallet_ledger`) row must belong to a
+ * balanced double-entry journal group on the same reference. A ledger row with
+ * no journal group means a money event wrote the business ledger without the
+ * authoritative posting; a journal group that is unbalanced is caught by the
+ * `journal_balanced` invariant instead.
+ *
+ * `wallet_ledger` is written directly by several services (mkoba, p2p, country,
+ * recurrence, vicoba, ussd, deposit reconciliation). Each of those inserts runs
+ * in the same transaction as an engine primitive that posts the journal group,
+ * so this check is the safety net that proves that mapping still holds.
+ *
+ * Returns one entry per orphaned reference.
+ */
+async function checkLedgerCoverage(client) {
+  const { rows } = await client.query(
+    `SELECT wl.reference_id,
+            COUNT(*)::int AS ledger_rows,
+            SUM(wl.amount)::text AS ledger_amount,
+            MIN(wl.description) AS sample_description
+       FROM wallet_ledger wl
+      WHERE NOT EXISTS (
+              SELECT 1
+                FROM journal_entries je
+               WHERE je.reference_id = wl.reference_id
+            )
+      GROUP BY wl.reference_id
+      ORDER BY wl.reference_id`
+  );
+  return rows.map((r) => ({
+    referenceId: r.reference_id,
+    ledgerRows: Number(r.ledger_rows),
+    ledgerAmount: Number(r.ledger_amount),
+    sampleDescription: r.sample_description,
+  }));
+}
+
+/**
+ * Run the ledger-coverage check on its own connection and surface every orphan
+ * as an OPEN `LEDGER_ORPHAN` reconciliation exception. Existing OPEN exceptions
+ * for the same reference are not duplicated.
+ */
+async function runLedgerCoverage() {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const orphans = await checkLedgerCoverage(client);
+    let recorded = 0;
+    for (const o of orphans) {
+      const existing = await client.query(
+        `SELECT 1 FROM reconciliation_exceptions
+          WHERE exception_type = 'LEDGER_ORPHAN'
+            AND reference_id = $1
+            AND status = 'OPEN'
+          LIMIT 1`,
+        [o.referenceId]
+      );
+      if (existing.rows.length) continue;
+      await client.query(
+        `INSERT INTO reconciliation_exceptions (exception_type, reference_id, detail)
+         VALUES ('LEDGER_ORPHAN', $1, $2::jsonb)`,
+        [o.referenceId, JSON.stringify(o)]
+      );
+      recorded += 1;
+    }
+    await client.query('COMMIT');
+    return { checked: orphans.length, recorded, orphans };
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    logger.error('LEDGER_COVERAGE', error.message);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+/**
  * Run a full balance reconciliation. Returns the run summary.
  * @param {string} runType 'DAILY' | 'MANUAL'
  */
@@ -191,6 +267,40 @@ async function runBalanceReconciliation(runType = 'DAILY') {
       );
     }
 
+    // Ledger coverage: every wallet_ledger row must map to a journal group.
+    const ledgerOrphans = await checkLedgerCoverage(client);
+    totalChecked += 1;
+    {
+      const state = ledgerOrphans.length === 0 ? 'MATCHED' : 'AMOUNT_MISMATCH';
+      if (state === 'MATCHED') totalMatched += 1;
+      else { totalDiff += 1; aggregateDifference += ledgerOrphans.length; }
+      await client.query(
+        `INSERT INTO reconciliation_line_items
+           (run_id, account_code, balance_name, state, journal_balance, expected_balance, difference, detail)
+         VALUES ($1,$2,$3,$4,$5,0,$5,$6::jsonb)`,
+        [runId, 'WALLET_LEDGER_JOURNAL_MAP',
+         'wallet_ledger rows without a balanced journal group', state,
+         ledgerOrphans.length,
+         JSON.stringify({ orphans: ledgerOrphans })]
+      );
+      for (const o of ledgerOrphans) {
+        const existing = await client.query(
+          `SELECT 1 FROM reconciliation_exceptions
+            WHERE exception_type = 'LEDGER_ORPHAN'
+              AND reference_id = $1
+              AND status = 'OPEN'
+            LIMIT 1`,
+          [o.referenceId]
+        );
+        if (existing.rows.length) continue;
+        await client.query(
+          `INSERT INTO reconciliation_exceptions (exception_type, reference_id, detail)
+           VALUES ('LEDGER_ORPHAN', $1, $2::jsonb)`,
+          [o.referenceId, JSON.stringify({ ...o, runId })]
+        );
+      }
+    }
+
     await client.query(
       `UPDATE reconciliation_runs
        SET status = CASE WHEN ($2::numeric) > 0 THEN 'COMPLETE_WITH_DIFF' ELSE 'COMPLETE' END,
@@ -240,4 +350,4 @@ async function recentRuns(limit = 20) {
   return r.rows;
 }
 
-module.exports = { runBalanceReconciliation, recentRuns };
+module.exports = { runBalanceReconciliation, runLedgerCoverage, checkLedgerCoverage, recentRuns };

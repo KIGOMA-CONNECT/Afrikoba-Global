@@ -13,6 +13,7 @@
  * ============================================================ */
 const BASE = process.env.DEVICE_TEST_BASE || 'http://127.0.0.1:3000';
 const pool = require('../src/config/db');
+const config = require('../src/config');
 const fin = require('../src/services/financialEngine');
 const { createDeviceRateLimiter } = require('../src/middleware/deviceRateLimit');
 
@@ -161,24 +162,30 @@ async function run() {
   await expect(anonTransfer.status === 401, `unauthenticated transfer -> 401 (got ${anonTransfer.status})`);
 
   await section('Per-device rate limiter (unit)');
-  const limit = createDeviceRateLimiter({ max: 3, windowMs: 60000 });
-  let nextCalls = 0;
-  let hitStatus = null;
-  let hitCode = null;
-  const mkRes = () => ({
-    status: (s) => { hitStatus = s; return { json: (b) => { hitCode = b.code; } }; },
-  });
-  const mkReq = () => ({
-    ip: '127.0.0.1',
-    headers: { 'user-agent': 'rate-test', 'accept-language': 'en', 'x-device-fingerprint': DEVICE_B },
-  });
-  for (let i = 0; i < 3; i++) {
+  const previousRateLimitDisabled = config.security.rateLimitDisabled;
+  try {
+    config.security.rateLimitDisabled = false;
+    const limit = createDeviceRateLimiter({ max: 3, windowMs: 60000 });
+    let nextCalls = 0;
+    let hitStatus = null;
+    let hitCode = null;
+    const mkRes = () => ({
+      status: (s) => { hitStatus = s; return { json: (b) => { hitCode = b.code; } }; },
+    });
+    const mkReq = () => ({
+      ip: '127.0.0.1',
+      headers: { 'user-agent': 'rate-test', 'accept-language': 'en', 'x-device-fingerprint': DEVICE_B },
+    });
+    for (let i = 0; i < 3; i++) {
+      await limit(mkReq(), mkRes(), () => { nextCalls++; });
+    }
+    await expect(nextCalls === 3 && hitStatus === null, `3 requests pass (got ${nextCalls} next / ${hitStatus} status)`);
     await limit(mkReq(), mkRes(), () => { nextCalls++; });
+    await expect(hitStatus === 429 && hitCode === 'DEVICE_RATE_LIMIT_EXCEEDED',
+      `4th request refused 429 (got ${hitStatus} ${hitCode})`);
+  } finally {
+    config.security.rateLimitDisabled = previousRateLimitDisabled;
   }
-  await expect(nextCalls === 3 && hitStatus === null, `3 requests pass (got ${nextCalls} next / ${hitStatus} status)`);
-  await limit(mkReq(), mkRes(), () => { nextCalls++; });
-  await expect(hitStatus === 429 && hitCode === 'DEVICE_RATE_LIMIT_EXCEEDED',
-    `4th request refused 429 (got ${hitStatus} ${hitCode})`);
 
   // Restore policy so the test user is unblocked for future runs.
   await api('PUT', '/api/devices/policy', token, { policy: 'PERMISSIVE' });

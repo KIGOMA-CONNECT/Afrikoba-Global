@@ -5,6 +5,7 @@ const limitService = require('../services/limitService');
 const fraudDetectionService = require('../services/fraudDetectionService');
 const walletFreezesService = require('../services/walletFreezesService');
 const governanceService = require('../services/governanceService');
+const { writeAudit } = require('../services/auditService');
 const { authRequired, requireKycLevel } = require('../middleware/auth');
 const { enforceDeviceTrust } = require('../middleware/deviceGuard');
 const { validate } = require('../middleware/validate');
@@ -29,14 +30,28 @@ router.get('/pending-approvals', async (req, res, next) => {
 
 // Register executors for four-eyes maker-checker operations handled by wallet.
 // On approval of a high-value WALLET_TRANSFER, actually run the transfer.
-governanceService.registerExecutor('WALLET_TRANSFER', async (payload) => {
+governanceService.registerExecutor('WALLET_TRANSFER', async (payload, approverId, flow) => {
+  // C1RV-01 (owner decision): only the wallet owner's own transfer may run. A flow
+  // whose requester is not the sender (e.g. made by an admin) is refused before
+  // any money moves, whoever approves it.
+  if (!flow || flow.requester_id == null || String(flow.requester_id) !== String(payload.fromUserId)) {
+    await writeAudit({
+      userId: approverId,
+      action: 'WALLET_TRANSFER_PROHIBITED',
+      entityType: 'APPROVAL_FLOW',
+      entityId: flow ? Number(flow.id) : null,
+      meta: { route: 'approval executor', flow_id: flow ? Number(flow.id) : null, maker_id: flow ? flow.requester_id : null, from_user_id: payload.fromUserId ?? null, checker_id: approverId },
+    });
+    throw Object.assign(new Error('Msimamizi haruhusiwi kuhamisha fedha kutoka wallet ya mteja.'), { statusCode: 403, code: 'WALLET_TRANSFER_PROHIBITED' });
+  }
   const result = await walletService.transferWallet(payload.fromUserId, payload.toPhoneNumber, payload.amount, payload.note);
   return result;
 });
 
 // Resolve live high-value threshold (TZS). Admin override via config_settings.
 async function getHighValueThreshold(req) {
-  if (req.user && req.user.role === 'ADMIN') return Infinity; // admins bypass the gate
+  // R36B OD-3 (review #2): no admin exemption while four-eyes is environment-locked (pilot).
+  if (req.user && req.user.role === 'ADMIN' && !require('../config/pilot').isFourEyesLocked()) return Infinity; // admins bypass the gate
   const stored = await governanceService.getSetting('HIGH_VALUE_TRANSFER_THRESHOLD');
   const parsed = parseFloat(stored);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 5000000;
@@ -88,7 +103,7 @@ router.post('/transfer', enforceDeviceTrust, validate(schemas.wallet.transfer), 
     }
 
     // Four-eyes gate: high-value transfers need a second approver (maker-checker).
-    // A non-admin's transfer above the threshold becomes a pending approval_flow
+    // A transfer above the threshold (a non-admin's; in the pilot also an admin's, R36B OD-3) becomes a pending approval_flow
     // and only executes once an admin (other than the requester) approves it.
     const threshold = await getHighValueThreshold(req);
     if (parseFloat(amount) >= threshold) {
@@ -147,7 +162,7 @@ router.post('/withdraw', enforceDeviceTrust, requireKycLevel(1), validate(schema
       });
     }
 
-    const result = await walletService.withdrawToMno(req.user.id, amount, provider);
+    const result = await walletService.withdrawToMno(req.user.id, amount, provider, req.headers['idempotency-key'] || null);
     return res.json(result);
   } catch (error) {
     next(error);

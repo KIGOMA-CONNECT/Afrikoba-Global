@@ -41,9 +41,10 @@ function fail(label, extra) { failed++; failures.push(label); console.log(`  ✗
 async function expect(cond, label, extra) { if (cond) ok(label); else fail(label, extra); }
 async function section(label) { console.log('\n--- ' + label + ' ---'); }
 
-async function api(method, path, token, body) {
+async function api(method, path, token, body, extraHeaders) {
   const headers = { 'Content-Type': 'application/json' };
   if (token) headers.Authorization = `Bearer ${token}`;
+  if (extraHeaders) Object.assign(headers, extraHeaders);
   const isGet = method === 'GET';
   const res = await fetch(BASE + path, { method, headers, body: !isGet && body !== undefined ? JSON.stringify(body) : undefined });
   let data = null; try { data = await res.json(); } catch (e) { data = {}; }
@@ -196,7 +197,7 @@ async function main() {
   const app2 = await api('POST', `/api/saccos/${orgId}/loans/apply`, m1.tok, { amount: 100000, termMonths: 6 });
   await expect(app2.status === 201, 'm1 applies 100000 (backing 150000) -> 201');
   const app2Id = app2.data.result.id;
-  const wd = await api('POST', `/api/saccos/${orgId}/savings/withdraw`, m1.tok, { amount: 40000 });
+  const wd = await api('POST', `/api/saccos/${orgId}/savings/withdraw`, m1.tok, { amount: 40000 }, { 'Idempotency-Key': 'LM-WD-40000' });
   await expect(wd.data.success === true, 'm1 withdraws 40000 (live savings 10000, backing 30000)');
 
   await setLendingConfig(orgId, { savingsBackingEnabled: true, savingsBackingMultiple: 3, guaranteesRequired: 0, maxActiveLoans: 10 });

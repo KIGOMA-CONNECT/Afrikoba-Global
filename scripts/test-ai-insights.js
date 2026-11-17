@@ -77,11 +77,14 @@ async function run() {
       ($1, 'INV-${suffix}-2', 'Customer B', 180000, 0, 180000, 'OVERDUE', NOW() - INTERVAL '3 days')`,
     [biz.rows[0].id]
   );
-  await pool.query(
+  const payrollRunIds = [];
+  const currentPayroll = await pool.query(
     `INSERT INTO payroll_runs (funding_source, status, total_amount, created_by)
-     VALUES ('BUSINESS', 'PAID', 900000, $1)`,
+     VALUES ('BUSINESS', 'PAID', 900000, $1)
+     RETURNING id`,
     [ownerId]
   );
+  payrollRunIds.push(Number(currentPayroll.rows[0].id));
 
   // Procurement buyer: one OPEN RFQ + a disbursed supplier financing (financing
   // linked to the buyer's RFQ, supplier owned by the owner's business).
@@ -102,11 +105,13 @@ async function run() {
   );
 
   // Give payroll a previous month reference so PAYROLL_HEALTH computes (older run).
-  await pool.query(
+  const previousPayroll = await pool.query(
     `INSERT INTO payroll_runs (funding_source, status, total_amount, created_by, created_at)
-     VALUES ('BUSINESS', 'PAID', 600000, $1, NOW() - INTERVAL '30 days')`,
+     VALUES ('BUSINESS', 'PAID', 600000, $1, date_trunc('month', NOW()) - INTERVAL '1 day')
+     RETURNING id`,
     [ownerId]
   );
+  payrollRunIds.push(Number(previousPayroll.rows[0].id));
 
   await section('Refresh generates invoice/payroll/procurement insights');
   const refresh = await api('POST', '/api/ai/insights/refresh', owner.token);
@@ -156,7 +161,9 @@ async function run() {
   await pool.query(`DELETE FROM procurement_requests WHERE id = $1`, [rfq.rows[0].id]);
   await pool.query(`DELETE FROM suppliers WHERE id = $1`, [supplier.rows[0].id]);
   await pool.query('DELETE FROM business_invoices WHERE business_id = $1', [biz.rows[0].id]);
-  await pool.query('DELETE FROM payroll_runs WHERE created_by = $1', [ownerId]);
+  if (payrollRunIds.length) {
+    await pool.query('DELETE FROM payroll_runs WHERE id = ANY($1::int[])', [payrollRunIds]);
+  }
   await pool.query('DELETE FROM business_accounts WHERE id = $1', [biz.rows[0].id]);
 }
 

@@ -1,0 +1,672 @@
+{
+  "schemaVersion": 1,
+  "algorithm": "sha256",
+  "canonicalization": "utf8-lf-no-bom",
+  "generatedAt": "2026-11-17T09:41:54.509Z",
+  "generatedBy": "MTC-30-G3",
+  "fileCount": 164,
+  "rootHash": "4e9ccd35906bd33236218fd7badff009a36cc3f0d1515fa3d0053950606dc3a0",
+  "files": {
+    "001_services_and_invites.sql": {
+      "sha256": "a32c9db9aaafca4d83df8d31ad4095562bfc202b0f9fb0eef453c044b81726eb",
+      "bytes": 2396
+    },
+    "002_otp_attempts.sql": {
+      "sha256": "94a742f5f568e7f23d71f54c7d0894de50c0402136a4635b2467817ac0a98454",
+      "bytes": 130
+    },
+    "002_vicoba_social_fund_penalties.sql": {
+      "sha256": "0f1d1d1abe5d6aadd27b8f3f42e41acd5e5e23b7c152b53b4443fea1f0a6ac80",
+      "bytes": 6740
+    },
+    "003_mkoba_features.sql": {
+      "sha256": "1316fad376b7bf735bc80291a4033676f9f2d7660ed5350980dd5a6b8337a3d2",
+      "bytes": 5807
+    },
+    "004_audit_log.sql": {
+      "sha256": "ab479dd7fb77357fcc8567b5327fd0bdbe7292b25a67026ca5e88cfd8c8b1dcb",
+      "bytes": 1884
+    },
+    "005_idempotency_keys.sql": {
+      "sha256": "4fce1afbadda6de823b7e3d2e5c72c7b5aab40a573f454c54cbf0c83dd8f5f1a",
+      "bytes": 639
+    },
+    "006_totp_2fa.sql": {
+      "sha256": "eb986d8b26832cb5417b80e30bb5aae93c066f55c142541fb4ca0c4452659ca1",
+      "bytes": 420
+    },
+    "007_multi_currency.sql": {
+      "sha256": "900a1dccb64caa999562c52f13fd9a16d56380221417f9f63c51d54aaffa3891",
+      "bytes": 2103
+    },
+    "008_performance_indexes.sql": {
+      "sha256": "4e55636a66307629d6dda6e2052efd944b78fbc811529cb5188955d6c5dbb1ac",
+      "bytes": 4703
+    },
+    "009_notifications.sql": {
+      "sha256": "66408bb6dc0fc5f5826ede34c54bc47c370fa2ba96670d464668bf68f2edbf5e",
+      "bytes": 1452
+    },
+    "010_referral_analytics.sql": {
+      "sha256": "8a442c3736fe3f9a8efb2fe761d9e6559daeaa0d7fa2360a8eaece2f34ea0d04",
+      "bytes": 2744
+    },
+    "011_revoked_tokens.sql": {
+      "sha256": "d408453b5e726f61eb9092b763b7bf49f6805b53068a6db5b28366412133a1e6",
+      "bytes": 743
+    },
+    "012_api_keys.sql": {
+      "sha256": "cbcc6ff59d96a8aaf4f87d89f055f39901aaeef17099c59ba175ae6df03055a4",
+      "bytes": 862
+    },
+    "013_banking_features.sql": {
+      "sha256": "bb303d882973d4b71d1407e50a7ef7882099d0b3635791e85749d467ea71a4db",
+      "bytes": 6895
+    },
+    "014_advanced_features.sql": {
+      "sha256": "5f4614df73861ae8f3b16043db2404fc8ace7d44eb27511dcb6c916df662cc5f",
+      "bytes": 5677
+    },
+    "015_smart_features.sql": {
+      "sha256": "e5549c7c33cac61888cebd73ff78f27e2063765022ed04cfea554c61ffb78685",
+      "bytes": 7369
+    },
+    "016_ecosystem_features.sql": {
+      "sha256": "5d7d9b1021859174149e386ba34ca8104a925dd791d28d02ddf4a04ea36ba757",
+      "bytes": 7730
+    },
+    "017_network_features.sql": {
+      "sha256": "12e0b1e5b86a2ba9dd639409061dd0a886638b4e7804e1570a246e7a91174bea",
+      "bytes": 8458
+    },
+    "018_fix_constraints.sql": {
+      "sha256": "ea4a766f76e82f6b688e149553fb021dc933aa84ab7f6b15afb6cbca907ac392",
+      "bytes": 972
+    },
+    "019_g_family_features.sql": {
+      "sha256": "3e8249f8bd337b262b2185b109ad442646faacc10c865a41ce5ff9c228379445",
+      "bytes": 3934
+    },
+    "020_h_business_commerce.sql": {
+      "sha256": "85b672498fee120dc641cb228927771501e0dd04f8c29ee7f8f35cd3995927ca",
+      "bytes": 5310
+    },
+    "021_i_savings_credit.sql": {
+      "sha256": "a5df5ebff34f8baa484b34a30c3e13205cb1f34b5389eedffe91438a6c07be0a",
+      "bytes": 6996
+    },
+    "022_j_virtual_cards.sql": {
+      "sha256": "ac816805861a3c5194968c0d7067612e1994eeb5200bc7d07e0ff282e6da0b00",
+      "bytes": 2135
+    },
+    "023_k_bap.sql": {
+      "sha256": "716a5bf91b6632fdeaac568297845d5a4be9c0a39a88d1b5283bc92761999f92",
+      "bytes": 3130
+    },
+    "024_i18n_multi_country.sql": {
+      "sha256": "4fd2a96355cf0c4de5918c0dacf2fb04c05cfb9715f2b722bf2a278ac453a716",
+      "bytes": 2503
+    },
+    "025_auth_hardening.sql": {
+      "sha256": "0af06dc6371a0c50580f1461f86e6a569d7855d3839edd80baeddb99955bf255",
+      "bytes": 369
+    },
+    "026_pin_reset_hardening.sql": {
+      "sha256": "7323d0b9c5b374b3d33fc92ec64b1a51cde9e16866fc8bd582a3b0e73a131cc2",
+      "bytes": 436
+    },
+    "027_refresh_token_rotation.sql": {
+      "sha256": "521a79adfa11e53b4a19dd5ef2526effba3bc54e2590c262d5cdca00539e55fb",
+      "bytes": 680
+    },
+    "028_account_lockout.sql": {
+      "sha256": "7b97a42d4c3bf939412f7d4832852e52444704efa95934965a528fbc217a1a28",
+      "bytes": 439
+    },
+    "029_afrikoba_yield_feature.sql": {
+      "sha256": "645811a92aba92dc22676601bb1aaaa15f6f7f9c8e77240c34c36c8cd1fbac6e",
+      "bytes": 1372
+    },
+    "030_audit_logs.sql": {
+      "sha256": "5fa9b065b70deb2ed5f61d9d8d11a134136dfe7290f94435cf231d37415ee598",
+      "bytes": 768
+    },
+    "031_financial_core.sql": {
+      "sha256": "be41d63a0db804f74d61cca64d21c6df4bd7641dc234347e9acfde063f2506cd",
+      "bytes": 8978
+    },
+    "032_balance_reconciliation.sql": {
+      "sha256": "b644a54829a67a194b091a67718392db3fca9380434647e9706cc8fe61ff0e93",
+      "bytes": 2427
+    },
+    "033_financial_hardening.sql": {
+      "sha256": "73b09caec01a3ff70137cbcbd16685de1c8b4bdaca13ab8e325ecb818324d25d",
+      "bytes": 4910
+    },
+    "034_finance_account_types.sql": {
+      "sha256": "964fde2f259277d19c3466e2f9d5da3df05883ab362d29bb568181a176dccd31",
+      "bytes": 564
+    },
+    "035_finance_phase10.sql": {
+      "sha256": "59a6a4e88065bbaabdd4c7064472f4dda75a105d51cdd5dd1b10d5518be3887b",
+      "bytes": 538
+    },
+    "036_financial_passport.sql": {
+      "sha256": "3083df4b86513ce332a778b402f33b236bf76a60892c19cee8458b46b6973866",
+      "bytes": 3103
+    },
+    "037_financial_autopilot.sql": {
+      "sha256": "6fbe371f929f16e95a1e759ab9255b350c64905c5b806fd48fbc95c01e75a986",
+      "bytes": 1627
+    },
+    "038_marketplace.sql": {
+      "sha256": "3486ef1d01e5e582e7dbfdc5d902c7bd176df434799ee91b58b020a1da1512e2",
+      "bytes": 5395
+    },
+    "039_marketplace_financing.sql": {
+      "sha256": "6c3268119efae85ee5aa69131ae90a421cf8c5e8a335495c93ea7e292b9f32e0",
+      "bytes": 3056
+    },
+    "040_marketplace_financing_installments.sql": {
+      "sha256": "3fc89c3469462bbfefc8ba594aae0eb2562e1f85f3ed91be7e8bf0ec03cdc533",
+      "bytes": 1526
+    },
+    "040_seller_verification.sql": {
+      "sha256": "6a6b92e3efd6949326a9ae3ed85cb559cfba1bd940f009966c7fb609f07922b7",
+      "bytes": 1232
+    },
+    "041_marketplace_escrow_disputes.sql": {
+      "sha256": "957eba00851ca085bd3d061280d8ede29728664e6a31d2c62855befd604c39fb",
+      "bytes": 1451
+    },
+    "042_rosca_trust.sql": {
+      "sha256": "75974e7183a20e23dd7021dac9afecc1887d246ee342cdc55069816cc24d9c47",
+      "bytes": 1485
+    },
+    "043_budgeting.sql": {
+      "sha256": "06ca4372a37535349fca3e90fd07a66d1234abd04ccd598a8f8343b5c0642e80",
+      "bytes": 1790
+    },
+    "044_projects.sql": {
+      "sha256": "81d3e1d5b5971d80716730b3353ecf6dca78b718868a68e89d35aafe053e4062",
+      "bytes": 9973
+    },
+    "045_upatu_governance.sql": {
+      "sha256": "f86e93242de3d24aaf5ed6a54fb627057f20bb79a39bd9a513db2c8346240dea",
+      "bytes": 2926
+    },
+    "046_ai_intelligence.sql": {
+      "sha256": "23e701834dcc2cc7047e8d581f01d1c3c984e7922e20e8f72fcb0f215d028942",
+      "bytes": 2257
+    },
+    "047_procurement.sql": {
+      "sha256": "3db31af1c98c2110241e537eea682b1e341c20c129635717fbd8507501f2fd35",
+      "bytes": 3234
+    },
+    "048_payment_links.sql": {
+      "sha256": "24bff077b7ce53a427dbb8e7ba67a23f9bb9743860c88683164f7c2302b98c3e",
+      "bytes": 707
+    },
+    "049_developer_portal.sql": {
+      "sha256": "aec9c9d1b060c9f6521b692079c68510423e90a54ccb15c856bb74cf97e52871",
+      "bytes": 1105
+    },
+    "050_rbac_aml.sql": {
+      "sha256": "7dfeb65e4cac3cdd21e0afe3b6446c87482ee201011c89ddf9da41a7269d10db",
+      "bytes": 2033
+    },
+    "051_countries.sql": {
+      "sha256": "f05f559e26e2952312f0964712f972ab6b35a7d7801987ada2c1ada93be8558e",
+      "bytes": 1119
+    },
+    "052_config_settings.sql": {
+      "sha256": "6cf52f38f26e7b877c0c8f2b1f11f0a803ce7a329429c9884fdeb4506e578c11",
+      "bytes": 459
+    },
+    "053_social_fund_and_projects.sql": {
+      "sha256": "a484f82dad9cdb9ddcb1ff572141ef0ca2030d07468cbe6f4704b3170492db3d",
+      "bytes": 3782
+    },
+    "054_telemetry.sql": {
+      "sha256": "ac1cc6e2b6b0a62bca146f9d754e7dc453ea880cb3bacc3ee0dbccf2f142399a",
+      "bytes": 672
+    },
+    "055_analytics_warehouse.sql": {
+      "sha256": "540e009bbe3db319f4c5938892a8861a7aeba65f046f8b36b45a1ac50e6bd7fd",
+      "bytes": 498
+    },
+    "056_cashflow_forecast.sql": {
+      "sha256": "dc21bb1af201d946e1bc6ffae9401dbf241a64bc6af2d851e70ebea454b54af3",
+      "bytes": 929
+    },
+    "057_doc_intelligence.sql": {
+      "sha256": "fecbc65e0aac2b026e0d6a67ce11f82ee159c36b49500f0b4f78d2318f939632",
+      "bytes": 584
+    },
+    "058_treasury_multisig.sql": {
+      "sha256": "a156e6ce5f3259c2c17d0b9052fefe07c187e904d83dea61e5c79e41e559bf86",
+      "bytes": 1352
+    },
+    "059_project_monitoring.sql": {
+      "sha256": "6ff1ebc1d74708562769c01ce67573f1b5a73b5508699892cf6b9ede5c821886",
+      "bytes": 1484
+    },
+    "060_group_governance.sql": {
+      "sha256": "977d0ebcb093a0280cde744d822d6d28eb6202f3fbac88530748090afa557eb1",
+      "bytes": 7440
+    },
+    "061_gov_financial_linkage.sql": {
+      "sha256": "ce6dc8e6a944847c4449fef4b02ec0f5fc6fb5875b41129d82e1cdf583e4ea0d",
+      "bytes": 1130
+    },
+    "062_gov_access_control.sql": {
+      "sha256": "2794368634504f3c30e2ba86db654a558c2973f0e7f1f14b8de9d165a19216ed",
+      "bytes": 1635
+    },
+    "063_gov_ai_secret_analytics.sql": {
+      "sha256": "e7672722f7cc18334740a45e8adb171ab5ba0129a67a8f304572caad79d109e9",
+      "bytes": 1512
+    },
+    "064_ai_risk_reco_explain.sql": {
+      "sha256": "d26684d74e4112df7c27101d7e0a3e939433291951f6bb6550b9cc09eeaf0049",
+      "bytes": 2465
+    },
+    "065_ai_budget_boq.sql": {
+      "sha256": "fc3d49ac842b418ec9524c4298dd21d6ce62b7cb5b435813afb32385fdd6aec8",
+      "bytes": 2229
+    },
+    "066_payroll_engine.sql": {
+      "sha256": "faa1f87742084388d5ad62648a56e9542027da0dab6077e83e46e755b3a46321",
+      "bytes": 2483
+    },
+    "067_recurrence_scheduler.sql": {
+      "sha256": "2dac90d4f57add14fddc5f91c076804681188002f66c7e23a8fafeccb89ed276",
+      "bytes": 1451
+    },
+    "068_stepup_auth.sql": {
+      "sha256": "fcd7e50df094f8205784812ba38b883f3ec51e966b4cfc23f034d9ae7c3d9f28",
+      "bytes": 745
+    },
+    "069_marketplace_circles_kilimo.sql": {
+      "sha256": "529d74b18ca3c6b9e794c0b243176c3c247d35dbd99921d22434aa0afd103fe8",
+      "bytes": 6607
+    },
+    "071_transaction_type_60.sql": {
+      "sha256": "cb8522a0edf8bb8203f567557627eb05c590ec41df1643c4e9ec44c5fb648ff3",
+      "bytes": 218
+    },
+    "072_social_events.sql": {
+      "sha256": "e70ca76876e61c44d6f2619e3104bb753ad44f28074bb318fe8dd9c5d30120eb",
+      "bytes": 3650
+    },
+    "073_social_events_stage2.sql": {
+      "sha256": "d4e4889c186402c7f6b2cb5d731fce1c4c7ba6a01841f97aa03ba69e37bbe010",
+      "bytes": 2522
+    },
+    "074_social_events_stage3.sql": {
+      "sha256": "7e8f447efcaa93c55586766653a01e18e04b2fbdb9243016a8b770beda0ce575",
+      "bytes": 2924
+    },
+    "075_social_events_stage4.sql": {
+      "sha256": "119b0d2fb615e74e563644e0d81a4fbec9a8bd683c7d387dc05226de5ab87322",
+      "bytes": 2306
+    },
+    "076_event_series_updated_at.sql": {
+      "sha256": "cbc7d377aab988b6946dfbc3138058f860f5d750fa83f5e31e5ebcaf6da77015",
+      "bytes": 261
+    },
+    "077_event_members_updated_at.sql": {
+      "sha256": "50fb9d6817f92843b902ff7cdb8e862bd66bae8a42bdc983baf0ec0f3ef37d91",
+      "bytes": 256
+    },
+    "078_social_events_stage5.sql": {
+      "sha256": "4b9fdc8edb69dc9805b95c915fb360843ed026fe3ca9b2770a6061ae2f569823",
+      "bytes": 534
+    },
+    "079_social_events_stage5_fx.sql": {
+      "sha256": "f461b691694273a4b2bee1ca3e6421946832adddefb6136b469303d665683043",
+      "bytes": 457
+    },
+    "080_feature_flags.sql": {
+      "sha256": "ece4f85b94ebb61ef3d863554ed51b4ec71b1a5d4fb4e9eaa2f0c2c94c619564",
+      "bytes": 1583
+    },
+    "081_four_eyes_experiments.sql": {
+      "sha256": "2cba88c12558021b0c405a5aeaab7bf1fa4a404b039043da03ee99c7077b371f",
+      "bytes": 4074
+    },
+    "082_kyc_foureyes_ops.sql": {
+      "sha256": "50871c53c524353c6d50083898b5e5586f2afb69fbf19a50925e5b5cd80aa4ba",
+      "bytes": 2071
+    },
+    "083_kyc_schema_align.sql": {
+      "sha256": "f2d7887f37820e9cec10c608abdb75f6a69c690fbd244c9e96a22f293b7f2c60",
+      "bytes": 929
+    },
+    "084_disputes_lifecycle_kyc_expiry.sql": {
+      "sha256": "42b6e67c23d112eb6d6da0fab233e521ee2c9ca2f293b26335bd62e22c8a86d2",
+      "bytes": 2100
+    },
+    "085_merchant_connected_accounts_payouts.sql": {
+      "sha256": "4ee03753efd36fb2056d07157083f4bfcd397698b4cd6a2e319ebf7ccea0a94b",
+      "bytes": 3484
+    },
+    "086_kilimo_seasons_advisories.sql": {
+      "sha256": "70ff90b9711118d8cb40cdaed6fc19e7bc379aadabaa4556436eb0e560aa87da",
+      "bytes": 1783
+    },
+    "087_outbox_event_bus.sql": {
+      "sha256": "83f940ac5c986258a7e71d3a5174af39d777dc1c4c8167a3143405ea8c95aaa7",
+      "bytes": 1159
+    },
+    "088_partitioned_ledger_audit.sql": {
+      "sha256": "121a473c7e1f8762547a38da24c14a73760ae487b635ef0095db3dd56c7c0248",
+      "bytes": 6072
+    },
+    "089_multi_country_compliance.sql": {
+      "sha256": "fbbf69cb476b3e05246cae2ef9efb9785bc582cfd93c44fd7c7788eac065dbb4",
+      "bytes": 5024
+    },
+    "090_sequence_resync.sql": {
+      "sha256": "5ac913b08caa3e7238ec5ec268494b83b394835968ea112310203a1dc2483f96",
+      "bytes": 1509
+    },
+    "091_field_partners_overlay.sql": {
+      "sha256": "05f71d1232260657f2680b0ed147e5260800ed07ef0c0d6677d405eb1b991fac",
+      "bytes": 2461
+    },
+    "092_device_security.sql": {
+      "sha256": "2d9826decdff80014ca5b84331b7313e733d4e848a2f52c7194d111c2bd4f160",
+      "bytes": 1029
+    },
+    "093_chart_of_accounts_numbering.sql": {
+      "sha256": "5c33bee90aea155f666d092fbde04ea459d5a4d190b5c97f9525d55cad3ebc2b",
+      "bytes": 4038
+    },
+    "094_trace_level_spans.sql": {
+      "sha256": "58152632bf9b8bec09c7d2d53ce2bfd28fc66900880cf5dcb4b07a0fe0d2f3b4",
+      "bytes": 2042
+    },
+    "095_sar_filing.sql": {
+      "sha256": "a7d815956d9756c6f50a198576a149d2140d4d4d97049c105168d7f6c15afac7",
+      "bytes": 1034
+    },
+    "096_suppliers_reconciliation.sql": {
+      "sha256": "cf59d56d884c41b1d1c147d619d72b138d12990c1a96783ee08810a7afdcb5c6",
+      "bytes": 2746
+    },
+    "097_tcra_ussd_shortcode_registry.sql": {
+      "sha256": "c4c0e29ed6c73c372ecea46f6a3cdc76602bd211e766bbaf0749fecac3a383a0",
+      "bytes": 1701
+    },
+    "098_payment_requests.sql": {
+      "sha256": "bef779192d9570a76be816a4d3283f63e21007bdf8c7247f5d18ca1bbe596e5e",
+      "bytes": 1219
+    },
+    "099_merchant_invoices.sql": {
+      "sha256": "bdaf163dc0849b1f09bcbe1d61eecc370160fdc0952aa3638993dbef41e52d50",
+      "bytes": 1174
+    },
+    "100_support_tickets_resolved_at.sql": {
+      "sha256": "366324948714f83f5fa5d98ffd52add44701e4ccb446105b4c18b0e9676c046c",
+      "bytes": 514
+    },
+    "101_saccos_foundation.sql": {
+      "sha256": "5c7e40f91814cf9827a4385065e4f4ac4bbe76bdd4f80ad9f23d0c72da70dc22",
+      "bytes": 3078
+    },
+    "102_saccos_shares.sql": {
+      "sha256": "1365836a170ee922956c494ee0043369f30cb54154d82ede33a5866684c4c359",
+      "bytes": 1898
+    },
+    "103_saccos_savings.sql": {
+      "sha256": "a0ba19567d5a8bb0f746a65e53c8cd168ec2e02f5bad2d238fbc7bd6b26f2f9e",
+      "bytes": 2900
+    },
+    "104_saccos_credit.sql": {
+      "sha256": "d3e8810ffcdd692f36a794a209a20aafdd5feb2ee228c7d6cb3ae08388e0e001",
+      "bytes": 3382
+    },
+    "105_saccos_governance.sql": {
+      "sha256": "9681a9c09d6c14c60c50da260af894db80ee0bb7312839ec5a7a73e4f5eef61e",
+      "bytes": 2503
+    },
+    "106_saccos_accounting.sql": {
+      "sha256": "51d7cbe7baf16a7ce15b42205ceafaced862736427165abd7a27f034760894e2",
+      "bytes": 2497
+    },
+    "107_saccos_investments.sql": {
+      "sha256": "901a5bc280d0a4f1cdfe6d739eb4d3f92349a117c4422bf8a93177e48bf4d750",
+      "bytes": 2923
+    },
+    "108_saccos_dividends.sql": {
+      "sha256": "b46b8e3c2ba0393e2e84ad60a49b4243ecd4608cc803f877fef8312043919093",
+      "bytes": 2622
+    },
+    "109_saccos_funds.sql": {
+      "sha256": "5d18f3fe7157438f5f60d9487eb4758f258fe630206eef053b37ceb2842db90a",
+      "bytes": 4050
+    },
+    "110_saccos_exits.sql": {
+      "sha256": "60bcf79a190a35a0622d69350f179013570c14bc9627421bcba40504b79ce074",
+      "bytes": 1989
+    },
+    "111_saccos_reports.sql": {
+      "sha256": "639c435eecfa6af84f35a62ddaca9d3cc650b0ca76843d902540d5711b1d471c",
+      "bytes": 1812
+    },
+    "112_saccos_loan_installments.sql": {
+      "sha256": "9f83a03aa05334b61f968259613a9574000323f451832f357e4961f0d9237b6b",
+      "bytes": 1667
+    },
+    "113_saccos_installment_arrears.sql": {
+      "sha256": "e71edf7093c9cbf97e3ac6efc5b70c277bdf754e016a144352cb0ff864527869",
+      "bytes": 981
+    },
+    "114_saccos_meetings.sql": {
+      "sha256": "df419f50fea3c93b81cfb5438efc13901a273c86dfd685eb6a9df2d31a28cd62",
+      "bytes": 2614
+    },
+    "115_saccos_savings_interest.sql": {
+      "sha256": "c5f144a799151dc1aa5371fd526f557f490b4aa43831c31921281ed52e861fd1",
+      "bytes": 2980
+    },
+    "116_saccos_backing_welfare.sql": {
+      "sha256": "09aaf0621de5011a8a7388951bcb5771b435b06cd5e789c26688b82e4dc45b66",
+      "bytes": 3676
+    },
+    "117_saccos_loan_management.sql": {
+      "sha256": "04efc694f6a9a09954798f3a6933da074ea88372aaf6c09805008c61030a32f3",
+      "bytes": 7564
+    },
+    "118_saccos_lending_products.sql": {
+      "sha256": "5a9684e5dbaf99c83f11d3d740071e136d7b6327ccbc750be1d5b170c6b97210",
+      "bytes": 2322
+    },
+    "119_saccos_treasury.sql": {
+      "sha256": "3645896f5faa4d1ea6d5d40526f77e4c8b9c6e7ea1dd09c99bc23ea5b501b58f",
+      "bytes": 1424
+    },
+    "120_aml_compliance.sql": {
+      "sha256": "fbe83d2cfce19eec1c1dee8b046214fee80143695c0c6d32a4b5236e371c784a",
+      "bytes": 925
+    },
+    "121_remittance_lifecycle.sql": {
+      "sha256": "78d90f5c96617125bdf9be760ace5f6a8ebda523f4ed02322d6347f7c03b71db",
+      "bytes": 3007
+    },
+    "122_merchant_payroll.sql": {
+      "sha256": "dda3b2c6f5635856153e51aac18ef68421e9d2467accab46387365fc2c11a324",
+      "bytes": 2531
+    },
+    "123_sanctions_watchlist.sql": {
+      "sha256": "430b69fcb5d4d9f25c447965dd4de3af1d83d72eae4fb549b51181edf4bea56b",
+      "bytes": 2651
+    },
+    "124_vicoba_mkoba_merge.sql": {
+      "sha256": "605bc17185dc33f0751f2e5c2d41aa9fe5c5e0aec2dbd2f47b3faf7cd2526a0c",
+      "bytes": 1676
+    },
+    "125_vicoba_group_profile.sql": {
+      "sha256": "0c4fe90dfccf831fcbfa7b971d0425e1e0661a48aa7ba13a17d278153a3ee8d3",
+      "bytes": 675
+    },
+    "126_product_isolation.sql": {
+      "sha256": "ebb6788c0f3d26c3492cb1b5b520cd55761a4ad90eb7497163ce0ad5115d5fc0",
+      "bytes": 10025
+    },
+    "127_lending_circles_p0.sql": {
+      "sha256": "7cbbc8200b70003f4b68ba46633778aa0027f7f2b3350a517450c534a9ad8d18",
+      "bytes": 6476
+    },
+    "128_fx_rate_history.sql": {
+      "sha256": "9f5162d57fb41a9343ce6f5b9db0e6c09fca4156c6c3ee569bd34fd220d35038",
+      "bytes": 1689
+    },
+    "129_project_finance_foundation.sql": {
+      "sha256": "a21d733dfd91876b5d283b67abe346eeb7bc2d5013370a7564de4d82e1163bcd",
+      "bytes": 9374
+    },
+    "130_project_updated_at.sql": {
+      "sha256": "c64b3da93f261da2c81c9372eb792bfa374bec4908e72008f1073d5c52fb47c3",
+      "bytes": 562
+    },
+    "131_project_reviews_consultation.sql": {
+      "sha256": "fbd054d34dcb427e1be4738a43bc900141f0f8190e5e8b6b34eea6f83d95318c",
+      "bytes": 3987
+    },
+    "132_project_dividend_payouts.sql": {
+      "sha256": "940cc839416810b3f09f03ab5d1b0d0627df4fe8dbeb7446025ed601ebbb2902",
+      "bytes": 1284
+    },
+    "133_project_funding_advanced.sql": {
+      "sha256": "7a55cf48d0831dc216c83755ad21ff11e923a1f5fc1ec1b6031402aabd1b5822",
+      "bytes": 1681
+    },
+    "134_project_completion_settlement.sql": {
+      "sha256": "215d2aebb5a11cc04e09b2ccf65a10727fefebeadb036c503cce284696b61b39",
+      "bytes": 1266
+    },
+    "135_project_reserve_release.sql": {
+      "sha256": "a4c0ca267f53977fd3d33437ab4aaa528138510f9302815222b2e8743a6e7d68",
+      "bytes": 1017
+    },
+    "136_project_liquidation.sql": {
+      "sha256": "be6d951ba345ae36e11761d5e94b770404e229c4f511c65917289c66d519dde0",
+      "bytes": 2171
+    },
+    "137_project_drawdown_plans.sql": {
+      "sha256": "ef1083cd774cf27af3b6e9ff06a615ad78e69087fa79efa5f565d35c88c3b8d5",
+      "bytes": 2042
+    },
+    "138_project_identity_bridge.sql": {
+      "sha256": "6e18f1f5ef9038129b2c73fedb560cf6f9f00a6b1366d340c51c892c192d386e",
+      "bytes": 625
+    },
+    "138_vicoba_loan_accounting_hardening.sql": {
+      "sha256": "234a579609854aa7dcee050a91bf829e256da143dce710b2cfffa7549cdfbd50",
+      "bytes": 432
+    },
+    "139_financial_finiteness_guard.sql": {
+      "sha256": "ecc538c908b8b82f297bb4f6f3a712117a51e63a301c567fe16e1fab160abbf7",
+      "bytes": 2383
+    },
+    "139_project_agreement_acceptance.sql": {
+      "sha256": "c5eeb627ced038927705de6db50ad255ebbe20350c3e5920c16c7054e8748d72",
+      "bytes": 1142
+    },
+    "139b_financial_invariants.sql": {
+      "sha256": "ba61e37318834f0529f4f3beebc38ad3dcef72774e389f85c5fd7d6f1fc30fa2",
+      "bytes": 2083
+    },
+    "140_agent_settlement_four_eyes.sql": {
+      "sha256": "83d140c0f342c40d525a1bad27cd18add8e8159c7565b95eed865a74f700996c",
+      "bytes": 368
+    },
+    "140_secondary_market_authoritative_identity.sql": {
+      "sha256": "738c86490c59ed896f8327ab608b027afe085c93023ca52f8ca215c283d9ebf0",
+      "bytes": 698
+    },
+    "141_financial_core_savings_ledger.sql": {
+      "sha256": "7687909cdc3e4df71586ba33dbff0cadeebcfe9ec7afa96ae085789c1f104416",
+      "bytes": 468
+    },
+    "142_governance_integrity.sql": {
+      "sha256": "c206294fdb1a73760b2cb0ddc378160a3eda5a3b86527d53151c18de8c36e2c4",
+      "bytes": 2684
+    },
+    "143_governance_integrity_v2.sql": {
+      "sha256": "bc46f3fe3a5ce6fbb5ed4663e1122e6365b37d086c1ae3816e52542528d4183c",
+      "bytes": 2580
+    },
+    "144_transaction_linkage_trigger.sql": {
+      "sha256": "12cc5ca0deed7bde556b1ae3bb9c885fa5669bb08de997f57b5c38943e4397c2",
+      "bytes": 1084
+    },
+    "145_saccos_savings_movement_unique_ref.sql": {
+      "sha256": "8f265c9cd354327def8cb06217d1c5ac07094968c141412ad1ba776bc8a0415b",
+      "bytes": 467
+    },
+    "146_outbox_dispatch_leases.sql": {
+      "sha256": "5ca6a9ae8a5fc737e276a420780bda4e460d7a5672e73e314a0e9534ac2c8326",
+      "bytes": 357
+    },
+    "147_notification_idempotency.sql": {
+      "sha256": "6b1146a3761c9ad4991512becad8c5541dfd8585afd76cfb028b34204563f22b",
+      "bytes": 795
+    },
+    "148_sms_deliveries.sql": {
+      "sha256": "1b0520975446985c715ee843daca2360a732bb53adbead0aee2ce0823f65292c",
+      "bytes": 1845
+    },
+    "149_vicoba_loan_three_tier_approvals.sql": {
+      "sha256": "3dc774ef3863f535d19ab9073e5b0c4c8beb64976085d78188df8927ba820eb7",
+      "bytes": 6091
+    },
+    "150_social_fund_idempotency.sql": {
+      "sha256": "a7561ca6ae10b4ccf8c814f38dad5433a8c772497af8211aec1b76373d387648",
+      "bytes": 807
+    },
+    "151_gov_an_immutable_analytics_snapshots.sql": {
+      "sha256": "3143b2d8e2a2525354b85a4e6a4f1639cd2b0d6f3db37df8f27f6f79eb6b1059",
+      "bytes": 3079
+    },
+    "152_social_fund_case_permissions.sql": {
+      "sha256": "c06e3e47a93fed70584f084904253e9805e79ef789fd89e102a5343fd7823143",
+      "bytes": 1091
+    },
+    "153_social_fund_clearing_account.sql": {
+      "sha256": "bbb148c24de8107b9bd25355dff351788b20f65c4959b6b58ab78106821cbab0",
+      "bytes": 2472
+    },
+    "154_journal_posting_registry.sql": {
+      "sha256": "a702c84cf2f33f84d4cfce14a96d63667a94347ddbb7aaf74ddf877d1579b3ec",
+      "bytes": 2240
+    },
+    "155_social_fund_institution_binding.sql": {
+      "sha256": "1ae142c6fb279717da3ab6129a2d295a5db6115855a33ba6a2d36a626fc13c6a",
+      "bytes": 1697
+    },
+    "156_institution_foundation.sql": {
+      "sha256": "156c943f67803c40cc9e332e08658936ab07e872b6350f438580ffed903a76f8",
+      "bytes": 3157
+    },
+    "157_social_fund_institution_binding.sql": {
+      "sha256": "7fbd2025e8aa1440997d48b3818ba41591c2da20de755dcfa15cd8427c3c0ccf",
+      "bytes": 1115
+    },
+    "158_institution_fk_hardening.sql": {
+      "sha256": "ad1f0e11fbdf563e894a784cec748beebd15301270931f12018cf74b0fa2f0bc",
+      "bytes": 1393
+    },
+    "159_gsf_governance_foundation.sql": {
+      "sha256": "b4bdcdb7cc8e0cb6a31286e9ded2dc3c4eae6067ef146ae2952dc21b9ffb6c46",
+      "bytes": 3962
+    }
+  },
+  "authorization": {
+    "file": "authorization.json",
+    "sha256": "f5e50ffb982f2962a226253c49225abb4f6b56b86009c4688ee8c63ef38ee102",
+    "bytes": 2914
+  }
+}

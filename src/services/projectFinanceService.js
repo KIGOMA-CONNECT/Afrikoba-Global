@@ -118,6 +118,24 @@ async function getEffectiveRule(projectId, client = pool) {
   return r.rows[0] || null;
 }
 
+/**
+ * Rule used to allocate revenue. Phase 71 / OBS-7c: when an amendment was
+ * approved after funding (a FROZEN version exists below the current ACTIVE one),
+ * the funded investments keep their original terms: the latest FROZEN version.
+ * Otherwise this is getEffectiveRule (unchanged behaviour).
+ */
+async function getAllocationRule(projectId, client = pool) {
+  const eff = await getEffectiveRule(projectId, client);
+  if (!eff || eff.status !== 'ACTIVE') return eff;
+  const frozen = await client.query(
+    `SELECT * FROM waterfall_allocation_rules
+     WHERE project_id = $1 AND status = 'FROZEN' AND version < $2
+     ORDER BY version DESC LIMIT 1`,
+    [projectId, eff.version]
+  );
+  return frozen.rows[0] || eff;
+}
+
 /** Rules list for a project (all versions). */
 async function listWaterfallRules(projectId) {
   const r = await pool.query(
@@ -174,6 +192,10 @@ async function proposeWaterfallRules(userId, projectId, data) {
 /**
  * Expert/admin approves a DRAFT or PROPOSED rule → ACTIVE. Marks any prior
  * non-frozen rule SUPERSEDED. If a later version already took effect, skip.
+ * Phase 71 / OBS-7c (owner decision): a FROZEN rule is immutable. Approving an
+ * amendment never changes a FROZEN row; it only activates the new version, and
+ * revenue for the funded investments keeps using the FROZEN terms
+ * (getAllocationRule). The audit row is written in the same transaction.
  */
 async function approveWaterfallRule(userId, ruleId, { effective_date } = {}) {
   const rule = await pool.query('SELECT * FROM waterfall_allocation_rules WHERE id = $1', [ruleId]);
@@ -196,16 +218,29 @@ async function approveWaterfallRule(userId, ruleId, { effective_date } = {}) {
     await client.query(
       `UPDATE waterfall_allocation_rules
        SET status = 'SUPERSEDED', updated_at = NOW()
-       WHERE project_id = $1 AND id <> $2 AND status NOT IN ('SUPERSEDED')`,
+       WHERE project_id = $1 AND id <> $2 AND status NOT IN ('SUPERSEDED', 'FROZEN')`,
       [cur.project_id, cur.id]
     );
-    await client.query(
+    const activated = await client.query(
       `UPDATE waterfall_allocation_rules
        SET status = 'ACTIVE', approved_by = $2, approved_at = NOW(), effective_date = $3, updated_at = NOW()
-       WHERE id = $1`,
+       WHERE id = $1 AND status IN ('DRAFT', 'PROPOSED')
+       RETURNING approved_at`,
       [cur.id, userId, effective]
     );
-    await logAudit({ eventType: 'WATERFALL_RULES_APPROVED', action: 'APPROVE', entityType: 'WATERFALL_RULE', userId, entityId: cur.id, afterData: { project_id: cur.project_id, version: cur.version, effective_date: effective } });
+    if (activated.rowCount !== 1) throw new ValidityError('Rule imebadilika wakati wa kuidhinisha; jaribu tena.', 409);
+    const prev = cur.supersedes_rule_id
+      ? (await client.query('SELECT id, version, status FROM waterfall_allocation_rules WHERE id = $1', [cur.supersedes_rule_id])).rows[0]
+      : null;
+    await logAudit({
+      client,
+      eventType: 'WATERFALL_RULES_APPROVED', action: 'APPROVE', entityType: 'WATERFALL_RULE', userId, entityId: cur.id,
+      afterData: {
+        project_id: cur.project_id, version: cur.version, new_version: cur.version, effective_date: String(effective).slice(0, 10),
+        previous_rule_id: prev ? prev.id : null, previous_version: prev ? prev.version : null, previous_status: prev ? prev.status : null,
+        proposed_by: cur.proposed_by, proposed_at: cur.proposed_at, approved_by: userId, approved_at: activated.rows[0].approved_at,
+      },
+    });
     await client.query('COMMIT');
   } catch (e) {
     await client.query('ROLLBACK').catch(() => {});
@@ -216,55 +251,139 @@ async function approveWaterfallRule(userId, ruleId, { effective_date } = {}) {
   return (await pool.query('SELECT * FROM waterfall_allocation_rules WHERE id = $1', [ruleId])).rows[0];
 }
 
-async function setWaterfallFrozen(ruleId, frozen) {
+// Phase 71 / OBS-7c: the only allowed transition is ACTIVE -> FROZEN. A FROZEN
+// rule is immutable (owner decision); DRAFT/PROPOSED rules become effective only
+// through approveWaterfallRule, which records the approver.
+async function setWaterfallFrozen(ruleId) {
   const r = await pool.query(
-    `UPDATE waterfall_allocation_rules SET status = $2, updated_at = NOW()
-     WHERE id = $1 RETURNING *`,
-    [ruleId, frozen ? 'FROZEN' : 'ACTIVE']
+    `UPDATE waterfall_allocation_rules SET status = 'FROZEN', updated_at = NOW()
+     WHERE id = $1 AND status = 'ACTIVE' RETURNING *`,
+    [ruleId]
   );
-  if (r.rows.length === 0) throw new ValidityError('Waterfall rule haipatikani.', 404);
+  if (r.rows.length === 0) {
+    const cur = await pool.query('SELECT status FROM waterfall_allocation_rules WHERE id = $1', [ruleId]);
+    if (cur.rows.length === 0) throw new ValidityError('Waterfall rule haipatikani.', 404);
+    throw new ValidityError(`Rule iko katika hali '${cur.rows[0].status}'; ni rule ACTIVE pekee inayoweza kugandishwa.`, 409);
+  }
   return r.rows[0];
 }
 
 async function freezeWaterfallRule(userId, ruleId) {
-  const rule = await setWaterfallFrozen(ruleId, true);
+  const rule = await setWaterfallFrozen(ruleId);
   await logAudit({ eventType: 'WATERFALL_RULES_FROZEN', action: 'FREEZE', entityType: 'WATERFALL_RULE', userId, entityId: ruleId });
   return rule;
 }
 
 async function unfreezeWaterfallRule(userId, ruleId) {
-  const rule = await setWaterfallFrozen(ruleId, false);
-  await logAudit({ eventType: 'WATERFALL_RULES_UNFROZEN', action: 'UNFREEZE', entityType: 'WATERFALL_RULE', userId, entityId: ruleId });
-  return rule;
+  // Phase 71 / OBS-7c: FROZEN rules are immutable (owner decision). Changes go
+  // through a new version (proposeWaterfallRules + approveWaterfallRule).
+  const cur = await pool.query('SELECT status FROM waterfall_allocation_rules WHERE id = $1', [ruleId]);
+  if (cur.rows.length === 0) throw new ValidityError('Waterfall rule haipatikani.', 404);
+  await logAudit({ eventType: 'WATERFALL_RULES_UNFREEZE_REFUSED', action: 'UNFREEZE_REFUSED', entityType: 'WATERFALL_RULE', userId, entityId: ruleId, afterData: { status: cur.rows[0].status } });
+  throw new ValidityError('Rule iliyogandishwa haiwezi kubadilishwa; pendekeza toleo jipya litakaloidhinishwa.', 409);
 }
 
 /**
- * Called after a successful investment. Ensures the project's controlled
- * account balance projection tracks the ledger, and freezes the active
- * waterfall rule from the moment funding begins (Phase 0/1 locking).
+ * Phase 71 / OBS-7. Escrow projection and waterfall freeze for ONE investment,
+ * written INSIDE projectService.invest's transaction. The caller must already
+ * hold the projects row FOR UPDATE, have re-checked PUBLISHED/FUNDING, debited
+ * the wallet and incremented amount_raised. Lock order (the same as refunds and
+ * completion): projects -> controlled_project_accounts -> waterfall_allocation_rules.
+ * Any failure throws, so the whole investment rolls back.
  */
-async function onFundingReceived({ projectId, amount, firstFunding }) {
-  const p = await getProject(projectId);
-  const raised = Number(p.amount_raised) || 0;
+async function recordFundingInTransaction({ client, projectId, amount }) {
+  if (!client) throw new Error('recordFundingInTransaction: a transaction client is required');
+  const amt = Number(amount);
+  if (!Number.isFinite(amt) || amt <= 0) throw new ValidityError('Kiasi si sahihi.');
+  const p = (await client.query('SELECT * FROM projects WHERE id = $1', [projectId])).rows[0];
+  if (!p) throw new ValidityError('Mradi haupatikani.', 404);
+  const raisedAfter = Number(p.amount_raised) || 0;
+  const raisedBefore = round2(raisedAfter - amt);
   const target = Number(p.capital_required) || 0;
-  const cur = p.currency_code || 'TZS';
 
-  await pool.query(
-    `INSERT INTO controlled_project_accounts
-       (project_id, escrow_balance, remaining_balance, funding_target, currency, is_locked, status)
-     VALUES ($1, $2, $2, $3, $4, TRUE, 'ACTIVE')
-     ON CONFLICT (project_id) DO UPDATE
-       SET escrow_balance = $2, remaining_balance = $2, funding_target = $3,
-           updated_at = NOW()`,
-    [projectId, raised, target, cur]
+  const esc = await client.query(
+    'SELECT status FROM controlled_project_accounts WHERE project_id = $1 FOR UPDATE', [projectId]
   );
+  if (esc.rows.length === 0) {
+    // No escrow yet: open it with the verified total raised (read under the lock).
+    await client.query(
+      `INSERT INTO controlled_project_accounts
+         (project_id, escrow_balance, remaining_balance, funding_target, currency, is_locked, status)
+       VALUES ($1, $2, $2, $3, $4, TRUE, 'ACTIVE')`,
+      [projectId, raisedAfter, target, p.currency_code || 'TZS']
+    );
+  } else {
+    if (esc.rows[0].status === 'CLOSED') {
+      throw new ValidityError('Akaunti ya escrow ya mradi imefungwa; uwekezaji haukubaliki.', 409);
+    }
+    // First funding of a row that already exists (e.g. a legacy pre-created row
+    // holding no money): start from this investment. Otherwise add exactly it.
+    const u = await client.query(
+      `UPDATE controlled_project_accounts
+          SET escrow_balance    = CASE WHEN $3::numeric = 0 THEN $2::numeric ELSE escrow_balance + $2::numeric END,
+              remaining_balance = CASE WHEN $3::numeric = 0 THEN $2::numeric ELSE remaining_balance + $2::numeric END,
+              funding_target = $4, updated_at = NOW()
+        WHERE project_id = $1 AND status <> 'CLOSED'`,
+      [projectId, amt, raisedBefore, target]
+    );
+    if (u.rowCount !== 1) throw new ValidityError('Akaunti ya escrow ya mradi imebadilika; jaribu tena.', 409);
+  }
 
-  if (firstFunding) {
-    const rule = await getEffectiveRule(projectId);
-    if (rule && ['ACTIVE'].includes(rule.status)) {
-      await setWaterfallFrozen(rule.id, true);
+  // Freeze the approved rule from the moment funding begins (once per project).
+  const frozen = await client.query(
+    "SELECT 1 FROM waterfall_allocation_rules WHERE project_id = $1 AND status = 'FROZEN' LIMIT 1", [projectId]
+  );
+  if (frozen.rows.length === 0) {
+    const rule = await getEffectiveRule(projectId, client);
+    if (rule && rule.status === 'ACTIVE') {
+      const f = await client.query(
+        "UPDATE waterfall_allocation_rules SET status = 'FROZEN', updated_at = NOW() WHERE id = $1 AND status = 'ACTIVE'",
+        [rule.id]
+      );
+      if (f.rowCount !== 1) throw new ValidityError('Waterfall rule imebadilika wakati wa uwekezaji; jaribu tena.', 409);
     }
   }
+}
+
+/**
+ * Phase 71 / F2 (owner decision): a refund is rejected whenever the available
+ * escrow is insufficient. Replaces GREATEST(x - amt, 0), which floored a
+ * shortfall to 0 and hid it. Both amount_raised and the escrow's
+ * remaining_balance must cover the refund; otherwise 409 and the caller's
+ * transaction rolls back (no wallet credit, no investment change, no journal).
+ * The caller must hold the projects row FOR UPDATE (refund lock order).
+ */
+async function applyRefundToEscrow({ client, projectId, amount }) {
+  if (!client) throw new Error('applyRefundToEscrow: a transaction client is required');
+  const amt = Number(amount);
+  const raised = await client.query(
+    'UPDATE projects SET amount_raised = amount_raised - $1, updated_at = NOW() WHERE id = $2 AND amount_raised >= $1',
+    [amt, projectId]
+  );
+  const escrow = raised.rowCount === 1
+    ? await client.query(
+      `UPDATE controlled_project_accounts
+          SET remaining_balance = remaining_balance - $1, updated_at = NOW()
+        WHERE project_id = $2 AND remaining_balance >= $1`,
+      [amt, projectId]
+    )
+    : { rowCount: 0 };
+  if (raised.rowCount !== 1 || escrow.rowCount !== 1) {
+    const short = new ValidityError(
+      'Salio la escrow la mradi halitoshi kurejesha uwekezaji huu; hakuna kilichorejeshwa.', 409);
+    short.code = 'FUNDING_REFUND_ESCROW_INSUFFICIENT';
+    throw short;
+  }
+}
+
+/**
+ * Called AFTER a committed investment: owner notification only. It must not
+ * write escrow or waterfall state (Phase 71 / OBS-7): those are written inside
+ * the investment transaction by recordFundingInTransaction, so a late, repeated
+ * or failed call here can never restore or skip money state.
+ */
+async function onFundingReceived({ projectId, amount }) {
+  const p = await getProject(projectId);
 
   const owner = await pool.query('SELECT id FROM users WHERE id = $1', [p.owner_user_id]);
   if (owner.rows.length > 0) {
@@ -292,12 +411,17 @@ async function onFundingReceived({ projectId, amount, firstFunding }) {
  *      full lineage in waterfall_allocation_records.
  * Percentages come exclusively from the ACTIVE/FROZEN rule (never code).
  */
-async function processIncomingRevenue(userId, projectId, { amount, revenue_type, unique_reference, description } = {}) {
+async function processIncomingRevenue(userId, projectId, { amount, revenue_type, unique_reference, description } = {}, actorRole = null) {
   const amt = Number(amount);
   if (!amt || amt <= 0) throw new ValidityError('Kiasi si sahihi.');
   const p = await getProject(projectId);
+  // Phase 71 / E0d: revenue becomes investor entitlements that payProjectDividends
+  // pays out, so only the project owner or ADMIN/MODERATOR/EXPERT may record it.
+  if (p.owner_user_id !== userId && !isExpert(actorRole)) {
+    throw new ValidityError('Huna ruhusa za mradi huu.', 403);
+  }
 
-  const rule = await getEffectiveRule(projectId);
+  const rule = await getAllocationRule(projectId);
   if (!rule) throw new ValidityError('Waterfall rules hazijawekwa kwa mradi huu.');
   if (!['ACTIVE', 'FROZEN'].includes(rule.status)) throw new ValidityError('Waterfall rules bado hazijaidhinishwa.');
 
@@ -576,7 +700,15 @@ async function requestDisbursement(
   try {
     if (ownsTransaction) await client.query('BEGIN');
 
-    await getOwnerOnly(projectId, userId, client);
+    const ownedProject = await getOwnerOnly(projectId, userId, client);
+    // Phase 71 / F2 (owner decision): disbursements only for an ACTIVE project.
+    // executeDisbursement re-checks this under the project row lock.
+    if (ownedProject.status !== 'ACTIVE') {
+      const notActive = new ValidityError(
+        `Malipo ya mradi yanaruhusiwa tu mradi ukiwa ACTIVE (sasa: ${ownedProject.status}).`, 409);
+      notActive.code = 'DISBURSEMENT_PROJECT_NOT_ACTIVE';
+      throw notActive;
+    }
 
     const funded = await client.query(
       `SELECT 1
@@ -966,6 +1098,21 @@ async function executeDisbursement(userId, projectId, requestId) {
 
   try {
     await client.query('BEGIN');
+
+    /*
+     * Phase 71 / F2 (owner decision): a disbursement is executed only for an
+     * ACTIVE project. The project row is locked FIRST, the same lock order as
+     * invest, refunds (E0b), forceCloseFunding and completeProject (E0c), so a
+     * refund, cancellation or completion of this project cannot interleave.
+     */
+    const lockedProject = await client.query('SELECT id, status FROM projects WHERE id = $1 FOR UPDATE', [projectId]);
+    if (lockedProject.rows.length === 0) throw new ValidityError('Mradi haupatikani.', 404);
+    if (lockedProject.rows[0].status !== 'ACTIVE') {
+      const notActive = new ValidityError(
+        `Malipo ya mradi yanaruhusiwa tu mradi ukiwa ACTIVE (sasa: ${lockedProject.rows[0].status}).`, 409);
+      notActive.code = 'DISBURSEMENT_PROJECT_NOT_ACTIVE';
+      throw notActive;
+    }
 
     /*
      * Lock the exact request before checking or executing it.
@@ -1638,9 +1785,32 @@ async function payProjectDividends({ projectId, actorUserId, actorRole }) {
     throw new ValidityError('Huna mamlaka ya kufanya malipo ya mgawanyo.', 403);
   }
   const client = await pool.connect();
+  let committed = false; // errors after COMMIT are never mapped to 409
+  let stage = 'start';  // last step entered; logged when a payout is refused
   try {
     await client.query('BEGIN');
     const p = await getProject(projectId, client);
+
+    // Phase 71 / E0 (B2). Lock order, always the same:
+    //   1. this project's PENDING payout rows (payouts table only), ORDER BY
+    //      investor_user_id: a parallel payout waits here; once the first one
+    //      commits, the rows are re-evaluated, nothing is PENDING, and it
+    //      returns already_paid;
+    //   2. the investors' users rows, ORDER BY id (below, before the first
+    //      creditWallet): avoids the FOR KEY SHARE -> FOR UPDATE upgrade
+    //      deadlock inside creditWallet between payouts of different projects
+    //      that share investors.
+    // A lock wait over lock_timeout (55P03, src/config/db.js 3000 ms) or a
+    // deadlock (40P01) before COMMIT becomes 409 DIVIDEND_PAYOUT_IN_PROGRESS
+    // (catch block); every other database error propagates unchanged.
+    stage = 'payout-lock';
+    await client.query(
+      `SELECT id FROM project_investor_payouts
+       WHERE project_id = $1 AND status = 'PENDING'
+       ORDER BY investor_user_id, id
+       FOR UPDATE OF project_investor_payouts`,
+      [projectId]
+    );
 
     const pendingRes = await client.query(
       `SELECT investor_user_id, SUM(entitlement)::numeric AS total_entitlement, COUNT(*)::int AS row_count
@@ -1655,11 +1825,18 @@ async function payProjectDividends({ projectId, actorUserId, actorRole }) {
       return { paid: [], total: 0, already_paid: true };
     }
 
+    stage = 'users-lock';
+    await client.query(
+      'SELECT id FROM users WHERE id = ANY($1::int[]) ORDER BY id FOR UPDATE',
+      [pending.map((row) => row.investor_user_id)]
+    );
+
     const txnRef = `${generateReference('PROJECT_DIVIDEND_PAYOUT')}-${projectId}`;
     const paid = [];
     for (const row of pending) {
       const amt = Number(row.total_entitlement);
       if (amt <= 0) continue;
+      stage = 'credit';
       const res = await fin.creditWallet({
         client,
         userId: row.investor_user_id,
@@ -1671,15 +1848,25 @@ async function payProjectDividends({ projectId, actorUserId, actorRole }) {
         productRef: String(projectId),
       });
       if (res.dedup) continue;
-      await client.query(
+      stage = 'mark-paid';
+      const marked = await client.query(
         `UPDATE project_investor_payouts SET status = 'PAID', paid_at = NOW(), payout_setting_reference = $1
          WHERE project_id = $2 AND investor_user_id = $3 AND status = 'PENDING'`,
         [txnRef, projectId, row.investor_user_id]
       );
+      // Every PENDING row summed for this investor must flip to PAID, no more
+      // and no fewer; otherwise roll back the whole payout (credits included).
+      if (marked.rowCount !== Number(row.row_count)) {
+        const changed = new ValidityError(
+          'Hali ya malipo ya mgawanyo imebadilika wakati wa kulipa; hakuna kilicholipwa, jaribu tena.', 409);
+        changed.code = 'DIVIDEND_STATE_CHANGED';
+        throw changed;
+      }
       paid.push({ investor_user_id: row.investor_user_id, amount: amt });
     }
 
     await client.query('COMMIT');
+    committed = true;
 
     await logAudit({
       eventType: 'PROJECT_DIVIDEND_PAID', action: 'CREATE', entityType: 'PROJECT',
@@ -1708,6 +1895,17 @@ async function payProjectDividends({ projectId, actorUserId, actorRole }) {
     return { paid, total: round2(paid.reduce((s, x) => s + Number(x.amount), 0)), already_paid: paid.length === 0 };
   } catch (e) {
     await client.query('ROLLBACK').catch(() => {});
+    if (!committed && e && (e.code === '55P03' || e.code === '40P01')) {
+      require('../utils/logger').warn(
+        'PROJECT_DIVIDEND_PAYOUT',
+        `payout for project ${projectId} not completed at stage ${stage} (${e.code}): ${e.message}`,
+        { code: e.code, projectId, stage, table: e.table || null, routine: e.routine || null }
+      );
+      const busy = new ValidityError(
+        'Malipo hayakukamilika kwa sababu ya shughuli nyingine zinazoendelea. Hakuna kilicholipwa. Jaribu tena baadaye.', 409);
+      busy.code = 'DIVIDEND_PAYOUT_IN_PROGRESS';
+      throw busy;
+    }
     throw e;
   } finally {
     client.release();
@@ -1853,22 +2051,61 @@ async function completeProject({ projectId, actorUserId, actorRole }) {
   }
 
   const client = await pool.connect();
+  let txCommitted = false; // errors after COMMIT are never mapped to 409
+  let stage = 'start';   // last step entered; logged when a completion is refused
+  const stateChanged = () => {
+    const e = new ValidityError('Hali ya mradi imebadilika wakati wa kukamilisha; hakuna kilichofanyika, jaribu tena.', 409);
+    e.code = 'PROJECT_COMPLETE_STATE_CHANGED';
+    return e;
+  };
   try {
     await client.query('BEGIN');
+    // Phase 71 / E0c. Lock order, always (the same family as the E0b refunds;
+    // executeDisbursement takes the owner's users row before the escrow too):
+    //   1. the project row FOR UPDATE,
+    //   2. the project's CONFIRMED investments FOR UPDATE ORDER BY id,
+    //   3. the investors' and the owner's users rows ORDER BY id FOR UPDATE,
+    //   4. the controlled_project_accounts (escrow) row FOR UPDATE,
+    // all before the first creditWallet. A parallel completion waits at step 1
+    // and is answered under the lock; the escrow is read under its lock, so a
+    // disbursement or refund cannot take money from it between the read and the
+    // UPDATE. Taking the users rows first means creditWallet's KEY SHARE ->
+    // FOR UPDATE upgrade cannot deadlock against another credit of the same user.
+    stage = 'project-lock';
+    const locked = await client.query('SELECT id, status FROM projects WHERE id = $1 FOR UPDATE', [projectId]);
+    if (locked.rows.length === 0) throw new ValidityError('Mradi haupatikani.', 404);
+    const settled = await client.query('SELECT * FROM project_settlements WHERE project_id = $1', [projectId]);
+    if (settled.rows.length > 0) {
+      await client.query('ROLLBACK');
+      return { success: true, already_completed: true, settlement: settled.rows[0] };
+    }
+    if (locked.rows[0].status !== 'ACTIVE') {
+      throw new ValidityError(`Mradi lazima uwe ACTIVE kwa kukamilika. (sasa: ${locked.rows[0].status})`);
+    }
 
+    stage = 'investments-lock';
     const invRes = await client.query(
       `SELECT investor_user_id, amount, participation_pct
        FROM project_investments WHERE project_id = $1 AND status = 'CONFIRMED'
-       ORDER BY id ASC`,
+       ORDER BY id ASC
+       FOR UPDATE`,
       [projectId]
     );
     const investors = invRes.rows;
     const totalRaised = round2(investors.reduce((s, i) => s + Number(i.amount), 0));
 
+    stage = 'users-lock';
+    await client.query(
+      'SELECT id FROM users WHERE id = ANY($1::int[]) ORDER BY id FOR UPDATE',
+      [[...new Set([p.owner_user_id, ...investors.map((i) => i.investor_user_id)])]]
+    );
+
+    stage = 'escrow-lock';
     const escrowRes = await client.query(
-      `SELECT remaining_balance FROM controlled_project_accounts WHERE project_id = $1 AND status <> 'CLOSED' LIMIT 1`,
+      `SELECT remaining_balance FROM controlled_project_accounts WHERE project_id = $1 AND status <> 'CLOSED' LIMIT 1 FOR UPDATE`,
       [projectId]
     );
+    const escrowRaw = escrowRes.rows.length > 0 ? escrowRes.rows[0].remaining_balance : null;
     const escrow = escrowRes.rows.length > 0 ? Number(escrowRes.rows[0].remaining_balance || 0) : 0;
     // Control total so retained items never exceed escrow.
     const reserveRes = await client.query(
@@ -1882,6 +2119,7 @@ async function completeProject({ projectId, actorUserId, actorRole }) {
     let returnedToInvestors = 0;
     let ownerShare = 0;
 
+    stage = 'credit';
     if (escrow > 0 && investors.length > 0) {
       // Pro-rata return by participation (weight), last investor absorbs rounding.
       let committed = 0;
@@ -1955,13 +2193,18 @@ async function completeProject({ projectId, actorUserId, actorRole }) {
        FROM project_milestones WHERE project_id = $1`, [projectId]
     );
 
-    await client.query(
+    // The escrow row is locked and was read above: it must still hold exactly
+    // that balance, and exactly that row (or none, if there was none) closes.
+    stage = 'close-escrow';
+    const escUpd = await client.query(
       `UPDATE controlled_project_accounts
        SET remaining_balance = 0, status = 'CLOSED', updated_at = NOW()
-       WHERE project_id = $1 AND status <> 'CLOSED'`,
-      [projectId]
+       WHERE project_id = $1 AND status <> 'CLOSED' AND remaining_balance IS NOT DISTINCT FROM $2::numeric`,
+      [projectId, escrowRaw]
     );
+    if (escUpd.rowCount !== escrowRes.rows.length) throw stateChanged();
 
+    stage = 'settlement';
     await client.query(
       `INSERT INTO project_settlements
          (project_id, invested_total, escrow_balance, returned_to_investors, owner_received,
@@ -1978,11 +2221,13 @@ async function completeProject({ projectId, actorUserId, actorRole }) {
        }), actorUserId]
     );
 
+    stage = 'complete-project';
     const upd = await client.query(
       `UPDATE projects SET status = 'COMPLETED', completed_at = NOW(), updated_at = NOW()
-       WHERE id = $1 RETURNING *`,
+       WHERE id = $1 AND status = 'ACTIVE' RETURNING *`,
       [projectId]
     );
+    if (upd.rowCount !== 1) throw stateChanged();
 
     await logAudit({
       eventType: 'PROJECT_COMPLETED', action: 'COMPLETE', entityType: 'PROJECT',
@@ -1992,6 +2237,7 @@ async function completeProject({ projectId, actorUserId, actorRole }) {
     });
 
     await client.query('COMMIT');
+    txCommitted = true;
 
     // Transactional notifications after COMMIT.
     await createNotification(p.owner_user_id, {
@@ -2016,7 +2262,20 @@ async function completeProject({ projectId, actorUserId, actorRole }) {
     return { success: true, project: upd.rows[0], settlement: { invested_total: totalRaised, escrow_balance: escrow, returned_to_investors: returnedToInvestors, owner_received: ownerShare, reserve_released: reserveTotal } };
   } catch (e) {
     await client.query('ROLLBACK').catch(() => {});
-    if (String(e.message || '').toLowerCase().includes('duplicate key')) {
+    if (!txCommitted && e && (e.code === '55P03' || e.code === '40P01')) {
+      require('../utils/logger').warn(
+        'PROJECT_COMPLETE',
+        `completeProject for project ${projectId} not completed at stage ${stage} (${e.code}): ${e.message}`,
+        { code: e.code, projectId, path: 'completeProject', stage, table: e.table || null, routine: e.routine || null }
+      );
+      const busy = new ValidityError(
+        'Ukamilishaji wa mradi haukukamilika kwa sababu ya shughuli nyingine zinazoendelea. Hakuna kilichofanyika. Jaribu tena baadaye.', 409);
+      busy.code = 'PROJECT_COMPLETE_IN_PROGRESS';
+      throw busy;
+    }
+    // Last line of defence only (the settlement is checked under the project
+    // lock above): UNIQUE (project_id) on project_settlements, migration 134.
+    if (!txCommitted && e && e.code === '23505' && e.constraint === 'project_settlements_project_id_key') {
       const s = await pool.query('SELECT * FROM project_settlements WHERE project_id = $1', [projectId]);
       if (s.rows.length > 0) return { success: true, already_completed: true, settlement: s.rows[0] };
     }
@@ -2590,39 +2849,71 @@ async function forceCloseFunding(userId, role, projectId, { action } = {}) {
     throw new ValidityError('Urefu wa urejeshaji unaruhusu hali ya FUNDING/PUBLISHED/EXPIRED tu.');
   }
 
-  const invRes = await pool.query(
-    "SELECT id, investor_user_id, amount FROM project_investments WHERE project_id = $1 AND status = 'CONFIRMED'", [projectId]
-  );
-  if (invRes.rows.length === 0) throw new ValidityError('Hakuna uwekezaji uliothibitishwa kurejeshwa.');
-
   const client = await pool.connect();
+  let committed = false; // errors after COMMIT are never mapped to 409
+  let stage = 'start';   // last step entered; logged when a refund is refused
+  let invRes;
+  const refundNotices = []; // sent only after COMMIT (backlog #25)
   try {
     await client.query('BEGIN');
+    // Phase 71 / E0b. Lock order, the same in refundInvestment
+    // (src/services/projectService.js), always:
+    //   1. the project row FOR UPDATE,
+    //   2. the project's CONFIRMED investments FOR UPDATE ORDER BY id,
+    //   3. the investors' users rows ORDER BY id FOR UPDATE,
+    // all before the first creditWallet. A parallel refund of the same project
+    // (either path) waits at step 1 and then re-checks the project status and
+    // the CONFIRMED rows under the lock, so nothing is refunded twice. Taking
+    // the users rows first means creditWallet's KEY SHARE -> FOR UPDATE upgrade
+    // cannot deadlock against another refund of the same investor.
+    stage = 'project-lock';
+    const locked = await client.query('SELECT id, status FROM projects WHERE id = $1 FOR UPDATE', [projectId]);
+    if (locked.rows.length === 0) throw new ValidityError('Mradi haupatikani.', 404);
+    if (!['FUNDING', 'PUBLISHED', 'EXPIRED'].includes(locked.rows[0].status)) {
+      throw new ValidityError('Urefu wa urejeshaji unaruhusu hali ya FUNDING/PUBLISHED/EXPIRED tu.');
+    }
+    stage = 'investments-lock';
+    invRes = await client.query(
+      `SELECT id, investor_user_id, amount FROM project_investments
+       WHERE project_id = $1 AND status = 'CONFIRMED'
+       ORDER BY id
+       FOR UPDATE`,
+      [projectId]
+    );
+    if (invRes.rows.length === 0) throw new ValidityError('Hakuna uwekezaji uliothibitishwa kurejeshwa.');
+    stage = 'users-lock';
+    await client.query(
+      'SELECT id FROM users WHERE id = ANY($1::int[]) ORDER BY id FOR UPDATE',
+      [[...new Set(invRes.rows.map((inv) => inv.investor_user_id))]]
+    );
     for (const inv of invRes.rows) {
       const amt = Number(inv.amount);
       const ref = generateReference('PREF');
-      await client.query(
-        "UPDATE project_investments SET refund_reference = $1, refunded_at = NOW(), status = 'REFUNDED' WHERE id = $2",
+      stage = 'mark-refunded';
+      const marked = await client.query(
+        "UPDATE project_investments SET refund_reference = $1, refunded_at = NOW(), status = 'REFUNDED' WHERE id = $2 AND status = 'CONFIRMED'",
         [ref, inv.id]
       );
-      await client.query('UPDATE projects SET amount_raised = GREATEST(amount_raised - $1, 0) WHERE id = $2', [amt, projectId]);
-      await client.query(
-        `UPDATE controlled_project_accounts SET remaining_balance = GREATEST(remaining_balance - $1, 0), updated_at = NOW()
-         WHERE project_id = $2`, [amt, projectId]
-      );
+      // The row is locked and was read CONFIRMED: exactly one row must flip.
+      if (marked.rowCount !== 1) {
+        const changed = new ValidityError('Hali ya uwekezaji imebadilika wakati wa kurejesha; hakuna kilichorejeshwa, jaribu tena.', 409);
+        changed.code = 'FUNDING_REFUND_STATE_CHANGED';
+        throw changed;
+      }
+      stage = 'escrow';
+      await applyRefundToEscrow({ client, projectId, amount: amt });
+      stage = 'credit';
       await fin.creditWallet({ client, userId: inv.investor_user_id, amount: amt, reference: ref, fromAccount: INVESTMENT_ACCOUNT, description: 'Funding cancelled refund' });
       await client.query(
         `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
          VALUES ($1,$2,$3,0,$3,'SUCCESS','PROJECT_REFUND',$4)`,
         [ref, inv.investor_user_id, amt, JSON.stringify({ project_id: projectId, investment_id: inv.id, refund_reference: ref })]
       );
-      createNotification(inv.investor_user_id, {
-        title: 'Uwekezaji umerudishwa',
-        body: `Uwekezaji wako TZS ${amt.toLocaleString('en-US')} katika mradi umerejeshwa kwa kufuta ufadhili. Rejea: ${ref}`,
-        type: 'PROJECT', entityType: 'PROJECT', entityId: projectId,
-      }).catch(() => {});
+      // Phase 71 / #25: notified only after COMMIT (below), as refundInvestment.
+      refundNotices.push({ userId: inv.investor_user_id, amt, ref });
     }
 
+    stage = 'close-project';
     await client.query("UPDATE projects SET status = 'CANCELLED', amount_raised = 0, updated_at = NOW() WHERE id = $1", [projectId]);
     await client.query("UPDATE controlled_project_accounts SET remaining_balance = 0, status = 'CLOSED', updated_at = NOW() WHERE project_id = $1", [projectId]);
     await client.query(
@@ -2631,11 +2922,33 @@ async function forceCloseFunding(userId, role, projectId, { action } = {}) {
       [projectId, userId, JSON.stringify({ refunded_count: invRes.rows.length })]
     );
     await client.query('COMMIT');
+    committed = true;
   } catch (e) {
     await client.query('ROLLBACK').catch(() => {});
+    if (!committed && e && (e.code === '55P03' || e.code === '40P01')) {
+      require('../utils/logger').warn(
+        'PROJECT_FUNDING_REFUND',
+        `forceCloseFunding refund for project ${projectId} not completed at stage ${stage} (${e.code}): ${e.message}`,
+        { code: e.code, projectId, path: 'forceCloseFunding', stage, table: e.table || null, routine: e.routine || null }
+      );
+      const busy = new ValidityError(
+        'Urejeshaji wa uwekezaji haukukamilika kwa sababu ya shughuli nyingine zinazoendelea. Hakuna kilichorejeshwa. Jaribu tena baadaye.', 409);
+      busy.code = 'FUNDING_REFUND_IN_PROGRESS';
+      throw busy;
+    }
     throw e;
   } finally {
     client.release();
+  }
+
+  // After COMMIT and after the refund's locks are released: a rolled-back refund
+  // sends nothing, and the FK check no longer waits on the investors' users rows.
+  for (const n of refundNotices) {
+    await createNotification(n.userId, {
+      title: 'Uwekezaji umerudishwa',
+      body: `Uwekezaji wako TZS ${n.amt.toLocaleString('en-US')} katika mradi umerejeshwa kwa kufuta ufadhili. Rejea: ${n.ref}`,
+      type: 'PROJECT', entityType: 'PROJECT', entityId: projectId,
+    }).catch(() => {});
   }
 
   return { success: true, status: 'CANCELLED', refunded_count: invRes.rows.length };
@@ -2672,13 +2985,15 @@ async function getInvestorStatement({ userId, role }, projectId) {
     return row ? Number(row.amount || 0) : 0;
   })();
 
-  const ruleRes = await pool.query(
-    `SELECT ${RULE_COLUMNS.join(', ')}
-       FROM waterfall_allocation_rules WHERE project_id = $1 ORDER BY version DESC LIMIT 1`,
-    [projectId]
-  );
-  const waterfallConfig = ruleRes.rows[0]
-    ? Object.fromEntries(WATERFALL_STEPS.map((s) => [s.key, Number(ruleRes.rows[0][s.column] || 0)]))
+  // Phase 71 / F4: show the rule revenue is allocated with (getAllocationRule,
+  // OBS-7c: the FROZEN terms of the funded investments), and only when
+  // processIncomingRevenue would accept it (ACTIVE or FROZEN). Previously the
+  // highest version was shown, even an unapproved draft/proposal or an amendment
+  // that does not apply to the funded investments.
+  const allocRule = await getAllocationRule(projectId);
+  const shownRule = allocRule && ['ACTIVE', 'FROZEN'].includes(allocRule.status) ? allocRule : null;
+  const waterfallConfig = shownRule
+    ? Object.fromEntries(WATERFALL_STEPS.map((s) => [s.key, Number(shownRule[s.column] || 0)]))
     : {};
 
   const invested = invRes.rows.filter((r) => r.status === 'CONFIRMED')
@@ -9419,6 +9734,8 @@ module.exports = {
   WATERFALL_STEPS,
   isExpert,
   onFundingReceived,
+  recordFundingInTransaction,
+  applyRefundToEscrow,
   listWaterfallRules,
   createInitialRules,
   proposeWaterfallRules,

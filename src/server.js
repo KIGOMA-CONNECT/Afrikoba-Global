@@ -92,12 +92,14 @@ const fourEyesRoutes = require('./routes/fourEyesRoutes');
 const outboxRoutes = require('./routes/outboxRoutes');
 const outbox = require('./services/outboxService');
 const pool = require('./config/db');
-const { createNotification } = require('./services/notificationService');
+const outboxHandlers = require('./outbox/handlers');
 const swaggerUi = require('swagger-ui-express');
 const { swaggerSpec } = require('./config/swagger');
 
 // Fail-fast: usiendelee na mazingira ya production yenye maadili hatari.
 config.validateConfig();
+// R36: a pilot process must be a production-mode process (no dev-only behaviour).
+require('./config/pilot').assertPilotEnvironment();
 
 // Sentry error monitoring — only in production when DSN is set
 if (config.sentry.dsn) {
@@ -110,56 +112,9 @@ if (config.sentry.dsn) {
 
 const app = express();
 
-// Outbox / event-bus default handlers (transaction-aware fan-out).
-let _outboxRetryCount = 0;
-outbox.registerHandler('MERCHANT_PAYOUT_EXECUTED', async ({ payload }) => {
-  const m = (await pool.query('SELECT user_id FROM merchants WHERE id = $1', [payload.merchantId])).rows[0];
-  await createNotification(m ? m.user_id : payload.userId, {
-    title: 'Malipo ya mfanyabiashara yametumwa',
-    body: payload.reference ? `Rejea: ${payload.reference}` : 'Malipo yametumwa.',
-    type: 'FRAUD_TRANSACTION',
-  }).catch(() => {});
-});
-outbox.registerHandler('VICOBA_LOAN_APPROVED', async ({ payload }) => {
-  await createNotification(payload.applicantUserId, {
-    title: 'Mkopo wa VICOBA umetolewa',
-    body: `Mkopo wa TZS ${payload.amount} umewekwa kwenye wallet yako.`,
-    type: 'TRANSACTION',
-  }).catch(() => {});
-});
-outbox.registerHandler('OUTBOX_TEST', async ({ payload }) => {
-  await createNotification(payload.userId, { title: 'Outbox heartbeat', body: 'delivered' });
-});
-outbox.registerHandler('OUTBOX_RETRY', async () => {
-  _outboxRetryCount += 1;
-  if (_outboxRetryCount % 3 !== 0) throw new Error('sigui bado');
-});
-outbox.registerHandler('PROJECT_REVENUE_PROCESSED', async ({ payload }) => {
-  const { projectId, amount, reference, allocations = [] } = payload;
-  const p = await pool.query('SELECT id, owner_user_id, name FROM projects WHERE id = $1', [projectId]);
-  if (p.rows.length === 0) return;
-  const summary = allocations.map((a) => `${a.step}: ${a.amount}`).join(', ');
-  await createNotification(p.rows[0].owner_user_id, {
-    title: 'Mapato na mgawanyo kwenye waterfall',
-    body: `Mradi "${p.rows[0].name}": TZS ${amount} yamegawanywa (${summary}).`,
-    type: 'PROJECT',
-    entityType: 'PROJECT',
-    entityId: projectId,
-  }).catch(() => {});
-});
-outbox.registerHandler('PROJECT_DIVIDEND_PAID', async ({ payload }) => {
-  const { projectId, name, reference, paid = [] } = payload;
-  const p = await pool.query('SELECT owner_user_id FROM projects WHERE id = $1', [projectId]);
-  if (p.rows.length === 0) return;
-  const total = paid.reduce((s, x) => s + Number(x.amount || 0), 0);
-  await createNotification(p.rows[0].owner_user_id, {
-    title: 'Mgawanyo wa faida umetolewa',
-    body: `Wawekezaji ${paid.length} wa mradi "${name}" wamelipwa jumla ya TZS ${total}. Rejea: ${reference}`,
-    type: 'PROJECT',
-    entityType: 'PROJECT',
-    entityId: projectId,
-  }).catch(() => {});
-});
+// Outbox / event-bus handlers (transaction-aware fan-out).
+// All handlers live in src/outbox/handlers.js (Phase 71 / Step A).
+outboxHandlers.registerAll(outbox);
 
 // H5: Initialize database security settings
 initDbSecurity().catch(() => {});
@@ -326,6 +281,8 @@ app.use('/api', validateTokenPayload);
 // v1 canonical prefix + backward-compatible /api prefix
 const versionPrefixes = ['/api/v1', '/api'];
 for (const prefix of versionPrefixes) {
+  // R36 Task 4: pilot boundary gates first (src/config/pilot.js); services enforce the same flags.
+  require('./config/pilot').mountPilotGates(app, prefix);
   app.use(`${prefix}/auth`, authLimiter, authRoutes);
   app.use(`${prefix}/wallet`, deviceRateLimit, walletLimiter, walletRoutes);
   app.use(`${prefix}/vicoba`, walletLimiter, vicobaRoutes);
@@ -431,12 +388,12 @@ if (process.env.DISABLE_CRON !== 'true') {
   startRecurrenceScheduler(parseInt(process.env.RECURRENCE_INTERVAL_MS, 10) || 60000);
   // Event reminders (commitment due / upcoming event) — best-effort hourly sweep
   const { runEventReminders } = require('./services/eventService');
-  const runReminders = () => runEventReminders().catch(() => {});
+  const runReminders = require('./config/pilot').pilotJob('EVENT_REMINDERS', () => runEventReminders().catch(() => {}));
   runReminders();
   setInterval(runReminders, parseInt(process.env.EVENT_REMINDER_INTERVAL_MS, 10) || 3600000);
   // Recurring event series (templates + cadence) — generate due events, best-effort hourly
   const { runDueEventSeries } = require('./services/eventService');
-  const runSeries = () => runDueEventSeries().catch(() => {});
+  const runSeries = require('./config/pilot').pilotJob('EVENT_SERIES', () => runDueEventSeries().catch(() => {}));
   runSeries();
   setInterval(runSeries, parseInt(process.env.EVENT_SERIES_INTERVAL_MS, 10) || 3600000);
 }

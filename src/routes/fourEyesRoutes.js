@@ -1,11 +1,10 @@
 const express = require('express');
 const router = express.Router();
 const { authRequired, requireRoles } = require('../middleware/auth');
-const { logAction } = require('../services/auditService');
+const { logAction, writeAudit } = require('../services/auditService'); // R26: logAction import lost in b993f1c (17 call sites)
 const fe = require('../services/fourEyesService');
 const pool = require('../config/db');
 const fin = require('../services/financialEngine');
-const vicoba = require('../services/vicobaService');
 const card = require('../services/cardService');
 const credit = require('../services/savingsCreditService');
 const business = require('../services/businessService');
@@ -16,7 +15,9 @@ const network = require('../services/networkService');
 router.use(authRequired, requireRoles('ADMIN'));
 
 const { requireFeature } = require('../services/featureFlagService');
-router.use(requireFeature('FOUR_EYES'));
+// R36B OD-3: in the pilot the four-eyes routes do not depend on the FOUR_EYES flag (environment lock).
+const fourEyesFlagGate = requireFeature('FOUR_EYES');
+router.use((req, res, next) => (require('../config/pilot').isFourEyesLocked() ? next() : fourEyesFlagGate(req, res, next)));
 
 const VALID_ROLES = ['ADMIN', 'MJUMBE', 'OPS', 'COMPLIANCE', 'SUPPORT'];
 const PROMOTABLE = ['ADMIN', 'OPS', 'COMPLIANCE', 'SUPPORT'];
@@ -50,17 +51,61 @@ fe.registerExecutor('ADMIN_DEMOTE_ROLE', async (payload, approverId) => {
   return applyRoleChange(payload, approverId);
 });
 
-fe.registerExecutor('ADMIN_LARGE_REFUND', async (payload, approverId) => {
+// Stable, request-scoped operation reference. A dispatch that committed the wallet
+// credit but could not record EXECUTED is recovered by re-dispatch under this same
+// reference, so the credit is never repeated.
+function fourEyesRefundReference(requestId) {
+  return `FOUR_EYES_REFUND:${requestId}`;
+}
+
+function unresolvedRefund(message) {
+  return Object.assign(new Error(message), { status: 409, code: 'FOUR_EYES_OPERATION_UNRESOLVED' });
+}
+
+// Runs inside the executor's transaction. Success is reported only for a committed
+// CREDIT operation with the expected shape and a balanced two-line journal.
+async function verifyCommittedRefund(client, { reference, userId, amount }) {
+  const op = await client.query(
+    'SELECT operation_type, user_id, amount, status FROM financial_operations WHERE reference_id = $1',
+    [reference]
+  );
+  const row = op.rows[0];
+  if (!row) throw unresolvedRefund('Operesheni ya marejesho haijapatikana; haijathibitishwa.');
+  if (row.status !== 'SUCCESS') {
+    throw unresolvedRefund(`Operesheni ya marejesho iko katika hali ${row.status}, si SUCCESS.`);
+  }
+  if (row.operation_type !== 'CREDIT' || Number(row.user_id) !== Number(userId) ||
+      Math.abs(Number(row.amount) - Number(amount)) >= 0.005) {
+    throw Object.assign(new Error('Operesheni iliyopo ya marejesho hailingani na ombi.'), { status: 409, code: 'FOUR_EYES_OPERATION_MISMATCH' });
+  }
+  const journal = await client.query(
+    `SELECT COUNT(*)::int AS n,
+            COALESCE(SUM(CASE WHEN direction = 'DR' THEN amount ELSE 0 END), 0)::numeric AS dr,
+            COALESCE(SUM(CASE WHEN direction = 'CR' THEN amount ELSE 0 END), 0)::numeric AS cr
+       FROM journal_entries WHERE reference_id = $1`,
+    [reference]
+  );
+  const j = journal.rows[0];
+  if (j.n !== 2 || Math.abs(Number(j.dr) - Number(amount)) >= 0.005 || Math.abs(Number(j.cr) - Number(amount)) >= 0.005) {
+    throw unresolvedRefund('Jarida ya marejesho haijakamilika kwa operesheni iliyopo.');
+  }
+}
+
+fe.registerExecutor('ADMIN_LARGE_REFUND', async (payload, approverId, request) => {
+  const requestId = Number(request && request.id);
+  if (!Number.isSafeInteger(requestId) || requestId <= 0) {
+    throw Object.assign(new Error('Kitambulisho cha ombi si sahihi.'), { status: 400 });
+  }
   const userId = Number(payload.userId);
   const amount = Number(payload.amount);
   if (!userId || !amount || amount <= 0) throw Object.assign(new Error('userId na amount sahihi zinahitajika.'), { status: 400 });
   const user = await pool.query('SELECT id, full_name FROM users WHERE id = $1', [userId]);
   if (user.rows.length === 0) throw Object.assign(new Error('Mtumiaji hajapatikana.'), { status: 404 });
-  const reference = `REF-${approverId}-${Date.now()}`;
+  const reference = fourEyesRefundReference(requestId);
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    await fin.creditWallet({
+    const credit = await fin.creditWallet({
       client,
       userId,
       amount,
@@ -69,14 +114,17 @@ fe.registerExecutor('ADMIN_LARGE_REFUND', async (payload, approverId) => {
       description: `Malipo ya marejesho (four-eyes)`,
       actor: `four-eyes:${approverId}`,
     });
+    if (credit.dedup) {
+      await verifyCommittedRefund(client, { reference, userId, amount });
+    }
     await client.query('COMMIT');
+    return { userId, amount, reference, replayed: Boolean(credit.dedup) };
   } catch (e) {
     await client.query('ROLLBACK').catch(() => {});
     throw e;
   } finally {
     client.release();
   }
-  return { userId, amount, reference };
 });
 
 const num = (v) => Number(v);
@@ -86,19 +134,17 @@ const requireValue = (v, msg) => {
   }
 };
 
-fe.registerExecutor('VICOBA_LOAN_DISBURSE', async (payload, approverId) => {
-  const loanId = num(payload.loanId);
-  requireValue(loanId, 'loanId inahitajika.');
-  const actorId = num(payload.actorId) || approverId;
-  return vicoba.approveLoan(actorId, loanId, payload.approvedAmount != null && payload.approvedAmount !== '' ? num(payload.approvedAmount) : undefined);
-});
-
-fe.registerExecutor('VICOBA_SOCIAL_FUND_DISBURSE', async (payload, approverId) => {
-  const requestId = num(payload.requestId);
-  requireValue(requestId, 'requestId inahitajika.');
-  const actorId = num(payload.actorId) || approverId;
-  return vicoba.approveSocialFundDisbursement(actorId, requestId, payload.approvedAmount != null && payload.approvedAmount !== '' ? num(payload.approvedAmount) : undefined);
-});
+// R29 D5: VICOBA group operations are authorised only by group officers (MWEKAHAZINA, KATIBU,
+// MWENYEKITI) acting as themselves on the VICOBA routes, never through the system-admin
+// four-eyes queue and never with an actor taken from a body or payload. Launchers, POST /requests
+// and these executors (requests already queued) all refuse, whatever the policy says.
+const VICOBA_ACTION_CODES = new Set(['VICOBA_LOAN_DISBURSE', 'VICOBA_SOCIAL_FUND_DISBURSE']);
+const vicobaGroupAuthorityRequired = () => Object.assign(
+  new Error('VICOBA_GROUP_AUTHORITY_REQUIRED: Operesheni za kikundi zinaidhinishwa na viongozi wa kikundi kupitia VICOBA, si na admin wa mfumo.'),
+  { status: 403, statusCode: 403, code: 'VICOBA_GROUP_AUTHORITY_REQUIRED' }
+);
+fe.registerExecutor('VICOBA_LOAN_DISBURSE', async () => { throw vicobaGroupAuthorityRequired(); });
+fe.registerExecutor('VICOBA_SOCIAL_FUND_DISBURSE', async () => { throw vicobaGroupAuthorityRequired(); });
 
 fe.registerExecutor('CARD_ADMIN_SETTLE', async (payload, approverId) => {
   requireValue(payload.authReference, 'authReference inahitajika.');
@@ -146,11 +192,38 @@ router.get('/policies', async (req, res, next) => {
 });
 
 router.put('/policies/:code', async (req, res, next) => {
+  let client = null;
   try {
-    const policy = await fe.upsertPolicy({ actionCode: req.params.code, ...req.body });
-    await logAction(req.user.id, 'FOUR_EYES_POLICY_UPDATE', 'FOUR_EYES_POLICY', policy.id, { action_code: policy.action_code }, req);
-    res.json({ policy });
-  } catch (error) { next(error); }
+    client = await pool.connect();
+    await client.query('BEGIN');
+    const result = await fe.upsertPolicy({
+      actionCode: req.params.code,
+      ...req.body,
+      client,
+    });
+    await writeAudit({
+      userId: req.user.id,
+      action: 'FOUR_EYES_POLICY_UPDATE',
+      entityType: 'FOUR_EYES_POLICY',
+      entityId: result.policy.id,
+      meta: {
+        action_code: result.policy.action_code,
+        before: result.before,
+        after: result.after,
+      },
+      req,
+      client,
+    });
+    await client.query('COMMIT');
+    res.json({ policy: result.policy });
+  } catch (error) {
+    if (client) {
+      await client.query('ROLLBACK').catch(() => {});
+    }
+    next(error);
+  } finally {
+    if (client) client.release();
+  }
 });
 
 // ===== Requests =====
@@ -168,6 +241,7 @@ router.get('/requests/:id', async (req, res, next) => {
 
 router.post('/requests', async (req, res, next) => {
   try {
+    if (VICOBA_ACTION_CODES.has(String(req.body.action_code || '').trim().toUpperCase())) throw vicobaGroupAuthorityRequired();
     const { request, policy } = await fe.initiateRequest({ actionCode: req.body.action_code, requesterId: req.user.id, payload: req.body.payload });
     await logAction(req.user.id, 'FOUR_EYES_REQUESTED', 'FOUR_EYES_REQUEST', request.id, { action_code: request.action_code }, req);
     res.status(201).json({ request, policy });
@@ -229,21 +303,9 @@ router.post('/actions/large-refund', async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
-router.post('/actions/vicoba-loan-disburse', async (req, res, next) => {
-  try {
-    const { request, policy } = await fe.initiateRequest({ actionCode: 'VICOBA_LOAN_DISBURSE', requesterId: req.user.id, payload: { actorId: req.body.actorId, loanId: req.body.loanId, approvedAmount: req.body.approvedAmount } });
-    await logAction(req.user.id, 'FOUR_EYES_REQUESTED', 'FOUR_EYES_REQUEST', request.id, { action_code: request.action_code }, req);
-    res.status(201).json({ request, policy });
-  } catch (error) { next(error); }
-});
+router.post('/actions/vicoba-loan-disburse', (req, res, next) => next(vicobaGroupAuthorityRequired()));
 
-router.post('/actions/vicoba-social-disburse', async (req, res, next) => {
-  try {
-    const { request, policy } = await fe.initiateRequest({ actionCode: 'VICOBA_SOCIAL_FUND_DISBURSE', requesterId: req.user.id, payload: { actorId: req.body.actorId, requestId: req.body.requestId, approvedAmount: req.body.approvedAmount } });
-    await logAction(req.user.id, 'FOUR_EYES_REQUESTED', 'FOUR_EYES_REQUEST', request.id, { action_code: request.action_code }, req);
-    res.status(201).json({ request, policy });
-  } catch (error) { next(error); }
-});
+router.post('/actions/vicoba-social-disburse', (req, res, next) => next(vicobaGroupAuthorityRequired()));
 
 router.post('/actions/card-settle', async (req, res, next) => {
   try {

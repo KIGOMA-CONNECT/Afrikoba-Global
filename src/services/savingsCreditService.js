@@ -321,34 +321,38 @@ async function listFixedDeposits(userId, query = pool) {
 
 async function withdrawFixedDeposit(userId, depositId, data) {
   const allowEarly = !!(data && (data.allow_early === true || data.allow_early === 'true'));
-  const dep = await pool.query("SELECT * FROM fixed_deposits WHERE id = $1 AND user_id = $2 AND status = 'ACTIVE'", [depositId, userId]);
-  if (!dep.rows.length) throw badge('Mchango huu haupatikani au umechukuliwa.', 404);
-  const d = dep.rows[0];
-  const today = new Date();
-  const matured = new Date(d.maturity_date) <= today;
   const client = await pool.connect();
   let deposit;
   let interest = 0;
   let penalty = 0;
   try {
     await client.query('BEGIN');
+    // R28 S1: read the deposit under a row lock inside the transaction, so a concurrent
+    // withdrawal of the same deposit waits and then finds it no longer ACTIVE (404).
+    const dep = await client.query("SELECT * FROM fixed_deposits WHERE id = $1 AND user_id = $2 AND status = 'ACTIVE' FOR UPDATE", [depositId, userId]);
+    if (!dep.rows.length) throw badge('Mchango huu haupatikani au umechukuliwa.', 404);
+    const d = dep.rows[0];
+    const today = new Date();
+    const matured = new Date(d.maturity_date) <= today;
     const amountNum = Number(d.amount);
     if (matured) {
       interest = round2(amountNum * (Number(d.annual_rate) / 100) * (Number(d.term_months) / 12));
       penalty = 0;
       deposit = amountNum + interest;
-      await client.query(
-        `UPDATE fixed_deposits SET status = 'MATURED', interest_accrued = $1, matured_at = NOW(), updated_at = NOW() WHERE id = $2`,
+      const claimed = await client.query(
+        `UPDATE fixed_deposits SET status = 'MATURED', interest_accrued = $1, matured_at = NOW(), updated_at = NOW() WHERE id = $2 AND status = 'ACTIVE'`,
         [interest, depositId]
       );
+      if (claimed.rowCount !== 1) throw badge('Mchango huu haupatikani au umechukuliwa.', 404);
     } else if (allowEarly) {
       penalty = round2(amountNum * 0.02);
       interest = 0;
       deposit = amountNum - penalty;
-      await client.query(
-        `UPDATE fixed_deposits SET status = 'WITHDRAWN_EARLY', penalty_amount = $1, updated_at = NOW() WHERE id = $2`,
+      const claimed = await client.query(
+        `UPDATE fixed_deposits SET status = 'WITHDRAWN_EARLY', penalty_amount = $1, updated_at = NOW() WHERE id = $2 AND status = 'ACTIVE'`,
         [penalty, depositId]
       );
+      if (claimed.rowCount !== 1) throw badge('Mchango huu haupatikani au umechukuliwa.', 404);
     } else {
       throw badge('Mchango huu haujakomaa bado. Tumia allow_early=true kwa kuondoa mapema (penalty 2%).', 400);
     }
@@ -503,12 +507,15 @@ async function listMicroLoans(userId, isAdmin) {
 }
 
 async function adminApproveMicroLoan(loanId, adminId, note) {
-  const loan = await pool.query("SELECT * FROM micro_loans WHERE id = $1 AND status = 'PENDING' FOR UPDATE", [loanId]);
-  if (!loan.rows.length) throw badge('Mkopo haupatikani au uko kwenye status isiyo sahihi.', 404);
+  // R27 sweep S-2: the PENDING -> APPROVED claim is one conditional UPDATE (the old
+  // FOR UPDATE was an autocommit pool.query, released at once), so concurrent or
+  // repeated approvals get the same 404 and only one approval is recorded.
   const res = await pool.query(
-    `UPDATE micro_loans SET status = 'APPROVED', admin_note = $1, approved_at = NOW(), updated_at = NOW() WHERE id = $2 RETURNING *`,
+    `UPDATE micro_loans SET status = 'APPROVED', admin_note = $1, approved_at = NOW(), updated_at = NOW()
+      WHERE id = $2 AND status = 'PENDING' RETURNING *`,
     [note || null, loanId]
   );
+  if (res.rowCount !== 1) throw badge('Mkopo haupatikani au uko kwenye status isiyo sahihi.', 404);
   await logAudit(adminId, 'MICRO_LOAN_APPROVED', `Mkopo #${loanId} umeidhinishwa`).catch(() => {});
   return res.rows[0];
 }
@@ -536,15 +543,34 @@ async function respondGuarantor(userId, loanId, accept) {
     [loanId, userId]
   );
   if (!inv.rows.length) throw badge('Mwaliko haupatikani au tayari umejibiwa.', 404);
+  // R27 sweep S-3: both answers claim the invitation conditionally (PENDING only).
+  // Accept locks the invitation row inside its transaction before holding funds;
+  // decline is one conditional UPDATE. A decline can no longer overwrite an ACCEPTED
+  // invitation whose guarantee is held (releaseGuarantees only releases ACCEPTED).
   if (accept) {
-    const blocked = Number(inv.rows[0].blocked_amount);
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
+      // R28 F2c: a guarantee can only be held while the loan can still be disbursed
+      // (guarantees are released only by adminDisburseMicroLoan). FOR SHARE on the loan
+      // (same order as disbursement: loan, then invitation, then wallet) waits for an
+      // in-flight disbursement and then sees ACTIVE.
+      const loanRow = await client.query(
+        `SELECT status FROM micro_loans WHERE id = $1 AND status IN ('PENDING','APPROVED') FOR SHARE`,
+        [loanId]
+      );
+      if (!loanRow.rows.length) throw badge('Mkopo huu tayari umetolewa au haupo; dhamana haiwezi kukubaliwa.', 409);
+      const lockedInv = await client.query(
+        `SELECT * FROM loan_guarantors WHERE id = $1 AND status = 'PENDING' FOR UPDATE`,
+        [inv.rows[0].id]
+      );
+      if (!lockedInv.rows.length) throw badge('Mwaliko haupatikani au tayari umejibiwa.', 404);
+      const blocked = Number(lockedInv.rows[0].blocked_amount);
       const u = await client.query('SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE', [userId]);
       if (Number(u.rows[0].wallet_balance) < blocked) throw badge('Salio la mdhamini halitoshi kwa dhamana hii.', 400);
       await fin.lockWallet({ client, userId, amount: blocked, reference: `SCGUAR:${loanId}:${userId}:LOCK`, description: 'Loan guarantee hold' });
-      await client.query(`UPDATE loan_guarantors SET status = 'ACCEPTED', decided_at = NOW() WHERE id = $1`, [inv.rows[0].id]);
+      const acc = await client.query(`UPDATE loan_guarantors SET status = 'ACCEPTED', decided_at = NOW() WHERE id = $1 AND status = 'PENDING'`, [inv.rows[0].id]);
+      if (acc.rowCount !== 1) throw badge('Mwaliko haupatikani au tayari umejibiwa.', 409);
       await logTx(client, userId, blocked, 'LOAN_GUARANTEE', { feature: 'loan_guarantee', loan_id: loanId });
       await client.query('COMMIT');
       return { success: true, blocked_amount: blocked, message: 'Dhamana imekubaliwa.' };
@@ -553,7 +579,8 @@ async function respondGuarantor(userId, loanId, accept) {
       throw err;
     } finally { client.release(); }
   }
-  await pool.query(`UPDATE loan_guarantors SET status = 'DECLINED', decided_at = NOW() WHERE id = $1`, [inv.rows[0].id]);
+  const dec = await pool.query(`UPDATE loan_guarantors SET status = 'DECLINED', decided_at = NOW() WHERE id = $1 AND status = 'PENDING'`, [inv.rows[0].id]);
+  if (dec.rowCount !== 1) throw badge('Mwaliko haupatikani au tayari umejibiwa.', 409);
   return { success: true, blocked_amount: 0, message: 'Dhamana imekataliwa.' };
 }
 
@@ -571,25 +598,29 @@ async function releaseGuarantees(client, loanId) {
 }
 
 async function adminDisburseMicroLoan(loanId, adminId) {
-  const loan = await pool.query("SELECT * FROM micro_loans WHERE id = $1 AND status = 'APPROVED' FOR UPDATE", [loanId]);
-  if (!loan.rows.length) throw badge('Mkopo haupatikani au haujaiddhinishwa.', 404);
-  const l = loan.rows[0];
-  const rate = Number(l.interest_rate);
-  const due = round2(Number(l.amount) * (1 + rate / 100));
-  const term = Number(l.term_months);
-  const installment = round2(due / term);
-  if (term > 1) {
-    const acc = await pool.query(`SELECT COUNT(*)::int AS n FROM loan_guarantors WHERE loan_id = $1 AND status = 'ACCEPTED'`, [loanId]);
-    if (Number(acc.rows[0].n) === 0) throw badge('Lazima kuwe na mdhamini aliyekubali kabla ya kutoa mkopo.', 400);
-  }
+  // R27 IV-A-8: the loan lock is taken inside the disbursement transaction (it was an
+  // autocommit pool.query, released at once) and the APPROVED -> ACTIVE claim is
+  // conditional, so a concurrent disbursement gets a 404 instead of a raw 23505.
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    const loan = await client.query("SELECT * FROM micro_loans WHERE id = $1 AND status = 'APPROVED' FOR UPDATE", [loanId]);
+    if (!loan.rows.length) throw badge('Mkopo haupatikani au haujaiddhinishwa.', 404);
+    const l = loan.rows[0];
+    const rate = Number(l.interest_rate);
+    const due = round2(Number(l.amount) * (1 + rate / 100));
+    const term = Number(l.term_months);
+    const installment = round2(due / term);
+    if (term > 1) {
+      const acc = await client.query(`SELECT COUNT(*)::int AS n FROM loan_guarantors WHERE loan_id = $1 AND status = 'ACCEPTED'`, [loanId]);
+      if (Number(acc.rows[0].n) === 0) throw badge('Lazima kuwe na mdhamini aliyekubali kabla ya kutoa mkopo.', 400);
+    }
     await fin.creditWallet({ client, userId: l.user_id, amount: l.amount, reference: `SCLOAN:${loanId}:DISBURSE`, fromAccount: 'SUSPENSE', description: 'Micro loan disbursement' });
-    await client.query(
-      `UPDATE micro_loans SET status = 'ACTIVE', due_amount = $1, monthly_installment = $2, disbursed_at = NOW(), updated_at = NOW() WHERE id = $3`,
+    const claimed = await client.query(
+      `UPDATE micro_loans SET status = 'ACTIVE', due_amount = $1, monthly_installment = $2, disbursed_at = NOW(), updated_at = NOW() WHERE id = $3 AND status = 'APPROVED'`,
       [due, installment, loanId]
     );
+    if (claimed.rowCount !== 1) throw badge('Mkopo haupatikani au haujaiddhinishwa.', 409);
     for (let i = 1; i <= term; i++) {
       const dd = new Date();
       dd.setMonth(dd.getMonth() + i);
@@ -617,23 +648,34 @@ async function loanSchedule(userId, loanId) {
 }
 
 async function payInstallment(userId, loanId, installmentId) {
-  const loan = await pool.query("SELECT * FROM micro_loans WHERE id = $1 AND user_id = $2 AND status = 'ACTIVE'", [loanId, userId]);
-  if (!loan.rows.length) throw badge('Mkopo haupatikani au hauko ACTIVE.', 404);
-  const inst = await pool.query("SELECT * FROM loan_installments WHERE id = $1 AND loan_id = $2 AND status = 'PENDING'", [installmentId, loanId]);
-  if (!inst.rows.length) throw badge('Kipindi hiki hakipatikani au tayari kimalizika.', 404);
-  const l = loan.rows[0];
-  const amount = Number(inst.rows[0].amount);
+  // R27 IV-B-1: loan, then installment, are read and locked inside the transaction
+  // (same lock order as payoffLoan); the installment claim and the loan update are
+  // conditional, and paid_amount is incremented in SQL (no stale absolute write).
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    const loan = await client.query("SELECT * FROM micro_loans WHERE id = $1 AND user_id = $2 AND status = 'ACTIVE' FOR UPDATE", [loanId, userId]);
+    if (!loan.rows.length) throw badge('Mkopo haupatikani au hauko ACTIVE.', 404);
+    const inst = await client.query("SELECT * FROM loan_installments WHERE id = $1 AND loan_id = $2 AND status = 'PENDING' FOR UPDATE", [installmentId, loanId]);
+    if (!inst.rows.length) throw badge('Kipindi hiki hakipatikani au tayari kimalizika.', 404);
+    const amount = Number(inst.rows[0].amount);
     await fin.debitWallet({ client, userId, amount, reference: `SCLOAN:${loanId}:INST:${installmentId}:PAY`, toAccount: 'SUSPENSE', description: 'Micro loan installment repayment' });
-    await client.query(`UPDATE loan_installments SET paid_amount = $1, status = 'PAID', paid_at = NOW() WHERE id = $2`, [amount, installmentId]);
-    const paidAmount = round2(Number(l.paid_amount) + amount);
-    const status = paidAmount >= Number(l.due_amount) ? 'REPAID' : 'ACTIVE';
-    await client.query('UPDATE micro_loans SET paid_amount = $1, status = $2, updated_at = NOW() WHERE id = $3', [paidAmount, status, loanId]);
+    const claimed = await client.query(`UPDATE loan_installments SET paid_amount = $1, status = 'PAID', paid_at = NOW() WHERE id = $2 AND status = 'PENDING'`, [amount, installmentId]);
+    if (claimed.rowCount !== 1) throw badge('Kipindi hiki hakipatikani au tayari kimalizika.', 409);
+    const upd = await client.query(
+      `UPDATE micro_loans
+          SET paid_amount = paid_amount + $1,
+              status = CASE WHEN paid_amount + $1 >= due_amount THEN 'REPAID' ELSE 'ACTIVE' END,
+              updated_at = NOW()
+        WHERE id = $2 AND status = 'ACTIVE'
+        RETURNING paid_amount, due_amount, status`,
+      [amount, loanId]
+    );
+    if (upd.rowCount !== 1) throw badge('Mkopo haupatikani au hauko ACTIVE.', 409);
+    const u = upd.rows[0];
     await logTx(client, userId, amount, 'LOAN_REPAYMENT', { feature: 'micro_loan_installment', loan_id: loanId, installment_id: installmentId });
     await client.query('COMMIT');
-    return { success: true, paid: amount, remaining: round2(Number(l.due_amount) - paidAmount), status };
+    return { success: true, paid: amount, remaining: round2(Number(u.due_amount) - Number(u.paid_amount)), status: u.status };
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
     throw err;
@@ -641,24 +683,28 @@ async function payInstallment(userId, loanId, installmentId) {
 }
 
 async function payoffLoan(userId, loanId) {
-  const loan = await pool.query("SELECT * FROM micro_loans WHERE id = $1 AND user_id = $2 AND status = 'ACTIVE'", [loanId, userId]);
-  if (!loan.rows.length) throw badge('Mkopo haupatikani au hauko ACTIVE.', 404);
-  const l = loan.rows[0];
-  const remaining = round2(Number(l.due_amount) - Number(l.paid_amount));
-  if (remaining <= 0) throw badge('Mkopo tayari umemalizika.', 400);
+  // R27 IV-B-2: remaining is computed from the loan row locked inside the
+  // transaction, so a concurrent installment payment cannot be charged twice and
+  // the REPAID write is conditional on the loan still being ACTIVE.
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    const loan = await client.query("SELECT * FROM micro_loans WHERE id = $1 AND user_id = $2 AND status = 'ACTIVE' FOR UPDATE", [loanId, userId]);
+    if (!loan.rows.length) throw badge('Mkopo haupatikani au hauko ACTIVE.', 404);
+    const l = loan.rows[0];
+    const remaining = round2(Number(l.due_amount) - Number(l.paid_amount));
+    if (remaining <= 0) throw badge('Mkopo tayari umemalizika.', 400);
     await fin.debitWallet({ client, userId, amount: remaining, reference: `SCLOAN:${loanId}:PAYOFF`, toAccount: 'SUSPENSE', description: 'Micro loan payoff' });
     const waived = await client.query(
       `UPDATE loan_installments SET status = 'WAIVED', paid_at = NOW()
        WHERE loan_id = $1 AND status = 'PENDING' RETURNING id`,
       [loanId]
     );
-    await client.query(
-      `UPDATE micro_loans SET paid_amount = due_amount, status = 'REPAID', updated_at = NOW() WHERE id = $1`,
+    const repaid = await client.query(
+      `UPDATE micro_loans SET paid_amount = due_amount, status = 'REPAID', updated_at = NOW() WHERE id = $1 AND status = 'ACTIVE'`,
       [loanId]
     );
+    if (repaid.rowCount !== 1) throw badge('Mkopo haupatikani au hauko ACTIVE.', 409);
     await logTx(client, userId, remaining, 'LOAN_REPAYMENT', { feature: 'micro_loan_payoff', loan_id: loanId });
     await client.query('COMMIT');
     await logAudit(userId, 'MICRO_LOAN_PAID', `Mkopo #${loanId} umemalizika kabla ya muda`).catch(() => {});

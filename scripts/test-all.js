@@ -240,17 +240,17 @@ async function section(title) { console.log(`\n== ${title} ==`); }
   const webhookData = await resWebhook.json();
   await expect(resWebhook.status === 200 && webhookData.success, 'Callback ya AzamPay inathibitisha deposit', `${resWebhook.status} ${JSON.stringify(webhookData)}`);
   const depAft = await balanceOf(regB.data.user.id);
-  await expect(depAft.wallet === depBef.wallet + 100000, 'Deposit inaongezwa kwenye wallet (wallet_amount)', `${depBef.wallet} → ${depAft.wallet}`);
+  await expect(depAft.wallet === depBef.wallet, 'Deposit inabaki PENDING (AzamPay disabled) - hakuna credit', `${depBef.wallet} → ${depAft.wallet}`);
 
   const revMid = await pool.query('SELECT total_commission FROM company_revenue WHERE id = 1');
-  await expect(Number(revMid.rows[0].total_commission) - Number(revBefore.rows[0].total_commission) === 1000, 'Commission 1% inaenda company_revenue');
+  await expect(Number(revMid.rows[0].total_commission) - Number(revBefore.rows[0].total_commission) === 0, 'Hakuna commission (deposit bado PENDING, AzamPay disabled)');
 
   const wbDup = await fetch(BASE + '/api/payments/azampay-callback', {
     method: 'POST', headers: hdr, body: whBody,
   });
   const dupData = await wbDup.json();
   const depAfterDup = await balanceOf(regB.data.user.id);
-  await expect(dupData.duplicate === true && depAfterDup.wallet === depAft.wallet, 'Duplicate callback HAIRUDISHI fedha mara mbili (idempotency)', JSON.stringify(dupData));
+  await expect(dupData.pending === true && depAfterDup.wallet === depAft.wallet, 'Duplicate callback HAIRUDISHI fedha mara mbili (idempotency)', JSON.stringify(dupData));
 
   const wbWrong = await fetch(BASE + '/api/payments/azampay-callback', {
     method: 'POST', headers: { 'Content-Type': 'application/json', 'x-webhook-secret': 'wrong_secret' },
@@ -258,21 +258,52 @@ async function section(title) { console.log(`\n== ${title} ==`); }
   });
   await expect(wbWrong.status === 401, 'Webhook secret mbaya inakataliwa (401)', `${wbWrong.status}`);
 
-  // Withdrawal + reconciliation refund
-  const wd = await api('POST', '/api/wallet/withdraw', regC.data.token, { amount: 5000, provider: 'Mpesa' });
-  await expect(wd.status === 200, 'Withdrawal inaanza (PENDING)', `${wd.status}`);
-  const afterWd = await balanceOf(regC.data.user.id);
-  await expect(afterWd.wallet === cAfter.wallet - 5000, 'Salio linaondolewa kwa withdrawal', `${afterWd.wallet}`);
+  // Withdrawal (provider disabled) - capture state before the rejected request.
+  const wdTxBefore = (await pool.query(
+    "SELECT count(*)::int AS n FROM transactions WHERE user_id = $1 AND type = 'WITHDRAWAL'",
+    [regC.data.user.id]
+  )).rows[0].n;
+  const wdLedgerBefore = (await pool.query(
+    'SELECT count(*)::int AS n FROM wallet_ledger WHERE from_user_id = $1', [regC.data.user.id]
+  )).rows[0].n;
+  const wdLockedBefore = Number((await pool.query(
+    'SELECT locked_balance FROM users WHERE id = $1', [regC.data.user.id]
+  )).rows[0].locked_balance);
 
-  await pool.query(`UPDATE transactions SET created_at = NOW() - INTERVAL '16 minutes' WHERE reference_id = $1`, [wd.data.referenceId]);
-  const recon = await reconcilePendingDeposits();
-  await expect(recon.processedWithdrawals.length >= 1, 'Reconciliation inachakata withdrawal iliyokwama', JSON.stringify(recon));
-  // v2 policy: withdrawal inatatuliwa tu kulingana na hali ya gateway.
-  // Matokeo: watumiaji hawawezi kukosa fedha - ama zimerudishwa (gateway
-  // FAILED -> refund) au zimesalia kwenye hold (gateway UNKNOWN/PENDING).
-  const afterRefund = await balanceOf(regC.data.user.id);
-  await expect(afterRefund.wallet === cAfter.wallet || afterRefund.wallet === afterWd.wallet,
-    'Fedha hazipotei kwenye withdrawal (refund au hold)', `ledger=${afterRefund.wallet} base=${cAfter.wallet} afterWd=${afterWd.wallet}`);
+  const wd = await api('POST', '/api/wallet/withdraw', regC.data.token, { amount: 5000, provider: 'Mpesa' });
+  await expect(wd.status === 503 && wd.data.code === 'AZAMPAY_DISABLED', 'Withdrawal inakataliwa (AzamPay disabled)', `${wd.status} ${JSON.stringify(wd.data)}`);
+  const afterWd = await balanceOf(regC.data.user.id);
+  await expect(afterWd.wallet === cAfter.wallet, 'Salio HAILIONDOLIWI (withdrawal gate closed, no hold)', `${afterWd.wallet}`);
+
+  const wdTxAfter = (await pool.query(
+    "SELECT count(*)::int AS n FROM transactions WHERE user_id = $1 AND type = 'WITHDRAWAL'", [regC.data.user.id]
+  )).rows[0].n;
+  await expect(wdTxAfter === wdTxBefore, 'Hakuna withdrawal transaction mpya (gate closed)', wdTxBefore + ' -> ' + wdTxAfter);
+
+  const wdLedgerAfter = (await pool.query(
+    'SELECT count(*)::int AS n FROM wallet_ledger WHERE from_user_id = $1', [regC.data.user.id]
+  )).rows[0].n;
+  await expect(wdLedgerAfter === wdLedgerBefore, 'Hakuna ledger movement (gate closed)', wdLedgerBefore + ' -> ' + wdLedgerAfter);
+
+  const wdLockedAfter = Number((await pool.query(
+    'SELECT locked_balance FROM users WHERE id = $1', [regC.data.user.id]
+  )).rows[0].locked_balance);
+  await expect(wdLockedAfter === wdLockedBefore, 'Hakuna hold (locked_balance unchanged)', wdLockedBefore + ' -> ' + wdLockedAfter);
+
+  // Isolated reconciliation test: a known PROCESSING withdrawal must NOT be
+  // settled when AzamPay is disabled.
+  const isoRef = 'WD-ISO-' + nowSuffix();
+  await pool.query(
+    "INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, created_at) VALUES ($1, $2, 1000, 0, 1000, 'PROCESSING', 'WITHDRAWAL', NOW() - INTERVAL '16 minutes')",
+    [isoRef, regC.data.user.id]
+  );
+  const isoRecon = await reconcilePendingDeposits();
+  await expect(isoRecon.providerDisabled === true, 'Reconciliation inaripoti provider disabled', JSON.stringify(isoRecon));
+  await expect(isoRecon.processedWithdrawals.some((w) => w.reference_id === isoRef),
+    'Reconciliation inagundua withdrawal iliyokwama (found, not settled)', JSON.stringify(isoRecon));
+  const isoAfter = await pool.query('SELECT status FROM transactions WHERE reference_id = $1', [isoRef]);
+  await expect(isoAfter.rows[0].status === 'PROCESSING', 'Withdrawal inabaki PROCESSING (hakuna settle)', isoAfter.rows[0].status);
+  await pool.query('DELETE FROM transactions WHERE reference_id = $1', [isoRef]);
 
   // ------------------------------------------------------------
   await section('4. VICOBA — kikundi, join-code, mialiko, hisa, mikopo, usalama');
@@ -319,17 +350,29 @@ async function section(title) { console.log(`\n== ${title} ==`); }
   const gDetails = await api('GET', `/api/vicoba/groups/${groupId}`, regD.data.token, null);
   await expect(Number(gDetails.data.group.group_wallet_balance) === 50000, 'Group Wallet imeongezeka kwa hisa', `${gDetails.data.group.group_wallet_balance}`);
 
-  const loanReq = await api('POST', `/api/vicoba/groups/${groupId}/loans`, regD.data.token, { applicantUserId: regE.data.user.id, requestedAmount: 30000 });
-  await expect(loanReq.status === 201, 'Mwenyekiti anaongeza ombi la mkopo', `${loanReq.status}`);
+  // R34 S5: ngazi tatu (KATIBU -> MHASIBU/MWEKAHAZINA -> MWENYEKITI) zinahitaji watu watatu tofauti
+  // wasio mwombaji, na kikundi chenye wanachama zaidi ya watatu: ongeza Katibu na Mwekahazina.
+  const regK = await register('255732' + nowSuffix(), 'Rehema Katibu');
+  const regM = await register('255733' + nowSuffix(), 'Musa Mwekahazina');
+  await subscribe(regK.data.token, 'VICOBA');
+  await subscribe(regM.data.token, 'VICOBA');
+  const regJ = await register('255734' + nowSuffix(), 'Juma Mjumbe');
+  await subscribe(regJ.data.token, 'VICOBA');
+  await api('POST', `/api/vicoba/groups/${groupId}/members`, regD.data.token, { userId: regJ.data.user.id });
+  await api('POST', `/api/vicoba/groups/${groupId}/members`, regD.data.token, { userId: regK.data.user.id, roleInGroup: 'KATIBU' });
+  await api('POST', `/api/vicoba/groups/${groupId}/members`, regD.data.token, { userId: regM.data.user.id, roleInGroup: 'MWEKAHAZINA' });
+
+  const loanReq = await api('POST', `/api/vicoba/groups/${groupId}/loans`, regE.data.token, { requestedAmount: 30000 });
+  await expect(loanReq.status === 201 && loanReq.data.loan.status === 'PENDING_KATIBU', 'Mwanachama anaanzisha ombi lake la mkopo (PENDING_KATIBU)', `${loanReq.status}`);
   const loanId = loanReq.data.loan.id;
 
-  // Approver lazima awe MWEKAHAZINA/KATIBU — Mjumbe (regE) hawezi
-  const badApprove = await api('POST', `/api/vicoba/loans/${loanId}/approve`, regE.data.token, { approvedAmount: 30000 });
-  await expect(badApprove.status === 403, 'Mjumbe HAWEZI kuidhinisha mkopo (403)', `${badApprove.status}`);
+  // Ngazi ya Katibu inahitaji KATIBU — Mjumbe (regJ) hawezi
+  const badApprove = await api('POST', `/api/vicoba/loans/${loanId}/decision`, regJ.data.token, { step: 'KATIBU', decision: 'APPROVE' });
+  await expect(badApprove.status === 403 && badApprove.data.code === 'VICOBA_LOAN_STEP_ROLE_REQUIRED', 'Mjumbe HAWEZI kuidhinisha mkopo (403)', `${badApprove.status} ${badApprove.data && badApprove.data.code}`);
 
-  // Kuongeza ombi ni Mwenyekiti pekee — Mjumbe hawezi
-  const badLoan = await api('POST', `/api/vicoba/groups/${groupId}/loans`, regE.data.token, { applicantUserId: regE.data.user.id, requestedAmount: 10000 });
-  await expect(badLoan.status === 403, 'Mjumbe HAWEZI kuongeza ombi la mkopo (403)', `${badLoan.status}`);
+  // Mwanachama huanzisha ombi lake tu — hawezi kuomba kwa niaba ya mwingine (applicantUserId ya mwingine)
+  const badLoan = await api('POST', `/api/vicoba/groups/${groupId}/loans`, regJ.data.token, { applicantUserId: regE.data.user.id, requestedAmount: 10000 });
+  await expect(badLoan.status === 403 && badLoan.data.code === 'VICOBA_LOAN_APPLICANT_MUST_BE_SELF', 'Mjumbe HAWEZI kuomba mkopo kwa niaba ya mwingine (403)', `${badLoan.status} ${badLoan.data && badLoan.data.code}`);
 
   // ------------------------------------------------------------
   await section('5. ROSCA — upatu kamili + payout engine (hesabu za fedha)');
@@ -631,12 +674,23 @@ async function section(title) { console.log(`\n== ${title} ==`); }
   await expect(sfDetails.data.socialFund.requests.length >= 1, 'Social fund has 1+ disbursement request');
 
   // --- Loan Repayment ---
-  // Approve existing loan from section 4 (MWEKAHAZINA = regE)
+  // Approve existing loan from section 4. regE is the applicant, so since R30 (VICOBA
+  // F-D5-5) regE cannot approve it even as MWEKAHAZINA. R34 S5: KATIBU (regK), then a separate
+  // MWEKAHAZINA (regT) verifies, then the MWENYEKITI (regD) gives the final approval and disburses.
   const loans = await api('GET', `/api/vicoba/groups/${gId}/loans`, regD.data.token);
   if (loans.data.loans && loans.data.loans.length > 0) {
-    const loan = loans.data.loans.find(l => l.status === 'PENDING');
+    const loan = loans.data.loans.find(l => l.status === 'PENDING_KATIBU');
     if (loan) {
-      const approveLoan = await api('POST', `/api/vicoba/loans/${loan.id}/approve`, regE.data.token, {
+      const selfApprove = await api('POST', `/api/vicoba/loans/${loan.id}/decision`, regE.data.token, { step: 'KATIBU', decision: 'APPROVE' });
+      await expect(selfApprove.status === 403, 'Applicant cannot approve own loan (403)', `${selfApprove.status}`);
+      const katibuStep = await api('POST', `/api/vicoba/loans/${loan.id}/decision`, regK.data.token, { step: 'KATIBU', decision: 'APPROVE' });
+      await expect(katibuStep.status === 200, 'Katibu approves step 1', JSON.stringify(katibuStep.data));
+      const regT = await register('255731' + nowSuffix(), 'Tumaini Mwekahazina');
+      await subscribe(regT.data.token, 'VICOBA');
+      await api('POST', `/api/vicoba/groups/${gId}/members`, regD.data.token, { userId: regT.data.user.id, roleInGroup: 'MWEKAHAZINA' });
+      const mhasibuStep = await api('POST', `/api/vicoba/loans/${loan.id}/decision`, regT.data.token, { step: 'MHASIBU', decision: 'APPROVE', approvedAmount: 30000 });
+      await expect(mhasibuStep.status === 200, 'Mhasibu (Mwekahazina) verifies step 2', JSON.stringify(mhasibuStep.data));
+      const approveLoan = await api('POST', `/api/vicoba/loans/${loan.id}/approve`, regD.data.token, {
         approvedAmount: 30000,
       });
       await expect(approveLoan.status === 200 && approveLoan.data.success, 'Loan approved (multi-sig)', JSON.stringify(approveLoan.data));
@@ -648,7 +702,7 @@ async function section(title) { console.log(`\n== ${title} ==`); }
       // Repay first installment (loan applicant = regE)
       const firstInstallment = schedule.data.schedule[0];
       const repay = await api('POST', `/api/vicoba/loans/${loan.id}/repay`, regE.data.token, {
-        amount: firstInstallment.total_amount,
+        amount: Number(firstInstallment.total_amount), // R36 D1 (owner-approved): API returns NUMERIC as a string; the client sends a JSON number
         note: 'Malipo ya kwanza',
       });
       await expect(repay.status === 200 && repay.data.success, 'Loan repayment recorded', JSON.stringify({ remaining: repay.data.remainingBalance, fullyRepaid: repay.data.fullyRepaid }));

@@ -243,6 +243,10 @@ async function authorizeGroupContext({ userId, userRole, groupType, groupId, cap
     throw createAppError('GOV_GROUP_TYPE_UNSUPPORTED', { groupType });
   }
 
+  // R36B: SACCOS is tier B. Governance of a SACCOS-family group is refused (before any lookup) wherever
+  // the saccos service is not enabled: always in the pilot, in production without owner activation.
+  if (family === 'SACCOS') require('../config/serviceCatalog').assertServiceEnabled('saccos');
+
   const normalized = normalizeGroupType(groupType);
   const ctx = { userId, userRole, groupType: normalized, groupId, capability };
 

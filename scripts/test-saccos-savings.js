@@ -11,6 +11,16 @@
  * ============================================================ */
 const BASE = process.env.SACCOS_TEST_BASE || 'http://127.0.0.1:3000';
 const pool = require('../src/config/db');
+
+// Database safety guard — refuse to run against production or non-isolated databases
+const EXPECTED_DB = process.env.PHASE68_TEST_DB;
+const DENYLIST = ['afrikoba_regression', 'afrikoba_global', 'afrikoba', 'afrikoba_staging', 'postgres', 'phase68_guard', 'phase68_remed_dryrun'];
+if (!EXPECTED_DB || !process.env.DB_NAME || process.env.DB_NAME !== EXPECTED_DB ||
+    !/^phase68_amount_guard_[a-z0-9_]+$/i.test(EXPECTED_DB)) {
+  console.error('REFUSING to run: DB_NAME and PHASE68_TEST_DB must match an explicit phase68_amount_guard_<unique_suffix> disposable database name.');
+  process.exit(2);
+}
+
 const savingsService = require('../src/services/saccosSavingsService');
 const crypto = require('crypto');
 
@@ -28,9 +38,10 @@ async function expect(cond, label, extra) {
 }
 async function section(label) { console.log('\n--- ' + label + ' ---'); }
 
-async function api(method, path, token, body) {
+async function api(method, path, token, body, extraHeaders) {
   const headers = { 'Content-Type': 'application/json' };
   if (token) headers.Authorization = `Bearer ${token}`;
+  if (extraHeaders) Object.assign(headers, extraHeaders);
   const isGet = method === 'GET' || method === 'HEAD';
   const res = await fetch(BASE + path, {
     method, headers,
@@ -92,6 +103,15 @@ async function wallet(userId) {
 }
 
 async function main() {
+  // Database identity verification before any write
+  const identity = await pool.query('SELECT current_database() AS db');
+  const dbName = identity.rows[0].db;
+  const DENYLIST = ['afrikoba_regression', 'afrikoba_global', 'afrikoba', 'afrikoba_staging', 'postgres', 'phase68_guard', 'phase68_remed_dryrun'];
+  if (DENYLIST.includes(dbName) || dbName !== process.env.DB_NAME || dbName !== process.env.PHASE68_TEST_DB) {
+    console.error(`REFUSING to run: database identity '${dbName}' does not match expected '${process.env.DB_NAME}'.`);
+    process.exit(2);
+  }
+  console.log(`[guard] verified database identity: ${dbName}`);
   const suffix = nowSuffix();
   const phone = (n) => `255${suffix.slice(-3)}${String(n).padStart(4, '0')}`;
 
@@ -158,7 +178,7 @@ async function main() {
 
   // ---------- 4. Auto-approved withdrawals ----------
   await section('Auto-approved withdrawals');
-  const wd1 = await api('POST', `/api/saccos/${orgId}/savings/withdraw`, mTok, { amount: 2000 });
+  const wd1 = await api('POST', `/api/saccos/${orgId}/savings/withdraw`, mTok, { amount: 2000 }, { 'Idempotency-Key': 'WD1-' + crypto.randomBytes(4).toString('hex') });
   await expect(wd1.status === 201 && wd1.data.result.status === 'APPROVED' && wd1.data.result.newBalance === 3000,
     'auto withdrawal 2000 -> APPROVED balance 3000', `${wd1.status}`);
   await expect((await wallet(mReg.data.user.id)) === before - 5000 + 2000, 'wallet credited +2000');
@@ -171,12 +191,12 @@ async function main() {
   await expect(drL && crW && Number(drL.amount) === 2000 && Number(crW.amount) === 2000,
     'withdrawal journal DR SAVINGS_LIABILITY / CR wallet (2k)');
 
-  const tooMuch = await api('POST', `/api/saccos/${orgId}/savings/withdraw`, mTok, { amount: 4000 });
+  const tooMuch = await api('POST', `/api/saccos/${orgId}/savings/withdraw`, mTok, { amount: 4000 }, { 'Idempotency-Key': 'TM-' + crypto.randomBytes(4).toString('hex') });
   await expect(tooMuch.status === 400 && tooMuch.data.code === 'SACCOS_SAVINGS_INSUFFICIENT', 'withdraw 4000 (usable 2500) -> SACCOS_SAVINGS_INSUFFICIENT');
-  const overRetain = await api('POST', `/api/saccos/${orgId}/savings/withdraw`, mTok, { amount: 2600 });
+  const overRetain = await api('POST', `/api/saccos/${orgId}/savings/withdraw`, mTok, { amount: 2600 }, { 'Idempotency-Key': 'OR-' + crypto.randomBytes(4).toString('hex') });
   await expect(overRetain.status === 400 && overRetain.data.code === 'SACCOS_SAVINGS_INSUFFICIENT', 'withdraw 2600 breaks minBalanceToRetain 500 -> INSUFFICIENT');
 
-  const wd2 = await api('POST', `/api/saccos/${orgId}/savings/withdraw`, mTok, { amount: 2500 });
+  const wd2 = await api('POST', `/api/saccos/${orgId}/savings/withdraw`, mTok, { amount: 2500 }, { 'Idempotency-Key': 'WD2-' + crypto.randomBytes(4).toString('hex') });
   await expect(wd2.status === 201 && wd2.data.result.newBalance === 500, 'withdraw 2500 (==usable) -> balance 500');
 
   const accountsList = await api('GET', `/api/saccos/${orgId}/savings/accounts`, ownerTok);
@@ -209,11 +229,11 @@ async function main() {
   await fundWallet(fReg.data.user.id, 200000);
 
   await api('POST', `/api/saccos/${s2Id}/savings/deposit`, fTok, { amount: 10000 });
-  const pendW = await api('POST', `/api/saccos/${s2Id}/savings/withdraw`, fTok, { amount: 4000 });
+  const pendW = await api('POST', `/api/saccos/${s2Id}/savings/withdraw`, fTok, { amount: 4000 }, { 'Idempotency-Key': 'PW-' + crypto.randomBytes(4).toString('hex') });
   await expect(pendW.status === 201 && pendW.data.result.status === 'PENDING' && pendW.data.result.newBalance === 10000,
     'gated withdrawal -> PENDING, balance unchanged (reserved)', `${pendW.status}/${pendW.data.code || ''}`);
 
-  const second = await api('POST', `/api/saccos/${s2Id}/savings/withdraw`, fTok, { amount: 8000 });
+  const second = await api('POST', `/api/saccos/${s2Id}/savings/withdraw`, fTok, { amount: 8000 }, { 'Idempotency-Key': 'SW-' + crypto.randomBytes(4).toString('hex') });
   await expect(second.status === 400 && second.data.code === 'SACCOS_SAVINGS_INSUFFICIENT', 'second pending 8000 while 4000 pending -> INSUFFICIENT');
 
   const wids = await pool.query(
@@ -229,9 +249,9 @@ async function main() {
   await expect(mineF.data.result.account.balance === 6000, 'balance 6000 after approval');
 
   const dupW = await api('POST', `/api/saccos/${s2Id}/savings/withdrawals/${wId}/approve`, o2Tok);
-  await expect(dupW.status === 400 && dupW.data.code === 'SACCOS_SAVINGS_DECIDED', 're-approve -> SACCOS_SAVINGS_DECIDED');
+  await expect(dupW.status === 200 && dupW.data.result.status === 'APPROVED' && dupW.data.result.dedup === true, 're-approve same decision -> established APPROVED, dedup (no second debit)');
 
-  const w3 = await api('POST', `/api/saccos/${s2Id}/savings/withdraw`, fTok, { amount: 3000 });
+  const w3 = await api('POST', `/api/saccos/${s2Id}/savings/withdraw`, fTok, { amount: 3000 }, { 'Idempotency-Key': 'W3-' + crypto.randomBytes(4).toString('hex') });
   await expect(w3.status === 201 && w3.data.result.status === 'PENDING', 'second gated withdrawal -> PENDING');
   const wids3 = await pool.query(
     `SELECT id FROM saccos_savings_withdrawals WHERE account_id = (SELECT id FROM saccos_savings_accounts WHERE member_id = $1) AND status = 'PENDING' ORDER BY id DESC LIMIT 1`,
@@ -244,7 +264,7 @@ async function main() {
   const mineF2 = await api('GET', `/api/saccos/${s2Id}/savings/mine`, fTok);
   await expect(mineF2.data.result.account.balance === 6000, 'balance unchanged after rejection (6000)');
   const dupR = await api('POST', `/api/saccos/${s2Id}/savings/withdrawals/${w3Id}/reject`, o2Tok);
-  await expect(dupR.status === 400 && dupR.data.code === 'SACCOS_SAVINGS_DECIDED', 're-reject -> SACCOS_SAVINGS_DECIDED');
+  await expect(dupR.status === 200 && dupR.data.result.status === 'REJECTED' && dupR.data.result.dedup === true, 're-reject same decision -> established REJECTED, dedup');
 
   const s2Sum = await api('GET', `/api/saccos/${s2Id}/savings/summary`, o2Tok);
   await expect(Number(s2Sum.data.result.balance) === 6000, 'org2 summary balance 6000');

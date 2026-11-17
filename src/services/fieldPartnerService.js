@@ -104,11 +104,14 @@ async function bindUser({ partnerId, userId }) {
 
 /**
  * Admin supplies the partner's lendable pool from SUSPENSE.
- * Idempotent on the supplied reference.
+ * Idempotent on the supplied reference: a replay returns `dedup: true` and
+ * moves no money. A missing reference is generated and returned so the caller
+ * can replay safely.
  */
 async function fundPartner({ partnerId, amount, reference }) {
   const amountN = Number(amount);
   if (!(amountN > 0)) throw createAppError('VALIDATION_ERROR', { field: 'amount' });
+  const ref = reference || generateReference('FPF');
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -116,13 +119,25 @@ async function fundPartner({ partnerId, amount, reference }) {
     if (!partner) throw createAppError('FIELD_PARTNER_NOT_FOUND');
     if (!partner.active) throw createAppError('FIELD_PARTNER_INACTIVE');
 
+    const op = await fin.claimOperation({
+      client,
+      operationType: 'FIELD_PARTNER_FUNDING',
+      reference: ref,
+      userId: partner.user_id || null,
+      amount: amountN,
+          });
+    if (!op.claimed) {
+      await client.query('ROLLBACK');
+      return { success: true, dedup: true, reference: ref, funded: 0, partnerId };
+    }
+
     await fin.postJournal({
       client,
       lines: [
         { accountCode: 'SUSPENSE', direction: 'DR', amount: amountN },
         { accountCode: 'PARTNER_BALANCE', direction: 'CR', amount: amountN },
       ],
-      referenceId: reference,
+      referenceId: ref,
       description: `Field partner funding: ${partner.name}`,
       postedBy: 'engine:field_partner_fund',
     });
@@ -131,8 +146,9 @@ async function fundPartner({ partnerId, amount, reference }) {
       `UPDATE field_partners SET available_balance = available_balance + $1, updated_at = NOW() WHERE id = $2`,
       [amountN, partnerId]
     );
+    await fin.setOperationState({ client, reference: ref, status: 'SUCCESS' });
     await client.query('COMMIT');
-    return { success: true, reference, funded: amountN, partnerId };
+    return { success: true, reference: ref, funded: amountN, partnerId };
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {});
     logger.error('FP_FUND', error.message, { partnerId });
@@ -177,16 +193,16 @@ async function disburseLoan({ loanId, partnerId }) {
     if (loan.field_partner_id !== partnerId) throw createAppError('FIELD_PARTNER_UNAUTHORIZED');
     if (loan.status !== 'PENDING') throw createAppError('FP_LOAN_STATUS_INVALID');
 
-    const partner = await pool.query('SELECT * FROM field_partners WHERE id = $1 FOR UPDATE', [partnerId]);
-    if (partner.rows.length === 0) throw createAppError('FIELD_PARTNER_NOT_FOUND');
-    const p = partner.rows[0];
+    const partnerRes = await client.query('SELECT * FROM field_partners WHERE id = $1 FOR UPDATE', [partnerId]);
+    if (partnerRes.rows.length === 0) throw createAppError('FIELD_PARTNER_NOT_FOUND');
+    const p = partnerRes.rows[0];
     if (!p.active) throw createAppError('FIELD_PARTNER_INACTIVE');
 
     const amountN = Number(loan.amount);
     const avail = Number(p.available_balance);
     if (avail < amountN) throw createAppError('FIELD_PARTNER_POOL_INSUFFICIENT');
 
-    await fin.creditWallet({
+    const creditResult = await fin.creditWallet({
       client,
       userId: loan.borrower_user_id,
       amount: amountN,
@@ -195,13 +211,20 @@ async function disburseLoan({ loanId, partnerId }) {
       description: `Field partner loan: ${loan.loan_reference}`,
       actor: 'engine:field_partner_disburse',
     });
+    if (creditResult.dedup) {
+      await client.query('ROLLBACK');
+      throw createAppError('FIELD_PARTNER_LOAN_ALREADY_DISBURSED');
+    }
 
-    await client.query(
+    const updated = await client.query(
       `UPDATE field_partners SET available_balance = available_balance - $1,
               total_loans_facilitated = total_loans_facilitated + $1,
-              updated_at = NOW() WHERE id = $2`,
+              updated_at = NOW() WHERE id = $2 AND available_balance >= $1`,
       [amountN, partnerId]
     );
+    if (updated.rowCount !== 1) {
+      throw createAppError('FIELD_PARTNER_POOL_INSUFFICIENT');
+    }
     await client.query(
       `UPDATE field_partner_loans SET status = 'DISBURSED', disbursed_at = NOW(), updated_at = NOW() WHERE id = $1`,
       [loanId]

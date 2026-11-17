@@ -15,6 +15,16 @@
  * ============================================================ */
 const BASE = process.env.SACCOS_TEST_BASE || 'http://127.0.0.1:3000';
 const pool = require('../src/config/db');
+
+// Database safety guard — refuse to run against production or non-isolated databases
+const EXPECTED_DB = process.env.PHASE68_TEST_DB;
+const DENYLIST = ['afrikoba_regression', 'afrikoba_global', 'afrikoba', 'afrikoba_staging', 'postgres', 'phase68_guard', 'phase68_remed_dryrun'];
+if (!EXPECTED_DB || !process.env.DB_NAME || process.env.DB_NAME !== EXPECTED_DB ||
+    !/^phase68_amount_guard_[a-z0-9_]+$/i.test(EXPECTED_DB)) {
+  console.error('REFUSING to run: DB_NAME and PHASE68_TEST_DB must match an explicit phase68_amount_guard_<unique_suffix> disposable database name.');
+  process.exit(2);
+}
+
 const fundsService = require('../src/services/saccosFundsService');
 
 let passed = 0;
@@ -67,6 +77,15 @@ async function fundWallet(userId, amount) {
 function nowSuffix() { return String(Date.now()).slice(-6); }
 
 async function main() {
+  // Database identity verification before any write
+  const identity = await pool.query('SELECT current_database() AS db');
+  const dbName = identity.rows[0].db;
+  const DENYLIST = ['afrikoba_regression', 'afrikoba_global', 'afrikoba', 'afrikoba_staging', 'postgres', 'phase68_guard', 'phase68_remed_dryrun'];
+  if (DENYLIST.includes(dbName) || dbName !== process.env.DB_NAME || dbName !== process.env.PHASE68_TEST_DB) {
+    console.error(`REFUSING to run: database identity '${dbName}' does not match expected '${process.env.DB_NAME}'.`);
+    process.exit(2);
+  }
+  console.log(`[guard] verified database identity: ${dbName}`);
   const suffix = nowSuffix();
   const phone = (n) => `255${suffix.slice(-3)}${String(n).padStart(4, '0')}`;
 
@@ -374,7 +393,7 @@ async function main() {
   const release2 = await api('POST', `/api/saccos/${orgId}/loan-loss/${llr2Id}/release`, ownerTok);
   await expect(release2.status === 200 && release2.data.result.status === 'RELEASED', 'release loan2 provision -> RELEASED');
   const reRelease = await api('POST', `/api/saccos/${orgId}/loan-loss/${llr2Id}/release`, ownerTok);
-  await expect(reRelease.status === 400 && reRelease.data.code === 'SACCOS_LLR_STATE', 're-release -> SACCOS_LLR_STATE');
+  await expect(reRelease.status === 200 && reRelease.data.result.alreadyReleased === true, 're-release -> alreadyReleased');
 
   const llrList = await api('GET', `/api/saccos/${orgId}/loan-loss`, ownerTok);
   const llrSummary = await api('GET', `/api/saccos/${orgId}/loan-loss/summary`, ownerTok);

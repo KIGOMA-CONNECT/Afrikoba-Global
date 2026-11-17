@@ -69,29 +69,37 @@ async function getSplitDetail(splitId) {
   return { split: split.rows[0], participants: participants.rows };
 }
 
+// Round half away from zero to 2 decimals (matches NUMERIC(..,2) rounding of the decimal text).
+function money2(value) {
+  return Number(`${Math.round(Number(`${String(Number(value))}e2`))}e-2`);
+}
+
 async function paySplit(splitId, userId, amount) {
-  const participant = await pool.query(
-    `SELECT * FROM bill_split_participants WHERE split_id = $1 AND user_id = $2`,
-    [splitId, userId]
-  );
-  if (participant.rows.length === 0) throw new Error('Huwezi kulipa split hii.');
-
-  const p = participant.rows[0];
-  const remaining = parseFloat(p.amount_owed) - parseFloat(p.amount_paid);
-  if (amount > remaining) amount = remaining;
-
-  const newPaid = parseFloat(p.amount_paid) + amount;
-
-  // Transfer from wallet to creator
-  const split = await pool.query(`SELECT creator_id FROM bill_splits WHERE id = $1`, [splitId]);
-  if (split.rows.length === 0) throw new Error('Split haipatikani.');
-  const creatorId = split.rows[0].creator_id;
-
+  amount = money2(amount);
   const ref = generateReference('BS');
 
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+
+    // R28 S2: lock the split, then the participant, and compute what is still owed from the
+    // locked row, so concurrent payments cannot both pay the full outstanding balance.
+    const split = await client.query(`SELECT creator_id FROM bill_splits WHERE id = $1 FOR UPDATE`, [splitId]);
+    const participant = await client.query(
+      `SELECT * FROM bill_split_participants WHERE split_id = $1 AND user_id = $2 FOR UPDATE`,
+      [splitId, userId]
+    );
+    if (participant.rows.length === 0) throw new Error('Huwezi kulipa split hii.');
+
+    const p = participant.rows[0];
+    const remaining = money2(parseFloat(p.amount_owed) - parseFloat(p.amount_paid));
+    if (amount > remaining) amount = remaining;
+
+    const newPaid = money2(parseFloat(p.amount_paid) + amount);
+
+    // Transfer from wallet to creator
+    if (split.rows.length === 0) throw new Error('Split haipatikani.');
+    const creatorId = split.rows[0].creator_id;
 
     await client.query(
       `UPDATE bill_split_participants
@@ -115,16 +123,18 @@ async function paySplit(splitId, userId, amount) {
       await client.query(`UPDATE bill_splits SET status = 'PARTIAL', updated_at = NOW() WHERE id = $1`, [splitId]);
     }
 
-    await fin.internalTransfer({
-      client, fromUserId: userId, toUserId: creatorId, amount,
-      reference: ref, description: `Bill split payment for split ${splitId}`
-    });
-
-    await client.query(
-      `INSERT INTO transactions (user_id, type, total_charged, commission, status, reference_id, meta)
-       VALUES ($1, 'TRANSFER', $2, 0, 'SUCCESS', $3, $4)`,
+    const txResult = await client.query(
+      `INSERT INTO transactions (user_id, type, total_charged, wallet_amount, commission, status, reference_id, meta)
+       VALUES ($1, 'TRANSFER', $2, $2, 0, 'SUCCESS', $3, $4)
+       RETURNING id`,
       [userId, amount, ref, JSON.stringify({ split_id: splitId, type: 'BILL_SPLIT', unique: ref })]
     );
+
+    await fin.internalTransfer({
+      client, fromUserId: userId, toUserId: creatorId, amount,
+      reference: ref, description: `Bill split payment for split ${splitId}`,
+      transactionId: txResult.rows[0].id
+    });
 
     await client.query('COMMIT');
   } catch (error) {

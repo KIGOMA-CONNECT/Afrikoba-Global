@@ -7,15 +7,16 @@
  * the policy explicitly allows it.
  * ============================================================ */
 const pool = require('../config/db');
+const { writeAudit } = require('./auditService');
 
 const executors = {};
 
 function registerExecutor(actionCode, fn) {
-  executors[actionCode] = fn;
+  executors[actionCode] = require('../config/pilot').guardExecutor(actionCode, fn); // R36: pilot executor allow-list
 }
 
 async function getPolicy(actionCode, db = pool) {
-  const r = await db.query('SELECT * FROM four_eyes_policies WHERE action_code = $1', [actionCode]);
+  const r = await db.query('SELECT * FROM four_eyes_policies WHERE action_code = $1 FOR SHARE', [actionCode]);
   if (r.rows.length === 0) throw Object.assign(new Error('Sera ya four-eyes haijapatikana.'), { status: 404 });
   if (!r.rows[0].enabled) throw Object.assign(new Error('Sera hii imezimwa.'), { status: 403 });
   return r.rows[0];
@@ -26,28 +27,51 @@ async function listPolicies() {
   return r.rows;
 }
 
-async function upsertPolicy({ actionCode, description, requiredApprovers, approverRoles, enabled, allowSelfApprove }) {
+async function upsertPolicy({ actionCode, description, requiredApprovers, approverRoles, enabled, allowSelfApprove, client }) {
   const code = String(actionCode || '').trim();
   if (!code) throw Object.assign(new Error('actionCode inahitajika.'), { status: 400 });
+  if (!client || client === pool) {
+    throw Object.assign(new Error('Policy updates require a caller-owned transaction client.'), { status: 500, code: 'FOUR_EYES_POLICY_TRANSACTION_REQUIRED' });
+  }
+
+  // Serialize updates even when the policy row does not yet exist.
+  await client.query(
+    'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
+    [`four_eyes_policy:${code}`]
+  );
+
+  const existing = await client.query(
+    'SELECT * FROM four_eyes_policies WHERE action_code = $1 FOR UPDATE',
+    [code]
+  );
+  const previous = existing.rows[0] || null;
   let base = { description: '', required_approvers: 1, approver_roles: ['ADMIN'], enabled: true, allow_self_approve: false };
-  const existing = await pool.query('SELECT * FROM four_eyes_policies WHERE action_code = $1', [code]);
-  if (existing.rows.length > 0) {
-    const r = existing.rows[0];
+  if (previous) {
     base = {
-      description: r.description,
-      required_approvers: r.required_approvers,
-      approver_roles: r.approver_roles,
-      enabled: r.enabled,
-      allow_self_approve: r.allow_self_approve,
+      description: previous.description,
+      required_approvers: previous.required_approvers,
+      approver_roles: previous.approver_roles,
+      enabled: previous.enabled,
+      allow_self_approve: previous.allow_self_approve,
     };
   }
+
   const roles = Array.isArray(approverRoles) && approverRoles.length ? approverRoles : base.approver_roles;
   const required = requiredApprovers !== undefined && requiredApprovers !== null
     ? Math.max(1, Math.min(3, Number(requiredApprovers) || 1))
     : base.required_approvers;
   const enabledVal = enabled !== undefined && enabled !== null ? Boolean(enabled) : base.enabled;
   const selfVal = allowSelfApprove !== undefined && allowSelfApprove !== null ? Boolean(allowSelfApprove) : base.allow_self_approve;
-  const r = await pool.query(
+  // R36B OD-3: in the pilot a policy cannot be weakened by one admin (environment lock, before any write).
+  const pilotCfg = require('../config/pilot');
+  if (pilotCfg.isFourEyesLocked()) {
+    if (selfVal === true) throw pilotCfg.fourEyesLockedError('allow_self_approve');
+    const norm = (r) => [...new Set((r || []).map(String))].sort().join(',');
+    if (norm(roles) !== norm(base.approver_roles)) throw pilotCfg.fourEyesLockedError('approver_roles');
+    if (enabledVal === false) throw pilotCfg.fourEyesLockedError('enabled=false');
+    if (previous && Number(required) < Number(previous.required_approvers)) throw pilotCfg.fourEyesLockedError('required_approvers');
+  }
+  const result = await client.query(
     `INSERT INTO four_eyes_policies (action_code, description, required_approvers, approver_roles, enabled, allow_self_approve)
      VALUES ($1,$2,$3,$4,$5,$6)
      ON CONFLICT (action_code) DO UPDATE SET
@@ -57,7 +81,18 @@ async function upsertPolicy({ actionCode, description, requiredApprovers, approv
      RETURNING *`,
     [code, String(description ?? base.description), required, roles, enabledVal, selfVal]
   );
-  return r.rows[0];
+
+  const policy = result.rows[0];
+  const snapshot = (row) => row ? ({
+    action_code: row.action_code,
+    description: row.description,
+    required_approvers: row.required_approvers,
+    approver_roles: row.approver_roles,
+    enabled: row.enabled,
+    allow_self_approve: row.allow_self_approve,
+  }) : null;
+
+  return { policy, before: snapshot(previous), after: snapshot(policy) };
 }
 
 async function initiateRequest({ actionCode, requesterId, payload, client = pool }) {
@@ -136,7 +171,7 @@ async function getRequestForUpdate(client, requestId) {
        JOIN users u ON u.id = r.requester_id
        JOIN four_eyes_policies p ON p.action_code = r.action_code
       WHERE r.id = $1
-      FOR UPDATE OF r`,
+      FOR UPDATE OF r, p`,
     [requestId]
   );
 
@@ -214,10 +249,14 @@ async function approve(requestId, approverId, role, note) {
 
     const { request, policy } = await getRequestForUpdate(client, requestId);
 
+    if (!policy.enabled) {
+      throw Object.assign(new Error('Sera ya four-eyes imezimwa; idhini mpya hairuhusiwi.'), { status: 403 });
+    }
     if (request.status !== 'PENDING') {
       throw Object.assign(new Error('Ombi hili tayari limeamuliwa.'), { status: 409 });
     }
-    if (Number(request.requester_id) === Number(approverId) && !policy.allow_self_approve) {
+    // R36B OD-3: in the pilot self-approval is refused whatever the stored policy says.
+    if (Number(request.requester_id) === Number(approverId) && (!policy.allow_self_approve || require('../config/pilot').isFourEyesLocked())) {
       throw Object.assign(new Error('Huwezi kuidhinisha ombi lako mwenyewe (four-eyes).'), { status: 403 });
     }
     if (!policy.approver_roles.includes(role)) {
@@ -377,7 +416,12 @@ async function _dispatch(requestId, approverId) {
     inTransaction = true;
 
     const locked = await client.query(
-      'SELECT * FROM four_eyes_requests WHERE id = $1 FOR UPDATE',
+      `SELECT r.*, p.enabled AS policy_enabled
+         FROM four_eyes_requests r
+         JOIN four_eyes_policies p ON p.action_code = r.action_code
+        WHERE r.id = $1
+        FOR UPDATE OF r
+        FOR SHARE OF p`,
       [requestId]
     );
 
@@ -393,6 +437,87 @@ async function _dispatch(requestId, approverId) {
     // Dispatch only while this request is still APPROVED.
     // The row lock serializes concurrent dispatch attempts.
     if (request.status !== 'APPROVED') {
+      await client.query('COMMIT');
+      inTransaction = false;
+      return null;
+    }
+
+    // A disabled policy blocks fresh execution. The only exception is
+    // record-only recovery of an exactly matching, already-settled agent
+    // settlement; no executor or financial mutation is invoked.
+    if (request.policy_enabled !== true) {
+      let recoveryResult = null;
+
+      if (request.action_code === 'AGENT_SETTLEMENT') {
+        const payload = request.payload || {};
+        const settlementId = Number(payload.settlementId);
+        const agentId = Number(payload.agentId);
+        const amount = Number(payload.amount);
+        const type = String(payload.type || '');
+        const reference = String(payload.reference || '');
+
+        if (Number.isSafeInteger(settlementId) && settlementId > 0 &&
+            Number.isSafeInteger(agentId) && agentId > 0 &&
+            Number.isFinite(amount) && amount > 0 &&
+            ['DEPOSIT', 'WITHDRAWAL'].includes(type) && reference) {
+          const linked = await client.query(
+            `SELECT id, agent_id, amount, type, reference, status
+               FROM agent_settlements
+              WHERE id = $1
+              FOR UPDATE`,
+            [settlementId]
+          );
+
+          if (linked.rows.length) {
+            const settlement = linked.rows[0];
+            const matches =
+              Number(settlement.id) === settlementId &&
+              Number(settlement.agent_id) === agentId &&
+              Number(settlement.amount) === amount &&
+              String(settlement.type) === type &&
+              String(settlement.reference) === reference &&
+              settlement.status === 'SETTLED';
+
+            if (matches) {
+              recoveryResult = {
+                success: true,
+                reference,
+                status: 'SETTLED',
+                duplicate: true,
+                recovered: true
+              };
+
+              const recovered = await client.query(
+                `UPDATE four_eyes_requests
+                    SET status = 'EXECUTED',
+                        executed_by = $2,
+                        execution_result = $3,
+                        error = NULL,
+                        updated_at = NOW()
+                  WHERE id = $1 AND status = 'APPROVED'
+                  RETURNING id`,
+                [requestId, approverId, JSON.stringify(recoveryResult)]
+              );
+
+              if (recovered.rows.length) {
+                await client.query('COMMIT');
+                inTransaction = false;
+                return recoveryResult;
+              }
+            }
+          }
+        }
+      }
+
+      await client.query(
+        `UPDATE four_eyes_requests
+            SET status = 'FAILED',
+                error = 'Four-Eyes policy is disabled; dispatch was blocked.',
+                updated_at = NOW()
+          WHERE id = $1 AND status = 'APPROVED'`,
+        [requestId]
+      );
+
       await client.query('COMMIT');
       inTransaction = false;
       return null;
@@ -460,6 +585,28 @@ async function _dispatch(requestId, approverId) {
     await client.query('COMMIT');
     inTransaction = false;
 
+    // R26-C2: record maker (requester) and checker(s) of the executed operation.
+    // After COMMIT and non-throwing, so it can never undo or block the execution.
+    try {
+      const checkers = await pool.query(
+        `SELECT approver_id FROM four_eyes_approvals WHERE request_id = $1 AND decision = 'APPROVE' ORDER BY id`,
+        [requestId]
+      );
+      await writeAudit({
+        userId: approverId,
+        action: 'FOUR_EYES_EXECUTED',
+        entityType: 'FOUR_EYES_REQUEST',
+        entityId: Number(requestId),
+        meta: {
+          request_id: Number(requestId),
+          action_code: request.action_code,
+          maker_id: request.requester_id,
+          checker_ids: checkers.rows.map((r) => r.approver_id),
+          executed_by: approverId,
+        },
+      });
+    } catch (auditError) { /* writeAudit logs its own failures; never block the executed result */ }
+
     return result || {};
   } catch (error) {
     if (inTransaction) {
@@ -474,11 +621,12 @@ async function _dispatch(requestId, approverId) {
 async function retry(requestId, actorId) {
   const client = await pool.connect();
   let recoverApprovedSettlement = false;
+  let recoverApprovedRefund = false;
 
   try {
     await client.query('BEGIN');
 
-    const { request } = await getRequestForUpdate(client, requestId);
+    const { request, policy } = await getRequestForUpdate(client, requestId);
 
     // Recover only the split-commit case: financial settlement committed,
     // but Four-Eyes could not persist the request's EXECUTED status.
@@ -543,11 +691,24 @@ async function retry(requestId, actorId) {
       // executor, whose SETTLED duplicate guard must prevent repeat effects.
       recoverApprovedSettlement = true;
       await client.query('COMMIT');
+    } else if (request.status === 'APPROVED' && request.action_code === 'ADMIN_LARGE_REFUND') {
+      // Leave APPROVED. _dispatch() re-invokes the executor, which verifies the committed
+      // operation under the stable reference and never repeats the wallet credit.
+      recoverApprovedRefund = true;
+      await client.query('COMMIT');
     } else {
       if (request.status !== 'FAILED') {
         throw Object.assign(
           new Error('Ombi linahitaji kuwa FAILED ili kurudia.'),
           { status: 409 }
+        );
+      }
+
+      // A normal FAILED retry requires the current policy to be enabled.
+      if (policy.enabled !== true) {
+        throw Object.assign(
+          new Error('Four-Eyes policy is disabled; retry is blocked.'),
+          { status: 403 }
         );
       }
 
@@ -580,6 +741,7 @@ async function retry(requestId, actorId) {
   return {
     executed,
     recoveredSettledAgentRequest: recoverApprovedSettlement,
+    recoveredApprovedRefund: recoverApprovedRefund,
     request: (await getRequest(requestId)).request
   };
 }

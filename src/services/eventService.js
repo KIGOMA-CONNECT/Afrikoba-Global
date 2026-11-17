@@ -188,6 +188,10 @@ async function contribute(userId, eventId, { amount, mode = 'FUNDRAISING', contr
   const cur = String(currency || 'TZS').toUpperCase();
   let effectiveTzs = amountN;
   let currencyAmount = amountN;
+  if (cur !== 'TZS' && require('../config/pilot').isPilotMode()) {
+    // R36B OD-F1 (review #5): FX (service "currency") is not in the pilot; event contributions are TZS only.
+    throw Object.assign(badge('Kwenye pilot michango ni kwa TZS pekee.', 403), { code: 'PILOT_SERVICE_EXCLUDED' });
+  }
   if (cur !== 'TZS') {
     const rate = await currencyService.getExchangeRate(cur, 'TZS');
     if (!rate) {
@@ -669,12 +673,22 @@ async function isAdminUser(userId) {
   return rows.length > 0 && rows[0].role === 'ADMIN';
 }
 
+// R28 R27RV-01: money amount rounded to 2 decimals the way NUMERIC(…,2) rounds it (half away
+// from zero on the decimal text node-postgres sends). Non-finite and exponent-form values
+// (outside any valid money range) give NaN; the caller refuses NaN and <= 0.
+function money2(value) {
+  return Number(`${Math.round(Number(`${String(Number(value))}e2`))}e-2`);
+}
+
 async function requestEventWithdrawal(actorId, eventId, { amount, mode, toUserId, comment }) {
   const event = await findEventById(eventId);
   assertOwner(actorId, event);
   const modeUp = String(mode || 'FUNDRAISING').toUpperCase();
   if (!VALID_MODES.includes(modeUp)) throw badge('Njia ya uondoaji haijulikani.', 400);
-  const amountN = Number(amount);
+  // R28 R27RV-01: round to NUMERIC(18,2) before the INSERT (decimal half-up, as Postgres
+  // rounds the value it receives), so the row, the flow data, the wallet credit, the pool
+  // debit and the journal all carry the same amount.
+  const amountN = money2(amount);
   if (!Number.isFinite(amountN) || amountN <= 0) throw badge('Kiasi cha uondoaji ni lazima kiwe chanya na halali.', 400);
   const recipient = toUserId != null ? Number(toUserId) : actorId;
 
@@ -710,7 +724,8 @@ async function requestEventWithdrawal(actorId, eventId, { amount, mode, toUserId
   const threshold = Number.isFinite(parsed) && parsed > 0 ? parsed : 5000000;
   let requiresApproval = false;
   let approvalFlowId = null;
-  if (amountN >= threshold && !(await isAdminUser(actorId))) {
+  // R36B OD-3 (review #2): no admin exemption while four-eyes is environment-locked (pilot).
+  if (amountN >= threshold && (require('../config/pilot').isFourEyesLocked() || !(await isAdminUser(actorId)))) {
     const flow = await governanceService.createApprovalFlow({
       requesterId: actorId,
       actionType: 'EVENT_WITHDRAWAL',
@@ -753,24 +768,62 @@ async function requestEventWithdrawal(actorId, eventId, { amount, mode, toUserId
   };
 }
 
-async function executeEventWithdrawal({ eventId, withdrawalId, mode, amount, userId, reference }) {
+// R27 IV-A-6: the event, amount, recipient, mode and reference all come from the
+// event_withdrawals row locked inside this transaction, never from the caller.
+// eventId/mode/amount/userId/reference are only claims (an approval flow's data, or
+// the direct path's own values) and must match that row. A row bound to an approval
+// flow can only be executed by that flow (flowId null = direct path, allowed only for
+// a row with no bound flow). A refusal here is a 409 that leaves the withdrawal
+// untouched (it is not marked FAILED). The call signature is unchanged for the
+// direct path in requestEventWithdrawal.
+async function executeEventWithdrawal({ withdrawalId, flowId = null, ...claimed }) {
+  const refuse = (message) => Object.assign(new Error(message), {
+    statusCode: 409, code: 'EVENT_WITHDRAWAL_FLOW_MISMATCH', keepWithdrawalState: true,
+  });
   const client = await pool.connect();
+  let reference = null;
+  let eventId = null;
   try {
     await client.query('BEGIN');
+    const locked = await client.query('SELECT * FROM event_withdrawals WHERE id = $1 FOR UPDATE', [withdrawalId]);
+    if (locked.rows.length === 0) throw refuse('Uondoaji huu haupatikani.');
+    const row = locked.rows[0];
+    reference = row.reference_id;
+    eventId = row.event_id;
+    const boundFlow = row.approval_flow_id == null ? null : Number(row.approval_flow_id);
+    if (flowId == null ? boundFlow != null : (boundFlow != null && boundFlow !== Number(flowId))) {
+      throw refuse('Idhini hii haihusiani na uondoaji huu.');
+    }
+    const c = claimed || {};
+    const mismatched = [];
+    if (c.eventId != null && Number(c.eventId) !== Number(row.event_id)) mismatched.push('eventId');
+    if (c.amount != null && Number(c.amount) !== Number(row.amount)) mismatched.push('amount');
+    if (c.userId != null && Number(c.userId) !== Number(row.user_id)) mismatched.push('userId');
+    if (c.mode != null && String(c.mode).toUpperCase() !== String(row.mode).toUpperCase()) mismatched.push('mode');
+    if (c.reference != null && String(c.reference) !== String(row.reference_id)) mismatched.push('reference');
+    if (mismatched.length) throw refuse(`Taarifa za idhini hazilingani na uondoaji uliorekodiwa (${mismatched.join(', ')}).`);
+    if (!reference) throw refuse('Uondoaji huu hauna kumbukumbu (reference).');
+    // R28 F2b: a cancelled (REJECTED) or FAILED withdrawal cannot be executed by its approval
+    // flow; refusing keeps the flow PENDING (it can still be rejected) instead of the dedup
+    // branch below reporting it APPROVED/executed with no money moved. PAID stays a dedup.
+    if (flowId != null && (row.status === 'REJECTED' || row.status === 'FAILED')) {
+      throw refuse('Uondoaji huu umeghairiwa au umeshindwa; idhini haiwezi kuutekeleza.');
+    }
+
     const updated = await client.query(
       `UPDATE event_withdrawals
-          SET status = 'PAID', paid_at = NOW(), reference_id = $3, updated_at = NOW()
-        WHERE id = $1 AND event_id = $2 AND status IN ('PENDING','APPROVED')
+          SET status = 'PAID', paid_at = NOW(), updated_at = NOW()
+        WHERE id = $1 AND status IN ('PENDING','APPROVED')
         RETURNING *`,
-      [withdrawalId, eventId, reference]
+      [withdrawalId]
     );
-    if (updated.rows.length === 0) {
+    if (updated.rows.length !== 1) {
       await client.query('ROLLBACK');
       return { dedup: true, reference };
     }
-    const modeUp = String(mode || updated.rows[0].mode).toUpperCase();
-    const amountN = Number(amount != null ? amount : updated.rows[0].amount);
-    const toUserId = userId != null ? Number(userId) : updated.rows[0].user_id;
+    const modeUp = String(row.mode).toUpperCase();
+    const amountN = Number(row.amount);
+    const toUserId = Number(row.user_id);
     const col = modeUp === 'SAVINGS' ? 'savings_amount' : 'collected_amount';
     const moved = await fin.groupToWallet({
       client,
@@ -795,10 +848,15 @@ async function executeEventWithdrawal({ eventId, withdrawalId, mode, amount, use
     return { success: true, withdrawalId, reference, amount: amountN, paidTo: toUserId };
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {});
-    await pool.query(
-      `UPDATE event_withdrawals SET status = 'FAILED', updated_at = NOW() WHERE id = $1`,
-      [withdrawalId]
-    ).catch(() => {});
+    if (!error.keepWithdrawalState) {
+      // R27: conditional, so a failed/timed-out concurrent attempt can never turn a
+      // row another attempt already PAID into FAILED.
+      await pool.query(
+        `UPDATE event_withdrawals SET status = 'FAILED', updated_at = NOW()
+          WHERE id = $1 AND status IN ('PENDING','APPROVED')`,
+        [withdrawalId]
+      ).catch(() => {});
+    }
     logger.error('EVENT_WITHDRAWAL_FAIL', error.message, { eventId, withdrawalId, reference });
     throw error;
   } finally {
@@ -837,13 +895,52 @@ async function listEventWithdrawals(eventId, { status } = {}) {
 async function cancelEventWithdrawal(actorId, eventId, withdrawalId) {
   const event = await findEventById(eventId);
   assertOwner(actorId, event);
-  const { rows } = await pool.query(
-    `UPDATE event_withdrawals SET status = 'REJECTED', updated_at = NOW()
-      WHERE id = $1 AND event_id = $2 AND status = 'PENDING' RETURNING *`,
-    [withdrawalId, eventId]
-  );
-  if (rows.length === 0) throw badge('Uondoaji haupo au hauwezi kughairiwa (tayari umechakatwa).', 400);
-  return { success: true, withdrawal: rows[0] };
+  const notCancellable = () => badge('Uondoaji haupo au hauwezi kughairiwa (tayari umechakatwa).', 400);
+  // R29 D3: under the withdrawal row lock, a withdrawal with a related EVENT_WITHDRAWAL approval
+  // flow that is PENDING or APPROVED is never cancelled here; the flow is not auto-rejected.
+  // R29 N-D3a: once every related flow is REJECTED, the owner may cancel the PENDING withdrawal.
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const locked = await client.query(
+      'SELECT * FROM event_withdrawals WHERE id = $1 AND event_id = $2 FOR UPDATE',
+      [withdrawalId, eventId]
+    );
+    if (locked.rows.length === 0 || locked.rows[0].status !== 'PENDING') throw notCancellable();
+    const flows = await client.query(
+      `SELECT id FROM approval_flows
+        WHERE action_type = 'EVENT_WITHDRAWAL' AND status IN ('PENDING','APPROVED')
+          AND (id = $1 OR (ref_type = 'EVENT_WITHDRAWAL' AND ref_id = $2))
+        LIMIT 1`,
+      [locked.rows[0].approval_flow_id, withdrawalId]
+    );
+    if (flows.rows.length > 0) {
+      throw Object.assign(
+        badge('Uondoaji huu una ombi la idhini (four-eyes). Kamilisha au kataa idhini kwanza; hauwezi kughairiwa moja kwa moja.', 409),
+        { code: 'EVENT_WITHDRAWAL_APPROVAL_OPEN' }
+      );
+    }
+    const { rows } = await client.query(
+      `UPDATE event_withdrawals SET status = 'REJECTED', updated_at = NOW()
+        WHERE id = $1 AND event_id = $2 AND status = 'PENDING' RETURNING *`,
+      [withdrawalId, eventId]
+    );
+    if (rows.length !== 1) throw notCancellable();
+    // R37 (8b) / ND3-F1: the audit record is written in the same transaction (logAudit with a client throws on
+    // failure), so a cancel is never committed without its audit row.
+    await logAudit({
+      client, eventType: 'EVENT_WITHDRAWAL_CANCELLED', action: 'CANCEL', entityType: 'event_withdrawal',
+      entityId: withdrawalId, userId: actorId, amount: rows[0].amount,
+      afterData: { eventId, withdrawalId, previousStatus: 'PENDING', status: 'REJECTED' },
+    });
+    await client.query('COMMIT');
+    return { success: true, withdrawal: rows[0] };
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 async function createInvite(actorId, eventId, { maxUses, expiresDays }) {

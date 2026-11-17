@@ -88,6 +88,9 @@ async function fundBusiness(businessId, ownerId, amount) {
     await logTx(client, ownerId, amountNum, 'DEPOSIT', { feature: 'business_fund', business_id: businessId });
     await client.query('COMMIT');
     return { success: true, business: biz.business_name, amount: amountNum, message: 'Fedha zimeingia kwenye biashara.' };
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
   } finally { client.release(); }
 }
 
@@ -105,6 +108,9 @@ async function businessToWallet(businessId, ownerId, amount) {
     await logTx(client, ownerId, amountNum, 'WITHDRAWAL', { feature: 'business_withdraw', business_id: businessId });
     await client.query('COMMIT');
     return { success: true, amount: amountNum, message: 'Fedha zimetolewa kwenye wallet yako.' };
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
   } finally { client.release(); }
 }
 
@@ -146,6 +152,9 @@ async function payPaymentLink(reference, payerUserId) {
     await logTx(client, payerUserId, Number(l.amount), 'TRANSFER', { feature: 'payment_link', payment_link: l.reference, business_id: l.business_id });
     await client.query('COMMIT');
     return { success: true, amount: Number(l.amount), reference: l.reference, message: 'Umefaulu kulipa.' };
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
   } finally { client.release(); }
 }
 
@@ -177,6 +186,9 @@ async function createInvoice(businessId, ownerId, data) {
     );
     await client.query('COMMIT');
     return res.rows[0];
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
   } finally { client.release(); }
 }
 
@@ -197,12 +209,15 @@ async function payInvoice(invoiceId, payerUserId) {
     const inv = await client.query("SELECT * FROM business_invoices WHERE id = $1 AND status = 'PENDING' FOR UPDATE", [invoiceId]);
     if (!inv.rows.length) throw Object.assign(new Error('Ankara haipatikani au imelipwa.'), { statusCode: 404 });
     const i = inv.rows[0];
-    await fin.debitWallet({ client, userId: payerUserId, amount: i.total_amount, reference: `BIZINV:${i.invoice_number}:PAID`, toAccount: 'BUSINESS_WALLET', description: 'Invoice payment' });
+    await fin.debitWallet({ client, userId: payerUserId, amount: i.total_amount, reference: `BIZINV:${i.id}:PAID`, toAccount: 'BUSINESS_WALLET', description: 'Invoice payment' });
     await client.query('UPDATE business_accounts SET balance = balance + $1 WHERE id = $2', [i.total_amount, i.business_id]);
     await client.query("UPDATE business_invoices SET status = 'PAID', paid_at = NOW() WHERE id = $1", [invoiceId]);
     await logTx(client, payerUserId, Number(i.total_amount), 'TRANSFER', { feature: 'invoice', invoice_number: i.invoice_number, business_id: i.business_id });
     await client.query('COMMIT');
     return { success: true, amount: Number(i.total_amount), invoice_number: i.invoice_number, message: 'Ankara imelipwa.' };
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
   } finally { client.release(); }
 }
 
@@ -282,6 +297,9 @@ async function runPayroll(businessId, ownerId, period, employees) {
     await logTx(client, ownerId, total, 'BULK_PAYMENT', { feature: 'payroll', payroll_run: run.rows[0].id, period });
     await client.query('COMMIT');
     return { success: true, payroll_run: run.rows[0], paid, failed, message: `Payroll ya ${formatMoney(total)} imefanyika.` };
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
   } finally { client.release(); }
 }
 
@@ -340,6 +358,9 @@ async function paySupplier(businessId, ownerId, supplierId, amount) {
     await logTx(client, ownerId, amountNum, 'BULK_PAYMENT', { feature: 'supplier_payment', supplier_id: supplierId, supplier: sup.rows[0].name });
     await client.query('COMMIT');
     return { success: true, amount: amountNum, supplier: sup.rows[0].name, message: 'Malipo ya muuzaji yamefanyika.' };
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
   } finally { client.release(); }
 }
 
@@ -397,28 +418,38 @@ async function listBusinessLoans(userId, isAdmin) {
 }
 
 async function adminApproveLoan(loanId, adminId, note) {
-  const loan = await pool.query("SELECT * FROM business_loans WHERE id = $1 AND status = 'PENDING' FOR UPDATE", [loanId]);
-  if (!loan.rows.length) throw Object.assign(new Error('Mkopo haupatikani au haiko katika status ya PENDING.'), { statusCode: 404 });
+  // R24-N2: claim the PENDING state atomically (one approval under concurrency).
   const res = await pool.query(
-    `UPDATE business_loans SET status = 'APPROVED', admin_note = $1, approved_at = NOW() WHERE id = $2 RETURNING *`,
+    `UPDATE business_loans SET status = 'APPROVED', admin_note = $1, approved_at = NOW()
+      WHERE id = $2 AND status = 'PENDING' RETURNING *`,
     [note || null, loanId]
   );
+  if (!res.rows.length) {
+    const exists = await pool.query('SELECT status FROM business_loans WHERE id = $1', [loanId]);
+    if (!exists.rows.length) throw Object.assign(new Error('Mkopo haupatikani au haiko katika status ya PENDING.'), { statusCode: 404 });
+    throw Object.assign(new Error(`Mkopo hauko katika status ya PENDING (sasa: ${exists.rows[0].status}).`), { statusCode: 409, code: 'LOAN_STATE_CONFLICT' });
+  }
   await logAudit(adminId, 'LOAN_APPROVED', `Mkopo #${loanId} umeidhinishwa`).catch(() => {});
   return res.rows[0];
 }
 
 async function adminDisburseLoan(loanId, adminId) {
-  const loan = await pool.query("SELECT * FROM business_loans WHERE id = $1 AND status = 'APPROVED' FOR UPDATE", [loanId]);
-  if (!loan.rows.length) throw Object.assign(new Error('Mkopo haupatikani au haujaiddhinishwa.'), { statusCode: 404 });
-  const l = loan.rows[0];
-  const rate = Number(l.interest_rate);
-  const due = Math.round(Number(l.amount) * (1 + rate / 100));
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    // R24-N2: lock the loan row inside this transaction (was pool.query autocommit,
+    // so concurrent calls each disbursed).
+    const loan = await client.query('SELECT * FROM business_loans WHERE id = $1 FOR UPDATE', [loanId]);
+    if (!loan.rows.length) throw Object.assign(new Error('Mkopo haupatikani au haujaiddhinishwa.'), { statusCode: 404 });
+    const l = loan.rows[0];
+    if (l.status !== 'APPROVED') {
+      throw Object.assign(new Error(`Mkopo haujaiddhinishwa au umeshatolewa (status: ${l.status}).`), { statusCode: 409, code: 'LOAN_STATE_CONFLICT' });
+    }
+    const rate = Number(l.interest_rate);
+    const due = Math.round(Number(l.amount) * (1 + rate / 100));
     await client.query('UPDATE business_accounts SET balance = balance + $1 WHERE id = $2', [l.amount, l.business_id]);
     await client.query(
-      `UPDATE business_loans SET status = 'DISBURSED', disbursed_at = NOW(), due_amount = $1 WHERE id = $2`,
+      `UPDATE business_loans SET status = 'DISBURSED', disbursed_at = NOW(), due_amount = $1 WHERE id = $2 AND status = 'APPROVED'`,
       [due, loanId]
     );
     await fin.postJournal({
@@ -433,22 +464,30 @@ async function adminDisburseLoan(loanId, adminId) {
     await client.query('COMMIT');
     await logAudit(adminId, 'LOAN_DISBURSED', `Mkopo #${loanId} umetolewa`).catch(() => {});
     return { success: true, amount: Number(l.amount), due_amount: due, message: 'Mkopo umetolewa kwenye biashara.' };
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
   } finally { client.release(); }
 }
 
 async function repayLoan(userId, loanId, amount) {
   const amountNum = Number(amount);
   if (!amountNum || amountNum <= 0) throw Object.assign(new Error('Kiasi si sahihi.'), { statusCode: 400 });
-  const loan = await pool.query("SELECT * FROM business_loans WHERE id = $1 AND status = 'DISBURSED'", [loanId]);
-  if (!loan.rows.length) throw Object.assign(new Error('Mkopo haupatikani au haujatolewa.'), { statusCode: 404 });
-  const l = loan.rows[0];
-  const biz = await pool.query('SELECT owner_id, balance FROM business_accounts WHERE id = $1', [l.business_id]);
-  if (!biz.rows.length || biz.rows[0].owner_id !== userId) throw Object.assign(new Error('Biashara haipatikani au sio yako.'), { statusCode: 403 });
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    // R25-02: loan and business rows are read and locked inside the transaction.
+    // They were read before BEGIN, so concurrent repayments each wrote
+    // paid_amount = stale + amount (lost update) and each debited the business
+    // against a stale balance (business balance could go negative).
+    const loan = await client.query("SELECT * FROM business_loans WHERE id = $1 AND status = 'DISBURSED' FOR UPDATE", [loanId]);
+    if (!loan.rows.length) throw Object.assign(new Error('Mkopo haupatikani au haujatolewa.'), { statusCode: 404 });
+    const l = loan.rows[0];
+    const biz = await client.query('SELECT owner_id, balance FROM business_accounts WHERE id = $1 FOR UPDATE', [l.business_id]);
+    if (!biz.rows.length || biz.rows[0].owner_id !== userId) throw Object.assign(new Error('Biashara haipatikani au sio yako.'), { statusCode: 403 });
     if (Number(biz.rows[0].balance) < amountNum) throw Object.assign(new Error('Salio la biashara halitoshi.'), { statusCode: 400 });
-    await client.query('UPDATE business_accounts SET balance = balance - $1 WHERE id = $2', [amountNum, l.business_id]);
+    const debited = await client.query('UPDATE business_accounts SET balance = balance - $1 WHERE id = $2 AND balance >= $1', [amountNum, l.business_id]);
+    if (debited.rowCount !== 1) throw Object.assign(new Error('Salio la biashara halitoshi.'), { statusCode: 400 });
     const newPaid = Number(l.paid_amount) + amountNum;
     const status = newPaid >= Number(l.due_amount) ? 'REPAID' : 'DISBURSED';
     await client.query('UPDATE business_loans SET paid_amount = $1, status = $2 WHERE id = $3', [newPaid, status, loanId]);
@@ -463,6 +502,9 @@ async function repayLoan(userId, loanId, amount) {
     await logTx(client, userId, amountNum, 'TRANSFER', { feature: 'loan_repayment', loan_id: loanId });
     await client.query('COMMIT');
     return { success: true, amount: amountNum, status, message: `Rejesho la mkopo limepokelewa (${formatMoney(newPaid)}/${formatMoney(l.due_amount)}).` };
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
   } finally { client.release(); }
 }
 
@@ -531,35 +573,57 @@ async function openPosSession(businessId, userId, openingCash) {
   return res.rows[0];
 }
 
+function parseCashAmount(raw, field) {
+  if (raw === undefined || raw === null || raw === '') return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0 || Math.abs(Math.round(n * 100) - n * 100) > 1e-6) {
+    throw Object.assign(new Error(`${field} si sahihi (lazima iwe namba isiyo hasi, desimali 2 au chini).`), { statusCode: 400, code: 'INVALID_POS_AMOUNT' });
+  }
+  return Math.round(n * 100) / 100;
+}
+
+/**
+ * R24-N1: closing a POS session records the cashier's physical cash count,
+ * sales and variance. It does NOT credit the business float: a declared cash
+ * count is not settled e-money, and posting DR MNO_CLEARING / CR BUSINESS_WALLET
+ * on it created unbacked balances that could be moved to a customer wallet.
+ * Physical cash enters the float only through a verified funding path
+ * (e.g. wallet deposit -> fundBusiness).
+ * R24-N2: the OPEN -> CLOSED transition is claimed under a row lock inside the
+ * transaction, so a session closes exactly once.
+ */
 async function closePosSession(sessionId, userId, closingCash, salesTotal) {
-  const sess = await pool.query("SELECT * FROM pos_sessions WHERE id = $1 AND status = 'OPEN' FOR UPDATE", [sessionId]);
-  if (!sess.rows.length) throw Object.assign(new Error('Kipindi cha POS hakipatikani au kimefungwa.'), { statusCode: 404 });
-  const s = sess.rows[0];
-  await assertBusinessAccess(s.business_id, userId);
-  const close = Number(closingCash) || 0;
-  const sales = Number(salesTotal) || (close - Number(s.opening_cash));
+  const closeParsed = parseCashAmount(closingCash, 'closing_cash');
+  const salesParsed = parseCashAmount(salesTotal, 'sales_total');
+  const pre = await pool.query('SELECT business_id FROM pos_sessions WHERE id = $1', [sessionId]);
+  if (!pre.rows.length) throw Object.assign(new Error('Kipindi cha POS hakipatikani au kimefungwa.'), { statusCode: 404 });
+  await assertBusinessAccess(pre.rows[0].business_id, userId);
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const delta = close - Number(s.opening_cash);
+    const sess = await client.query('SELECT * FROM pos_sessions WHERE id = $1 FOR UPDATE', [sessionId]);
+    const s = sess.rows[0];
+    if (!s || s.status !== 'OPEN') {
+      throw Object.assign(new Error('Kipindi cha POS hakipatikani au kimefungwa.'), { statusCode: 409, code: 'POS_SESSION_NOT_OPEN' });
+    }
+    const opening = Number(s.opening_cash) || 0;
+    const close = closeParsed === null ? 0 : closeParsed;
+    const variance = Math.round((close - opening) * 100) / 100;
+    const sales = salesParsed || variance;
     await client.query(
-      `UPDATE pos_sessions SET status = 'CLOSED', closing_cash = $1, sales_total = $2, closed_at = NOW() WHERE id = $3`,
+      `UPDATE pos_sessions SET status = 'CLOSED', closing_cash = $1, sales_total = $2, closed_at = NOW() WHERE id = $3 AND status = 'OPEN'`,
       [close, sales, sessionId]
     );
-    if (delta > 0) {
-      await client.query('UPDATE business_accounts SET balance = balance + $1 WHERE id = $2', [delta, s.business_id]);
-      await fin.postJournal({
-        client,
-        lines: [
-          { accountCode: 'MNO_CLEARING', direction: 'DR', amount: delta },
-          { accountCode: 'BUSINESS_WALLET', direction: 'CR', amount: delta },
-        ],
-        referenceId: `BIZPOS:${sessionId}:CLOSE`, description: 'POS sales deposited into business float',
-      });
-      await logTx(client, userId, delta, 'DEPOSIT', { feature: 'pos_sales', pos_session: sessionId });
-    }
     await client.query('COMMIT');
-    return { success: true, sales, deposited: delta > 0 ? delta : 0, message: 'Kipindi cha POS kimefungwa.' };
+    await logAudit(userId, 'POS_SESSION_CLOSED',
+      `POS #${sessionId}: opening ${formatMoney(opening)}, closing ${formatMoney(close)}, sales ${formatMoney(sales)} (cash count only; float not credited)`).catch(() => {});
+    return {
+      success: true, sales, deposited: 0, float_credited: false, cash_variance: variance,
+      message: 'Kipindi cha POS kimefungwa. Pesa taslimu hazijaongezwa kwenye salio la biashara; ziweke kupitia wallet ili ziingie kwenye salio.',
+    };
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
   } finally { client.release(); }
 }
 

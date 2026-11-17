@@ -31,8 +31,22 @@ router.use(authRequired);
 
 // Four-eyes executor: when an admin approves a high-value event withdrawal,
 // actually move the money from the event pool back to the recipient wallet.
-governanceService.registerExecutor('EVENT_WITHDRAWAL', async (payload) => {
-  return eventService.executeEventWithdrawal(payload);
+// R27 IV-A-6: the withdrawal executed is the flow's own ref_id; flow.data is only a
+// claim that must match the locked withdrawal row (checked in executeEventWithdrawal).
+governanceService.registerExecutor('EVENT_WITHDRAWAL', async (payload, approverId, flow) => {
+  const refuse = (message) => Object.assign(new Error(message), { statusCode: 409, code: 'EVENT_WITHDRAWAL_FLOW_MISMATCH' });
+  if (!flow || flow.ref_type !== 'EVENT_WITHDRAWAL') throw refuse('Idhini hii si ya uondoaji wa tukio.');
+  const refId = flow.ref_id != null ? Number(flow.ref_id) : null;
+  const claimedId = payload && payload.withdrawalId != null ? Number(payload.withdrawalId) : null;
+  if (refId != null && claimedId != null && refId !== claimedId) throw refuse('Idhini hii haihusiani na uondoaji huu.');
+  const withdrawalId = refId != null ? refId : claimedId;
+  if (!Number.isInteger(withdrawalId) || withdrawalId <= 0) throw refuse('Uondoaji wa idhini hii haujulikani.');
+  const p = payload || {};
+  return eventService.executeEventWithdrawal({
+    withdrawalId,
+    flowId: flow.id,
+    eventId: p.eventId, mode: p.mode, amount: p.amount, userId: p.userId, reference: p.reference,
+  });
 });
 
 // ===== STAGE 4: TEMPLATES & SERIES (literal paths before /:eventId) =====

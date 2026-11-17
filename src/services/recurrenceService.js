@@ -51,14 +51,17 @@ async function runAutoSavings(payload) {
     const user = (await client.query('SELECT wallet_balance FROM users WHERE id=$1 FOR UPDATE', [userId])).rows[0];
     if (!user) throw new Error('User not found');
     if (Number(user.wallet_balance) < amount) throw new Error('Insufficient balance for auto-savings');
-    const reference = `SAV-${Date.now()}`;
+    // Stable reference: use rule ID and due date instead of timestamp
+    const ruleId = payload.ruleId || payload.rule_id || 'default';
+    const dueDate = payload.dueDate || payload.due_date || new Date().toISOString().slice(0, 10);
+    const reference = `SAV-${userId}-${ruleId}-${dueDate}`;
     const op = await fin.claimOperation({
       client,
       operationType: 'DEBIT',
       reference,
       userId,
       amount,
-    });
+          });
     if (op.claimed === false) {
       await client.query('ROLLBACK').catch(() => {});
       return { skipped: true, reason: 'dup' };
@@ -169,7 +172,7 @@ async function runStandingInstruction(payload) {
       [referenceId, fromUserId, amount, JSON.stringify({ to_user_id: to.id, note, via: 'STANDING_INSTRUCTION' })]
     );
 
-    const result = await fin.internalTransfer({ client, fromUserId: from.id, toUserId: to.id, amount, reference: referenceId, description: note, actor: 'recurrence:standing-instruction' });
+    const result = await fin.internalTransfer({ client, fromUserId: from.id, toUserId: to.id, amount, reference: referenceId, description: note, actor: 'recurrence:standing-instruction', transactionId: txResult.rows[0].id });
     if (result.dedup) { await client.query('ROLLBACK').catch(() => {}); return { skipped: true, reason: 'dedup', reference: result.reference }; }
     await client.query(
       `INSERT INTO wallet_ledger (transaction_id, reference_id, from_user_id, to_user_id, amount, description)
@@ -241,6 +244,8 @@ async function runDueTasks() {
     // KYC document expiry sweep (best-effort every cycle)
     try { await require('./kycDocumentService').runExpirySweep(); } catch (e) { logger.error('RECURRENCE', `KYC expiry sweep failed: ${e.message}`); }
 
+    // R36 Task 4: recurring payments disabled -> no rule runs (housekeeping above still runs).
+    if (!require('../config/pilot').isFeatureEnabled('recurringPayments')) return { due: 0, skipped: 'PILOT_FEATURE_DISABLED' };
     const due = (await pool.query(
       `SELECT * FROM recurrence_rules WHERE enabled AND next_run_at <= NOW() ORDER BY next_run_at LIMIT 50`
     )).rows;
@@ -250,7 +255,7 @@ async function runDueTasks() {
       try {
         let result;
         switch (rule.task_type) {
-          case 'AUTO_SAVINGS': result = await runAutoSavings(rule.payload); break;
+          case 'AUTO_SAVINGS': result = await runAutoSavings({ ...rule.payload, ruleId: rule.id, dueDate: rule.next_run_at }); break;
           case 'CONTRIBUTION_CYCLE': result = await runContributionCycle(rule.payload); break;
           case 'PAYROLL_RUN': result = await runPayroll({ ...rule.payload, frequency: rule.frequency }); break;
           case 'STANDING_INSTRUCTION': result = await runStandingInstruction(rule.payload); break;

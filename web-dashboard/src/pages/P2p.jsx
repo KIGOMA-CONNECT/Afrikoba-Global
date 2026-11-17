@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import api from '../api/client.js';
 import { formatMoney, StatusBadge } from '../components/ui.jsx';
 import ServiceLock from '../components/ServiceLock.jsx';
@@ -26,6 +26,12 @@ export default function P2p() {
   const [shares, setShares] = useState('1');
   const [milestonesText, setMilestonesText] = useState('');
   const [revenueAmount, setRevenueAmount] = useState('');
+  // One Idempotency-Key per revenue entry: a double submit or a retry of the
+  // same entry is recorded once by the backend; a new entry gets a new key.
+  const revenueKeyRef = useRef(null);
+  const newRevenueKey = () => (window.crypto && window.crypto.randomUUID
+    ? window.crypto.randomUUID()
+    : `rev-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 
   const show = (type, text) => {
     setMsg({ type, text });
@@ -94,8 +100,11 @@ export default function P2p() {
 
   const recordRevenue = async (e) => {
     e.preventDefault();
+    if (!revenueKeyRef.current) revenueKeyRef.current = newRevenueKey();
     try {
-      await api.post(`/admin/projects/${selected.id}/revenue`, { amount: revenueAmount, description: 'Mapato ya mwezi' });
+      await api.post(`/admin/projects/${selected.id}/revenue`, { amount: revenueAmount, description: 'Mapato ya mwezi' },
+        { headers: { 'Idempotency-Key': revenueKeyRef.current } });
+      revenueKeyRef.current = null;
       show('ok', t('p2p.revenue_recorded'));
       setRevenueAmount('');
       openProject(selected.id);
@@ -247,7 +256,7 @@ export default function P2p() {
                       </tbody>
                     </table>
                     <form className="form-row" onSubmit={recordRevenue}>
-                      <div className="field"><label>{t('p2p.record_rev')}</label><input type="number" value={revenueAmount} onChange={(e) => setRevenueAmount(e.target.value)} required /></div>
+                      <div className="field"><label>{t('p2p.record_rev')}</label><input type="number" value={revenueAmount} onChange={(e) => { setRevenueAmount(e.target.value); revenueKeyRef.current = null; }} required /></div>
                       <button className="btn" type="submit">{t('p2p.record')}</button>
                       <button className="btn warn" type="button" onClick={runSplit}>{t('p2p.split')}</button>
                     </form>

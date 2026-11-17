@@ -7,12 +7,26 @@ const express = require('express');
 const { authRequired, requireRoles } = require('../middleware/auth');
 const business = require('../services/businessService');
 const governanceService = require('../services/governanceService');
+const { fourEyesGate, recordDirectExecution } = require('../middleware/fourEyesGate');
 
 const router = express.Router();
 
 // Register executor for four-eyes loan disbursement.
-governanceService.registerExecutor('BUSINESS_LOAN_DISBURSE', async (payload) => {
-  return await business.adminDisburseLoan(payload.loanId, payload.requesterId);
+// R27 IV-A-7: the acting admin is the flow's requester (approval_flows.requester_id,
+// set from req.user when the flow was created), never data.requesterId; the loan is
+// flow.ref_id, and data.loanId may only repeat it.
+governanceService.registerExecutor('BUSINESS_LOAN_DISBURSE', async (payload, approverId, flow) => {
+  const refuse = (message) => Object.assign(new Error(message), { statusCode: 409, code: 'APPROVAL_FLOW_TARGET_MISMATCH' });
+  if (!flow || !flow.requester_id) throw refuse('Idhini haina mwombaji.');
+  const claimed = payload && payload.loanId != null ? Number(payload.loanId) : null;
+  let loanId = claimed;
+  if (flow.ref_id != null) {
+    if (flow.ref_type !== 'BUSINESS_LOAN') throw refuse('Idhini hii si ya mkopo wa biashara.');
+    if (claimed != null && claimed !== Number(flow.ref_id)) throw refuse('Idhini hii haihusiani na mkopo huu.');
+    loanId = Number(flow.ref_id);
+  }
+  if (!Number.isInteger(loanId) || loanId <= 0) throw refuse('Mkopo wa idhini hii haujulikani.');
+  return await business.adminDisburseLoan(loanId, Number(flow.requester_id));
 });
 
 // Helper for high-value threshold
@@ -137,7 +151,8 @@ router.post('/admin/loans/:id/approve', authRequired, requireRoles('ADMIN'), asy
   try { res.json({ success: true, loan: await business.adminApproveLoan(req.params.id, req.user.id, req.body.note) }); }
   catch (e) { next(e); }
 });
-router.post('/admin/loans/:id/disburse', authRequired, requireRoles('ADMIN'), async (req, res, next) => {
+// R26-C1: when four-eyes is active for BUSINESS_LOAN_DISBURSE the direct route is refused (403 FOUR_EYES_REQUIRED).
+router.post('/admin/loans/:id/disburse', authRequired, requireRoles('ADMIN'), fourEyesGate('BUSINESS_LOAN_DISBURSE', (req) => ({ loanId: parseInt(req.params.id, 10) })), async (req, res, next) => {
   try {
     const loanId = parseInt(req.params.id, 10);
     const pool = require('../config/db');
@@ -164,7 +179,9 @@ router.post('/admin/loans/:id/disburse', authRequired, requireRoles('ADMIN'), as
       });
     }
 
-    res.json({ success: true, result: await business.adminDisburseLoan(loanId, req.user.id) });
+    const result = await business.adminDisburseLoan(loanId, req.user.id);
+    await recordDirectExecution(req, 'BUSINESS_LOAN_DISBURSE', loanId, { amount }); // R26-C2
+    res.json({ success: true, result });
   }
   catch (e) { next(e); }
 });

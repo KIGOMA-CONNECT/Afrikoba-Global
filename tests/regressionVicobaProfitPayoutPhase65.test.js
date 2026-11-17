@@ -74,7 +74,11 @@ const checks = [
   ],
   [
     'groupToWallet receives group wallet decrement SQL',
-    /groupSql:\s*['"`]UPDATE\s+vicoba_groups\s+SET\s+group_wallet_balance\s*=\s*group_wallet_balance\s*-\s*\$1\s+WHERE\s+id\s*=\s*\$2['"`]/i.test(fn),
+    /groupSql:\s*['"`]UPDATE\s+vicoba_groups\s+SET\s+group_wallet_balance\s*=\s*group_wallet_balance\s*-\s*\$1\s+WHERE\s+id\s*=\s*\$2(\s+AND\s+group_wallet_balance\s*>=\s*\$1)?['"`]/i.test(fn),
+  ],
+  [
+    'group wallet decrement is guarded against overdraft',
+    /groupSql:\s*['"`]UPDATE\s+vicoba_groups\s+SET\s+group_wallet_balance\s*=\s*group_wallet_balance\s*-\s*\$1\s+WHERE\s+id\s*=\s*\$2\s+AND\s+group_wallet_balance\s*>=\s*\$1['"`]/i.test(fn),
   ],
   [
     'payout remains transaction-protected',

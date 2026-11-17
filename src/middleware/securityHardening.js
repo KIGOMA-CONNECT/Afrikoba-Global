@@ -176,7 +176,7 @@ function strictCors(req, res, next) {
  * H8: Error handling hardening (no stack traces in production)
  */
 function secureErrorHandler(err, req, res, next) {
-  const isDev = process.env.NODE_ENV !== 'production';
+  const isDev = require('../config').isDevelopmentOrTest(); // R36: explicit dev/test only (was: any non-production)
 
   // Log the full error internally
   logger.error('ERROR', `${err.message} - ${req.method} ${req.path} - ${req.ip}`);

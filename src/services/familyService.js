@@ -461,6 +461,12 @@ async function syncOfflineOps(userId) {
   const ops = await pool.query("SELECT * FROM offline_operations WHERE user_id = $1 AND status = 'QUEUED' ORDER BY created_at ASC", [userId]);
   let processed = 0, failed = 0;
   for (const op of ops.rows) {
+    // R28 S5: claim the op (QUEUED -> PROCESSING, conditional, autocommitted) BEFORE executing it,
+    // so a concurrent sync that listed the same op skips it instead of executing it again. No
+    // transaction is held open across the op. Marks below only move an op this sync claimed.
+    const claim = await pool.query(
+      "UPDATE offline_operations SET status = 'PROCESSING' WHERE id = $1 AND user_id = $2 AND status = 'QUEUED'", [op.id, userId]);
+    if (claim.rowCount !== 1) continue;
     try {
       const p = op.payload;
       if (op.op_type === 'TRANSFER' && p.toPhone && p.amount) {
@@ -472,10 +478,10 @@ async function syncOfflineOps(userId) {
       } else {
         throw new Error('Aina ya operesheni haijulikani');
       }
-      await pool.query("UPDATE offline_operations SET status = 'PROCESSED', synced_at = NOW() WHERE id = $1", [op.id]);
+      await pool.query("UPDATE offline_operations SET status = 'PROCESSED', synced_at = NOW() WHERE id = $1 AND status = 'PROCESSING'", [op.id]);
       processed++;
     } catch (e) {
-      await pool.query('UPDATE offline_operations SET status = $1, error_message = $2 WHERE id = $3', ['FAILED', e.message, op.id]);
+      await pool.query("UPDATE offline_operations SET status = $1, error_message = $2 WHERE id = $3 AND status = 'PROCESSING'", ['FAILED', e.message, op.id]);
       failed++;
     }
   }
@@ -510,6 +516,13 @@ async function processRoundUps(userId) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    // R25-03: serialize round-up runs per user on the rule row. Without it,
+    // concurrent runs each selected the same un-logged transfers and each
+    // debited the spare (roundup_log has no unique constraint on transaction_id).
+    // The SELECT below runs after the lock, so it sees rows logged by a run
+    // that committed while this one waited.
+    const lockedRule = await client.query('SELECT id FROM roundup_rules WHERE id = $1 AND is_active = TRUE FOR UPDATE', [r.id]);
+    if (!lockedRule.rows.length) throw Object.assign(new Error('Hamna kanuni ya round-up.'), { statusCode: 400 });
     const txs = await client.query(
       `SELECT t.* FROM transactions t
        LEFT JOIN roundup_log rl ON rl.transaction_id = t.id
@@ -538,6 +551,9 @@ async function processRoundUps(userId) {
     }
     await client.query('COMMIT');
     return { success: true, roundup_saved: totalRound, message: `Round-up imeokoa TZS ${formatMoney(totalRound)}.` };
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
   } finally { client.release(); }
 }
 

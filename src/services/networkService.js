@@ -3,7 +3,7 @@ const config = require('../config');
 const { sendSMS } = require('./smsService');
 const { generateReference, formatMoney } = require('../utils/helpers');
 const { createAppError } = require('../utils/errorCodes');
-const { logAudit } = require('./auditService');
+const { logAudit, writeAudit } = require('./auditService');
 const logger = require('../utils/logger');
 const fin = require('../services/financialEngine');
 
@@ -266,11 +266,14 @@ async function agentSettlement(agentId, amount, type, requesterId) {
     await client.query('BEGIN');
 
     const agent = await client.query(
-      'SELECT id FROM agents WHERE id = $1 FOR UPDATE',
+      'SELECT id, status FROM agents WHERE id = $1 FOR UPDATE',
       [agentId]
     );
     if (!agent.rows.length) {
       throw Object.assign(new Error('Wakala hajapatikana.'), { statusCode: 404 });
+    }
+    if (String(agent.rows[0].status).toUpperCase() !== 'ACTIVE') {
+      throw Object.assign(new Error('Wakala hayuko ACTIVE; settlement mpya hairuhusiwi.'), { statusCode: 409 });
     }
 
     const settlement = await client.query(
@@ -349,6 +352,17 @@ async function executeAgentSettlement(payload, approverId) {
       throw Object.assign(new Error('Settlement hii haiwezi kutekelezwa katika hali yake ya sasa.'), { statusCode: 409 });
     }
 
+    const agentResult = await client.query(
+      'SELECT id, status FROM agents WHERE id = $1 FOR UPDATE',
+      [settlement.agent_id]
+    );
+    if (!agentResult.rows.length) {
+      throw Object.assign(new Error('Wakala hajapatikana.'), { statusCode: 404 });
+    }
+    if (String(agentResult.rows[0].status).toUpperCase() !== 'ACTIVE') {
+      throw Object.assign(new Error('Wakala hayuko ACTIVE; settlement haiwezi kutekelezwa.'), { statusCode: 409 });
+    }
+
     const amountNum = validateAgentAmount(settlement.amount);
     const operationReference = `${reference}:STL`;
     const claim = await fin.claimOperation({
@@ -356,8 +370,8 @@ async function executeAgentSettlement(payload, approverId) {
       operationType: `AGENT_SETTLEMENT_${settlement.type}`,
       reference: operationReference,
       userId: Number(approverId),
-      amount: amountNum
-    });
+      amount: amountNum,
+          });
     if (!claim.claimed) {
       throw Object.assign(new Error('Settlement ina financial operation iliyokwisha daiwa; inahitaji ukaguzi.'), { statusCode: 409 });
     }
@@ -368,6 +382,7 @@ async function executeAgentSettlement(payload, approverId) {
         `UPDATE agents
             SET balance = balance + $1::numeric
           WHERE id = $2
+            AND status = 'ACTIVE'
             AND balance <= $3::numeric - $1::numeric
           RETURNING id`,
         [amountNum, settlement.agent_id, '9999999999999.99']
@@ -390,6 +405,7 @@ async function executeAgentSettlement(payload, approverId) {
         `UPDATE agents
             SET balance = balance - $1::numeric
           WHERE id = $2
+            AND status = 'ACTIVE'
             AND balance >= $1::numeric
           RETURNING id`,
         [amountNum, settlement.agent_id]
@@ -430,6 +446,28 @@ async function executeAgentSettlement(payload, approverId) {
     if (!updated.rows.length) {
       throw Object.assign(new Error('Settlement status imebadilika; transaction imekataliwa.'), { statusCode: 409 });
     }
+
+    await logAudit({
+      eventType: 'AGENT_SETTLEMENT_SETTLED',
+      entityType: 'AGENT_SETTLEMENT',
+      entityId: settlementId,
+      userId: Number(approverId),
+      referenceId: reference,
+      amount: amountNum,
+      beforeData: {
+        status: 'PENDING',
+        agentId: Number(settlement.agent_id)
+      },
+      afterData: {
+        status: 'SETTLED',
+        type: settlement.type,
+        agentId: Number(settlement.agent_id),
+        reference,
+        operationReference,
+        approverId: Number(approverId)
+      },
+      client
+    });
 
     await client.query('COMMIT');
     return { success: true, reference, status: 'SETTLED', duplicate: false };
@@ -487,33 +525,56 @@ async function getBulkBatch(batchId, userId) {
   return { ...batch.rows[0], items: items.rows };
 }
 
-async function processBulkBatch(batchId) {
-  const batch = await pool.query('SELECT * FROM bulk_payment_batches WHERE id = $1', [batchId]);
-  if (!batch.rows.length) throw Object.assign(new Error('Batch hajapatikana.'), { statusCode: 404 });
-  const b = batch.rows[0];
-  if (b.status === 'COMPLETED') return { message: 'Batch tayari imechakatwa.' };
-  const items = await pool.query('SELECT * FROM bulk_payment_items WHERE batch_id = $1 AND status = $2', [batchId, 'PENDING']);
+async function processBulkBatch(batchId, requesterId) {
   let success = 0, failed = 0;
+  let denied = null;
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    // R25-05: claim the batch under a row lock inside the transaction and read
+    // its items after the lock. Previously the batch and items were read before
+    // BEGIN, so concurrent calls each processed every PENDING item (duplicate
+    // SUCCESS transactions; items paid by one run were flipped to FAILED by the
+    // others' OPERATION_SHAPE_MISMATCH).
+    const batch = await client.query('SELECT * FROM bulk_payment_batches WHERE id = $1 FOR UPDATE', [batchId]);
+    // R26-C5 (BOLA, OWASP API1): only the batch owner may process it. Checked
+    // on the locked row before any effect; a refusal looks exactly like
+    // getBulkBatch's (404 'Batch hajapatikana.') and is audited after rollback.
+    if (!batch.rows.length || requesterId == null || String(batch.rows[0].user_id) !== String(requesterId)) {
+      denied = { reason: batch.rows.length ? 'NOT_OWNER' : 'NOT_FOUND' };
+      throw Object.assign(new Error('Batch hajapatikana.'), { statusCode: 404 });
+    }
+    const b = batch.rows[0];
+    if (b.status === 'COMPLETED') {
+      await client.query('ROLLBACK');
+      return { message: 'Batch tayari imechakatwa.' };
+    }
+    const items = await client.query('SELECT * FROM bulk_payment_items WHERE batch_id = $1 AND status = $2 ORDER BY id FOR UPDATE', [batchId, 'PENDING']);
     await client.query("UPDATE bulk_payment_batches SET status = 'PROCESSING' WHERE id = $1", [batchId]);
     for (const item of items.rows) {
+      // R25-05: per-item savepoint. A failing item rolls back its own writes
+      // (SUCCESS transaction row, operation claim, balances) before it is
+      // marked FAILED; previously those writes stayed committed with the batch.
+      await client.query('SAVEPOINT bulk_item');
       try {
         const sender = await client.query('SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE', [b.user_id]);
         const recipient = await client.query('SELECT id, wallet_balance FROM users WHERE phone_number = $1', [item.recipient_phone.trim()]);
         if (!recipient.rows.length) throw new Error('Mpokeaji hajapatikana');
         if (Number(sender.rows[0].wallet_balance) < Number(item.amount)) throw new Error('Salio halitoshi');
         const reference = generateReference('BP');
-        await client.query(
+        const txResult = await client.query(
           `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
-           VALUES ($1,$2,$3,0,$3,'SUCCESS','BULK_PAYMENT', $4)`,
+           VALUES ($1,$2,$3,0,$3,'SUCCESS','BULK_PAYMENT', $4)
+           RETURNING id`,
           [reference, b.user_id, item.amount, JSON.stringify({ recipient: item.recipient_phone, batch_id: batchId })]
         );
-        await fin.internalTransfer({ client, fromUserId: b.user_id, toUserId: recipient.rows[0].id, amount: Number(item.amount), reference: `NET:${item.id}:TR`, description: 'Bulk transfer' });
+        await fin.internalTransfer({ client, fromUserId: b.user_id, toUserId: recipient.rows[0].id, amount: Number(item.amount), reference: `NET:${item.id}:TR`, description: 'Bulk transfer', transactionId: txResult.rows[0].id });
         await client.query("UPDATE bulk_payment_items SET status = 'SUCCESS', transaction_id = (SELECT id FROM transactions WHERE reference_id = $1) WHERE id = $2", [reference, item.id]);
+        await client.query('RELEASE SAVEPOINT bulk_item');
         success++;
       } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT bulk_item');
+        await client.query('RELEASE SAVEPOINT bulk_item');
         await client.query('UPDATE bulk_payment_items SET status = $1, failure_reason = $2 WHERE id = $3', ['FAILED', e.message, item.id]);
         failed++;
       }
@@ -521,7 +582,19 @@ async function processBulkBatch(batchId) {
     await client.query("UPDATE bulk_payment_batches SET status = 'COMPLETED', completed_at = NOW() WHERE id = $1", [batchId]);
     await client.query('COMMIT');
     return { success, failed, message: 'Batch imechakatwa.' };
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    if (!denied) throw e;
   } finally { client.release(); }
+  // Reached only for a refused request (R26-C5).
+  await writeAudit({
+    userId: requesterId == null ? null : requesterId,
+    action: 'BULK_BATCH_PROCESS_DENIED',
+    entityType: 'bulk_payment_batch',
+    entityId: Number(batchId),
+    meta: { reason: denied.reason },
+  });
+  throw Object.assign(new Error('Batch hajapatikana.'), { statusCode: 404 });
 }
 
 async function listUserBatches(userId) {
@@ -534,6 +607,7 @@ async function listUserBatches(userId) {
 // ====================================================================
 
 async function createScheduledPayment(userId, data) {
+  require('../config/pilot').assertFeatureEnabled('recurringPayments'); // R36 Task 4
   const { recipient_phone, amount, type, description, scheduled_for, recurrence } = data;
   const amountNum = Number(amount);
   if (!amountNum || amountNum <= 0) throw Object.assign(new Error('Kiasi si sahihi.'), { statusCode: 400 });
@@ -558,21 +632,35 @@ async function cancelScheduledPayment(id, userId) {
 }
 
 async function processDueScheduledPayments() {
+  // R36 Task 4: recurring payments disabled -> the worker executes nothing.
+  if (!require('../config/pilot').isFeatureEnabled('recurringPayments')) return { processed: 0, skipped: 'PILOT_FEATURE_DISABLED' };
   const due = await pool.query(
     `SELECT * FROM scheduled_payments WHERE status = 'ACTIVE' AND scheduled_for <= NOW()`,
     []
   );
   let processed = 0;
   for (const sp of due.rows) {
+    const next = computeNextExecution(sp);
+    // R28 S6: claim this occurrence (conditional, autocommitted) BEFORE transferring, so an
+    // overlapping run that listed the same row skips it. ONCE: the claim is the completion.
+    // Recurring: claimable once per occurrence (not yet executed since scheduled_for).
+    const claim = next
+      ? await pool.query(
+        `UPDATE scheduled_payments SET last_executed = NOW() WHERE id = $1 AND status = 'ACTIVE' AND scheduled_for <= NOW()
+           AND (last_executed IS NULL OR last_executed < scheduled_for)`, [sp.id])
+      : await pool.query(
+        `UPDATE scheduled_payments SET last_executed = NOW(), status = 'COMPLETED' WHERE id = $1 AND status = 'ACTIVE' AND scheduled_for <= NOW()`, [sp.id]);
+    if (claim.rowCount !== 1) continue;
     try {
       if (sp.type === 'TRANSFER' && sp.recipient_phone) {
-        await require('./walletService').transferWallet(sp.user_id, sp.recipient_phone, sp.amount, sp.description || 'Malipo yaliyopangwa');
+        await require('./walletService').transferWallet(sp.user_id, sp.recipient_phone, Number(sp.amount) /* R36: stored NUMERIC -> number (validated at creation) */, sp.description || 'Malipo yaliyopangwa');
       }
-      const next = computeNextExecution(sp);
-      await pool.query(
-        `UPDATE scheduled_payments SET last_executed = NOW(), ${next ? 'next_execution = $1, scheduled_for = $1, recurrence = $2' : "status = 'COMPLETED'"} WHERE id = $3`,
-        next ? [next, sp.recurrence, sp.id] : [sp.id]
-      );
+      if (next) {
+        await pool.query(
+          'UPDATE scheduled_payments SET last_executed = NOW(), next_execution = $1, scheduled_for = $1, recurrence = $2 WHERE id = $3',
+          [next, sp.recurrence, sp.id]
+        );
+      }
       processed++;
     } catch (e) {
       await pool.query("UPDATE scheduled_payments SET status = 'FAILED' WHERE id = $1", [sp.id]);
@@ -691,6 +779,7 @@ async function fireRemittanceEvent(eventType, transfer) {
 
 // F4.1: Rate-locked quote (5-minute expiry, RMQ-* reference)
 async function quoteRemittance(userId, data) {
+  require('../config/pilot').assertFeatureEnabled('remittance'); // R36 Task 4
   await ensureCorridors();
   const toCountry = String(data.to_country || data.toCountry || '').toUpperCase();
   const amountNum = Number(data.from_amount ?? data.amount);
@@ -736,6 +825,7 @@ async function listQuotes(userId) {
 }
 
 async function sendRemittance(senderId, data) {
+  require('../config/pilot').assertFeatureEnabled('remittance'); // R36 Task 4
   await ensureCorridors();
   let { recipient_phone, recipient_name, recipient_country, from_amount } = data;
   const amountNum = Number(from_amount);
@@ -858,6 +948,7 @@ async function screenRecipientForSanctions(r) {
 }
 
 async function pickupRemittance(pickupCode, recipientPhone, recipientName) {
+  require('../config/pilot').assertFeatureEnabled('remittance'); // R36 Task 4
   await expireStaleRemittances();
   const res = await pool.query('SELECT * FROM remittance_transfers WHERE pickup_code = $1 AND recipient_phone = $2', [pickupCode, recipientPhone]);
   if (!res.rows.length) throw createAppError('REMITTANCE_TRANSFER_NOT_FOUND');

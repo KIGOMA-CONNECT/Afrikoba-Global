@@ -8,6 +8,10 @@ import { useT } from '../i18n/LangProvider.jsx';
 const LEADER_ROLES = ['MWENYEKITI', 'MWEKAHAZINA', 'KATIBU'];
 const CYCLE_LABEL = { WEEKLY: 'Wiki', MONTHLY: 'Mwezi', DAILY: 'Kila Siku', BIWEEKLY: 'Wiki Mbili' };
 
+// R36 Task 3: the API accepts JSON numbers only (no server-side coercion). Inputs are converted
+// explicitly here; an empty field is omitted, anything non-numeric becomes NaN and is refused by the API.
+const toAmount = (v) => (v === '' || v == null ? undefined : Number(v));
+
 export default function Vicoba() {
   const { t } = useT();
   const user = JSON.parse(localStorage.getItem('afrikoba_user') || '{}');
@@ -320,7 +324,7 @@ export default function Vicoba() {
     e.preventDefault();
     try {
       const res = await api.post('/vicoba/groups', {
-        groupName: gName, cycleType: gCycle, shareValue: gShare, monthlyMaintenanceFee: gFee || undefined,
+        groupName: gName, cycleType: gCycle, shareValue: toAmount(gShare), monthlyMaintenanceFee: toAmount(gFee),
         description: cDescription, groupType: cGroupType, country: cCountry, language: cLanguage,
         startDate: cStartDate || undefined, minShares: cMinShares || undefined, maxShares: cMaxShares || undefined,
       });
@@ -350,7 +354,7 @@ export default function Vicoba() {
     e.preventDefault();
     try {
       const res = await api.post(`/vicoba/groups/${selected.id}/contribute`, {
-        amount: contributeAmt, sharesCount: contributeShares,
+        amount: toAmount(contributeAmt), sharesCount: toAmount(contributeShares),
       });
       show('ok', res.data.message);
       setContributeAmt('');
@@ -393,7 +397,7 @@ export default function Vicoba() {
     e.preventDefault();
     try {
       await api.post(`/vicoba/groups/${selected.id}/loans`, {
-        applicantUserId: loanApplicant, requestedAmount: loanAmount,
+        applicantUserId: loanApplicant, requestedAmount: toAmount(loanAmount),
         interestRate: loanInterest, repaymentMonths: loanMonths,
       });
       show('ok', t('vicoba.loan_added'));
@@ -405,7 +409,7 @@ export default function Vicoba() {
   const approve = async (loanId) => {
     try {
       const res = await api.post(`/vicoba/loans/${loanId}/approve`, {
-        approvedAmount: approveAmount || undefined,
+        approvedAmount: toAmount(approveAmount),
       });
       show('ok', res.data.message);
       selectGroup(selected);
@@ -418,7 +422,7 @@ export default function Vicoba() {
     e.preventDefault();
     try {
       const res = await api.post(`/vicoba/groups/${selected.id}/profits/calculate`, {
-        cycleNumber: pCycle, totalProfit: pProfit,
+        cycleNumber: pCycle, totalProfit: toAmount(pProfit),
       });
       setProfitCalc(res.data);
       show('ok', t('vicoba.profit_calculated'));
@@ -445,7 +449,7 @@ export default function Vicoba() {
   const requestWithdrawal = async (e) => {
     e.preventDefault();
     try {
-      const res = await api.post(`/vicoba/groups/${selected.id}/withdrawals`, { amount: wdAmt });
+      const res = await api.post(`/vicoba/groups/${selected.id}/withdrawals`, { amount: toAmount(wdAmt) });
       show('ok', res.data.message);
       setWdAmt('');
       api.get(`/vicoba/groups/${selected.id}/withdrawals`).then((r) => setWithdrawals(r.data.withdrawals || [])).catch(() => {});
@@ -464,7 +468,7 @@ export default function Vicoba() {
   const submitBonus = async (e) => {
     e.preventDefault();
     try {
-      const res = await api.post(`/vicoba/groups/${selected.id}/bonus`, bonusForm);
+      const res = await api.post(`/vicoba/groups/${selected.id}/bonus`, { ...bonusForm, amount: toAmount(bonusForm.amount) });
       show('ok', res.data.message);
       setBonusForm({ amount: '', purpose: '' });
       api.get(`/vicoba/groups/${selected.id}/bonuses`).then((r) => setBonuses(r.data.bonuses || [])).catch(() => {});
@@ -491,7 +495,7 @@ export default function Vicoba() {
   const initSocialFund = async (e) => {
     e.preventDefault();
     try {
-      const res = await api.post(`/vicoba/groups/${selected.id}/social-fund`, { monthlyContribution: sFundMonthly });
+      const res = await api.post(`/vicoba/groups/${selected.id}/social-fund`, { monthlyContribution: toAmount(sFundMonthly) });
       show('ok', res.data.message);
       setSFundMonthly('');
       api.get(`/vicoba/groups/${selected.id}/social-fund`).then((r) => setSocialFund(r.data.fund || r.data)).catch(() => {});
@@ -511,7 +515,7 @@ export default function Vicoba() {
     e.preventDefault();
     try {
       const res = await api.post(`/vicoba/groups/${selected.id}/social-fund/request`, {
-        reasonType: sReqType, reasonDetail: sReqDetail, requestedAmount: sReqAmount,
+        reasonType: sReqType, reasonDetail: sReqDetail, requestedAmount: toAmount(sReqAmount),
       });
       show('ok', res.data.message);
       setSReqDetail(''); setSReqAmount('');
@@ -521,7 +525,7 @@ export default function Vicoba() {
 
   const decideSocial = async (reqId, decision, approvedAmount) => {
     try {
-      const res = await api.post(`/vicoba/social-fund-requests/${reqId}/${decision}`, approvedAmount ? { approvedAmount } : {});
+      const res = await api.post(`/vicoba/social-fund-requests/${reqId}/${decision}`, approvedAmount ? { approvedAmount: toAmount(approvedAmount) } : {});
       show('ok', res.data.message);
       api.get(`/vicoba/groups/${selected.id}/social-fund`).then((r) => setSocialFund(r.data.fund || r.data)).catch(() => {});
     } catch (err) { show('err', err.response?.data?.message || t('vicoba.error')); }
@@ -539,7 +543,7 @@ export default function Vicoba() {
     const amt = repayMap[loanId];
     if (!amt) { show('err', 'Weka kiasi cha malipo.'); return; }
     try {
-      const res = await api.post(`/vicoba/loans/${loanId}/repay`, { amount: amt });
+      const res = await api.post(`/vicoba/loans/${loanId}/repay`, { amount: toAmount(amt) });
       show('ok', res.data.message);
       setRepayMap((p) => ({ ...p, [loanId]: '' }));
       api.get(`/vicoba/groups/${selected.id}/loans`).then((r) => setLoans(r.data.loans)).catch(() => {});

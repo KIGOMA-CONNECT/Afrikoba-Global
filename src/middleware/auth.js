@@ -5,7 +5,8 @@ const config = require('../config');
 const logger = require('../utils/logger');
 const { hardenedVerify } = require('./jwtHardening');
 
-const JWT_SECRET = config.security.jwtSecret || config.DEFAULT_JWT;
+// R37 (2): only the validated config value; no fallback of its own (config decides, fail-closed).
+const JWT_SECRET = config.security.jwtSecret;
 
 function signToken(user, expiresIn) {
   return jwt.sign(
@@ -119,4 +120,15 @@ function requireKycLevel(level) {
   };
 }
 
-module.exports = { signToken, authRequired, requireRoles, requireKycLevel, JWT_SECRET };
+// R37 (3): the short-lived token issued after the password step for a TOTP-enabled user. It carries
+// totp_pending, which hardenedVerify (authRequired + validateTokenPayload) refuses; only
+// POST /auth/totp-login accepts it.
+function signTotpPendingToken(user) {
+  return jwt.sign(
+    { id: user.id, av: user.auth_version || 0, totp_pending: true, jti: crypto.randomUUID() },
+    JWT_SECRET,
+    { algorithm: 'HS256', expiresIn: '5m' }
+  );
+}
+
+module.exports = { signToken, signTotpPendingToken, authRequired, requireRoles, requireKycLevel, JWT_SECRET };

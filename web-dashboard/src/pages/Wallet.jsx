@@ -64,7 +64,7 @@ export default function Wallet() {
   const deposit = async (e) => {
     e.preventDefault();
     try {
-      const res = await api.post('/wallet/deposit/initiate', { amount, provider });
+      const res = await api.post('/wallet/deposit/initiate', { amount: Number(amount), provider }); // R36: JSON number only
       show('ok', `${res.data.message} ${t('wallet.deposit_from', { amount: formatMoney(res.data.totalCharged) })}`);
       setAmount('');
     } catch (err) {
@@ -75,7 +75,7 @@ export default function Wallet() {
   const transfer = async (e) => {
     e.preventDefault();
     try {
-      const res = await api.post('/wallet/transfer', { toPhoneNumber: toPhone, amount, note });
+      const res = await api.post('/wallet/transfer', { toPhoneNumber: toPhone, amount: Number(amount), note });
       if (res.data.requiresApproval) {
         show('ok', `${res.data.message} (#${res.data.approvalFlowId})`);
       } else {

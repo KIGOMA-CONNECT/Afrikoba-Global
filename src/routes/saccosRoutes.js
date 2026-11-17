@@ -399,7 +399,17 @@ router.post('/:id/savings/deposit', authRequired, async (req, res, next) => {
 
 router.post('/:id/savings/withdraw', authRequired, async (req, res, next) => {
   try {
-    const out = await savings.withdraw(req.user.id, Number(req.params.id), { amount: req.body.amount });
+    const idempotencyKey = req.headers['idempotency-key'];
+    if (!idempotencyKey || typeof idempotencyKey !== 'string' || idempotencyKey.trim() === '') {
+      return res.status(400).json({ success: false, message: 'Idempotency-Key header is required.' });
+    }
+    if (idempotencyKey.length > 24) {
+      return res.status(400).json({ success: false, message: 'Idempotency-Key must be at most 24 characters.' });
+    }
+    const out = await savings.withdraw(req.user.id, Number(req.params.id), {
+      amount: req.body.amount,
+      reference: idempotencyKey.trim()
+    });
     res.status(201).json({ success: true, result: out });
   } catch (e) { next(e); }
 });

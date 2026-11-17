@@ -1,0 +1,4 @@
+{
+  "_comment": "R36B: owner-approved tier-B activations for production. Empty = no tier-B service may run in production. An entry needs: service (tier-B key in serviceCatalog.js), approved_by \"OWNER\", approval_ref, legal_ref and accounting_ref (sha256 of the signed letters), approved_at (ISO date), envs [\"production\"]. The process must ALSO list the service in AFRIKOBA_TIER_B_ENABLE. Never in a pilot process. Three-level activation is S11.",
+  "activations": []
+}

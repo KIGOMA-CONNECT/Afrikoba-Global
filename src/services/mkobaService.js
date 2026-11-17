@@ -6,11 +6,21 @@ const { logAudit } = require('./auditService');
 const logger = require('../utils/logger');
 const fin = require('./financialEngine');
 
+const VICOBA_OFFICER_ROLES = ['MWENYEKITI', 'MWEKAHAZINA', 'KATIBU'];
+
 // ==========================================
 // GROUP CONSTITUTION / RULES
 // ==========================================
 
-async function createConstitution(groupId, rules) {
+async function createConstitution(groupId, rules, actorUserId) {
+  // R33 S1 (G-0c): only an officer of THIS group (role from vicoba_members for req.user).
+  const officerRes = await pool.query(
+    'SELECT role_in_group FROM vicoba_members WHERE group_id = $1 AND user_id = $2',
+    [groupId, actorUserId]
+  );
+  if (officerRes.rows.length === 0 || !VICOBA_OFFICER_ROLES.includes(officerRes.rows[0].role_in_group)) {
+    throw Object.assign(new Error('Viongozi wa kikundi pekee wanaweza kuweka katiba ya kikundi.'), { statusCode: 403 });
+  }
   const {
     minSharesPerMember, maxSharesPerMember, sharePrice,
     maxLoanMultiplier, loanInterestRate, maxRepaymentMonths,
@@ -72,7 +82,7 @@ async function getConstitution(groupId) {
 // ==========================================
 
 async function buyShares(userId, groupId, sharesCount) {
-  const count = parseInt(sharesCount, 10);
+  const count = require('../utils/strictAmount').strictAmount(sharesCount, { field: 'sharesCount', integer: true }); // R36 Task 3
   if (count <= 0) throw Object.assign(new Error('Idadi ya hisa lazima iwe zaidi ya 0.'), { statusCode: 400 });
 
   const constRes = await pool.query(
@@ -188,10 +198,20 @@ async function getMemberShareSummary(groupId) {
 // PROFIT SHARING ENGINE
 // ==========================================
 
-async function calculateProfitDistribution(groupId, cycleNumber, totalProfit) {
+async function calculateProfitDistribution(groupId, cycleNumber, totalProfit, actorUserId) {
+  require('../config/pilot').assertFeatureEnabled('annualDividends'); // R36 Task 4
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+
+    // R33 S1 (G-0b): only an officer of THIS group; member row held FOR SHARE until COMMIT.
+    const officerRes = await client.query(
+      'SELECT role_in_group FROM vicoba_members WHERE group_id = $1 AND user_id = $2 FOR SHARE',
+      [groupId, actorUserId]
+    );
+    if (officerRes.rows.length === 0 || !VICOBA_OFFICER_ROLES.includes(officerRes.rows[0].role_in_group)) {
+      throw Object.assign(new Error('Viongozi wa kikundi pekee wanaweza kukokotoa mgawanyo wa faida.'), { statusCode: 403 });
+    }
 
     const totalSharesRes = await client.query(
       'SELECT COALESCE(SUM(total_shares), 0) as total FROM vicoba_members WHERE group_id = $1',
@@ -266,6 +286,7 @@ async function calculateProfitDistribution(groupId, cycleNumber, totalProfit) {
 }
 
 async function approveProfitDistribution(distributionId, approverUserId) {
+  require('../config/pilot').assertFeatureEnabled('annualDividends'); // R36 Task 4
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -405,7 +426,7 @@ async function getMyProfitPayouts(userId, groupId) {
 // ==========================================
 
 async function initiateTransfer(userId, groupId, { transferType, recipientUserId, recipientPhone, amount, note }) {
-  const amountNum = parseFloat(amount);
+  const amountNum = require('../utils/strictAmount').strictAmount(amount); // R36 Task 3
   if (amountNum <= 0) throw Object.assign(new Error('Kiasi lazima iwe zaidi ya 0.'), { statusCode: 400 });
 
   const roleRes = await pool.query(
@@ -480,11 +501,14 @@ async function approveTransfer(approverUserId, transferId, { approved, note }) {
   try {
     await client.query('BEGIN');
 
+    // R28 S3: lock the transfer row (as verifyTransfer does) so the VERIFIED check below and
+    // the COMPLETED/REJECTED claims (now conditional) cannot be raced by a second approval.
     const transferRes = await client.query(
       `SELECT ft.*, vm.role_in_group
        FROM vicoba_fund_transfers ft
        JOIN vicoba_members vm ON vm.group_id = ft.group_id AND vm.user_id = $1
-       WHERE ft.id = $2`,
+       WHERE ft.id = $2
+       FOR UPDATE OF ft`,
       [approverUserId, transferId]
     );
     if (transferRes.rows.length === 0) throw Object.assign(new Error('Uhamisho haupatikani.'), { statusCode: 404 });
@@ -499,10 +523,11 @@ async function approveTransfer(approverUserId, transferId, { approved, note }) {
     }
 
     if (!approved) {
-      await client.query(
-        "UPDATE vicoba_fund_transfers SET status = 'REJECTED', approved_by = $1, approver_note = $2, approved_at = NOW() WHERE id = $3",
+      const rejected = await client.query(
+        "UPDATE vicoba_fund_transfers SET status = 'REJECTED', approved_by = $1, approver_note = $2, approved_at = NOW() WHERE id = $3 AND status = 'VERIFIED'",
         [approverUserId, note || 'Imekataliwa', transferId]
       );
+      if (rejected.rowCount !== 1) throw Object.assign(new Error('Uhamisho hauko katika hali sahihi ya kuthibitishwa.'), { statusCode: 400 });
       await client.query('COMMIT');
       return { success: true, message: 'Uhamisho umekataliwa na Mwenyekiti.' };
     }
@@ -554,10 +579,11 @@ async function approveTransfer(approverUserId, transferId, { approved, note }) {
       });
     }
 
-    await client.query(
-      "UPDATE vicoba_fund_transfers SET status = 'COMPLETED', approved_by = $1, approver_note = $2, approved_at = NOW(), completed_at = NOW() WHERE id = $3",
+    const completed = await client.query(
+      "UPDATE vicoba_fund_transfers SET status = 'COMPLETED', approved_by = $1, approver_note = $2, approved_at = NOW(), completed_at = NOW() WHERE id = $3 AND status = 'VERIFIED'",
       [approverUserId, note || null, transferId]
     );
+    if (completed.rowCount !== 1) throw Object.assign(new Error('Uhamisho hauko katika hali sahihi ya kuthibitishwa.'), { statusCode: 400 });
 
     await client.query('COMMIT');
     await logAudit({ eventType: 'VICOBA_TRANSFER', action: 'APPROVE', entityType: 'VICOBA_FUND_TRANSFER', userId: approverUserId, entityId: transferId, referenceId: transfer.reference_id, amount: transfer.amount, afterData: { group_id: transfer.group_id, recipient: transfer.recipient_user_id } });
@@ -593,8 +619,9 @@ async function listTransfers(groupId, status) {
 // ==========================================
 
 async function processCrossNetworkTopUp(groupId, userId, { amount, provider, externalRef, phone }) {
-  const amountNum = parseFloat(amount);
-  if (amountNum <= 0) throw Object.assign(new Error('Kiasi lazima iwe zaidi ya 0.'), { statusCode: 400 });
+  require('../config/pilot').assertFeatureEnabled('externalPayments'); // R36 Task 4: external MNO top-up
+  const amountNum = Number(amount);
+  if (!Number.isFinite(amountNum) || amountNum <= 0) throw Object.assign(new Error('Kiasi lazima iwe zaidi ya 0.'), { statusCode: 400 });
 
   const validProviders = ['M-PESA', 'AIRTEL', 'TIGO', 'HALOPESA', 'AZAMPAY', 'CRDB', 'NMB'];
   const providerUpper = (provider || 'AZAMPAY').toUpperCase();
@@ -602,60 +629,41 @@ async function processCrossNetworkTopUp(groupId, userId, { amount, provider, ext
     throw Object.assign(new Error(`Mtandao ${provider} haujaidhinishwa. Matumizi: ${validProviders.join(', ')}`), { statusCode: 400 });
   }
 
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
+  const memberRes = await pool.query(
+    'SELECT 1 FROM vicoba_members WHERE group_id = $1 AND user_id = $2',
+    [groupId, userId]
+  );
+  if (memberRes.rows.length === 0) throw Object.assign(new Error('Hauko kwenye kikundi hiki.'), { statusCode: 403 });
 
-    const memberRes = await client.query(
-      'SELECT vm.*, u.phone_number, u.full_name FROM vicoba_members vm JOIN users u ON u.id = vm.user_id WHERE vm.group_id = $1 AND vm.user_id = $2 FOR UPDATE',
-      [groupId, userId]
-    );
-    if (memberRes.rows.length === 0) throw Object.assign(new Error('Hauko kwenye kikundi hiki.'), { statusCode: 403 });
-
-    const referenceId = generateReference('CN');
-    await fin.postJournal({
-      client,
-      lines: [
-        { accountCode: 'MNO_CLEARING', direction: 'DR', amount: amountNum },
-        { accountCode: 'VICOBA_GROUP', direction: 'CR', amount: amountNum },
-      ],
-      referenceId: `${referenceId}:GTOP`,
-      description: 'Cross-network Group Top-up',
-    });
-    await client.query(
-      'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance + $1 WHERE id = $2',
-      [amountNum, groupId]
-    );
-
-    await client.query(
-      'UPDATE vicoba_members SET contribution_balance = contribution_balance + $1 WHERE group_id = $2 AND user_id = $3',
-      [amountNum, groupId, userId]
-    );
-
-    await client.query(
-      `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
-       VALUES ($1, $2, $3, 0, $3, 'SUCCESS', 'VICOBA_SHARE', $4)`,
-      [referenceId, userId, amountNum, JSON.stringify({ group_id: groupId, provider: providerUpper, external_ref: externalRef, phone, cross_network: true })]
-    );
-
-    await client.query('COMMIT');
-
-    logger.info('VICOBA', `Cross-network top-up: TSh ${formatMoney(amountNum)} via ${providerUpper} from ${phone || 'unknown'}`);
-
-    return { success: true, referenceId, amount: amountNum, provider: providerUpper, message: `TSh ${formatMoney(amountNum)} zimeongezwa kupitia ${providerUpper}.` };
-  } catch (error) {
-    await client.query('ROLLBACK').catch(() => {});
-    throw error;
-  } finally {
-    client.release();
-  }
+  // R24-N3: amount, provider and externalRef are declared by the caller and
+  // nothing here proves the provider settled the funds. Crediting the group
+  // (DR MNO_CLEARING / CR VICOBA_GROUP) on that declaration alone created
+  // unbacked group money. Same rule as wallet deposits: the request is
+  // recorded as PENDING and nothing is credited, journaled or added to the
+  // member's contribution until a provider-confirmed settlement exists.
+  const referenceId = generateReference('CN');
+  await pool.query(
+    `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
+     VALUES ($1, $2, $3, 0, $3, 'PENDING', 'VICOBA_SHARE', $4)`,
+    [referenceId, userId, amountNum, JSON.stringify({
+      group_id: groupId, provider: providerUpper, external_ref: externalRef || null, phone: phone || null,
+      cross_network: true, awaiting_provider_confirmation: true,
+    })]
+  );
+  logger.info('VICOBA', `Cross-network top-up PENDING (not credited): TSh ${formatMoney(amountNum)} via ${providerUpper}`);
+  return {
+    success: true, status: 'PENDING', credited: false, referenceId, amount: amountNum, provider: providerUpper,
+    message: `Ombi la TSh ${formatMoney(amountNum)} kupitia ${providerUpper} limepokelewa na linasubiri uthibitisho wa mtoa huduma. Kikundi hakijaongezewa pesa bado.`,
+  };
 }
 
 // ==========================================
 // MEETING ATTENDANCE TRACKING
 // ==========================================
 
-async function scheduleMeeting(groupId, meetingDate, notes) {
+async function scheduleMeeting(groupId, meetingDate, notes, actorUserId) {
+  // R36: leader of this group only; refused before any write.
+  await require('../middleware/vicobaMembership').assertGroupLeader(groupId, actorUserId);
   const result = await pool.query(
     `INSERT INTO vicoba_meetings (group_id, meeting_date, notes)
      VALUES ($1, $2, $3)
@@ -666,7 +674,7 @@ async function scheduleMeeting(groupId, meetingDate, notes) {
   return result.rows[0];
 }
 
-async function recordAttendance(meetingId, userId, status, notes) {
+async function recordAttendance(meetingId, userId, status, notes, actorUserId) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -677,6 +685,8 @@ async function recordAttendance(meetingId, userId, status, notes) {
     );
     if (meetingRes.rows.length === 0) throw Object.assign(new Error('Mkutano haupatikani.'), { statusCode: 404 });
     const meeting = meetingRes.rows[0];
+    // R36: attendance can create fines (vicoba_penalties): only a leader of the meeting's group records it.
+    await require('../middleware/vicobaMembership').assertGroupLeader(meeting.group_id, actorUserId, client);
 
     const memberRes = await client.query(
       'SELECT * FROM vicoba_members WHERE group_id = $1 AND user_id = $2',
@@ -754,10 +764,14 @@ async function recordAttendance(meetingId, userId, status, notes) {
   }
 }
 
-async function bulkRecordAttendance(meetingId, attendanceList) {
+async function bulkRecordAttendance(meetingId, attendanceList, actorUserId) {
+  // R36: check the actor once before the first row, so a refused caller writes nothing.
+  const m = await pool.query('SELECT group_id FROM vicoba_meetings WHERE id = $1', [meetingId]);
+  if (m.rows.length === 0) throw Object.assign(new Error('Mkutano haupatikani.'), { statusCode: 404 });
+  await require('../middleware/vicobaMembership').assertGroupLeader(m.rows[0].group_id, actorUserId);
   const results = [];
   for (const entry of attendanceList) {
-    const result = await recordAttendance(meetingId, entry.userId, entry.status, entry.notes);
+    const result = await recordAttendance(meetingId, entry.userId, entry.status, entry.notes, actorUserId);
     results.push({ userId: entry.userId, ...result });
   }
   return results;

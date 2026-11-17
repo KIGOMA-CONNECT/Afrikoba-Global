@@ -35,6 +35,7 @@ const fin = require('./financialEngine');
 const saccosCore = require('./saccosService');
 const credit = require('./saccosCreditService');
 const installments = require('./saccosInstallmentService');
+const logger = require('../utils/logger');
 
 const round2 = (n) => Math.round(Number(n) * 100) / 100;
 
@@ -73,6 +74,7 @@ async function restructureLoan(actorId, saccosId, loanId, { newTermMonths, newRa
   if (!Number.isFinite(rate) || rate < 0) throw createAppError('SACCOS_LOAN_RESTRUCTURE_RATE');
 
   const client = await pool.connect();
+  let connectionError = null;
   try {
     await client.query('BEGIN');
     const loan = await fetchLoan(saccosId, loanId, client);
@@ -194,9 +196,13 @@ async function writeOffLoan(actorId, saccosId, loanId, { reason }) {
   if (!reason || !String(reason).trim()) throw createAppError('SACCOS_LOAN_WRITE_OFF_REASON');
 
   const client = await pool.connect();
+  let connectionError = null;
   try {
     await client.query('BEGIN');
-    const loan = await fetchLoan(saccosId, loanId, client);
+    // Lock order: loan row first, then loan-loss reserve row (releaseLoanLoss locks only the reserve, so no cycle).
+    const lockedLoan = await client.query('SELECT * FROM saccos_loans WHERE id = $1 AND saccos_id = $2 FOR UPDATE', [loanId, saccosId]);
+    if (!lockedLoan.rows.length) throw createAppError('SACCOS_LOAN_NOT_FOUND');
+    const loan = lockedLoan.rows[0];
     if (loan.status !== 'ACTIVE') throw createAppError('SACCOS_LOAN_WRITE_OFF_STATE');
     const outstanding = round2(Number(loan.amount_outstanding));
     if (outstanding <= 0) throw createAppError('SACCOS_LOAN_WRITE_OFF_STATE');
@@ -211,7 +217,7 @@ async function writeOffLoan(actorId, saccosId, loanId, { reason }) {
     );
 
     const llr = await client.query(
-      `SELECT * FROM saccos_loan_loss_reserves WHERE saccos_id = $1 AND loan_id = $2 AND status = 'PROVISIONED'`,
+      `SELECT * FROM saccos_loan_loss_reserves WHERE saccos_id = $1 AND loan_id = $2 AND status = 'PROVISIONED' FOR UPDATE`,
       [saccosId, loanId]
     );
     const provisioned = llr.rows.length ? round2(Number(llr.rows[0].provision_amount)) : 0;
@@ -231,6 +237,10 @@ async function writeOffLoan(actorId, saccosId, loanId, { reason }) {
       return { dedup: true, reference: ref };
     }
 
+    const loanUpd = await client.query(
+      `UPDATE saccos_loans SET status = 'WRITTEN_OFF', amount_outstanding = 0 WHERE id = $1 AND status = 'ACTIVE'`, [loanId]
+    );
+    if (loanUpd.rowCount !== 1) throw createAppError('SACCOS_LOAN_WRITE_OFF_STATE');
     const lines = [{ accountCode: credit.loansReceivableCode(saccosId), direction: 'CR', amount: writtenPrincipal }];
     if (reservesUsed > 0) lines.unshift({ accountCode: loanLossReserveCode(saccosId), direction: 'DR', amount: reservesUsed });
     if (expenseUsed > 0) lines.unshift({ accountCode: loanLossExpenseCode(saccosId), direction: 'DR', amount: expenseUsed });
@@ -247,14 +257,12 @@ async function writeOffLoan(actorId, saccosId, loanId, { reason }) {
       [saccosId, loanId, ref, outstanding, reservesUsed, expenseUsed, String(reason).trim(), actorId]
     );
     if (llr.rows.length) {
-      await client.query(
-        `UPDATE saccos_loan_loss_reserves SET status = 'UTILIZED', utilized_at = NOW() WHERE id = $1`,
+      const llrUpd = await client.query(
+        `UPDATE saccos_loan_loss_reserves SET status = 'UTILIZED', utilized_at = NOW() WHERE id = $1 AND status = 'PROVISIONED'`,
         [llr.rows[0].id]
       );
+      if (llrUpd.rowCount !== 1) throw createAppError('SACCOS_LLR_STATE');
     }
-    await client.query(
-      `UPDATE saccos_loans SET status = 'WRITTEN_OFF', amount_outstanding = 0 WHERE id = $1`, [loanId]
-    );
     await client.query(
       `UPDATE saccos_loan_applications SET status = 'WRITTEN_OFF' WHERE id = $1`, [loan.application_id]
     );
@@ -280,10 +288,15 @@ async function writeOffLoan(actorId, saccosId, loanId, { reason }) {
       status: 'WRITTEN_OFF',
     };
   } catch (e) {
-    await client.query('ROLLBACK').catch(() => {});
+    if (e.code === 'ECONNRESET' || e.code === 'ETIMEDOUT' || e.code === 'ECONNREFUSED' || e.code === 'ENOTFOUND') {
+      connectionError = e;
+    }
+    await client.query('ROLLBACK').catch((rbErr) => {
+      logger.error('ROLLBACK_FAILED', rbErr.message, { service: 'saccosLoanWorkout.writeOffLoan', loanId });
+    });
     throw e;
   } finally {
-    client.release();
+    client.release(connectionError);
   }
 }
 

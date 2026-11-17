@@ -14,6 +14,11 @@ const toIntlPhone = (v, ctx) => {
 const PHONE = z.string().transform(toIntlPhone);
 const POSITIVE_INT = z.coerce.number().int().positive();
 const POSITIVE_NUM = z.coerce.number().positive();
+// R36 Task 3: pilot financial amounts are JSON numbers only. No coercion: "5000", " 5000 ", true, null,
+// NaN, Infinity (zod v4 z.number() rejects non-finite) and <= 0 are refused, and the parsed value that
+// validate() puts on req.body is the very same number the client sent.
+const STRICT_AMOUNT = z.number().positive();
+const STRICT_COUNT = z.number().int().positive();
 const DATE_STR = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'YYYY-MM-DD');
 const MONTH_STR = z.string().regex(/^\d{4}-\d{2}$/, 'YYYY-MM');
 const PIN_4 = z.string().regex(/^\d{4}$/, 'PIN lazima iwe nambari 4');
@@ -56,16 +61,16 @@ const auth = {
 
 const wallet = {
   deposit: z.object({
-    amount: POSITIVE_NUM.refine((v) => v >= 1000, 'Kiasi kidogo ni TZS 1,000'),
+    amount: STRICT_AMOUNT.refine((v) => v >= 1000, 'Kiasi kidogo ni TZS 1,000'),
     provider: z.enum(['Mpesa', 'Tigo', 'Airtel', 'Halopesa']),
   }),
   transfer: z.object({
     toPhoneNumber: PHONE,
-    amount: POSITIVE_NUM,
+    amount: STRICT_AMOUNT,
     note: z.string().max(255).optional().nullable(),
   }),
   withdraw: z.object({
-    amount: POSITIVE_NUM.refine((v) => v >= 1000, 'Kiasi kidogo ni TZS 1,000'),
+    amount: STRICT_AMOUNT.refine((v) => v >= 1000, 'Kiasi kidogo ni TZS 1,000'),
     provider: z.enum(['Mpesa', 'Tigo', 'Airtel', 'Halopesa']),
   }),
 };
@@ -74,8 +79,8 @@ const vicoba = {
   createGroup: z.object({
     groupName: z.string().min(2).max(100),
     cycleType: z.string().max(50),
-    shareValue: POSITIVE_NUM,
-    monthlyMaintenanceFee: POSITIVE_NUM.optional(),
+    shareValue: STRICT_AMOUNT,
+    monthlyMaintenanceFee: STRICT_AMOUNT.optional(),
     description: z.string().max(1000).optional().nullable(),
     groupType: z.string().max(30).optional(),
     country: z.string().max(60).optional(),
@@ -96,28 +101,28 @@ const vicoba = {
     roleInGroup: z.string().max(50).optional(),
   }),
   contribute: z.object({
-    amount: POSITIVE_NUM.optional(),
-    sharesCount: POSITIVE_INT.optional(),
+    amount: STRICT_AMOUNT, // R36: required (the service has always needed it)
+    sharesCount: STRICT_COUNT.optional(),
   }),
   requestLoan: z.object({
     applicantUserId: POSITIVE_INT,
-    requestedAmount: POSITIVE_NUM,
-    interestRate: POSITIVE_NUM.optional(),
+    requestedAmount: STRICT_AMOUNT,
+    interestRate: STRICT_AMOUNT.optional(),
     repaymentMonths: POSITIVE_INT.optional(),
   }),
   approveLoan: z.object({
-    approvedAmount: POSITIVE_NUM.optional(),
+    approvedAmount: STRICT_AMOUNT.optional(),
   }),
   createSchedule: z.object({
     cycleNumber: POSITIVE_INT,
     dueDate: DATE_STR,
   }),
   payContribution: z.object({
-    amount: POSITIVE_NUM,
-    sharesCount: POSITIVE_INT.optional(),
+    amount: STRICT_AMOUNT,
+    sharesCount: STRICT_COUNT.optional(),
   }),
   socialFund: z.object({
-    monthlyContribution: POSITIVE_NUM,
+    monthlyContribution: STRICT_AMOUNT,
   }),
   socialFundContribute: z.object({
     month: MONTH_STR,
@@ -125,25 +130,25 @@ const vicoba = {
   socialFundRequest: z.object({
     reasonType: z.string().min(1).max(50),
     reasonDetail: z.string().min(1).max(500),
-    requestedAmount: POSITIVE_NUM,
+    requestedAmount: STRICT_AMOUNT,
   }),
   socialFundApprove: z.object({
-    approvedAmount: POSITIVE_NUM.optional(),
+    approvedAmount: STRICT_AMOUNT.optional(),
   }),
   repayLoan: z.object({
-    amount: POSITIVE_NUM,
+    amount: STRICT_AMOUNT,
     note: z.string().max(255).optional().nullable(),
     idempotencyKey: z.string().min(1).max(32).regex(/^[A-Za-z0-9._:-]+$/).optional(),
   }),
   withdrawal: z.object({
-    amount: POSITIVE_NUM,
+    amount: STRICT_AMOUNT,
   }),
   withdrawalDecision: z.object({
     approved: z.boolean(),
     note: z.string().max(255).optional().nullable(),
   }),
   bonus: z.object({
-    amount: POSITIVE_NUM,
+    amount: STRICT_AMOUNT,
     purpose: z.string().max(200).optional(),
   }),
 };
@@ -211,30 +216,30 @@ const admin = {
 
 const mkoba = {
   constitution: z.object({
-    sharePrice: POSITIVE_NUM,
+    sharePrice: STRICT_AMOUNT,
     maxSharesPerMember: POSITIVE_INT,
-    loanInterestRate: POSITIVE_NUM.optional(),
-    finePerAbsence: POSITIVE_NUM.optional(),
-    finePerLateArrival: POSITIVE_NUM.optional(),
+    loanInterestRate: STRICT_AMOUNT.optional(),
+    finePerAbsence: STRICT_AMOUNT.optional(),
+    finePerLateArrival: STRICT_AMOUNT.optional(),
     meetingDay: z.string().max(20).optional(),
     require3TierApproval: z.boolean().optional(),
     shareRollover: z.boolean().optional(),
   }),
   buyShares: z.object({
-    sharesCount: POSITIVE_INT,
+    sharesCount: STRICT_COUNT,
   }),
   profit: z.object({
     cycleNumber: POSITIVE_INT,
-    totalProfit: POSITIVE_NUM,
+    totalProfit: STRICT_AMOUNT,
   }),
   transfer: z.object({
     transferType: z.string().min(1).max(50),
     recipientUserId: POSITIVE_INT,
-    amount: POSITIVE_NUM,
+    amount: STRICT_AMOUNT,
     note: z.string().max(255).optional().nullable(),
   }),
   topup: z.object({
-    amount: POSITIVE_NUM,
+    amount: STRICT_AMOUNT,
     provider: z.enum(['AIRTEL', 'HALOPESA', 'TIGO', 'MPESA']),
     phone: PHONE,
   }),
@@ -247,7 +252,7 @@ const mkoba = {
     userId: POSITIVE_INT,
     status: z.enum(['PRESENT', 'LATE', 'ABSENT']),
     arrivalTime: z.string().max(10).optional(),
-    fineAmount: POSITIVE_NUM.optional(),
+    fineAmount: STRICT_AMOUNT.optional(),
   }),
 };
 

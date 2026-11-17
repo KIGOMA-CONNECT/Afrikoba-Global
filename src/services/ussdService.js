@@ -189,18 +189,19 @@ async function handleUssd(sessionId, phoneNumber, text) {
             let ref = 'USSD-';
             for (let i = 0; i < 8; i++) ref += chars[Math.floor(Math.random() * chars.length)];
 
-            await fin.internalTransfer({ client, fromUserId: u.id, toUserId: session.data.toUserId, amount: session.data.amount, reference: ref, description: 'USSD Transfer' });
-
-            await client.query(
+            const txResult = await client.query(
               `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
-               VALUES ($1, $2, $3, 0, $3, 'SUCCESS', 'TRANSFER', $4)`,
+               VALUES ($1, $2, $3, 0, $3, 'SUCCESS', 'TRANSFER', $4)
+               RETURNING id`,
               [ref, u.id, session.data.amount, JSON.stringify({ to_user_id: session.data.toUserId, via: 'USSD' })]
             );
 
+            await fin.internalTransfer({ client, fromUserId: u.id, toUserId: session.data.toUserId, amount: session.data.amount, reference: ref, description: 'USSD Transfer', transactionId: txResult.rows[0].id });
+
             await client.query(
-              `INSERT INTO wallet_ledger (reference_id, from_user_id, to_user_id, amount, description)
-               VALUES ($1, $2, $3, $4, 'USSD Transfer')`,
-              [ref, u.id, session.data.toUserId, session.data.amount]
+              `INSERT INTO wallet_ledger (transaction_id, reference_id, from_user_id, to_user_id, amount, description)
+               VALUES ($1, $2, $3, $4, $5, 'USSD Transfer')`,
+              [txResult.rows[0].id, ref, u.id, session.data.toUserId, session.data.amount]
             );
 
             await client.query('COMMIT');

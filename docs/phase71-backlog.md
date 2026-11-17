@@ -1,0 +1,1386 @@
+# Phase 71 Backlog
+
+Items raised during the Phase 71 (outbox hardening) review gates that are not yet done.
+
+## 1. Static check: literal `ROLLBACK` in `splitPaymentService`
+
+- **Origin:** Step 0 review (commit `71ca584`).
+- **Problem:** Case 10 of `tests/outbox-lease-dispatcher.phase71.test.js` verifies the
+  rollback/release **path** only. The `safeRelease()` wrapper in `src/config/db.js`
+  can issue `ROLLBACK` itself when a client is released mid-transaction, so the test
+  does not prove that `runSplitPayment` explicitly rolls back on the duplicate-period
+  early return.
+- **Action:** Add a static assertion (source scan of `src/services/splitPaymentService.js`)
+  that the duplicate-period branch contains `await client.query('ROLLBACK')` before
+  `return`, or add a direct assertion on the transaction-control call that does not
+  depend on the wrapper.
+
+## 2. `test:phase71` npm script
+
+- **Action:** Add a `test:phase71` script to `package.json` that runs the Phase 71 test
+  files.
+- **Requirement (must be in the script's documentation):** it needs a **disposable
+  database** named `phase71_financial_audit_<suffix>`, supplied through
+  `DB_NAME`/`DB_HOST`/`DB_PORT`/`DB_USER`/`DB_PASSWORD`. The tests refuse any other
+  database name and TRUNCATE tables, so they must never be pointed at a real database.
+  Do not add it to the default `npm test` script, which runs without a database.
+
+## 3. Direct notifications in `projectFinanceService` → Phase 72
+
+- **Decision:** Deferred to **Phase 72** (out of Phase 71 scope).
+- **Scope:** Direct `createNotification` / `notifyProjectInvestors` calls made after
+  `COMMIT` in `src/services/projectFinanceService.js` (e.g. the dividend payout loop and
+  close-out / liquidation notifications) should move into outbox handlers so they become
+  transactional and retry-safe.
+- **Note:** Phase 71 step E only moves `enqueueOutbox` and the dividend `logAudit` inside
+  the transaction; it does not change these direct notifications.
+
+## 4. Close-out outbox handlers are verify-only → notifications move in Phase 72
+
+- **Origin:** Step A decision.
+- **Current state:** The handlers for `PROJECT_COMPLETED`, `PROJECT_LIQUIDATED`,
+  `PROJECT_RESERVE_RELEASED` and `PROJECT_RESIDUAL_RELEASED` in `src/outbox/handlers.js`
+  are **verify-only**: SELECT only, they confirm by `payload.reference` that the
+  settlement / liquidation / reserve-release row exists, and throw if it does not. They
+  send no notifications, because `projectFinanceService` already notifies owner and
+  investors directly after `COMMIT` (a notifying handler would duplicate them).
+- **Phase 72:** Move those owner/investor notifications into these handlers and remove the
+  direct calls, **after Step B** (notification idempotency via `source_event_reference`)
+  **and Step D** (`sms_deliveries`, no failover on timeout) are in place, so handler
+  retries cannot duplicate notifications or SMS.
+
+## 5. Legacy `FAILED` outbox events for the four close-out event types
+
+- **Origin:** Step A review.
+- **Problem:** Before Step A, `PROJECT_COMPLETED`, `PROJECT_LIQUIDATED`,
+  `PROJECT_RESERVE_RELEASED` and `PROJECT_RESIDUAL_RELEASED` had no registered handler, so
+  the dispatcher marked any such event `FAILED` with `last_error = 'No handler registered
+  for <type>'`. Registering handlers does **not** reprocess them: `requeueDead` only
+  touches `DEAD` rows, and the dispatcher only claims `PENDING` (and expired `PROCESSING`).
+- **Procedure — count first, decide later (read-only, no UPDATE):**
+
+  ```sql
+  SELECT event_type,
+         COUNT(*)        AS failed_events,
+         MIN(created_at) AS oldest,
+         MAX(created_at) AS newest
+    FROM outbox_events
+   WHERE status = 'FAILED'
+     AND event_type IN ('PROJECT_COMPLETED', 'PROJECT_LIQUIDATED',
+                        'PROJECT_RESERVE_RELEASED', 'PROJECT_RESIDUAL_RELEASED')
+     AND last_error LIKE 'No handler registered for %'
+   GROUP BY event_type
+   ORDER BY event_type;
+  ```
+
+  Also list `FAILED` rows for these types whose `last_error` is **not** the
+  "No handler registered" message, separately; they need individual review.
+- **Decision (after counting, with approval):** whether to requeue these rows to `PENDING`
+  so the verify-only handlers confirm each reference, or to close them out with a recorded
+  disposition. Any requeue must be a separate, reviewed, audited change. It is not part of
+  Step A.
+
+## 6. Rollback procedure for migration 147 (notification idempotency)
+
+- **Origin:** Step B.
+- **Order matters:** drop the index first, then the column.
+
+  ```sql
+  DROP INDEX IF EXISTS uq_notifications_user_source_event_ref;
+  ALTER TABLE notifications DROP COLUMN IF EXISTS source_event_reference;
+  DELETE FROM schema_migrations WHERE version = '147_notification_idempotency.sql';
+  ```
+
+- **Before rolling back:** revert the Step B code first (`createNotification` writes
+  `source_event_reference`, and the five notifying outbox handlers pass it); otherwise every
+  handler notification will fail on the missing column. After rollback, outbox redeliveries
+  can create duplicate notifications again.
+- **Operational note:** `CREATE UNIQUE INDEX` (non-concurrent, because the runner wraps each
+  migration in a transaction) takes a lock that blocks writes to `notifications` while the
+  index is built. Existing rows are all `NULL` for the new column, but the table is still
+  scanned. Schedule the production run accordingly.
+
+## 7. Register `OUTBOX_TEST` and `OUTBOX_RETRY` only in test environments
+
+- **Origin:** Step B review.
+- **Problem:** `src/outbox/handlers.js` registers the diagnostic handlers `OUTBOX_TEST`
+  (creates a notification for `payload.userId`) and `OUTBOX_RETRY` (fails twice out of three)
+  in every environment, including production.
+- **Action:** Register them only when `NODE_ENV` is `test`/`development` (or behind an
+  explicit flag), and update `tests/fixtures/phase71-outbox-handlers.before.json` and the
+  contract test's expected set accordingly, so production cannot process these event types.
+
+## 8. Production release order for Step B: migration 147 first, then code
+
+- **Origin:** Step B review.
+- **Order:** apply migration `147_notification_idempotency.sql` **before** deploying the
+  Step B code.
+- **Why:** the Step B code makes the five notifying outbox handlers
+  (`MERCHANT_PAYOUT_EXECUTED`, `VICOBA_LOAN_APPROVED`, `OUTBOX_TEST`,
+  `PROJECT_REVENUE_PROCESSED`, `PROJECT_DIVIDEND_PAID`) always pass `sourceEventReference`,
+  so `createNotification` writes `notifications.source_event_reference` with
+  `ON CONFLICT (user_id, source_event_reference)`. Without the column and the partial unique
+  index, that INSERT fails, `createNotification` returns `null`, and **all five handlers
+  throw** and retry until `DEAD`. Direct callers (no reference) are unaffected.
+  The migration is backward-compatible with the old code (nullable column, partial index),
+  so migration-first is safe.
+- **Before building the index, size the table (read-only):**
+
+  ```sql
+  SELECT COUNT(*) AS notification_rows,
+         pg_size_pretty(pg_total_relation_size('notifications')) AS total_size
+    FROM notifications;
+  ```
+
+  The index is built non-concurrently inside the runner's transaction and blocks writes to
+  `notifications` while it builds (see item 6); choose a low-traffic window based on this
+  size. If the table is large, decide separately whether to build the index
+  `CONCURRENTLY` outside the runner before applying 147 (the `IF NOT EXISTS` makes 147 a
+  no-op for an index that already exists).
+
+## 9. Step D guarantee: fewer duplicate SMS, NOT exactly-once
+
+- **Origin:** Step D.
+- `sendSMSIdempotent` + `sms_deliveries` **reduce** duplicate sends; they do **not**
+  provide exactly-once delivery. When a provider call times out, resets, or returns 5xx,
+  the SMS may or may not have reached the handset. Such outcomes are recorded as `UNKNOWN`
+  and are never resent automatically, so the residual risk becomes a possibly *missing*
+  SMS (to be reconciled), instead of a possible *duplicate*.
+- Failover to another provider happens only after a **definite** failure (connection never
+  established, HTTP 4xx, explicit provider rejection).
+
+## 10. Rollback procedure for migration 148 (sms_deliveries)
+
+- **Revert the Step D code first** (`sendSMSIdempotent`, the `PROJECT_SPLIT_SMS` handler);
+  otherwise every `PROJECT_SPLIT_SMS` event fails on the missing table.
+- **Export `UNKNOWN` and `PENDING` rows first**: they are the only record of SMS whose
+  outcome still needs reconciliation.
+
+  ```sql
+  SELECT * FROM sms_deliveries WHERE status IN ('UNKNOWN', 'PENDING') ORDER BY updated_at;
+  DROP TABLE IF EXISTS sms_deliveries;          -- also drops its indexes
+  DELETE FROM schema_migrations WHERE version = '148_sms_deliveries.sql';
+  ```
+
+## 11. Production release order for Step D
+
+1. Apply migration `148_sms_deliveries.sql` (new table only; harmless to the old code).
+2. Deploy the Step D code **together**: `smsService.js`, `outboxService.js` and
+   `src/outbox/handlers.js`.
+- **`outboxService` must be released before or together with the new handler.** On the
+  old `outboxService`, `NonRetryableError` is not recognised and is treated as an ordinary
+  error: an `UNKNOWN` SMS event would be retried with backoff until `max_attempts` and then
+  `DEAD`. No SMS would be resent (each retry finds `UNKNOWN`), but the event would take
+  minutes instead of one attempt to reach `DEAD`, with misleading retry noise.
+- Code before migration: every `PROJECT_SPLIT_SMS` event fails (missing table) and retries.
+
+## 12. Reconcile `UNKNOWN` SMS with provider delivery reports
+
+- **Find them (read-only):**
+
+  ```sql
+  SELECT d.idempotency_key, d.provider, d.phone_last4, d.last_error, d.updated_at,
+         e.id AS outbox_event_id, e.status AS outbox_status
+    FROM sms_deliveries d
+    LEFT JOIN outbox_events e ON e.reference_id = d.idempotency_key
+   WHERE d.status = 'UNKNOWN'
+   ORDER BY d.updated_at;
+
+  SELECT id, reference_id, last_error FROM outbox_events
+   WHERE status = 'DEAD' AND last_error LIKE 'SMS_DELIVERY_UNKNOWN%';
+
+  -- Stale PENDING: claimed, outcome never recorded (process stopped mid-send).
+  -- Same threshold as smsService.STALE_PENDING_MS (10 minutes).
+  SELECT d.idempotency_key, d.provider, d.phone_last4, d.attempts, d.updated_at,
+         e.id AS outbox_event_id, e.status AS outbox_status, e.last_error
+    FROM sms_deliveries d
+    LEFT JOIN outbox_events e ON e.reference_id = d.idempotency_key
+   WHERE d.status = 'PENDING'
+     AND d.updated_at < NOW() - INTERVAL '10 minutes'
+   ORDER BY d.updated_at;
+  ```
+
+- **DEAD outbox event with a PENDING `sms_deliveries` row:** if a sender stops after the
+  claim (row `PENDING`), redeliveries of the event see a *fresh* `PENDING` and throw an
+  ordinary error ("delivery in progress elsewhere"). The outbox backoff (5 s, 10 s, 20 s,
+  40 s; `DEAD` after attempt 5, roughly 75 s plus dispatcher ticks) ends **before** the
+  10-minute stale threshold, so the event goes `DEAD` while the row is still `PENDING`
+  (not yet `UNKNOWN`). These rows appear in the stale-PENDING query above. A later
+  `requeueDead` (after 10 minutes) turns the row into `UNKNOWN` and the event into
+  `DEAD` with `SMS_DELIVERY_UNKNOWN`; in both cases nothing is resent automatically, and
+  the row must be reconciled like any `UNKNOWN`.
+
+- **Action:** match each `UNKNOWN` row against the provider's delivery reports / message
+  logs (Beem, Africa's Talking, Twilio) by provider, time window and `phone_last4`; then
+  record a decision (delivered -> mark `SENT`; not delivered -> explicit re-send) as a
+  reviewed, audited operation. No automatic resend.
+- **Also:** ingest provider delivery-report callbacks (DLR) so `provider_message_id` can
+  be confirmed automatically.
+- **RELEASE BLOCKER (first production release of Step D) — Africa's Talking codes:** the
+  per-recipient `statusCode` mapping in `smsService.classifyProviderResponse`
+  (accepted 100/101/102; rejected 401–407, 409, 502; UNKNOWN 500/501 and unrecognised)
+  was written from memory of the AT documentation and must be verified against AT's
+  **current** documentation before release. A wrong "rejected" code would allow a
+  failover that can double-send.
+- **RELEASE BLOCKER (first production release of Step D) — phone hash:** `phone_hash` is
+  a plain SHA-256 of the normalised number; the phone-number space is small enough to
+  brute-force, so it is effectively reversible. Decide before release whether to switch
+  to an HMAC with a server-side secret (and how that secret is managed/rotated). The
+  decision must be recorded before `sms_deliveries` holds production data.
+
+## 13. Direct `sendSMS` callers are not migrated
+
+- Only `PROJECT_SPLIT_SMS` uses `sendSMSIdempotent`. **36 direct `sendSMS` callers**
+  (37 call sites including the old split handler before Step D; roughly the "~38" estimated)
+  still use the original failover, which can double-send on a timeout.
+- `sendSMS` stays as-is for OTP (short-lived, user can request again).
+- Step C moves the `createNotification` SMS onto the outbox + `sendSMSIdempotent`; the
+  remaining callers (vicoba, wallet, p2p, rosca, family, network, recurrence, events,
+  reconciliation cron, pin reset, ...) need their own migration with stable keys.
+
+## 14. Production release order for Steps A–D (+ C)
+
+- **Migrations first:** apply `146_outbox_dispatch_leases.sql`, `147_notification_idempotency.sql`
+  and `148_sms_deliveries.sql` (in that order) **before** deploying any Phase 71 code.
+  The code of A, B, C and D reads/writes `lease_token`/`locked_until`,
+  `notifications.source_event_reference` and `sms_deliveries`, and fails without them.
+- **Then the code of A, B, C and D together, in one deploy.** Within it,
+  `src/services/outboxService.js` (`NonRetryableError`, `referenceId`/`eventId` passed to
+  handlers) must be released **before or together with** `src/outbox/handlers.js`; a
+  handler throwing `NonRetryableError` against an old dispatcher would just be retried.
+- Release blockers from item 12 (Africa's Talking codes, `phone_hash` HMAC decision) still
+  apply.
+- **Rolling back the code of Step C** (old `handlers.js` without `NOTIFICATION_SMS`): the
+  dispatcher marks every due `NOTIFICATION_SMS` event `FAILED` with
+  `No handler registered for NOTIFICATION_SMS`. `FAILED` is **terminal**: it is never
+  claimed again, and `requeueDead` only touches `DEAD`. Those SMS are not sent until
+  someone acts. Procedure:
+  1. Count (SELECT only) before deciding anything:
+     ```sql
+     SELECT status, COUNT(*) AS events, MIN(created_at) AS oldest, MAX(created_at) AS newest
+       FROM outbox_events
+      WHERE event_type = 'NOTIFICATION_SMS'
+      GROUP BY status;
+     SELECT COUNT(*) AS failed_no_handler
+       FROM outbox_events
+      WHERE event_type = 'NOTIFICATION_SMS' AND status = 'FAILED'
+        AND last_error = 'No handler registered for NOTIFICATION_SMS';
+     ```
+  2. Decide (a human decision, recorded) whether these SMS are still worth sending. Old
+     ones may be stale; the in-app notification exists regardless.
+  3. Only **after the handler is deployed again**, return the chosen events to the queue
+     as a reviewed, audited operation, e.g. `UPDATE outbox_events SET status = 'PENDING',
+     attempts = 0, next_attempt_at = NOW(), last_error = NULL, lease_token = NULL,
+     locked_until = NULL, updated_at = NOW() WHERE event_type = 'NOTIFICATION_SMS' AND
+     status = 'FAILED' AND last_error = 'No handler registered for NOTIFICATION_SMS'
+     AND created_at >= <cut-off>;`. `sms_deliveries` keyed by `NOTIF_SMS:<id>` prevents
+     a second send for any event that did get sent before the rollback.
+- **Detect notifications that should have an SMS event but do not** (sms_enabled user
+  with a phone, created since the Step C deploy). Causes: a failed enqueue, which is now
+  logged as `NOTIFICATION_SMS enqueue failed for notificationId=...` and the notification
+  is kept, or a release window. SELECT only:
+  ```sql
+  SELECT n.id AS notification_id, n.user_id, n.created_at
+    FROM notifications n
+    JOIN notification_preferences p ON p.user_id = n.user_id AND p.sms_enabled
+    JOIN users u ON u.id = n.user_id AND btrim(COALESCE(u.phone_number, '')) <> ''
+   WHERE n.created_at >= <step_c_deploy_time>
+     AND NOT EXISTS (
+       SELECT 1 FROM outbox_events e
+        WHERE e.reference_id = 'NOTIF_SMS:' || n.id
+          AND e.event_type = 'NOTIFICATION_SMS')
+   ORDER BY n.created_at;
+  ```
+  The preference and phone are read **now**, not as they were at creation time, so the
+  result is a candidate list to review, not proof of a lost SMS.
+
+## 15. createNotification SMS goes through the outbox (Step C) — timing change
+
+- All 19 `createNotification` callers (eventService ×4, projectFinanceService ×13,
+  projectService ×1, referralService ×1; none changed) now get their SMS via a
+  `NOTIFICATION_SMS` outbox event instead of an inline fire-and-forget `sendSMS`.
+- **SMS timing changes:** the SMS is sent by the outbox dispatcher (cron every minute,
+  `src/jobs/runAll.js`), so expect a delay of **up to about one minute** after the
+  notification (longer on retries: backoff 5/10/20/40 s; `DEAD` after attempt 5).
+  If the dispatcher cron is not running, notification SMS are **not sent** (they stay
+  `PENDING` in `outbox_events`). Monitor the `NOTIFICATION_SMS` backlog.
+- **How the dispatcher works today:** `cron.schedule('* * * * *')` calls
+  `dispatchOutbox({ batchSize: 50 })` **once per tick**. It claims at most 50 due events
+  (`ORDER BY attempts, id ... FOR UPDATE SKIP LOCKED`), handles them **one after another**,
+  and returns. It does **not** loop until the queue is empty; anything above 50 waits for
+  the next minute. The 50 are shared by **all** event types, not only SMS. Ticks are not
+  serialised: a tick slower than 60 s overlaps the next one, which is safe (SKIP LOCKED,
+  leases) but does not raise the per-tick limit.
+- **Maximum throughput:** at most **50 events/minute = 3,000 events/hour** in total.
+  This is also the hard upper bound for notification SMS, and lower in practice because
+  other event types and retries take slots. Each SMS can take up to one provider timeout
+  (15 s, no failover on UNKNOWN), so a few slow sends make one tick take minutes, and the
+  real rate can fall far below 3,000/hour. A burst of N notifications (e.g. a project
+  dividend to many investors) takes at least ceil(N/50) minutes to drain.
+- **Measuring the `NOTIFICATION_SMS` queue** (SELECT only):
+  ```sql
+  SELECT COUNT(*) FILTER (WHERE status = 'PENDING')                         AS pending,
+         COUNT(*) FILTER (WHERE status = 'PENDING' AND next_attempt_at <= NOW()) AS pending_due,
+         COUNT(*) FILTER (WHERE status = 'PROCESSING')                      AS processing,
+         MIN(created_at) FILTER (WHERE status = 'PENDING')                  AS oldest_pending,
+         NOW() - MIN(created_at) FILTER (WHERE status = 'PENDING')          AS oldest_pending_age
+    FROM outbox_events
+   WHERE event_type = 'NOTIFICATION_SMS';
+  ```
+  Alert if `oldest_pending_age` grows past a few minutes or `pending` keeps rising.
+- **RELEASE ITEM (decide before the first production release of Step C):** raise
+  `batchSize`, or run the dispatcher in a loop within a tick until the queue is empty or a
+  time budget is used up, e.g. "repeat while `claimed === batchSize` and elapsed < 50 s".
+  Size it against the largest expected notification burst and the provider rate limits.
+- **Enqueue failure is isolated (SAVEPOINT `notif_sms_enqueue`):** if the SMS enqueue
+  fails, the notification is kept, its id is returned, the caller's transaction stays
+  usable, and the error is logged with `notificationId`. That notification then has
+  **no** SMS; use the detection SELECT in item 14 to find such notifications.
+- **Error contract:** with `client`, other failures are logged and **re-thrown** to the
+  transaction owner; without `client` (all 19 callers today), failures are logged and
+  `null` is returned, as before Step C.
+- `sms_enabled` and the phone number are checked when the notification is created (no
+  event otherwise); the phone and text are re-read by the handler at send time, so a
+  phone change in between sends to the new number.
+- Callers without `client` (all 19 today) now write the notification and the event in
+  their own short transaction (one `pool.connect()` per call). Callers inside a financial
+  transaction (e.g. projectFinanceService refunds) still notify outside that transaction,
+  as before Step C; moving them onto `client` / the handlers is Phase 72 (item 3).
+- `UNKNOWN` outcomes make the event `DEAD` with `SMS_DELIVERY_UNKNOWN` and need the
+  reconciliation in item 12; the DEAD-with-PENDING case from item 12 applies here too.
+
+## 16. B2 (P1, fixed in E0): `payProjectDividends` could pay a dividend twice
+
+- **Problem:** the `PENDING` payout rows were read without a lock, and the
+  `PENDING -> PAID` update did not check its row count. `txnRef` is random per call
+  (`generateReference('PROJECT_DIVIDEND_PAYOUT')`), so the per-investor credit reference
+  never repeats and `creditWallet` cannot dedup. Two parallel calls both read the same
+  `PENDING` rows and both credited the wallets. The second call's UPDATE changed 0 rows,
+  went unnoticed, and the call committed.
+- **Evidence (tests/project-dividend-concurrency.phase71.test.js, code at HEAD 6739401):**
+  two parallel calls, investor A entitled to 1250.50 and B to 400.00. Wallets ended at
+  A = 2501.00 and B = 800.00, with 2 CREDIT operations, 4 journal rows and 2 "paid"
+  notifications per investor, and both calls reported `paid: 2`.
+- **Fix (E0, `payProjectDividends` only):**
+  1. `SELECT id FROM project_investor_payouts WHERE project_id = $1 AND status = 'PENDING'
+     ORDER BY investor_user_id, id FOR UPDATE OF project_investor_payouts`. A parallel
+     payout waits here and, after the first commits, finds nothing `PENDING` and returns
+     `already_paid`.
+  2. The investors' `users` rows are locked `ORDER BY id FOR UPDATE` before the first
+     `creditWallet` (item 18).
+  3. The `UPDATE ... SET status = 'PAID' ... WHERE status = 'PENDING'` must change exactly
+     `row_count` rows (the rows summed for that investor). Otherwise it throws
+     `ValidityError` 409 `DIVIDEND_STATE_CHANGED` and the whole payout, credits included,
+     is rolled back.
+  `txnRef`, all business references and the payout arithmetic are unchanged. After the
+  fix: A = 1250.50 and B = 400.00, with 1 CREDIT, 1 journal pair and 1 notification each.
+  The second call returns `already_paid`.
+- **Limits of the fix, recorded on purpose:**
+  - The aggregate `SELECT investor_user_id, SUM(entitlement) ... GROUP BY` after the lock
+    takes **no lock of its own**. It is a separate statement with a fresh snapshot.
+    `PENDING` rows inserted and committed by another transaction **between** the lock
+    statement and the aggregate are not locked but are summed. Rows committed **after**
+    the aggregate and before the UPDATE are not summed, but the UPDATE would flip them.
+    The row-count check catches both mismatches: `rowCount !== row_count` gives 409
+    `DIVIDEND_STATE_CHANGED`, the whole payout is rolled back, and the next call pays the
+    complete set.
+  - `if (res.dedup) continue;` skips the `PENDING -> PAID` update when `creditWallet`
+    reports a duplicate reference. That would leave the payout `PENDING` with no credit
+    in this run. It is **unreachable today**, because `txnRef` is random per call, so the
+    per-investor reference `${txnRef}-u${id}` never repeats. If `txnRef` ever becomes
+    deterministic, this branch must mark the rows `PAID` (the earlier credit is the
+    payment) instead of skipping them.
+  - The 409 for 55P03/40P01 covers any statement before `COMMIT`, not only the lock
+    statements. To keep that from misleading, the message says only that the payout did
+    not complete and nothing was paid ("Malipo hayakukamilika kwa sababu ya shughuli
+    nyingine zinazoendelea. Hakuna kilicholipwa. Jaribu tena baadaye."). `logger.warn`
+    records the step reached (`stage`: `payout-lock`, `users-lock`, `credit`,
+    `mark-paid`) with `e.table` and `e.routine` when PostgreSQL provides them.
+  - **Investors with zero entitlement are skipped without an UPDATE.** In the loop,
+    `if (amt <= 0) continue;` runs before `creditWallet` and before the
+    `PENDING -> PAID` UPDATE. An investor whose summed `PENDING` entitlement is 0 is
+    neither credited nor marked: the rows stay `PENDING` after a successful payout and
+    are summed (and skipped) again on every later run. This is unreachable in theory
+    today: `entitlement` has `CHECK (entitlement >= 0)` (migration 132), and
+    `processIncomingRevenue` does not insert rows with `entitlement <= 0`
+    (`if (entitlement <= 0) continue;`, `src/services/projectFinanceService.js:401`). A
+    future writer of zero rows would make it reachable. No code change in E0.
+  - **`ROLLBACK` is swallowed silently.** The `catch` runs
+    `await client.query('ROLLBACK').catch(() => {})`, so a failed rollback leaves no log
+    and the original error is thrown, then `finally` returns the connection with
+    `client.release()`. `src/config/db.js` limits the damage: `trackTransactionState`
+    clears `__afrikobaInTx` only after a **successful** ROLLBACK/COMMIT, so `safeRelease`
+    (db.js:216) sees the client still in a transaction and sends `ROLLBACK` again. If
+    that also fails, it releases **with an error** (`doRelease(rbErr3)`), and pg destroys
+    that connection instead of reusing it. A failed rollback is therefore not reused as a
+    dirty connection, but it is still not logged. No code change in E0. Logging it is a
+    small follow-up for all `ROLLBACK ... .catch(() => {})` sites.
+- **The same pattern may exist on other money paths of projectFinanceService.** These
+  are read-only notes, and none of these paths were changed. An earlier version of this
+  item gave wrong line numbers for `forceCloseFunding` (2640/2646/2659); the corrected
+  references and the plan are in **item 22**. `releaseCloseOutFund` (BEGIN `:3221`,
+  `creditWallet` `:3224`) and `executeDisbursement` (BEGIN `:968`, `FOR UPDATE` `:979`,
+  `creditWallet` `:1020`) each credit a single user. Their state transitions should be
+  reviewed for the same "unlocked read + unchecked UPDATE" pattern.
+- **Detecting past double payments (read-only, for production; NOT run by Claude Code).**
+  Written from the migrations and the payout code, **not executed anywhere**. **The
+  owner runs it by hand on production**, not Claude Code. It returns ids, amounts and
+  references only (no names, phone numbers or message text).
+  - The basis: since the payout was introduced (commit 079d185, 2026-09-14), each investor
+    credit is a `financial_operations` row (migration 033). It has `operation_type =
+    'CREDIT'`, `status = 'SUCCESS'` and `reference_id = '<txnRef>-u<investor_user_id>'`,
+    where `txnRef = 'PROJECT_DIVIDEND_PAYOUT-<8 hex>-<project_id>'`
+    (`generateReference` in `src/utils/helpers.js`). A successful run writes `txnRef` to
+    `project_investor_payouts.payout_setting_reference` (migration 132) on the rows it
+    flipped. In the B2 race, the losing call's UPDATE changed 0 rows, so **its `txnRef`
+    appears in no payout row**.
+  - Query A, the one requested: an investor with more than one dividend CREDIT for one
+    project in one day, within a chosen period. A second legitimate payout on the same
+    day (a new revenue paid out again) also shows here, so confirm with B or C.
+    ```sql
+    -- psql: \set from '2026-09-14'  \set to '2026-12-01'
+    BEGIN READ ONLY;
+    SET LOCAL statement_timeout = '60s';
+    WITH div AS (
+      SELECT fo.id, fo.user_id AS investor_user_id, fo.amount, fo.created_at, fo.reference_id,
+             (regexp_match(fo.reference_id,
+                '^PROJECT_DIVIDEND_PAYOUT-[0-9A-F]{8}-([0-9]+)-u[0-9]+$'))[1]::int AS project_id
+        FROM financial_operations fo
+       WHERE fo.operation_type = 'CREDIT'
+         AND fo.status = 'SUCCESS'
+         AND fo.reference_id LIKE 'PROJECT\_DIVIDEND\_PAYOUT-%'
+         AND fo.created_at >= :'from' AND fo.created_at < :'to'
+    )
+    SELECT project_id, investor_user_id, created_at::date AS day,
+           COUNT(*) AS credits, SUM(amount) AS credited_total,
+           array_agg(id ORDER BY created_at) AS financial_operation_ids,
+           array_agg(reference_id ORDER BY created_at) AS references
+      FROM div
+     GROUP BY project_id, investor_user_id, created_at::date
+    HAVING COUNT(*) > 1
+     ORDER BY day, project_id, investor_user_id;
+    ROLLBACK;
+    ```
+  - Query B, confirmation by amount: credited total greater than the entitlement marked
+    `PAID`, per project and investor. Any positive `excess` is money paid twice.
+    ```sql
+    BEGIN READ ONLY;
+    SET LOCAL statement_timeout = '60s';
+    WITH credited AS (
+      SELECT (regexp_match(reference_id,
+                '^PROJECT_DIVIDEND_PAYOUT-[0-9A-F]{8}-([0-9]+)-u[0-9]+$'))[1]::int AS project_id,
+             user_id AS investor_user_id, COUNT(*) AS credits, SUM(amount) AS credited_total
+        FROM financial_operations
+       WHERE operation_type = 'CREDIT' AND status = 'SUCCESS'
+         AND reference_id LIKE 'PROJECT\_DIVIDEND\_PAYOUT-%'
+       GROUP BY 1, 2
+    ), entitled AS (
+      SELECT project_id, investor_user_id, SUM(entitlement) AS paid_entitlement
+        FROM project_investor_payouts WHERE status = 'PAID'
+       GROUP BY 1, 2
+    )
+    SELECT c.project_id, c.investor_user_id, c.credits, c.credited_total,
+           COALESCE(e.paid_entitlement, 0) AS paid_entitlement,
+           c.credited_total - COALESCE(e.paid_entitlement, 0) AS excess
+      FROM credited c
+      LEFT JOIN entitled e USING (project_id, investor_user_id)
+     WHERE c.credited_total - COALESCE(e.paid_entitlement, 0) > 0.005
+     ORDER BY excess DESC;
+    ROLLBACK;
+    ```
+  - Query C, the losing call's credits: dividend credits whose batch `txnRef` was never
+    written to a payout row of that investor (the B2 signature).
+    ```sql
+    BEGIN READ ONLY;
+    SET LOCAL statement_timeout = '60s';
+    SELECT fo.id AS financial_operation_id, fo.user_id AS investor_user_id,
+           (regexp_match(fo.reference_id,
+              '^PROJECT_DIVIDEND_PAYOUT-[0-9A-F]{8}-([0-9]+)-u[0-9]+$'))[1]::int AS project_id,
+           fo.amount, fo.created_at, fo.reference_id
+      FROM financial_operations fo
+     WHERE fo.operation_type = 'CREDIT' AND fo.status = 'SUCCESS'
+       AND fo.reference_id LIKE 'PROJECT\_DIVIDEND\_PAYOUT-%'
+       AND NOT EXISTS (
+             SELECT 1 FROM project_investor_payouts p
+              WHERE p.investor_user_id = fo.user_id
+                AND p.payout_setting_reference = regexp_replace(fo.reference_id, '-u[0-9]+$', ''))
+     ORDER BY fo.created_at;
+    ROLLBACK;
+    ```
+  - Any row found is a case for finance and reconciliation. It is not corrected
+    automatically, and no correction script is part of E0.
+
+## 17. Dividend payout: 409 on lock timeout or deadlock, and `lock_timeout`
+
+- `src/config/db.js` keeps `lock_timeout: 3000` for production; **it is not changed**.
+  The 409 path relies on it.
+- **Contract:** before `COMMIT`, PostgreSQL `55P03` (lock wait over 3 s) or `40P01`
+  (deadlock) is translated into `ValidityError` 409 code `DIVIDEND_PAYOUT_IN_PROGRESS`,
+  message "Malipo hayakukamilika kwa sababu ya shughuli nyingine zinazoendelea. Hakuna
+  kilicholipwa. Jaribu tena baadaye." It is logged with `logger.warn` together with the
+  error code, `projectId`, `stage` (`payout-lock` / `users-lock` / `credit` /
+  `mark-paid`), and `e.table` / `e.routine` when present.
+  It is **not** `already_paid`: the payment state was not confirmed, the transaction was
+  rolled back, and nothing was paid by that call.
+- Every other database error propagates unchanged (tested with 40001). Errors after
+  `COMMIT` are never mapped (`committed` flag).
+- The route handler sends this as HTTP 409 via `errorHandler`. `localizeError` keeps the
+  message, because the code has no i18n key. **Proven over HTTP** in test 6 (the real
+  route, `authRequired`, `requireRoles`, the i18n middleware and `errorHandler`, driven by
+  supertest). The `code` reaches the client in both cases:
+  - `409 {"success":false,"code":"DIVIDEND_PAYOUT_IN_PROGRESS","message":"Malipo
+    hayakukamilika kwa sababu ya shughuli nyingine zinazoendelea. Hakuna kilicholipwa.
+    Jaribu tena baadaye."}`
+  - `409 {"success":false,"code":"DIVIDEND_STATE_CHANGED","message":"Hali ya malipo ya
+    mgawanyo imebadilika wakati wa kulipa; hakuna kilicholipwa, jaribu tena."}`
+  - A retry after the first payout committed returns
+    `200 {"success":true,"paid":[],"total":0,"already_paid":true}`, and the investor was
+    paid once.
+- Tests: lock held beyond 3 s gives 409 after about 3007 ms, and the next call returns
+  `already_paid` (logged stage `payout-lock`); a forced `40P01` gives 409, a
+  `logger.warn` entry with code, projectId and stage `mark-paid`, nothing paid, and the
+  retry pays once; a forced `55P03` inside `creditWallet` gives the same 409, stage
+  `credit` with `table`/`routine`, and nothing paid.
+
+## 18. Deadlock in `financialEngine.creditWallet` (lock upgrade); local fix only
+
+- **Cause:** `creditWallet` calls `claimOperation` first. Its `INSERT INTO
+  financial_operations` FK check takes `FOR KEY SHARE` on the user row, and two
+  transactions can hold that at the same time. Then each one asks for
+  `SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE`, which waits for the other's
+  KEY SHARE. The result is a deadlock (`40P01`). The server log shows both processes
+  waiting at that statement on the same `users` tuple.
+- **Evidence:** this predates E0. At HEAD, two payouts of different projects sharing
+  investors deadlocked in the load test (2 deadlocks). A deterministic barrier test (3a)
+  holds both at `creditWallet`'s `FOR UPDATE`. Without the users lock, both arrive holding
+  KEY SHARE and deadlock every time (server `deadlock detected`, `pg_stat_database.deadlocks`
+  0 -> 1). Money stays correct, because the deadlock victim is rolled back in full.
+- **Current fix is local to `payProjectDividends`:** lock order is payouts first
+  (`ORDER BY investor_user_id`), then `users` (`ORDER BY id`, `FOR UPDATE`), then
+  `creditWallet`. With the users lock taken first, a second payout blocks before it takes
+  any KEY SHARE, so there is no upgrade cycle.
+- **The permanent fix is a separate step:** lock the user row `FOR UPDATE` inside
+  `creditWallet` **before** `claimOperation` (and the same for `debitWallet` and the other
+  engine operations that follow the claim-then-lock order). That touches about 56 call
+  sites across `src` and every money path, so it needs its own tests and review.
+- **Reverse lock order elsewhere (read-only report, not changed):** no other code in `src`
+  locks `project_investor_payouts` (only `payProjectDividends` uses `FOR UPDATE` on it),
+  and no code takes `users` and then the payout rows. The paths below can still deadlock
+  with a dividend payout **on the `users` rows**, because they lock several investors in a
+  different order:
+  - `processIncomingRevenue`: `src/services/projectFinanceService.js:358` reads the
+    `CONFIRMED` investors without `ORDER BY`. The `INSERT INTO project_investor_payouts`
+    at `:404` takes FK `FOR KEY SHARE` on each investor in that unordered sequence.
+    Against a payout holding `users FOR UPDATE` in id order, this can form a cycle. The
+    payout side then returns 409 (item 17); the revenue side gets a raw 40P01.
+  - `completeProject`: credits investors in `project_investments.id` order (`:1905`/`:1943`),
+    not user id order.
+  - `forceCloseFunding`: credits investors in unspecified order (`:2640`/`:2659`).
+  These should adopt "lock users by id first" or the engine-level fix above.
+
+## 19. Wait time grows with the number of investors
+
+- The payout holds the `users` locks of all its investors (and the payout row locks)
+  until `COMMIT`. Any other wallet operation on those users, or a second payout of the
+  same project, waits that long. Beyond `lock_timeout` (3 s) it fails: a payout gets 409
+  (item 17), other operations get their own 55P03.
+- **What the earlier "N = 800: 3874 ms" was.** It was the wall time for **both calls
+  together**, measured from starting call 1 until both returned. Because call 1 returns
+  last, that is effectively **call 1's total time**, including the work after COMMIT
+  (audit log, one notification per investor, outbox). It was **not** call 2's lock wait,
+  and it is not compared with `lock_timeout`. `lock_timeout` (3000 ms) applies to
+  **one statement's wait for a lock**. Call 2 waits at the payout-lock statement until
+  call 1 COMMITs, so the number that matters is call 1's time in the locked section.
+- **Measured again with per-statement timings** (test 5 now records, per connection, when
+  the payout-lock statement is sent and returns, and when COMMIT returns; local
+  container, `P71_SCALE_INVESTORS=N`, call 2 starts 50 ms after call 1):
+
+  | N | call 1 locked section (lock granted → COMMIT done) | call 2 lock wait | call 1 total (incl. post-COMMIT) | call 2 result |
+  |---|---|---|---|---|
+  | 200 | 724 ms | 674 ms | 1122 ms | `already_paid` |
+  | 400 | 1334 ms | 1289 ms | 2062 ms | `already_paid` |
+  | 800 | 2646 ms | 2604 ms | 4010 ms | `already_paid` |
+  | 1000 | 3040 ms | 2993 ms | 4907 ms | `already_paid` (7 ms under the limit) |
+  | 1100 | 3319 ms | 3004 ms (cut off) | 5345 ms | **409 `DIVIDEND_PAYOUT_IN_PROGRESS`** |
+  | 1200 | 3385 ms | 3005 ms (cut off) | 5488 ms | **409 `DIVIDEND_PAYOUT_IN_PROGRESS`** |
+
+  The locked section costs about **3 ms per investor** (≈ 3.0–3.3 ms here). In every run,
+  each investor was paid exactly once, including the 409 runs.
+- **When call 2 starts getting 409:** when call 1's locked section, minus the delay before
+  call 2 reaches the lock, exceeds 3000 ms. On this container that is **between N = 1000
+  and N = 1100** (≈ 3000 / 3 ms ≈ 1000 investors). In production, the per-investor cost
+  is higher (network round trips to the DB, real load), so the threshold is **lower**. If
+  production costs 2× per investor, the threshold is about N ≈ 500. The same limit applies
+  to **any other wallet operation** on those investors (deposit, withdrawal, transfer)
+  while the payout runs: it waits on the `users` lock and gets its own 55P03 after 3 s.
+- Production latency is higher than a local container. Before projects with several
+  hundred investors pay out:
+  - measure the locked section in production (logger or `pg_stat_statements`);
+  - consider batching very large payouts (for example 300 investors per transaction).
+
+## 20. Dividend route has no idempotency
+
+- `POST /projects/:id/dividend/payout` (`src/routes/projectRoutes.js:257`) does not use
+  the `idempotent` middleware. Even if it did, it would not help without an
+  `Idempotency-Key` from the client: the middleware passes a request without the header
+  straight through (`src/middleware/idempotent.js:201`), and the service generates a
+  random `txnRef` per call, so there is no stable key to dedup on.
+- Today's protection is the row locks plus the `PENDING` state (item 16). A retried
+  request after success returns `already_paid`, not the original response.
+- **To do:** require an `Idempotency-Key` on this route (wrap it in `idempotent(...)`),
+  so a client retry gets the cached first response.
+
+## 21. Production note for E0
+
+- **E0 needs no migration** and changes only `payProjectDividends`
+  (src/services/projectFinanceService.js). It fixes a money bug that exists in production
+  today (item 16), so it **can be released early and on its own**, ahead of the rest of
+  Phase 71 (items 11 and 14).
+- Behaviour change for clients: a second payout request while one is running now waits,
+  then returns `already_paid`; or, after 3 s, returns HTTP 409 `DIVIDEND_PAYOUT_IN_PROGRESS`
+  ("try again later"). Before, it paid a second time. Admin tooling should treat 409 as
+  "retry later", not as a failure that needs manual action.
+- **The E0 commit sits on top of Steps A–D (and C)** on `phase71-outbox-hardening`
+  (baseline HEAD 6739401). A release of E0 on its own **must not** take that branch as
+  it is.
+  - Before that release, E0 must be applied to the **production base**: cherry-pick the
+    single E0 commit onto a branch cut from what production runs (its tag or commit), or
+    build a separate branch from production.
+  - Then run the E0 suite (`tests/project-dividend-concurrency.phase71.test.js`) again
+    **on that base**, against a disposable `phase71_financial_audit_*` database, and
+    record PASS/FAIL there. A pass on this branch does not prove a pass on the production
+    base.
+  - E0 itself touches only `payProjectDividends`. The cherry-pick should apply without
+    conflict unless production's version of that function differs, and any conflict
+    must be reviewed, not auto-resolved.
+- **The release on its own needs no migration**: E0 uses only existing tables, columns and
+  indexes.
+- **After the release, check the logs** for `PROJECT_DIVIDEND_PAYOUT` warnings and their
+  `stage`:
+  - `payout-lock` means a second request while a payout was running: expected and
+    harmless.
+  - `users-lock` or `credit` means the payout waited on another wallet operation of the
+    same investors. Watch how often it happens.
+  - `mark-paid` is unexpected and should be investigated.
+  - Repeated 409s for the same project suggest the payout is too large for 3 s (item 19).
+- **409 is a "retry later" answer, not a system failure.** Both 409 codes
+  (`DIVIDEND_PAYOUT_IN_PROGRESS` and `DIVIDEND_STATE_CHANGED`) mean the call was rolled
+  back in full and nothing was paid. They must not page on-call or be counted as 5xx
+  errors. The client retries later, and the retry either pays once or returns
+  `already_paid`.
+
+## 22. P1: other money paths that may refund or pay twice (E0b: refunds CONFIRMED and fixed)
+
+**Status after E0b:**
+- **Investment refund: CONFIRMED by test and FIXED in E0b.** This covers
+  `forceCloseFunding` (REFUND) and `refundInvestment`
+  (`src/services/projectService.js`), which has the same pattern and is reachable by
+  any investor (`POST /projects/:id/investments/:investmentId/refund`).
+- **`completeProject` and `processIncomingRevenue`: still NOT VERIFIED** (the code
+  reading below). They were not changed in E0b.
+
+**Status after E0c (`completeProject` only; `processIncomingRevenue` still NOT VERIFIED):**
+- **Two parallel completions: no double payment, even on HEAD 8ac5c01.** The second
+  call credited every investor again inside its own transaction, and was rolled back
+  only by `UNIQUE (project_id)` on `project_settlements` (`23505`, matched by the
+  text `'duplicate key'`). That constraint acts last, after all credits.
+  - Real RED on HEAD:
+    - a lock wait over 3 s returned raw `55P03` (HTTP `500 {"code":"55P03"}`);
+    - two completions sharing an investor deadlocked (`40P01`, one completion lost);
+    - no 409 mapping.
+  - The constraint is confirmed in `pg_constraint`: `project_settlements_project_id_key`
+    = `UNIQUE (project_id)`.
+- **Money without a source: CONFIRMED on HEAD and FIXED in E0c (N1).** The escrow was
+  read with no lock and later set to 0 regardless of what was read.
+  - **With `executeDisbursement`:** the completion read escrow 1000, a disbursement of
+    300 to the owner committed meanwhile, and the completion still returned 1000 to
+    the investors. Total out **1300** from an escrow of 1000.
+  - **With any other escrow writer:** same pattern, 1000 returned while only 700 was
+    left.
+- **State overwritten: CONFIRMED on HEAD and FIXED.**
+  - A project CANCELLED by another transaction during the completion was set to
+    `COMPLETED` and its escrow paid out. The project UPDATE had no status condition.
+  - Escrow and project UPDATEs changing 0 rows (or the wrong row) went unnoticed.
+- **Fix (E0c):**
+  - Lock order: project → CONFIRMED investments `ORDER BY id` → users (investors and
+    owner) `ORDER BY id` → escrow, all `FOR UPDATE`, before the first `creditWallet`.
+  - Settlement and status are re-checked under the project lock.
+  - The escrow UPDATE requires the balance that was read, and its rowCount must be 1
+    (or 0 if there was no escrow row). The project UPDATE adds `AND status = 'ACTIVE'`
+    and requires rowCount 1. Otherwise: 409 `PROJECT_COMPLETE_STATE_CHANGED` and full
+    rollback.
+  - `55P03` / `40P01` before COMMIT become 409 `PROJECT_COMPLETE_IN_PROGRESS`, with
+    `logger.warn` (stage, table, routine).
+  - `23505` on `project_settlements_project_id_key` (by constraint name) stays only as
+    the last line of defence.
+  - References, arithmetic, outbox, `lock_timeout` unchanged. No migration.
+- **Why the owner is in the users lock:** `executeDisbursement` locks the owner's users
+  row before the escrow. Without the owner in the completion's lock set, a completion
+  started by the owner deadlocked with a disbursement: the completion held the escrow,
+  then its audit row needed `KEY SHARE` on the owner. The "no users lock" mutation
+  reproduces this as `40P01`.
+- **Remaining (pre-existing, not new, not fixed; `executeDisbursement` unchanged):**
+  - **Condition:** the disbursement **executor** is also an investor of the project,
+    and the owner is an investor with a lower user id.
+  - **Cycle:** `executeDisbursement` holds `KEY SHARE` on the executor (its claim)
+    while it waits for the owner. The completion holds the owner and waits for the
+    executor.
+  - **Result:** `40P01`. The completion side now maps it to 409 and rolls back fully.
+  - **Status on HEAD:** the same cycle exists on HEAD, with investment-id order instead
+    of user-id order.
+
+**Evidence** (`tests/project-refund-concurrency.phase71.test.js`, real gate before
+COMMIT, disposable DB). The code at HEAD f18b88d failed the suite with 70 passed and
+80 failed:
+- **Two parallel forceCloseFunding REFUND calls:** every investor was refunded twice
+  (100 → 200, 250.5 → 501, 40 → 80), with 2 CREDIT, 4 journal rows and 2
+  `PROJECT_REFUND` transactions each. Both calls returned `refunded_count: 3`.
+- **Two parallel refundInvestment calls on one investment:** +600 instead of +300, and
+  `amount_raised` and escrow were reduced twice (380 → 0 instead of 80).
+- **refundInvestment and forceCloseFunding together on one EXPIRED project:** the
+  investor was refunded twice, in either order.
+- **Refunded rows were not re-checked:** an investment cancelled by another writer
+  while the refund waited was refunded anyway, and so was a row flipped in the same
+  transaction (the rowCount case).
+- **Other failures:** two refunds sharing an investor deadlocked (`40P01`). A lock wait
+  over 3 s returned raw `55P03`, which reached HTTP as `500 {"code":"55P03"}`.
+
+**False protection: `uq_project_investment_refund_reference`.** This is a UNIQUE index
+on `project_investments(refund_reference) WHERE refund_reference IS NOT NULL`
+(migration 133). It does **not** stop a second refund. Each call generates a new random
+`generateReference('PREF')`, and the second call's
+`UPDATE ... SET refund_reference = <new>` simply **overwrites** the first reference on
+the same row, so there is never a conflict. The test shows the first reference
+disappearing from the investment row, although both credits stay in
+`financial_operations` and `transactions`. The comment on `refundInvestment`
+("Idempotent via refund_reference UNIQUE") is **not true**. E0b keeps the index, but
+the actual protection is now the locks and the status re-check.
+
+**Fix (E0b): the same lock order on both paths, explained in a comment in each.**
+- **Lock order:**
+  1. `projects` row `FOR UPDATE`;
+  2. the investments `FOR UPDATE ORDER BY id` (forceCloseFunding: all `CONFIRMED`
+     ones of the project, read **inside** the transaction after the project lock;
+     refundInvestment: the one investment);
+  3. the investors' `users` rows `ORDER BY id FOR UPDATE`;
+  4. only then the first `creditWallet`.
+- **Re-checks under the lock:** the project status, and for refundInvestment the
+  investment's owner, status and `refund_reference`, are checked again with the same
+  400 messages as before.
+- **Refund UPDATE:** it now has `AND status = 'CONFIRMED'` and must change exactly one
+  row. Otherwise it returns 409 `FUNDING_REFUND_STATE_CHANGED` ("Hali ya uwekezaji
+  imebadilika wakati wa kurejesha; hakuna kilichorejeshwa, jaribu tena.") and the whole
+  refund is rolled back.
+- **Lock timeouts:** `55P03` / `40P01` before COMMIT become 409
+  `FUNDING_REFUND_IN_PROGRESS` ("Urejeshaji wa uwekezaji haukukamilika kwa sababu ya
+  shughuli nyingine zinazoendelea. Hakuna kilichorejeshwa. Jaribu tena baadaye.").
+  `logger.warn` (scope `PROJECT_FUNDING_REFUND`) records `path`, `stage`
+  (`project-lock` / `investments-lock` or `investment-lock` / `users-lock` /
+  `mark-refunded` / `credit` / `close-project`), `table` and `routine`. Other errors and
+  errors after COMMIT are not mapped.
+- **Unchanged:** references (`generateReference('PREF')`), refund amounts, the 400
+  messages, `lock_timeout` 3000, and the schema (no migration).
+- **Behaviour change:** refundInvestment's audit row is now written inside the
+  transaction (item 26).
+- **After the fix:** a parallel second call waits on the project lock and then gets the
+  existing 400 (project no longer refundable / investment already REFUNDED), or refunds
+  only what is still `CONFIRMED`. Each investor is refunded exactly once, and the
+  investment's `refund_reference` equals the single credit reference.
+
+**Original code reading (HEAD f18b88d line numbers), kept for the two unverified
+paths.** This is a code reading of
+`src/services/projectFinanceService.js` (line numbers from the working tree with E0). It
+follows the same pattern as B2 (item 16): a read with no lock, a loop that moves money
+with a **random** reference (so `creditWallet` cannot dedup), and a state UPDATE that
+neither re-checks the old state nor checks its row count. **None of this code was changed
+in E0, and no test for it is in the E0 commit.**
+
+- **`forceCloseFunding` (REFUND), likely to refund twice.**
+  - `:2594` reads the project with `pool.query`, outside any transaction, and `:2640`
+    checks `status` in memory. Nothing locks the project.
+  - `:2644` reads the `CONFIRMED` investments with `pool.query`, **before `BEGIN`**
+    (`:2651`), with no `FOR UPDATE` and no `ORDER BY`.
+  - In the loop, `:2654` makes a random reference (`generateReference('PREF')`).
+    `:2656` runs `UPDATE project_investments SET ... status = 'REFUNDED' WHERE id = $2`,
+    with **no `AND status = 'CONFIRMED'`** and no row-count check. `:2659`/`:2661`
+    decrement the amount raised and the escrow balance (`GREATEST(..., 0)` hides
+    over-decrement). `:2664` runs `creditWallet`.
+  - `:2677` sets the project to `CANCELLED` with no status condition.
+  - Two parallel REFUND calls both read the same list before either begins. The second
+    waits on the first's `project_investments` row lock, then updates the row again,
+    because there is no status condition, and credits each investor a second time with a
+    new reference.
+  - Side note: `createNotification(...)` at `:2670` runs inside the loop, before
+    `COMMIT`. It uses its own connection, so an investor can be told "refunded" for a
+    refund that is later rolled back.
+- **`completeProject`, may return the escrow twice.** (E0b-era code reading, kept for
+  history. Verified and fixed in E0c; see "Status after E0c" above. Line numbers refer to
+  the code before E0c.)
+  - `:1900` checks for an existing settlement with `pool.query`, outside the
+    transaction, with no lock. `:1898` checks `status = 'ACTIVE'` on a read made
+    outside the transaction.
+  - **Correction (found in E0c Part 1, verified in E0d):** an earlier version of this item
+    said `project_settlements` has no UNIQUE on `project_id`. **That was wrong.**
+    Migration 134 line 24 declares `UNIQUE (project_id)`
+    (`project_settlements_project_id_key`, confirmed in `pg_constraint` on a fresh test
+    DB), as well as the index `ix_project_settlements_project`. The second settlement
+    INSERT therefore fails. The protection is still fragile: it acts only after the
+    credits have run inside the transaction (so it relies on the whole transaction
+    rolling back), it is matched by a `'duplicate key'` string, and a lock wait surfaces
+    as a raw `55P03`. Hardening belongs to E0c.
+  - `:1910` reads investors inside the transaction with no lock (`ORDER BY id ASC`,
+    investment id rather than user id). `:1920` reads `remaining_balance` with **no
+    `FOR UPDATE`**.
+  - The investors are credited at `:1948`, with reference
+    `SETTLE-<projectId>-<Date.now()>-u<id>`, which is unique per call. The owner is
+    credited at `:1972`.
+  - Only then come the state UPDATEs: `:2010`
+    `UPDATE controlled_project_accounts ... WHERE status <> 'CLOSED'`, with no row-count
+    check; `:2017` `INSERT INTO project_settlements`, which does not fail on a duplicate;
+    and `:2033` `UPDATE projects SET status = 'COMPLETED' WHERE id = $1`, with no status
+    condition.
+  - Two parallel calls both see no settlement and the same escrow. Both credit it. The
+    second's escrow UPDATE changes 0 rows unnoticed. ~~It commits a second settlement.~~
+    (Corrected: the `UNIQUE (project_id)` above makes its settlement INSERT fail, so the
+    second transaction rolls back, as long as nothing swallows that error. Shown by the
+    E0c parallel test on HEAD 8ac5c01: the second call credited all investors in its
+    transaction, hit `23505 project_settlements_project_id_key` and was rolled back.)
+- **`processIncomingRevenue`, may record entitlements twice (paid twice later) and may
+  deadlock.**
+  - Replay is protected **only when the caller sends `unique_reference`**: `claimOperation`
+    (`:309`) turns a repeat into 409. Without it, `:304` generates a random reference, so a
+    client retry records a **second revenue**. Its `project_investor_payouts` rows have
+    new `payout_reference`s (`:402`), so `ON CONFLICT (payout_reference) DO NOTHING`
+    (`:407`) does not stop them, and the next payout pays both.
+  - `:358` reads the `CONFIRMED` investors with no lock and **no `ORDER BY`**. The
+    `INSERT INTO project_investor_payouts` at `:404` takes FK `FOR KEY SHARE` on each
+    investor in that unordered sequence, which is a deadlock path against a payout
+    holding `users FOR UPDATE` in id order (item 18). An investment confirmed or refunded
+    concurrently can also be included or left out.
+- **Plan for E0b (same method as E0, its own step and commit):**
+  1. For each path, a **parallel test that fails first** on the current code, using a
+     real gate before `COMMIT`, a diagnostic connection and `pg_stat_activity` lock
+     detection. It must show the double refund or payment with exact wallet, CREDIT,
+     journal and state numbers, and for `processIncomingRevenue`, the retry without
+     `unique_reference`. Disposable `phase71_financial_audit_*` DB, axios stubbed,
+     127.0.0.1 only.
+  2. Only after that failure is shown, apply the fix:
+     - Lock the state row inside the transaction (`projects` / `controlled_project_accounts`
+       / `project_investments` `FOR UPDATE`, in a fixed order).
+     - Move the reads inside the transaction.
+     - Re-check the old state in every UPDATE (`AND status = 'CONFIRMED'`,
+       `AND status = 'ACTIVE'`), and check the row count. (A UNIQUE on
+       `project_settlements(project_id)` already exists, migration 134:24; no migration
+       is needed for it.)
+     - Lock users `ORDER BY id` before crediting.
+     - Map 55P03/40P01 to 409 as in item 17.
+  3. Mutations that remove each guard, and the suites rerun, as in E0.
+  4. Production check (read-only, run by the owner) for past double refunds or
+     settlements, in the style of item 16.
+
+## 23. forceCloseFunding ACTIVATE vs REFUND on the same project (not fixed)
+
+Backlog only; no code change in E0b.
+
+**ACTIVATE is unchanged.** It reads the project with `pool.query` outside any
+transaction, checks `status = 'FUNDING'` and ≥ 50 % funded in memory, then runs
+`UPDATE projects SET status = 'ACTIVE' WHERE id = $1` with no status condition, plus
+`UPDATE controlled_project_accounts ... status = 'ACTIVE', escrow_balance =
+remaining_balance` (`src/services/projectFinanceService.js`, the ACTIVATE branch).
+
+**REFUND now locks the project row and re-checks its status** (E0b). That makes one
+interleaving safe:
+- ACTIVATE commits first and REFUND then refuses with the existing 400.
+
+The reverse is still open:
+- REFUND commits (project `CANCELLED`, all investments refunded, escrow 0 and `CLOSED`).
+- An ACTIVATE that already passed its stale status check then sets the project to
+  `ACTIVE` and the escrow account to `ACTIVE` with a 0 balance.
+
+No money is duplicated, but the project state is wrong. ACTIVATE should take the same
+project lock and re-check `FUNDING` (and the funded percentage) inside its transaction.
+This needs its own failing test first.
+
+## 24. `invest` between the refund's read and its writes (side effect of E0b, needs its own test)
+
+Before E0b, `forceCloseFunding` REFUND read the `CONFIRMED` investments **before**
+`BEGIN`, without a lock, and only touched the `projects` row later, inside the refund
+loop. `invest` (`src/services/projectService.js`) does lock `projects FOR UPDATE` and
+re-check the status, but that did not help. An investment committed **between** that
+read and the refund's first `UPDATE projects` was never refunded. The refund then set
+the project to `CANCELLED`, `amount_raised = 0` and the escrow to 0 / `CLOSED`, leaving
+that investor's money `CONFIRMED` in a cancelled project.
+
+After E0b, REFUND locks the project row **first** and reads the investments inside the
+transaction under that lock. `invest` also takes the project lock first, so the two now
+serialise:
+- an investment committed before the refund's lock is included and refunded;
+- an `invest` arriving later waits, then sees `CANCELLED` and is refused.
+
+This is a **side effect** of the E0b lock order, not a fix that was tested. It needs its
+own parallel test (`invest` held before COMMIT vs REFUND, and the reverse) before it is
+counted as fixed.
+
+*Update (remediation OBS-7):* `tests/project-escrow-funding.phase71.test.js` sections 1/6
+(investment committed, then REFUND), 1b (REFUND first, then invest is refused) and 1c
+(true race on 5 projects) now cover this. They pass on the fixed code.
+
+## 25. Refund notifications sent before COMMIT, on their own connection (fixed, remediation R2)
+
+`forceCloseFunding` calls `createNotification(...).catch(() => {})` **inside the refund
+loop, before `COMMIT`** (`src/services/projectFinanceService.js`, after the
+`INSERT INTO transactions ... 'PROJECT_REFUND'` of each investor). There is no `client`,
+so each notification runs in its own short transaction on another pool connection.
+- **Told "refunded" although the refund was rolled back.** The test's forced 40P01 at
+  the second investor's credit rolled the whole refund back, and nothing was refunded.
+  The first investor had already received the "Uwekezaji umerudishwa" notification
+  (count 1, with a `PREF-` reference that no longer exists).
+- **Lost after 3 s.** The notification INSERT's FK check needs `KEY SHARE` on the
+  investor's `users` row, which the refund's own transaction holds `FOR UPDATE` (taken
+  by `creditWallet`, and since E0b at the users-lock stage). It therefore waits until
+  the refund COMMITs. If that takes more than `lock_timeout` (3 s), it fails with
+  `55P03`, `createNotification` logs it and returns null, and the notification is
+  lost. Test evidence: the refund was held 4.5 s before COMMIT and committed; the
+  investor got 0 notifications, and `logger.error` showed `NOTIFICATION: Failed to
+  create notification: canceling statement due to lock timeout`. A large force-close
+  (many investors, over 3 s) loses the notifications of the early investors.
+- **To do:** send these notifications after `COMMIT`, as `refundInvestment` already
+  does, or move them to the outbox as in Step C.
+
+*Update (remediation R2):* the notifications are collected in the loop and sent only after
+`COMMIT` and `client.release()`, as `refundInvestment` does. A rolled-back refund sends
+none, and a refund held for 4.5 s before COMMIT no longer loses them. Delivery is still
+best-effort after COMMIT (a crash between COMMIT and the send loses the notification);
+the outbox route remains the stronger option. Tests:
+`tests/project-residuals-f1-f4-n25.phase71.test.js` sections #25a–d.
+
+## 26. refundInvestment audit was lost on every refund since it was introduced (fixed in E0b; behaviour change)
+
+**Cause.** `refundInvestment` called `logAudit({...})` **without `client`**, so it ran
+through `pool`, on another connection, before `COMMIT`. `audit_logs.user_id` has an FK
+to `users` (migration 088), so that INSERT needs `KEY SHARE` on the investor's `users`
+row. The refund's own transaction holds that row `FOR UPDATE` (`creditWallet`). The
+audit INSERT therefore waited for its own caller until `lock_timeout` (3 s), failed with
+`55P03`, and `writeAudit` **swallowed** the error (`AUDIT_LOG_FAILURE`, no rethrow
+without a client). The refund then committed.
+
+**Consequence.**
+- **No `refundInvestment` refund has ever been written to `audit_logs`.**
+- **Every call took at least 3 s** while holding the investor's row lock.
+- Measured on HEAD f18b88d: 3070 ms per call, 0 `audit_logs` rows (`action =
+  'PROJECT_REFUND'`), and `logger.error AUDIT_LOG_FAILURE: canceling statement due to
+  lock timeout`.
+
+The record of the money movement still exists in `financial_operations`, `transactions`
+(`PROJECT_REFUND`) and `journal_entries`. Past refunds can be found from
+`transactions WHERE type = 'PROJECT_REFUND'`, joined to `project_investments` via
+`meta->>'investment_id'`. An audit backfill, if wanted, is a separate decision.
+
+**Fix (E0b).** `logAudit({ ..., client })`: the audit row is written in the refund's
+transaction.
+
+**Behaviour change.** If the audit INSERT fails, `writeAudit` rethrows (it does so
+whenever a `client` is given), and the **whole refund is rolled back**: no credit, no
+status change. The error propagates as-is; it is not a 409. Before, the refund went
+through and the audit was silently dropped.
+
+**Tests:**
+- One refund writes exactly 1 `audit_logs` `PROJECT_REFUND` row for the investment and
+  takes under 1000 ms (13 ms measured).
+- A forced audit failure rolls the refund back with no money moved and no audit row.
+
+**`forceCloseFunding` checked, not changed.** Its audit is written with
+`client.query(INSERT INTO audit_log ...)`, so it is inside the transaction, and this
+self-wait does not happen. Difference:
+- It writes to the **`audit_log`** table (event-sourced project log, migration 004;
+  `user_id` has no FK).
+- `refundInvestment` writes to **`audit_logs`** through `logAudit`.
+- Both are merged by `listAudit`, but a query on only one table will miss the other
+  path's refunds.
+
+**Other `logAudit` calls without `client` inside a transaction that holds the same
+user's row `FOR UPDATE` may lose their audit the same way.** Not surveyed in E0b.
+
+## 27. P0 (access): anyone could record project revenue (fixed in E0d)
+
+**Problem (HEAD a5f3f7b).** `POST /projects/:id/revenue/process-incoming`
+(`src/routes/projectRoutes.js:86-92`) is behind `authRequired` only, and
+`processIncomingRevenue` (`src/services/projectFinanceService.js:295`) never checked who
+the caller was. **Any authenticated user**, including an investor in the project, could
+record revenue for **any** project that has an ACTIVE or FROZEN waterfall rule.
+
+**Impact: money with no source.** The revenue is split by the waterfall and written as
+`PENDING` `project_investor_payouts` entitlements. `payProjectDividends` then pays those
+entitlements into investors' wallets. No cash had to arrive for this. An investor could
+therefore credit themselves (and the other investors) out of nothing, in two calls.
+
+Measured on HEAD a5f3f7b, new test `tests/project-revenue-access.phase71.test.js`, DB
+`phase71_financial_audit_e0d_head`:
+- A regular user (not owner, not investor): **HTTP 201**, 1 `project_revenue`, 1
+  `financial_operations` claim, 1 `transactions`, 6 `journal_entries`, 2
+  `waterfall_allocation_records`, 2 `PENDING` payouts totalling **600** out of 1000.
+- An investor of the project (not owner): **HTTP 201**, the same rows, 600 in entitlements.
+- The service called directly by a non-owner with no role: accepted.
+- Result: 24 passed, 12 failed.
+
+**Fix (E0d).**
+- In the service, right after `getProject` (so a missing project is still 404) and
+  before the rule lookup, the claim and `BEGIN`:
+  `if (p.owner_user_id !== userId && !isExpert(actorRole)) throw new ValidityError('Huna ruhusa za mradi huu.', 403)`.
+  Same pattern as `listDrawdowns` and the same message as `getOwnerOnly` /
+  `getProjectForOwner`.
+- The role is a new 4th positional argument `actorRole` (default `null`). It is not read
+  from the request body or the options object, so it cannot be spoofed. The route passes
+  `req.user.role` from the authenticated token.
+- Reference handling, arithmetic, waterfall, journal and notifications are unchanged.
+  **No migration.**
+- After the fix: regular user and investor get 403 with nothing written; owner and
+  ADMIN/MODERATOR/EXPERT get 201 with the same allocations (DIVIDEND 600 / OWNER_RESIDUAL
+  400, entitlements 360/240) as before. 36 passed, 0 failed.
+- Mutations: removing the owner check fails 9 checks; removing the expert check fails 18
+  checks.
+- The 403 body has `code: "VALIDATION_ERROR"`, like every other `ValidityError` 403 in this
+  service (errorHandler maps by class, not status).
+
+**Can ship to production early, on its own.** Two files, no migration, no schema or data
+change, no change for owners and experts. It does not depend on E0c, E1 or E2. It can be
+cherry-picked onto the production base before the rest of Phase 71. Only callers that
+are neither owner nor expert see a change (201 → 403), and those are exactly the calls
+that must stop. No other code calls `processIncomingRevenue` (searched: only
+`projectRoutes.js:89`).
+
+**Production check (read-only, run by the owner, not by Claude Code).** Past revenue
+recorded by someone who was neither owner nor expert. `project_revenue` has no caller
+column; the caller is in `financial_operations.user_id` (written by `claimOperation`,
+`reference_id` = `project_revenue.unique_reference`). Ids only:
+```sql
+SELECT pr.id AS revenue_id, pr.project_id, fo.user_id, pr.created_at
+FROM project_revenue pr
+JOIN projects p ON p.id = pr.project_id
+LEFT JOIN financial_operations fo
+       ON fo.reference_id = pr.unique_reference
+      AND fo.operation_type = 'PROJECT_REVENUE_PROCESS'
+LEFT JOIN users u ON u.id = fo.user_id
+WHERE fo.user_id IS DISTINCT FROM p.owner_user_id
+  AND COALESCE(u.role, '') NOT IN ('ADMIN','MODERATOR','EXPERT')
+ORDER BY pr.id;
+```
+- Syntax- and logic-tested **only on test DBs**:
+  - `phase71_financial_audit_e0d_head` returned exactly the 4 revenues the test made as a
+    non-owner (regular user, investor, direct service call, spoofed option).
+  - `phase71_financial_audit_e0d_after` returned 0 rows (owner and expert revenues
+    excluded).
+- **NOT run on production.**
+- Limits:
+  - `users.role` is the role **today**, not at the time of the call.
+  - Revenue recorded by other code paths without a `PROJECT_REVENUE_PROCESS` claim would
+    show with `user_id` NULL.
+- Any row found needs a manual decision on its `project_investor_payouts`, especially
+  those already `PAID`.
+
+**Still open (not changed in E0d):**
+- **The owner can still record fake revenue for their own project.** E0d limits *who*,
+  not *whether the cash exists*. An owner who is also an investor (or colludes with one)
+  can create entitlements with no money behind them. Tying revenue to a verified inflow
+  (escrow / controlled account credit, or expert approval of owner-entered revenue) is a
+  **future business decision**.
+- **Revenue is accepted for any project status**, including `COMPLETED`, `CANCELLED` and
+  `LIQUIDATED` (valid values of `projects_status_check`, migration 136). Only the waterfall
+  rule status (ACTIVE / FROZEN) is checked.
+- **`unique_reference` is optional.** Without it `:309` generates a random reference, so a
+  client retry records a second revenue and second entitlements (item 22). Making it
+  mandatory changes the API and is left for E0c / a decision.
+- Concurrency of `processIncomingRevenue` (unordered investor read, FK lock order) remains
+  in item 22 / E0c.
+
+## 28. P1: completeProject and an investor with two CONFIRMED investments (not fixed)
+
+**Cause.**
+- **Two CONFIRMED investments per investor are possible.**
+  `project_investments` is unique on `(project_id, investor_user_id, status,
+  agreement_version)`, and `agreement_version` is a nullable INTEGER. NULLs are
+  distinct, so an investor who calls `invest` twice without `agreement_version` (or
+  with two different versions) holds **two CONFIRMED investments** in one project.
+- **The credit reference is per investor, not per investment.** `completeProject`
+  credits each investment with the reference `${settleRef}-u<userId>`, so both
+  investments of one investor share a reference. `creditWallet` claims it with shape
+  validation (`claimOperation(validateShape)`, `src/services/financialEngine.js`).
+
+**Effect** (measured by `tests/project-complete-concurrency.phase71.test.js`, section
+n; identical before and after E0c):
+- **Equal amounts: money lost silently.**
+  - Setup: x invests 150 + 150, y invests 300; escrow 600.
+  - The second claim has the same shape, so it returns `dedup` and the loop runs
+    `committed += amt; continue`.
+  - x is paid **150** (owns 300), y is paid 300, owner 0. **Total paid 450; 150 lost.**
+  - Yet the escrow is set to 0 / CLOSED, the project is COMPLETED, and the settlement
+    records `escrow_balance 600`, `returned_to_investors 450`.
+- **Different amounts: completion impossible.**
+  - Setup: x invests 100 + 200, y invests 300; escrow 600.
+  - The second claim has the same reference with a different amount:
+    `409 OPERATION_SHAPE_MISMATCH`, and the whole completion rolls back.
+  - Nothing is paid, the escrow keeps 600, and the project stays ACTIVE. It can never
+    be completed this way.
+- **The last investment absorbs rounding.** If the duplicate investment is the last one
+  in id order, the rounding remainder is lost or blocked with it.
+- **Correction to the E0c Part 1 report:** it described only the silent loss.
+
+**Not fixed in E0c** (by decision): the fix changes references (per investment, or
+grouping by investor before crediting) or arithmetic.
+- Decide one of:
+  - group CONFIRMED investments by investor before crediting (one credit per
+    investor, same reference format);
+  - reference per investment, e.g. `${settleRef}-i<investmentId>` (changes the
+    format; a reconciliation note is needed);
+  - forbid a second CONFIRMED investment per investor and project
+    (`invest` check plus a constraint, which is a migration).
+- **Same pattern, not verified:** `processIncomingRevenue`
+  (`payoutRef = ${ref}-div-<step>-u<investor>`, `ON CONFLICT (payout_reference) DO
+  NOTHING`) would record only the first investment's entitlement.
+
+**Production check** (read-only, run by the owner only, ids only). It was tested only
+on the test DB `phase71_financial_audit_e0c_after`, where it returned exactly the two
+section-n projects (13/46 and 14/49). **NOT run on production.**
+```sql
+SELECT project_id, investor_user_id, COUNT(*) AS confirmed_investments
+FROM project_investments
+WHERE status = 'CONFIRMED'
+GROUP BY project_id, investor_user_id
+HAVING COUNT(*) > 1
+ORDER BY project_id, investor_user_id;
+```
+
+## 29. P0 (SoD): VICOBA social fund self-approval and non-member requests (fixed, remediation OBS-5)
+
+**Problem (HEAD f419969).**
+- `approveSocialFundDisbursement` (`src/services/vicobaService.js`) checked only that
+  the approver is MWENYEKITI or MWEKAHAZINA. It never checked that the approver is
+  not the requester.
+- An officer could request a social fund disbursement and approve it themselves. One
+  person moved group funds into their own wallet (`fin.groupToWallet` to
+  `requester_id`, transaction `SUCCESS`, request `DISBURSED`).
+- Both callers were affected: `POST /vicoba/social-fund-requests/:requestId/approve`
+  and the four-eyes executor `VICOBA_SOCIAL_FUND_DISBURSE`, whose `actorId` defaults
+  to the payload's officer.
+- `requestSocialFundDisbursement` never checked membership. Any VICOBA subscriber
+  could file a request against any group's fund.
+- AFK-INST-16 §1 item 4 requires maker-checker with "no self-approval".
+
+**Fix (service level, covers both callers; no migration):**
+- request: 403 `Hauko kwenye kikundi hiki.` unless a `vicoba_members` row exists for
+  (group, user). This runs before the INSERT.
+- approve: 403 `Huwezi kuidhinisha ombi lako mwenyewe.` when
+  `requester_id === actorUserId`. This runs after the row lock and role check, before
+  any write.
+- Amounts, references, journal (DR VICOBA_GROUP / CR CUSTOMER_WALLET) and SMS are
+  unchanged.
+
+**Tests** (`tests/vicoba-socialfund-sod.phase71.test.js`, disposable
+`phase71_financial_audit_*` DBs, 127.0.0.1:55471 only, axios and SMS stubbed):
+- before, on HEAD f419969: 22 passed / 16 failed. Treasurer and chair each
+  self-approved 20000 into their own wallet. A non-member's request was stored.
+- after: 38 passed / 0 failed:
+  - self-approval returns 403, with no transaction, journal, claim, wallet, fund or
+    SMS change;
+  - a different officer disburses once;
+  - a duplicate approval returns 400;
+  - two concurrent approvals produce one disbursement;
+  - an injected failure after `groupToWallet` rolls back fully.
+- mutations: self-approval guard removed gives 26/12; membership guard removed gives
+  36/2. Each was restored and the file SHA is identical.
+
+**Still open:**
+- the direct route still bypasses four-eyes (decision D-25 / D-32);
+- a group whose only officer is the requester can no longer pay that request, which
+  is intended by the no-self-approval rule;
+- historical rows are not changed.
+
+**Production check** (read-only, run by the owner only, ids only). It was tested only
+on the test DB `phase71_financial_audit_r1_inc1_before`, where it returned exactly the
+three defect rows created by the before-run (1 non-member, 2 self-approved).
+**NOT run on production.**
+```sql
+SELECT r.id AS request_id, r.group_id, r.requester_id, r.approved_by, r.status,
+       (r.approved_by IS NOT NULL AND r.approved_by = r.requester_id) AS self_approved,
+       NOT EXISTS (SELECT 1 FROM vicoba_members m
+                    WHERE m.group_id = r.group_id AND m.user_id = r.requester_id) AS requester_not_member
+FROM vicoba_social_fund_requests r
+WHERE (r.approved_by IS NOT NULL AND r.approved_by = r.requester_id)
+   OR NOT EXISTS (SELECT 1 FROM vicoba_members m
+                   WHERE m.group_id = r.group_id AND m.user_id = r.requester_id)
+ORDER BY r.id;
+```
+
+## 30. decompose: any user, any project id, escrow row from a request amount (fixed, remediation OBS-6 / OBS-1a)
+
+**Problem (HEAD f419969).**
+- `POST /social/projects/:id/decompose` (`src/routes/socialFundRoutes.js`) was behind
+  `authRequired` only. `decomposeProject`
+  (`src/services/projectIntelligenceService.js`) ran for any authenticated user and
+  for any project id, including ids that do not exist.
+- It inserted the 4-phase template and also
+  `controlled_project_accounts (project_id, escrow_balance) VALUES (id, total_budget)`
+  with `ON CONFLICT DO NOTHING`.
+- On the test DB, a stranger created an escrow row of 999999 for an unfunded project,
+  and an admin created a row of 5000 for a non-existent project.
+- Budgets of 0, negative values, `abc` and `NaN` were stored as template costs.
+  `Infinity` returned a 500 error.
+- Money paths read `remaining_balance` (left at 0), and the first funding overwrites
+  both columns, so no value creation was found at source level. The row was still a
+  fabricated escrow record.
+
+**Fix (no migration):**
+- The service checks that the project exists (404) and that the caller is the owner or
+  ADMIN/MODERATOR/EXPERT (403). This is the E0d rule. The check runs before BEGIN. The
+  route passes `req.user.id` and `req.user.role`.
+- `total_budget` must be a finite positive number (400).
+- decompose no longer writes `controlled_project_accounts`. Escrow comes only from
+  `invest` -> `onFundingReceived`.
+- The template split (10/30/35/25) is unchanged.
+
+**Tests** (`tests/project-decompose-escrow.phase71.test.js`):
+- before: 22 passed / 15 failed;
+- after: 37 passed / 0 failed;
+- mutations: guard removed gives 32/5; escrow insert restored gives 35/2; budget check
+  removed gives 31/6.
+
+**Still open:**
+- the calculation endpoint `POST /social/projects/:id/waterfall` (OBS-1b/1c, next
+  increment);
+- item 31.
+
+## 31. P1: escrow projection synced after COMMIT, best-effort, from an unlocked read (fixed, remediation OBS-7)
+
+`projectService.invest` commits, then calls `projectFinance.onFundingReceived`. That
+function runs outside any transaction: it reads `amount_raised` without a lock, upserts
+`controlled_project_accounts` with `escrow_balance = remaining_balance = amount_raised`
+as an absolute value, and freezes the waterfall rule on first funding. Errors are only
+logged.
+
+Reproduced on test DB `phase71_financial_audit_r1_obs7c` (probe in the remediation
+scratchpad, not a repo test):
+- **P1, stale overwrite:**
+  1. A invests 300.
+  2. B invests 200 and commits; B's sync reads 500 and is paused.
+  3. `forceCloseFunding REFUND` refunds both investors (wallets back to 1000/1000),
+     sets the project to CANCELLED and the escrow to 0/CLOSED.
+  4. B's sync resumes and sets `remaining_balance = 500` on the CLOSED escrow of the
+     cancelled project.
+
+  `getPlatformPfeBook` sums `remaining_balance` without a status filter, so escrow held
+  is overstated. No payout path from this row was found: `requestDisbursement` needs a
+  CONFIRMED investment, and `completeProject` skips CLOSED rows. This was not traced
+  exhaustively.
+- **P2, sync failure:** an injected error in the upsert left `invest` returning
+  success with `amount_raised = 400`, **no escrow row**, and the waterfall rule still
+  **ACTIVE** (not FROZEN) after first funding.
+- **Related (not verified as intended):** `approveWaterfallRule` supersedes every
+  non-SUPERSEDED rule, including FROZEN ones, although its comment says "non-frozen".
+  An owner proposal approved by an expert therefore replaces a frozen rule.
+
+**Fix (remediation OBS-7, authorized by the owner; not committed at the time of writing):**
+- New `projectFinanceService.recordFundingInTransaction({ client, projectId, amount })`,
+  called by `invest` **inside** its transaction, after `UPDATE projects SET amount_raised`
+  and therefore under the `projects` row lock that `invest`, REFUND (E0b) and
+  `completeProject` (E0c) all take first.
+  - It locks the escrow row (`FOR UPDATE`). If there is no row, it inserts one with
+    `amount_raised`. If the row is `CLOSED`, it refuses with 409. Otherwise it applies an
+    **increment** (the first funding of a pre-created row sets the amount), guarded by
+    `WHERE status <> 'CLOSED'` and `rowCount = 1`.
+  - Freeze: while the project has no FROZEN rule, the effective ACTIVE rule becomes
+    FROZEN (`WHERE status = 'ACTIVE'`, `rowCount = 1`).
+  - Any error rolls back the whole investment: wallet, investment, journal and
+    `amount_raised`.
+- `onFundingReceived` now only sends the owner notification after COMMIT. It no longer
+  writes escrow or rule status, so no stale post-commit write can restore escrow.
+- Tests: `tests/project-escrow-funding.phase71.test.js` (48 assertions). They cover
+  investment vs REFUND in both orders and a true race, a callback after closure, an
+  escrow or freeze failure, duplicate callbacks and references, concurrent investors with
+  full reconciliation (raised = CONFIRMED = ledger = escrow remaining = escrow gross),
+  an expiry refund followed by a delayed sync, failure injection at 11 write boundaries,
+  and a CLOSED escrow guard. Before the fix: 31 passed, 17 failed. After: 48 passed,
+  0 failed.
+- Behaviour change: the freeze now happens on any investment while no FROZEN rule exists
+  (before, only on the first funding, and only when the sync succeeded).
+- Not changed: `forceCloseFunding` and `refundInvestment` still use `GREATEST(..., 0)`,
+  which can hide drift. Escrow rows that drifted before this fix are not repaired; an
+  owner-only read-only check is in the remediation evidence (05).
+
+## 32. P1: a FROZEN waterfall rule could be superseded, unfrozen or bypassed (fixed, remediation OBS-7c)
+
+Owner decision: a FROZEN waterfall rule is immutable. Expert approval alone cannot change
+it. An approved change creates a new version with an effective date, an approval record
+and a full audit trail. Funded investments keep their original allocation terms.
+
+Before the fix (test DB `phase71_financial_audit_r1_obs7c_before`, 12 passed, 15 failed):
+- `approveWaterfallRule` superseded every non-SUPERSEDED rule, including FROZEN ones.
+- Revenue after an amendment was allocated with the new version (DIVIDEND 500 instead
+  of 600 on 1000).
+- Unfreezing a FROZEN rule returned 200.
+- "Freezing" a PROPOSED rule activated it without approval.
+
+Fix (`src/services/projectFinanceService.js`):
+- The supersede step excludes FROZEN rows. Activation only moves DRAFT or PROPOSED to
+  ACTIVE (`rowCount = 1`, else 409).
+- The approval audit is written inside the same transaction. It records project,
+  previous rule, version and status, the new version, the effective date, the proposer
+  and time, and the approver and time.
+- `getAllocationRule` is used by `processIncomingRevenue`. While a FROZEN rule exists
+  with a lower version than the ACTIVE amendment, revenue uses the FROZEN terms.
+- `setWaterfallFrozen` only allows ACTIVE to FROZEN.
+- `unfreezeWaterfallRule` is refused with 409. The refusal is audited
+  (`WATERFALL_RULES_UNFREEZE_REFUSED`).
+- No new roles, percentages or migrations.
+
+Tests: `tests/project-waterfall-frozen.phase71.test.js` (27 assertions, 27 passed,
+0 failed). Mutation runs (supersede, alloc, unfreeze, freezeany, audit) all fail it.
+
+**Open (BLOCKED, owner decision required):** cohort policy, meaning which terms apply to
+investments made **after** an approved amendment. The allocation engine is project-level,
+with no per-investment binding, so today all revenue stays on the FROZEN version. There is
+also no DB-level trigger for immutability; it is enforced in the service only.
+
+## 33. P0: money left a project's escrow without escrow controls (fixed, remediation F2 + F7; owner decisions F2 and "F2 + F7")
+
+Found in the independent review (06) and while tracing F2 (07). All of it was already
+present at HEAD. Reproduced on disposable test DBs.
+
+| Path | Before | After |
+|---|---|---|
+| Disbursement (`requestDisbursement`, `executeDisbursement`) | No project status check. A disbursement while FUNDING followed by a refund paid out 1600 against 1000 paid in | Only for an ACTIVE project. `executeDisbursement` locks `projects FOR UPDATE` first (the same lock order as invest, refunds and completion) and re-checks. 409 `DISBURSEMENT_PROJECT_NOT_ACTIVE` |
+| Refund (`refundInvestment`, `forceCloseFunding` REFUND) | `GREATEST(x - amt, 0)` floored a shortfall to 0 and hid it | New `applyRefundToEscrow` makes a guarded decrement of `amount_raised` and the escrow `remaining_balance` (`>= amt`, `rowCount = 1`). Otherwise 409 `FUNDING_REFUND_ESCROW_INSUFFICIENT` and the whole refund rolls back (all-or-nothing for forceClose) |
+| Payroll (`recordPayroll`) | Any project owner (any status, even DRAFT and unfunded) paid anyone from `PROJECT_INVESTMENT_ACCOUNT`, the investor capital shared by all projects. No escrow decrement | Funding source verified as investor capital, so escrow controls apply: ACTIVE only; paid only from this project's escrow (guarded decrement, `status <> 'CLOSED'`); lock order projects, then payee user, then escrow; audit inside the transaction. 409 `PAYROLL_PROJECT_NOT_ACTIVE` / `PAYROLL_ESCROW_INSUFFICIENT` |
+| Profit distribution (`computeDistribution`, legacy) | Paid investors from investor capital using a request-supplied `gross_profit`, with no link to recorded revenue (5000 paid on a 1000 investment) | Refused, 409 `PROJECT_DISTRIBUTION_UNSUPPORTED`. Nothing is written. Defining distributable profit is an owner decision |
+
+Not changed:
+- `disbursed_total` still counts only milestone disbursements. Payroll is reconciled from `project_payroll`.
+- No approval workflow was added to payroll (owner-only, as before).
+- `web-dashboard/src/pages/Projects.jsx` still calls `/distribution`. It now receives 409; frontend changes were not authorized.
+
+Tests: `tests/project-f2-f7-escrow-controls.phase71.test.js`.
+
+## 34. P0 (OPEN, not fixed): waterfall dividends are paid in real wallet money from revenue that is only declared (F8)
+
+`processIncomingRevenue` and `recordRevenue` post `DR PROJECT_REVENUE_RECEIVABLE / CR PROJECT_REVENUE_ACCOUNT`. No code
+ever credits the receivable (it is never collected). The waterfall then allocates into
+`PROJECT_DIVIDEND_ACCOUNT`, and `payProjectDividends` credits investor wallets from it.
+
+Reproduced on a disposable DB: revenue of 10000 was declared by the owner, 6000 was paid to the
+investor's wallet, and the owner paid nothing; the receivable stayed at 10000.
+
+Who may declare revenue is limited by E0d (owner or ADMIN/MODERATOR/EXPERT). Whether revenue must be
+collected (or evidenced) before dividends are paid is an OWNER DECISION. Production exposure is NOT VERIFIED.
+
+## 35. Open review findings from remediation review 06 (F1 and F4 fixed in R2; F3 open)
+
+- **F1:** `invest`'s PROJECT_INVEST audit row is always lost. The pool insert waits on the investor's users row
+  lock until `lock_timeout` (3 s), then the error is swallowed. Suggested correction: pass `client`, as E0b did.
+  *Fixed (R2):* `client` is passed. Behaviour change: an audit failure now rolls the investment back. Side effect
+  found while testing: before the fix every invest held the project row lock for about 3 s, so 4 of 6 parallel
+  invests on one project were refused with a lock timeout (rolled back cleanly). After the fix all 6 commit.
+- **F3:** a pending proposal at first funding skips the freeze, and a later approval replaces the funded terms.
+- **F4:** `getInvestorStatement` shows the latest rule version, not the version used for allocation.
+  *Fixed (R2):* the statement shows `getAllocationRule` (the FROZEN terms after an amendment, OBS-7c) and only when
+  it is ACTIVE or FROZEN; an unapproved draft or proposal is no longer shown as the investor's terms (empty
+  `waterfall_config` instead). While a proposal is pending above a FROZEN rule, the statement is empty and
+  revenue is refused: that follows from F3 and the amendment policy, which is an owner decision.

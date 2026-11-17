@@ -9,6 +9,8 @@ const router = express.Router();
 
 router.use(authRequired);
 router.use(requireService('VICOBA'));
+// R36 Task 2: membership isolation + minimisation for every GET naming a group/loan/meeting.
+require('../middleware/vicobaMembership').installVicobaReadGuards(router);
 
 // ==========================================
 // GROUP CONSTITUTION / RULES
@@ -18,7 +20,8 @@ router.post('/groups/:groupId/constitution', validate(schemas.mkoba.constitution
   try {
     const constitution = await mkobaService.createConstitution(
       parseInt(req.params.groupId, 10),
-      req.body
+      req.body,
+      req.user.id
     );
     return res.status(201).json({ success: true, constitution });
   } catch (error) { next(error); }
@@ -74,7 +77,7 @@ router.post('/groups/:groupId/profits/calculate', validate(schemas.mkoba.profit)
     const { cycleNumber, totalProfit } = req.body;
     if (!cycleNumber || !totalProfit) return res.status(400).json({ success: false, message: 'Jaza cycleNumber na totalProfit.' });
     const result = await mkobaService.calculateProfitDistribution(
-      parseInt(req.params.groupId, 10), cycleNumber, totalProfit
+      parseInt(req.params.groupId, 10), cycleNumber, totalProfit, req.user.id
     );
     return res.status(201).json({ success: true, ...result });
   } catch (error) { next(error); }
@@ -169,7 +172,7 @@ router.post('/groups/:groupId/meetings', async (req, res, next) => {
     const { meetingDate, notes } = req.body;
     if (!meetingDate) return res.status(400).json({ success: false, message: 'Jaza meetingDate.' });
     const meeting = await mkobaService.scheduleMeeting(
-      parseInt(req.params.groupId, 10), meetingDate, notes
+      parseInt(req.params.groupId, 10), meetingDate, notes, req.user.id
     );
     return res.status(201).json({ success: true, meeting });
   } catch (error) { next(error); }
@@ -180,7 +183,7 @@ router.post('/meetings/:meetingId/attendance', async (req, res, next) => {
     const { userId, status, notes } = req.body;
     if (!userId) return res.status(400).json({ success: false, message: 'Jaza userId.' });
     const result = await mkobaService.recordAttendance(
-      parseInt(req.params.meetingId, 10), userId, status, notes
+      parseInt(req.params.meetingId, 10), userId, status, notes, req.user.id
     );
     return res.json(result);
   } catch (error) { next(error); }
@@ -193,7 +196,7 @@ router.post('/meetings/:meetingId/attendance/bulk', async (req, res, next) => {
       return res.status(400).json({ success: false, message: 'Jaza attendance (list ya {userId, status}).' });
     }
     const results = await mkobaService.bulkRecordAttendance(
-      parseInt(req.params.meetingId, 10), attendance
+      parseInt(req.params.meetingId, 10), attendance, req.user.id
     );
     return res.json({ success: true, results });
   } catch (error) { next(error); }

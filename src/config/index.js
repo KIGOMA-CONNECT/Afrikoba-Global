@@ -2,6 +2,28 @@ require('dotenv').config();
 
 const DEFAULT_JWT = 'afrikoba_dev_secret_change_me';
 
+// R38 (10): a production JWT_SECRET must be at least JWT_MIN_LENGTH characters (after trimming) and must
+// not be a default shipped in the code or the templates. Defaults are compared by sha256 so their values
+// are not repeated here: DEFAULT_JWT (above) and the JWT_SECRET placeholder in .env.example.
+const crypto = require('crypto');
+const JWT_MIN_LENGTH = 32;
+const sha256 = (v) => crypto.createHash('sha256').update(String(v)).digest('hex');
+const KNOWN_DEFAULT_JWT_SHA256 = new Set([
+  sha256(DEFAULT_JWT),
+  'e5ce59bd50cf63c5f565845c5593340d0cd142325bdb40efa9b9712af34f49bb', // .env.example JWT_SECRET placeholder
+]);
+function jwtSecretProblem(secret) {
+  const s = typeof secret === 'string' ? secret.trim() : '';
+  if (!s) return 'haipo';
+  if (KNOWN_DEFAULT_JWT_SHA256.has(sha256(s))) return 'ni thamani ya akiba iliyoandikwa kwenye msimbo au template';
+  if (s.length < JWT_MIN_LENGTH) return `ni fupi kuliko herufi ${JWT_MIN_LENGTH}`;
+  return null;
+}
+
+// R36/R37 (2): dev-only behaviour (DEFAULT_JWT fallback, devOtp, stack traces) needs an EXPLICIT
+// development/test NODE_ENV; unset or any other value (e.g. 'Production', 'staging') is production-like.
+const isDevelopmentOrTest = () => process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'test';
+
 const config = {
   nodeEnv: process.env.NODE_ENV || 'development',
   port: parseInt(process.env.PORT || '3000', 10),
@@ -36,6 +58,13 @@ const config = {
     clientId: process.env.AZAMPAY_CLIENT_ID,
     clientSecret: process.env.AZAMPAY_CLIENT_SECRET,
     env: process.env.AZAMPAY_ENV || 'sandbox',
+    // Withdrawals/payouts stay blocked until the payout contract is verified
+    // against official AzamPay docs (Phase 68 D1). Default: false.
+    payoutContractVerified: process.env.AZAMPAY_PAYOUT_CONTRACT_VERIFIED === 'true',
+    // Deposits stay PENDING (never credited) until the transaction-status
+    // response contract is verified against official AzamPay docs
+    // (Phase 68 D1_PROVIDER_CONTRACT.md section 3). Default: false.
+    statusContractVerified: process.env.AZAMPAY_STATUS_CONTRACT_VERIFIED === 'true',
   },
   lending: {
     // Mikopo mikubwa (≥ threshold TZS) inahitaji KYC Level highValueKycLevel
@@ -58,7 +87,9 @@ const config = {
     baseUrl: process.env.CONTRACT_BASE_URL || 'http://localhost:3000/contracts',
   },
   security: {
-    jwtSecret: process.env.JWT_SECRET || DEFAULT_JWT,
+    // R37 (2): the shipped default exists for explicit test/development only; anywhere else it is empty
+    // (fail-closed: validateConfig refuses, and jsonwebtoken refuses to sign/verify with an empty key).
+    jwtSecret: process.env.JWT_SECRET || (isDevelopmentOrTest() ? DEFAULT_JWT : ''),
     jwtTtl: process.env.JWT_TTL || '7d',
     // '*' ina ruhusu origin zote (development). Katika production weka list halisi.
     corsOrigins: (process.env.CORS_ORIGINS || '*')
@@ -84,6 +115,13 @@ const config = {
   },
   ussd: {
     secret: process.env.USSD_SECRET || '',
+  },
+  withdrawal: {
+    // Four-eyes on self-service withdrawal. Owner decision (S9). Default OFF.
+    // When enabled, withdrawals at or above `fourEyesThreshold` TZS require
+    // approval via the four-eyes service before funds are held/dispatched.
+    fourEyesEnabled: process.env.WITHDRAWAL_FOUR_EYES_ENABLED === 'true',
+    fourEyesThreshold: parseFloat(process.env.WITHDRAWAL_FOUR_EYES_THRESHOLD || '0'),
   },
   device: {
     defaultPolicy: process.env.DEVICE_DEFAULT_POLICY || 'PERMISSIVE',
@@ -113,11 +151,23 @@ function validateConfig() {
   const errors = [];
   const isProd = config.nodeEnv === 'production';
 
-  if (!isProd) return { valid: true, errors };
-
-  if (!config.security.jwtSecret || config.security.jwtSecret === DEFAULT_JWT) {
-    errors.push('JWT_SECRET lazima uwe imewekwa na sio default (JWT_SECRET)');
+  // R37 (2): the JWT rule applies to every NODE_ENV except an explicit 'test' or 'development'.
+  if (!isDevelopmentOrTest()) {
+    const jwtProblem = jwtSecretProblem(process.env.JWT_SECRET);
+    if (jwtProblem) {
+      errors.push(`JWT_SECRET haikubaliki kwenye production (NODE_ENV si 'test' wala 'development'): ${jwtProblem} (src/config/index.js, R38 (10), R37 (2)).`);
+    }
   }
+  if (!isProd) {
+    if (errors.length > 0) throw new Error(`Production configuration haijakamilika:\n- ${errors.join('\n- ')}`);
+    return { valid: true, errors };
+  }
+
+  // R36: the pilot boundary (src/config/pilot.js) is never left to a silent default in production.
+  if (!require('./pilot').pilotModeExplicit()) {
+    errors.push("PILOT_MODE lazima iwekwe wazi: 'true' (pilot imefungwa) au 'false' (src/config/pilot.js)");
+  }
+
   if (!config.db.password || config.db.password === 'secret') {
     errors.push('DB_PASSWORD lazima uwe imewekwa na sio default');
   }
@@ -150,4 +200,9 @@ function validateConfig() {
 
 module.exports = config;
 module.exports.validateConfig = validateConfig;
+// R36: dev-only response behaviour (devOtp, stack traces) needs an EXPLICIT development/test NODE_ENV;
+// unset or any other value (e.g. 'staging', 'pilot') is treated as production-like (fail-closed).
+module.exports.isDevelopmentOrTest = isDevelopmentOrTest;
 module.exports.DEFAULT_JWT = DEFAULT_JWT;
+module.exports.JWT_MIN_LENGTH = JWT_MIN_LENGTH;
+module.exports.jwtSecretProblem = jwtSecretProblem;

@@ -77,7 +77,9 @@ async function addMember(actorUserId, groupId, userId, roleInGroup = 'MJUMBE') {
 }
 
 async function contributeShares(groupId, userId, amount, sharesCount) {
-  const amountNum = parseFloat(amount);
+  // R36 Task 3: strict number, no coercion; the validated value is the value posted.
+  const amountNum = require('../utils/strictAmount').strictAmount(amount);
+  require('../utils/strictAmount').strictAmount(sharesCount, { field: 'sharesCount', optional: true, integer: true });
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -103,7 +105,7 @@ async function contributeShares(groupId, userId, amount, sharesCount) {
       [referenceId, userId, amountNum, JSON.stringify({ group_id: groupId })]
     );
 
-    await fin.walletToGroup({ client, userId, groupId, groupAccount: 'VICOBA_GROUP', groupSql: 'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance + $1 WHERE id = $2', amount: amountNum, reference: `${referenceId}:WG`, description: 'VICOBA Share Contribution', productType: 'VICOBA', productRef: String(groupId) });
+    await fin.walletToGroup({ client, userId, groupId, groupAccount: 'VICOBA_GROUP', groupSql: 'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance + $1 WHERE id = $2', amount: amountNum, reference: `${referenceId}:WG`, description: 'VICOBA Share Contribution', productType: 'VICOBA', productRef: String(groupId), transactionId: tx.rows[0].id });
     await client.query(
       `UPDATE vicoba_members SET total_shares = total_shares + $1, contribution_balance = contribution_balance + $2
        WHERE group_id = $3 AND user_id = $4`,
@@ -129,27 +131,326 @@ async function contributeShares(groupId, userId, amount, sharesCount) {
   }
 }
 
-async function requestLoan(chairmanUserId, { groupId, applicantUserId, requestedAmount, interestRate, repaymentMonths }) {
+// ==========================================
+// R34 S5 — VICOBA loan three-tier approval chain (VICOBA v2.1 §3, §4.1–4.4)
+// Member submits own request -> KATIBU -> MHASIBU (role MWEKAHAZINA) -> MWENYEKITI -> disbursement.
+// The step structure is data (versioned); every rule below reads it from VICOBA_LOAN_CHAINS.
+// Rows created before migration 149 have approval_chain_version NULL and keep the legacy chain
+// (owner decision D-S5-8), only through approveLoan.
+// ==========================================
+const LOAN_CHAIN_VERSION = 1;
+const VICOBA_LOAN_CHAINS = Object.freeze({
+  1: Object.freeze([
+    Object.freeze({ no: 1, code: 'KATIBU', roles: Object.freeze(['KATIBU']), status: 'PENDING_KATIBU' }),
+    Object.freeze({ no: 2, code: 'MHASIBU', roles: Object.freeze(['MWEKAHAZINA']), status: 'PENDING_MHASIBU' }),
+    Object.freeze({ no: 3, code: 'MWENYEKITI', roles: Object.freeze(['MWENYEKITI']), status: 'PENDING_MWENYEKITI' }),
+  ]),
+});
+// Standard Group Governance Mode: more than three members (v2.1 §2.2).
+const STANDARD_MODE_MIN_MEMBERS = 4;
+const LOAN_TERMINAL_STATUSES = ['APPROVED', 'DISBURSED', 'REPAID', 'REJECTED', 'CANCELLED'];
+const SELF_APPROVAL_MSG = 'Huwezi kuidhinisha ombi lako mwenyewe.';
+const DEFAULT_LOAN_INTEREST_RATE = 10; // existing default (schema DEFAULT 10.00, previous `|| 10`)
+
+const loanErr = (statusCode, code, message) => Object.assign(new Error(message), { statusCode, code });
+const toCents = (v) => Math.round(Number(v) * 100);
+
+function loanChain(version) {
+  const chain = VICOBA_LOAN_CHAINS[version];
+  if (!chain) throw loanErr(409, 'VICOBA_LOAN_CHAIN_UNKNOWN', 'Mnyororo wa idhini wa ombi hili haujulikani.');
+  return chain;
+}
+
+// Who may act on `step` for this loan: a member holding one of the step roles, who is not the
+// applicant and has not decided any earlier step of this loan. Returns null when someone is eligible,
+// otherwise the ON_HOLD reason.
+async function holdReasonFor(client, groupId, applicantUserId, step, priorActorIds) {
+  const r = await client.query(
+    'SELECT user_id FROM vicoba_members WHERE group_id = $1 AND role_in_group = ANY($2::text[])',
+    [groupId, step.roles]
+  );
+  const holders = r.rows.map((x) => Number(x.user_id));
+  const prior = new Set(priorActorIds.map(Number));
+  if (holders.some((id) => id !== Number(applicantUserId) && !prior.has(id))) return null;
+  if (holders.includes(Number(applicantUserId))) return 'APPLICANT_IS_STEP_OFFICER';
+  if (holders.length > 0) return 'ACTOR_CONFLICT';
+  return 'APPROVER_MISSING';
+}
+
+// R37 (7) / F-R36-3: real storage limit of the VICOBA loan amount columns. vicoba_loan_requests.requested_amount,
+// approved_amount and vicoba_loan_approvals.amount are NUMERIC(15,2) (db/migrations/002, 149), so the largest
+// storable value is 9999999999999.99. Amounts are rounded the way the column rounds (NUMERIC half up) and
+// refused with 400 before any write, instead of a 500 "numeric field overflow" at INSERT/UPDATE.
+const LOAN_AMOUNT_COLUMN_MAX = '9999999999999.99';
+async function assertLoanAmountFitsColumn(db, amount) {
+  const tooBig = () => loanErr(400, 'VICOBA_LOAN_AMOUNT_INVALID', 'Kiasi cha mkopo kinazidi kiwango cha juu kinachoweza kuhifadhiwa.');
+  if (!(Number(amount) < 1e16)) throw tooBig(); // keeps the numeric(18,2) cast below from overflowing
+  const r = (await db.query('SELECT ($1::numeric)::numeric(18,2) > $2::numeric AS over', [String(amount), LOAN_AMOUNT_COLUMN_MAX])).rows[0];
+  if (r.over) throw tooBig();
+}
+
+async function requestLoan(actorUserId, { groupId, applicantUserId, requestedAmount, interestRate, repaymentMonths }) {
+  // v2.1 §3: the member submits their own request (applicant = initiator = req.user).
+  // A body applicant different from the caller is refused, never silently re-targeted.
+  if (applicantUserId != null && Number(applicantUserId) !== Number(actorUserId)) {
+    throw loanErr(403, 'VICOBA_LOAN_APPLICANT_MUST_BE_SELF', 'Mwanachama huanzisha ombi lake mwenyewe tu.');
+  }
+  // Owner decision D-S5-3: the member never sets the interest rate.
+  if (interestRate != null) {
+    throw loanErr(400, 'VICOBA_LOAN_INTEREST_FROM_GROUP', 'Riba ya mkopo inatoka kwenye sera ya kikundi, si kwenye ombi.');
+  }
+  // R36 Task 3: strict number (no "5000", true, null, NaN, Infinity); same code as before.
+  const amount = require('../utils/strictAmount').strictAmount(requestedAmount, { field: 'requestedAmount', code: 'VICOBA_LOAN_AMOUNT_INVALID', message: 'Kiasi cha mkopo lazima kiwe namba kubwa kuliko 0.' });
+  await assertLoanAmountFitsColumn(pool, amount); // R37 (7)
+  const months = repaymentMonths == null ? 3 : Number(repaymentMonths);
+  if (!Number.isInteger(months) || months <= 0) {
+    throw loanErr(400, 'VICOBA_LOAN_MONTHS_INVALID', 'Muda wa marejesho si sahihi.');
+  }
+  const applicant = Number(actorUserId);
+  const gid = Number(groupId);
+
   const { enforceHighValueKyc } = require('./kycDocumentService');
   const config = require('../config');
-  await enforceHighValueKyc({ userId: applicantUserId, amount: requestedAmount, threshold: config.lending.highValueLoanThreshold, requiredLevel: config.lending.highValueKycLevel });
-  const roleRes = await pool.query(
-    'SELECT role_in_group FROM vicoba_members WHERE group_id = $1 AND user_id = $2',
-    [groupId, chairmanUserId]
-  );
-  const allowed = ['MWENYEKITI', 'MWEKAHAZINA', 'KATIBU'];
-  if (roleRes.rows.length === 0 || !allowed.includes(roleRes.rows[0].role_in_group)) {
-    throw Object.assign(new Error('Mwenyekiti au Katibu ndiye anayeweza kuongeza ombi la mkopo.'), { statusCode: 403 });
-  }
+  await enforceHighValueKyc({ userId: applicant, amount, threshold: config.lending.highValueLoanThreshold, requiredLevel: config.lending.highValueKycLevel });
 
-  const result = await pool.query(
-    `INSERT INTO vicoba_loan_requests
-      (group_id, applicant_user_id, requested_amount, interest_rate, repayment_months, chairman_approval, chairman_approved_by)
-     VALUES ($1, $2, $3, $4, $5, TRUE, $6)
-     RETURNING *`,
-    [groupId, applicantUserId, requestedAmount, interestRate || 10, repaymentMonths || 3, chairmanUserId]
+  const chain = loanChain(LOAN_CHAIN_VERSION);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const member = await client.query(
+      'SELECT role_in_group FROM vicoba_members WHERE group_id = $1 AND user_id = $2',
+      [gid, applicant]
+    );
+    if (member.rows.length === 0) {
+      throw loanErr(403, 'VICOBA_NOT_GROUP_MEMBER', 'Hauko kwenye kikundi hiki.');
+    }
+
+    // Owner decision D-S5-4: a group that cannot staff three different people (Standard mode needs
+    // more than three members and a holder for every step role) is refused up front: 409, no row.
+    const structure = await client.query(
+      `SELECT COUNT(*)::int AS members,
+              COALESCE(array_agg(DISTINCT role_in_group) FILTER (WHERE role_in_group IS NOT NULL), '{}') AS roles
+         FROM vicoba_members WHERE group_id = $1`,
+      [gid]
+    );
+    const { members, roles } = structure.rows[0];
+    const staffed = chain.every((s) => s.roles.some((r) => roles.includes(r)));
+    if (members < STANDARD_MODE_MIN_MEMBERS || !staffed) {
+      throw loanErr(409, 'VICOBA_GOVERNANCE_INSUFFICIENT_APPROVERS', 'Kikundi hakina watu wa kutosha kwa ngazi tatu tofauti za idhini.');
+    }
+
+    const constitution = await client.query(
+      'SELECT loan_interest_rate FROM vicoba_group_constitutions WHERE group_id = $1',
+      [gid]
+    );
+    const groupRate = constitution.rows.length && constitution.rows[0].loan_interest_rate != null
+      ? Number(constitution.rows[0].loan_interest_rate)
+      : DEFAULT_LOAN_INTEREST_RATE;
+
+    // v2.1 §4.3/§4.4: when the applicant is the only holder of the first step role, wait (ON_HOLD).
+    const first = chain[0];
+    const hold = await holdReasonFor(client, gid, applicant, first, []);
+    const result = await client.query(
+      `INSERT INTO vicoba_loan_requests
+        (group_id, applicant_user_id, initiated_by_user_id, approval_chain_version, requested_amount,
+         interest_rate, repayment_months, status, hold_reason, hold_step, held_at)
+       VALUES ($1, $2, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       RETURNING *`,
+      [gid, applicant, LOAN_CHAIN_VERSION, amount, groupRate, months,
+        hold ? 'ON_HOLD' : first.status, hold, hold ? first.code : null, hold ? new Date() : null]
+    );
+    await client.query('COMMIT');
+    const row = result.rows[0];
+    await logAudit({ eventType: 'VICOBA_LOAN', action: 'REQUEST', entityType: 'VICOBA_LOAN', userId: applicant, entityId: row.id, amount, afterData: { group_id: gid, status: row.status, hold_reason: hold, chain_version: LOAN_CHAIN_VERSION } });
+    return row;
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+// Checks every v1 chain rule for `actorUserId` acting on `stepCode`, with the loan row already locked
+// FOR UPDATE by the caller. Returns { step, role, priorActorIds }.
+async function assertChainStep(client, loan, actorUserId, stepCode) {
+  const actor = Number(actorUserId);
+  const member = await client.query(
+    'SELECT role_in_group FROM vicoba_members WHERE group_id = $1 AND user_id = $2 FOR SHARE',
+    [loan.group_id, actor]
   );
-  return result.rows[0];
+  if (member.rows.length === 0) throw loanErr(403, 'VICOBA_NOT_GROUP_MEMBER', 'Hauko kwenye kikundi husika.');
+  if (Number(loan.applicant_user_id) === actor) throw loanErr(403, 'VICOBA_LOAN_SELF_APPROVAL', SELF_APPROVAL_MSG);
+  if (LOAN_TERMINAL_STATUSES.includes(loan.status)) throw loanErr(409, 'VICOBA_LOAN_ALREADY_DECIDED', 'Ombi hili tayari limeamuliwa.');
+  if (loan.status === 'ON_HOLD') throw loanErr(409, 'VICOBA_LOAN_ON_HOLD', 'Ombi hili limesimamishwa (ON_HOLD) likisubiri mwidhinishaji aliyeidhinishwa.');
+  const chain = loanChain(loan.approval_chain_version);
+  const current = chain.find((s) => s.status === loan.status);
+  if (!current || current.code !== stepCode) {
+    throw loanErr(409, 'VICOBA_LOAN_STEP_OUT_OF_ORDER', 'Hatua hii si ngazi inayosubiriwa kwa ombi hili.');
+  }
+  const role = member.rows[0].role_in_group;
+  if (!current.roles.includes(role)) {
+    throw loanErr(403, 'VICOBA_LOAN_STEP_ROLE_REQUIRED', 'Huna nafasi inayohitajika kwa ngazi hii ya idhini.');
+  }
+  const prior = await client.query('SELECT actor_user_id FROM vicoba_loan_approvals WHERE loan_id = $1', [loan.id]);
+  const priorActorIds = prior.rows.map((x) => Number(x.actor_user_id));
+  if (priorActorIds.includes(actor)) {
+    throw loanErr(403, 'VICOBA_LOAN_ACTOR_ALREADY_ACTED', 'Umeshashiriki ngazi nyingine ya ombi hili.');
+  }
+  return { step: current, role, priorActorIds, chain };
+}
+
+async function insertApproval(client, loan, step, actorUserId, role, decision, reason, amount) {
+  try {
+    await client.query(
+      `INSERT INTO vicoba_loan_approvals
+        (loan_id, group_id, chain_version, step_no, step_code, actor_user_id, actor_role_at_action, decision, reason, amount)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+      [loan.id, loan.group_id, loan.approval_chain_version, step.no, step.code, actorUserId, role, decision, reason, amount]
+    );
+  } catch (e) {
+    if (e.code === '23505' && /loan_actor/.test(e.constraint || '')) throw loanErr(403, 'VICOBA_LOAN_ACTOR_ALREADY_ACTED', 'Umeshashiriki ngazi nyingine ya ombi hili.');
+    if (e.code === '23505') throw loanErr(409, 'VICOBA_LOAN_ALREADY_DECIDED', 'Ombi hili tayari limeamuliwa.');
+    if (e.code === '23514' && /applicant/.test(e.message || '')) throw loanErr(403, 'VICOBA_LOAN_SELF_APPROVAL', SELF_APPROVAL_MSG);
+    throw e;
+  }
+}
+
+// KATIBU / MHASIBU approval, and rejection at any step. MWENYEKITI approval goes to approveLoan
+// (it disburses in the same transaction).
+async function decideLoanStep(actorUserId, loanId, { step, decision, reason, approvedAmount } = {}) {
+  if (!['APPROVE', 'REJECT'].includes(decision)) {
+    throw loanErr(400, 'VICOBA_LOAN_DECISION_INVALID', 'Uamuzi lazima uwe APPROVE au REJECT.');
+  }
+  if (!loanChain(LOAN_CHAIN_VERSION).some((s) => s.code === step)) {
+    throw loanErr(400, 'VICOBA_LOAN_STEP_INVALID', 'Ngazi ya idhini si sahihi.');
+  }
+  if (decision === 'APPROVE' && step === 'MWENYEKITI') {
+    return approveLoan(actorUserId, loanId, approvedAmount);
+  }
+  const actor = Number(actorUserId);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const loanRes = await client.query('SELECT * FROM vicoba_loan_requests WHERE id = $1 FOR UPDATE', [loanId]);
+    if (loanRes.rows.length === 0) throw loanErr(404, 'VICOBA_LOAN_NOT_FOUND', 'Ombi la mkopo halipatikani.');
+    const loan = loanRes.rows[0];
+    if (loan.approval_chain_version == null) {
+      throw loanErr(409, 'VICOBA_LOAN_LEGACY_CHAIN', 'Ombi hili ni la mnyororo wa zamani; linakamilishwa kwa utaratibu wa zamani.');
+    }
+    const ctx = await assertChainStep(client, loan, actor, step);
+
+    if (decision === 'REJECT') {
+      const why = typeof reason === 'string' ? reason.trim() : '';
+      if (why.length < 3 || why.length > 500) {
+        throw loanErr(400, 'VICOBA_LOAN_REJECT_REASON_REQUIRED', 'Sababu ya kukataa inahitajika (herufi 3 hadi 500).');
+      }
+      await insertApproval(client, loan, ctx.step, actor, ctx.role, 'REJECTED', why, null);
+      const upd = await client.query(
+        `UPDATE vicoba_loan_requests
+            SET status = 'REJECTED', rejection_reason = $2, rejected_step = $3, updated_at = NOW()
+          WHERE id = $1 AND status = $4`,
+        [loan.id, why, ctx.step.code, loan.status]
+      );
+      if (upd.rowCount !== 1) throw loanErr(409, 'VICOBA_LOAN_ALREADY_DECIDED', 'Ombi hili tayari limeamuliwa.');
+      await client.query('COMMIT');
+      await logAudit({ eventType: 'VICOBA_LOAN', action: 'REJECT', entityType: 'VICOBA_LOAN', userId: actor, entityId: loan.id, afterData: { group_id: loan.group_id, step: ctx.step.code, role: ctx.role, reason: why } });
+      return { success: true, loanId: loan.id, status: 'REJECTED', step: ctx.step.code, message: 'Ombi la mkopo limekataliwa.' };
+    }
+
+    let amount = null;
+    if (ctx.step.code === 'MHASIBU') {
+      amount = approvedAmount === undefined
+        ? Number(loan.requested_amount)
+        : require('../utils/strictAmount').strictAmount(approvedAmount, { field: 'approvedAmount', code: 'VICOBA_LOAN_AMOUNT_INVALID', message: 'Kiasi cha mkopo lazima kiwe namba kubwa kuliko 0.' });
+      if (!Number.isFinite(amount) || amount <= 0) {
+        throw loanErr(400, 'VICOBA_LOAN_AMOUNT_INVALID', 'Kiasi cha mkopo lazima kiwe kikubwa kuliko 0.');
+      }
+      if (amount >= 1e16) {
+        throw loanErr(400, 'VICOBA_LOAN_AMOUNT_INVALID', 'Kiasi kilichoidhinishwa hakizidi kilichoombwa.');
+      }
+      await assertLoanAmountFitsColumn(client, amount); // R37 (7): real column limit, before insertApproval
+      // R35 (1): round with Postgres NUMERIC(18,2), the same rule the column applies on store, and
+      // compare the rounded value with the request; JS float rounding let 10000.005 pass as 10000.01.
+      const rounded = (await client.query(
+        'SELECT ($1::numeric)::numeric(18,2) AS amt, ($1::numeric)::numeric(18,2) > ($2::numeric)::numeric(18,2) AS over',
+        [String(amount), String(loan.requested_amount)]
+      )).rows[0];
+      if (rounded.over || !(Number(rounded.amt) > 0)) {
+        throw loanErr(400, 'VICOBA_LOAN_AMOUNT_INVALID', 'Kiasi kilichoidhinishwa hakizidi kilichoombwa.');
+      }
+      amount = rounded.amt;
+    }
+    await insertApproval(client, loan, ctx.step, actor, ctx.role, 'APPROVED', null, amount);
+
+    const next = ctx.chain[ctx.step.no]; // chain is 1-based by `no`; next step object
+    const hold = await holdReasonFor(client, loan.group_id, loan.applicant_user_id, next, [...ctx.priorActorIds, actor]);
+    const nextStatus = hold ? 'ON_HOLD' : next.status;
+    const upd = await client.query(
+      `UPDATE vicoba_loan_requests
+          SET status = $2, hold_reason = $3, hold_step = $4, held_at = $5, updated_at = NOW(),
+              approved_amount = CASE WHEN $6::numeric IS NULL THEN approved_amount ELSE $6::numeric END,
+              treasurer_approval = CASE WHEN $6::numeric IS NULL THEN treasurer_approval ELSE TRUE END,
+              treasurer_approved_by = CASE WHEN $6::numeric IS NULL THEN treasurer_approved_by ELSE $7 END
+        WHERE id = $1 AND status = $8`,
+      [loan.id, nextStatus, hold, hold ? next.code : null, hold ? new Date() : null, amount, actor, loan.status]
+    );
+    if (upd.rowCount !== 1) throw loanErr(409, 'VICOBA_LOAN_ALREADY_DECIDED', 'Ombi hili tayari limeamuliwa.');
+    await client.query('COMMIT');
+    await logAudit({ eventType: 'VICOBA_LOAN', action: 'APPROVE_STEP', entityType: 'VICOBA_LOAN', userId: actor, entityId: loan.id, amount, afterData: { group_id: loan.group_id, step: ctx.step.code, role: ctx.role, next_status: nextStatus, hold_reason: hold } });
+    return { success: true, loanId: loan.id, status: nextStatus, step: ctx.step.code, holdReason: hold, message: hold ? 'Ombi limesimamishwa likisubiri mwidhinishaji aliyeidhinishwa.' : 'Ngazi imeidhinishwa.' };
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+// Owner decision D-S5-5: the applicant may cancel their own request while it is ON_HOLD.
+async function cancelLoanRequest(actorUserId, loanId) {
+  const actor = Number(actorUserId);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const loanRes = await client.query('SELECT * FROM vicoba_loan_requests WHERE id = $1 FOR UPDATE', [loanId]);
+    if (loanRes.rows.length === 0) throw loanErr(404, 'VICOBA_LOAN_NOT_FOUND', 'Ombi la mkopo halipatikani.');
+    const loan = loanRes.rows[0];
+    if (Number(loan.applicant_user_id) !== actor) {
+      throw loanErr(403, 'VICOBA_LOAN_CANCEL_NOT_APPLICANT', 'Mwombaji pekee anaweza kufuta ombi lake.');
+    }
+    if (loan.status !== 'ON_HOLD') {
+      throw loanErr(409, 'VICOBA_LOAN_NOT_ON_HOLD', 'Ombi linaweza kufutwa likiwa ON_HOLD tu.');
+    }
+    const upd = await client.query(
+      `UPDATE vicoba_loan_requests SET status = 'CANCELLED', cancelled_by_user_id = $2, cancelled_at = NOW(), updated_at = NOW()
+        WHERE id = $1 AND status = 'ON_HOLD'`,
+      [loan.id, actor]
+    );
+    if (upd.rowCount !== 1) throw loanErr(409, 'VICOBA_LOAN_NOT_ON_HOLD', 'Ombi linaweza kufutwa likiwa ON_HOLD tu.');
+    await client.query('COMMIT');
+    await logAudit({ eventType: 'VICOBA_LOAN', action: 'CANCEL', entityType: 'VICOBA_LOAN', userId: actor, entityId: loan.id, afterData: { group_id: loan.group_id, hold_reason: loan.hold_reason, hold_step: loan.hold_step } });
+    return { success: true, loanId: loan.id, status: 'CANCELLED', message: 'Ombi la mkopo limefutwa.' };
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function getLoanApprovals(actorUserId, loanId) {
+  const r = await pool.query(
+    `SELECT a.step_no, a.step_code, a.actor_user_id, a.actor_role_at_action, a.decision, a.reason, a.amount, a.decided_at
+       FROM vicoba_loan_requests lr
+       JOIN vicoba_members vm ON vm.group_id = lr.group_id AND vm.user_id = $1
+       LEFT JOIN vicoba_loan_approvals a ON a.loan_id = lr.id
+      WHERE lr.id = $2
+      ORDER BY a.step_no`,
+    [actorUserId, loanId]
+  );
+  if (r.rows.length === 0) throw loanErr(403, 'VICOBA_NOT_GROUP_MEMBER', 'Hauko kwenye kikundi husika.');
+  return r.rows.filter((x) => x.step_no != null);
 }
 
 async function approveLoan(approverUserId, loanId, approvedAmount) {
@@ -158,7 +459,7 @@ async function approveLoan(approverUserId, loanId, approvedAmount) {
     await client.query('BEGIN');
 
     const roleRes = await client.query(
-      `SELECT vm.role_in_group, g.group_name, u.phone_number, u.full_name, u.id as applicant_id
+      `SELECT vm.role_in_group, g.group_name, u.phone_number, u.full_name, u.id as applicant_id, lr.approval_chain_version
        FROM vicoba_loan_requests lr
        JOIN vicoba_members vm ON vm.group_id = lr.group_id AND vm.user_id = $1
        JOIN vicoba_groups g ON g.id = lr.group_id
@@ -171,8 +472,15 @@ async function approveLoan(approverUserId, loanId, approvedAmount) {
       throw Object.assign(new Error('Hauko kwenye kikundi husika.'), { statusCode: 403 });
     }
     const ctx = roleRes.rows[0];
-    if (ctx.role_in_group !== 'MWEKAHAZINA' && ctx.role_in_group !== 'KATIBU') {
+    // R34 S5: a chain-v1 loan is decided here only at its MWENYEKITI step (assertChainStep below);
+    // a legacy loan (chain NULL) keeps the old rule (owner decision D-S5-8).
+    const isChain = ctx.approval_chain_version != null;
+    if (!isChain && ctx.role_in_group !== 'MWEKAHAZINA' && ctx.role_in_group !== 'KATIBU') {
       throw Object.assign(new Error('Mwekahazina au Katibu ndiye anayeidhinisha kiasi.'), { statusCode: 403 });
+    }
+    // R30 F-D5-5: the applicant never approves their own loan (checked under the loan row lock).
+    if (Number(ctx.applicant_id) === Number(approverUserId)) {
+      throw loanErr(403, 'VICOBA_LOAN_SELF_APPROVAL', 'Huwezi kuidhinisha ombi lako mwenyewe.');
     }
 
     const loanRes = await client.query(
@@ -184,6 +492,16 @@ async function approveLoan(approverUserId, loanId, approvedAmount) {
 
     // Idempotent retry after a committed approval.
     if (loan.status === 'DISBURSED') {
+      if (isChain) {
+        // Only the MWENYEKITI who gave the final approval gets the idempotent success.
+        const own = await client.query(
+          "SELECT 1 FROM vicoba_loan_approvals WHERE loan_id = $1 AND step_code = 'MWENYEKITI' AND actor_user_id = $2",
+          [loanId, approverUserId]
+        );
+        if (own.rows.length === 0) {
+          throw loanErr(409, 'VICOBA_LOAN_ALREADY_DECIDED', 'Ombi hili tayari limeamuliwa.');
+        }
+      }
       const existingTx = await client.query(
         `SELECT wallet_amount
          FROM transactions
@@ -208,38 +526,70 @@ async function approveLoan(approverUserId, loanId, approvedAmount) {
       });
     }
 
-    if (loan.status !== 'PENDING') {
-      throw Object.assign(new Error('Ombi hili tayari limechakatwa.'), { statusCode: 400 });
+    let finalAmount;
+    if (isChain) {
+      // R34 S5: final (MWENYEKITI) step. All chain rules, then the step row, then the same disbursement.
+      const step = await assertChainStep(client, loan, approverUserId, 'MWENYEKITI');
+      finalAmount = Number(loan.approved_amount);
+      if (approvedAmount !== undefined) {
+        const asked = require('../utils/strictAmount').strictAmount(approvedAmount, { field: 'approvedAmount', code: 'VICOBA_LOAN_AMOUNT_INVALID', message: 'Kiasi cha mkopo lazima kiwe namba kubwa kuliko 0.' });
+        if (!Number.isFinite(asked) || asked <= 0) {
+          throw loanErr(400, 'VICOBA_LOAN_AMOUNT_INVALID', 'Kiasi cha mkopo lazima kiwe kikubwa kuliko 0.');
+        }
+        if (toCents(asked) !== toCents(loan.approved_amount)) {
+          throw loanErr(409, 'VICOBA_LOAN_AMOUNT_MISMATCH', 'Kiasi hakilingani na kilichohakikiwa na Mhasibu.');
+        }
+      }
+      if (!Number.isFinite(finalAmount) || finalAmount <= 0) {
+        throw loanErr(409, 'VICOBA_LOAN_AMOUNT_INVALID', 'Kiasi kilichohakikiwa na Mhasibu hakipo.');
+      }
+      await insertApproval(client, loan, step.step, Number(approverUserId), step.role, 'APPROVED', null, finalAmount);
+      const claimed = await client.query(
+        `UPDATE vicoba_loan_requests
+         SET chairman_approval = TRUE, chairman_approved_by = $2, status = 'APPROVED', updated_at = NOW()
+         WHERE id = $1 AND status = 'PENDING_MWENYEKITI'`,
+        [loanId, approverUserId]
+      );
+      if (claimed.rowCount !== 1) {
+        throw loanErr(409, 'VICOBA_LOAN_ALREADY_DECIDED', 'Ombi hili tayari limeamuliwa.');
+      }
+    } else {
+      if (loan.status !== 'PENDING') {
+        throw Object.assign(new Error('Ombi hili tayari limechakatwa.'), { statusCode: 400 });
+      }
+      if (!loan.chairman_approval) {
+        throw Object.assign(new Error('Ombi bado halijaidhinishwa na Mwenyekiti.'), { statusCode: 400 });
+      }
+
+      finalAmount = approvedAmount === undefined
+        ? Number(loan.requested_amount)
+        : require('../utils/strictAmount').strictAmount(approvedAmount, { field: 'approvedAmount' });
+
+      if (!Number.isFinite(finalAmount) || finalAmount <= 0) {
+        throw Object.assign(new Error('Kiasi cha mkopo lazima kiwe kikubwa kuliko 0.'), { statusCode: 400 });
+      }
+
+      if (finalAmount > Number(loan.requested_amount)) {
+        throw Object.assign(new Error('Kiasi kilichoidhinishwa hakizidi kilichoombwa.'), { statusCode: 400 });
+      }
+
+      await client.query(
+        `UPDATE vicoba_loan_requests
+         SET approved_amount = $1, treasurer_approval = TRUE, treasurer_approved_by = $2, status = 'APPROVED', updated_at = NOW()
+         WHERE id = $3`,
+        [finalAmount, approverUserId, loanId]
+      );
     }
-    if (!loan.chairman_approval) {
-      throw Object.assign(new Error('Ombi bado halijaidhinishwa na Mwenyekiti.'), { statusCode: 400 });
-    }
 
-    const finalAmount = approvedAmount == null
-      ? Number(loan.requested_amount)
-      : Number(approvedAmount);
-
-    if (!Number.isFinite(finalAmount) || finalAmount <= 0) {
-      throw Object.assign(new Error('Kiasi cha mkopo lazima kiwe kikubwa kuliko 0.'), { statusCode: 400 });
-    }
-
-    if (finalAmount > Number(loan.requested_amount)) {
-      throw Object.assign(new Error('Kiasi kilichoidhinishwa hakizidi kilichoombwa.'), { statusCode: 400 });
-    }
-
-    await client.query(
-      `UPDATE vicoba_loan_requests
-       SET approved_amount = $1, treasurer_approval = TRUE, treasurer_approved_by = $2, status = 'APPROVED', updated_at = NOW()
-       WHERE id = $3`,
-      [finalAmount, approverUserId, loanId]
-    );
-
-    await client.query(
+    // Create transaction first with canonical reference
+    const txRes = await client.query(
       `INSERT INTO transactions
         (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
-       VALUES ($1, $2, $3, 0, $3, 'SUCCESS', 'VICOBA_LOAN', $4)`,
+       VALUES ($1, $2, $3, 0, $3, 'SUCCESS', 'VICOBA_LOAN', $4)
+       RETURNING id`,
       [referenceId, ctx.applicant_id, finalAmount, JSON.stringify({ group_id: loan.group_id, loan_id: loanId })]
     );
+    const transactionId = txRes.rows[0].id;
 
     const groupDebit = await client.query(
       `UPDATE vicoba_groups
@@ -260,11 +610,12 @@ async function approveLoan(approverUserId, loanId, approvedAmount) {
       client,
       userId: ctx.applicant_id,
       amount: finalAmount,
-      reference: `${referenceId}:GW`,
+      reference: referenceId,
       fromAccount: 'VICOBA_GROUP',
       description: 'VICOBA Loan Disbursement',
       productType: 'VICOBA',
       productRef: String(loan.group_id),
+      transactionId,
     });
 
     await generateLoanSchedule(
@@ -540,6 +891,10 @@ async function getGroupDetails(groupId, requesterUserId) {
     [groupId]
   );
 
+  if (!members.rows.some((m) => m.user_id === requesterUserId)) {
+    // R36 Task 2: service-level refusal too (not only the route guard). Same 403 for any non-member.
+    throw require('../middleware/vicobaMembership').notMember();
+  }
   const detail = { ...group.rows[0], members: members.rows };
   if (requesterUserId) {
     const myRole = members.rows.find((m) => m.user_id === requesterUserId)?.role_in_group;
@@ -596,7 +951,8 @@ async function createContributionSchedule(groupId, cycleNumber, dueDate) {
 }
 
 async function payContribution(groupId, userId, cycleNumber, amount, sharesCount) {
-  const amountNum = parseFloat(amount);
+  const amountNum = require('../utils/strictAmount').strictAmount(amount); // R36 Task 3
+  require('../utils/strictAmount').strictAmount(sharesCount, { field: 'sharesCount', optional: true, integer: true });
   const MAX_ATTEMPTS = 6;
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     const client = await pool.connect();
@@ -655,17 +1011,17 @@ async function payContribution(groupId, userId, cycleNumber, amount, sharesCount
     const totalDeduct = amountNum + penaltyAmount;
 
     const referenceId = generateReference('VC');
-    await fin.walletToGroup({ client, userId, groupId, groupAccount: 'VICOBA_GROUP', groupSql: 'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance + $1 WHERE id = $2', amount: amountNum, reference: `${referenceId}:WG`, description: 'VICOBA Contribution', productType: 'VICOBA', productRef: String(groupId) });
-    if (penaltyAmount > 0) {
-      await fin.debitWallet({ client, userId, amount: penaltyAmount, reference: `${referenceId}:DR`, toAccount: 'PLATFORM_FEES', description: 'VICOBA Late Penalty' });
-    }
-
     const tx = await client.query(
       `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
        VALUES ($1, $2, $3, 0, $3, 'SUCCESS', 'VICOBA_SHARE', $4)
        RETURNING id`,
       [referenceId, userId, totalDeduct, JSON.stringify({ group_id: groupId, cycle: cycleNumber, penalty: penaltyAmount })]
     );
+
+    await fin.walletToGroup({ client, userId, groupId, groupAccount: 'VICOBA_GROUP', groupSql: 'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance + $1 WHERE id = $2', amount: amountNum, reference: `${referenceId}:WG`, description: 'VICOBA Contribution', productType: 'VICOBA', productRef: String(groupId), transactionId: tx.rows[0].id });
+    if (penaltyAmount > 0) {
+      await fin.debitWallet({ client, userId, amount: penaltyAmount, reference: `${referenceId}:DR`, toAccount: 'PLATFORM_FEES', description: 'VICOBA Late Penalty', transactionId: tx.rows[0].id });
+    }
 
     await client.query(
       `INSERT INTO vicoba_member_contributions (schedule_id, group_id, user_id, amount, shares_count, is_late, penalty_paid)
@@ -780,13 +1136,23 @@ async function payPenalty(userId, penaltyId) {
       await client.query('COMMIT');
       return { success: true, referenceId: generateReference('VP'), message: 'Faini tayari imelipwa.' };
     }
+    // R29 D2: a penalty an officer has WAIVED is never paid (checked under the row lock above).
+    if (penalty.status === 'WAIVED') {
+      throw Object.assign(new Error('Faini hii imeondolewa na kiongozi wa kikundi; haihitaji kulipwa.'), { statusCode: 409, code: 'PENALTY_WAIVED' });
+    }
 
     const userRes = await client.query('SELECT phone_number, full_name FROM users WHERE id = $1', [userId]);
     const user = userRes.rows[0];
 
     const referenceId = generateReference('VP');
     await fin.debitWallet({ client, userId, amount: penalty.amount, reference: `${referenceId}:DR`, toAccount: 'PLATFORM_FEES', description: 'VICOBA Penalty Payment' });
-    await client.query("UPDATE vicoba_penalties SET status = 'PAID', paid_at = NOW() WHERE id = $1", [penaltyId]);
+    const marked = await client.query(
+      "UPDATE vicoba_penalties SET status = 'PAID', paid_at = NOW() WHERE id = $1 AND status NOT IN ('PAID', 'WAIVED')",
+      [penaltyId]
+    );
+    if (marked.rowCount !== 1) {
+      throw Object.assign(new Error('Faini hii imeondolewa na kiongozi wa kikundi; haihitaji kulipwa.'), { statusCode: 409, code: 'PENALTY_WAIVED' });
+    }
 
     await client.query(
       `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
@@ -821,16 +1187,21 @@ async function waivePenalty(actorUserId, penaltyId) {
       throw Object.assign(new Error('Mwenyekiti au Mwekahazina pekee anaweza kuondoa faini.'), { statusCode: 403 });
     }
 
-    const penaltyRes = await client.query('SELECT * FROM vicoba_penalties WHERE id = $1', [penaltyId]);
+    // R28 S7: lock the penalty (payPenalty locks it too) and waive only if still not PAID, so a
+    // waive racing a payment cannot overwrite PAID with WAIVED.
+    const penaltyRes = await client.query('SELECT * FROM vicoba_penalties WHERE id = $1 FOR UPDATE', [penaltyId]);
     if (penaltyRes.rows.length === 0) throw Object.assign(new Error('Faini haipo.'), { statusCode: 404 });
     if (penaltyRes.rows[0].status === 'PAID') {
       throw Object.assign(new Error('Faini tayari imelipwa, haiwezi kuondolewa.'), { statusCode: 400 });
     }
 
-    await client.query(
-      "UPDATE vicoba_penalties SET status = 'WAIVED', waived_by = $1 WHERE id = $2",
+    const waived = await client.query(
+      "UPDATE vicoba_penalties SET status = 'WAIVED', waived_by = $1 WHERE id = $2 AND status <> 'PAID'",
       [actorUserId, penaltyId]
     );
+    if (waived.rowCount !== 1) {
+      throw Object.assign(new Error('Faini tayari imelipwa, haiwezi kuondolewa.'), { statusCode: 400 });
+    }
 
     await client.query('COMMIT');
     return { success: true, message: 'Faini imeondolewa.' };
@@ -847,7 +1218,7 @@ async function waivePenalty(actorUserId, penaltyId) {
 // ==========================================
 
 async function initSocialFund(groupId, monthlyContribution) {
-  const amount = parseFloat(monthlyContribution);
+  const amount = require('../utils/strictAmount').strictAmount(monthlyContribution, { field: 'monthlyContribution' }); // R36 Task 3
   if (amount <= 0) throw Object.assign(new Error('Kiasi lazima iwe zaidi ya 0.'), { statusCode: 400 });
 
   const existing = await pool.query('SELECT 1 FROM vicoba_social_fund WHERE group_id = $1', [groupId]);
@@ -921,15 +1292,15 @@ async function contributeSocialFund(groupId, userId, month) {
 }
 
 async function requestSocialFundDisbursement(groupId, userId, { reasonType, reasonDetail, requestedAmount }) {
-  const rawAmount = requestedAmount;
-  const amountText = typeof rawAmount === 'string' ? rawAmount.trim() : '';
-  const amount = typeof rawAmount === 'number'
-    ? rawAmount
-    : (amountText !== '' && /^(?:\d+(?:\.\d*)?|\.\d+)$/.test(amountText)
-      ? Number(amountText)
-      : NaN);
-  if (!Number.isFinite(amount) || amount <= 0) {
-    throw Object.assign(new Error('Kiasi cha ombi lazima kiwe chanya na halali.'), { statusCode: 400 });
+  // R36 Task 3: numbers only (numeric strings were accepted before; now refused, no coercion).
+  const amount = require('../utils/strictAmount').strictAmount(requestedAmount, { field: 'requestedAmount', message: 'Kiasi cha ombi lazima kiwe chanya na halali.' });
+  // Only a member of the group may request from its social fund.
+  const memberRes = await pool.query(
+    'SELECT 1 FROM vicoba_members WHERE group_id = $1 AND user_id = $2',
+    [groupId, userId]
+  );
+  if (memberRes.rows.length === 0) {
+    throw Object.assign(new Error('Hauko kwenye kikundi hiki.'), { statusCode: 403 });
   }
   const fundRes = await pool.query('SELECT * FROM vicoba_social_fund WHERE group_id = $1', [groupId]);
   if (fundRes.rows.length === 0) {
@@ -973,10 +1344,15 @@ async function approveSocialFundDisbursement(actorUserId, requestId, approvedAmo
     if (roleRes.rows.length === 0 || !['MWENYEKITI', 'MWEKAHAZINA'].includes(roleRes.rows[0].role_in_group)) {
       throw Object.assign(new Error('Mwenyekiti au Mwekahazina pekee anaweza kuthibitisha.'), { statusCode: 403 });
     }
+    // Maker-checker: no self-approval (AFK-INST-16 §1 item 4). Applies to the
+    // direct route and to the four-eyes executor, which both call this function.
+    if (Number(request.requester_id) === Number(actorUserId)) {
+      throw Object.assign(new Error('Huwezi kuidhinisha ombi lako mwenyewe.'), { statusCode: 403 });
+    }
 
-    const finalAmount = approvedAmount == null
+    const finalAmount = approvedAmount === undefined
       ? Number(request.requested_amount)
-      : Number(approvedAmount);
+      : require('../utils/strictAmount').strictAmount(approvedAmount, { field: 'approvedAmount', message: 'Kiasi kilichoidhinishwa lazima kiwe chanya na halali.' });
     if (!Number.isFinite(finalAmount) || finalAmount <= 0) {
       throw Object.assign(new Error('Kiasi kilichoidhinishwa lazima kiwe chanya na halali.'), { statusCode: 400 });
     }
@@ -994,13 +1370,17 @@ async function approveSocialFundDisbursement(actorUserId, requestId, approvedAmo
       [finalAmount, actorUserId, requestId]
     );
     const referenceId = generateReference('SD');
-    await fin.groupToWallet({ client, userId: request.requester_id, groupId: request.fund_id, groupAccount: 'VICOBA_GROUP', groupSql: 'UPDATE vicoba_social_fund SET total_balance = total_balance - $1, total_disbursed = total_disbursed + $1 WHERE id = $2 AND total_balance >= $1', amount: finalAmount, reference: `${referenceId}:GW`, description: 'VICOBA Social Fund Disbursement', productType: 'VICOBA', productRef: String(request.fund_id) });
 
-    await client.query(
+    // Create transaction first with canonical reference
+    const txRes = await client.query(
       `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
-       VALUES ($1, $2, $3, 0, $3, 'SUCCESS', 'VICOBA_SOCIAL_FUND_DISBURSEMENT', $4)`,
+       VALUES ($1, $2, $3, 0, $3, 'SUCCESS', 'VICOBA_SOCIAL_FUND_DISBURSEMENT', $4)
+       RETURNING id`,
       [referenceId, request.requester_id, finalAmount, JSON.stringify({ group_id: request.group_id, request_id: requestId, reason_type: request.reason_type })]
     );
+    const transactionId = txRes.rows[0].id;
+
+    await fin.groupToWallet({ client, userId: request.requester_id, groupId: request.fund_id, groupAccount: 'VICOBA_GROUP', groupSql: 'UPDATE vicoba_social_fund SET total_balance = total_balance - $1, total_disbursed = total_disbursed + $1 WHERE id = $2 AND total_balance >= $1', amount: finalAmount, reference: referenceId, description: 'VICOBA Social Fund Disbursement', productType: 'VICOBA', productRef: String(request.fund_id), transactionId });
 
     await client.query("UPDATE vicoba_social_fund_requests SET status = 'DISBURSED', disbursement_reference = $1 WHERE id = $2", [referenceId, requestId]);
 
@@ -1143,7 +1523,7 @@ async function generateLoanSchedule(loanId, groupId, amount, interestRate, repay
 }
 
 async function repayLoan(userId, loanId, amount, note, idempotencyKey = null) {
-  const amountNum = Number(amount);
+  const amountNum = require('../utils/strictAmount').strictAmount(amount, { message: 'Kiasi cha malipo lazima kiwe kikubwa kuliko 0.' }); // R36 Task 3
 
   if (!Number.isFinite(amountNum) || amountNum <= 0) {
     throw Object.assign(new Error('Kiasi cha malipo lazima kiwe kikubwa kuliko 0.'), { statusCode: 400 });
@@ -1169,42 +1549,17 @@ async function repayLoan(userId, loanId, amount, note, idempotencyKey = null) {
     }
     const loan = loanRes.rows[0];
 
+    // Determine reference: use idempotency key if provided, otherwise
+    // derive a deterministic reference from loan + schedule to prevent
+    // silent duplicate financial effects on retry without a key.
+    // NOTE: schedule is fetched after this point, so we use loanId + amount
+    // as the base. The full idempotency check happens after schedule fetch.
     const referenceId = idempotencyKey
       ? `VLR-${loanId}-${idempotencyKey}`
-      : generateReference('LR');
+      : null;  // Will be set after schedule fetch
 
-    if (idempotencyKey) {
-      const existingRepayment = await client.query(
-        `SELECT amount, reference_id
-         FROM vicoba_loan_repayments
-         WHERE reference_id = $1
-         LIMIT 1`,
-        [referenceId]
-      );
-
-      if (existingRepayment.rows.length === 1) {
-        const existingAmount = Number(existingRepayment.rows[0].amount);
-
-        if (existingAmount !== amountNum) {
-          await client.query('ROLLBACK');
-
-          throw Object.assign(
-            new Error('Idempotency key tayari ilitumika kwa kiasi tofauti.'),
-            { statusCode: 409 }
-          );
-        }
-
-        await client.query('ROLLBACK');
-
-        return {
-          success: true,
-          referenceId,
-          amount: existingAmount,
-          dedup: true,
-          message: 'Malipo haya tayari yalipokelewa.',
-        };
-      }
-    }
+    // If no idempotency key, we still need dedup protection.
+    // Use loan_id + schedule_id as deterministic reference (set after schedule fetch).
 
     if (loan.status !== 'DISBURSED') {
       throw Object.assign(new Error('Mkopo haujaondolewa au tayari umelipwa.'), { statusCode: 400 });
@@ -1222,6 +1577,39 @@ async function repayLoan(userId, loanId, amount, note, idempotencyKey = null) {
       throw Object.assign(new Error('Hakuna deni la kulipa.'), { statusCode: 400 });
     }
     const schedule = scheduleRes.rows[0];
+
+    // Determine final reference ID (deterministic when no idempotency key)
+    const finalReferenceId = referenceId || `VLR-${loanId}-S${schedule.id}-A${amountNum}`;
+
+    // Idempotency check (works for both key and no-key cases)
+    const existingRepayment = await client.query(
+      `SELECT amount, reference_id
+       FROM vicoba_loan_repayments
+       WHERE reference_id = $1
+       LIMIT 1`,
+      [finalReferenceId]
+    );
+
+    if (existingRepayment.rows.length === 1) {
+      const existingAmount = Number(existingRepayment.rows[0].amount);
+
+      if (existingAmount !== amountNum) {
+        await client.query('ROLLBACK');
+        throw Object.assign(
+          new Error('Idempotency key tayari ilitumika kwa kiasi tofauti.'),
+          { statusCode: 409 }
+        );
+      }
+
+      await client.query('ROLLBACK');
+      return {
+        success: true,
+        referenceId: finalReferenceId,
+        amount: existingAmount,
+        dedup: true,
+        message: 'Malipo haya tayari yalipokelewa.',
+      };
+    }
 
     // Check for late repayment penalty
     const today = new Date();
@@ -1253,9 +1641,25 @@ async function repayLoan(userId, loanId, amount, note, idempotencyKey = null) {
 
     const totalDeduct = amountNum + penaltyAmount;
 
-    await fin.walletToGroup({ client, userId, groupId: loan.group_id, groupAccount: 'VICOBA_GROUP', groupSql: 'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance + $1 WHERE id = $2', amount: amountNum, reference: `${referenceId}:WG`, description: 'VICOBA Loan Repayment', productType: 'VICOBA', productRef: String(loan.group_id) });
+    // Create transaction first (enables TX ID propagation and canonical reference)
+    const txRes = await client.query(
+      `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
+       VALUES ($1, $2, $3, 0, $3, 'SUCCESS', 'VICOBA_LOAN_REPAYMENT', $4)
+       RETURNING id`,
+      [finalReferenceId, userId, totalDeduct, JSON.stringify({ group_id: loan.group_id, loan_id: loanId, penalty: penaltyAmount })]
+    );
+    const transactionId = txRes.rows[0].id;
+
+    const wgResult = await fin.walletToGroup({ client, userId, groupId: loan.group_id, groupAccount: 'VICOBA_GROUP', groupSql: 'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance + $1 WHERE id = $2', amount: amountNum, reference: `${finalReferenceId}:WG`, description: 'VICOBA Loan Repayment', productType: 'VICOBA', productRef: String(loan.group_id), transactionId });
+    if (wgResult.dedup) {
+      await client.query('ROLLBACK');
+      return { success: true, referenceId: finalReferenceId, dedup: true, message: 'Malipo haya tayari yalipokelewa.' };
+    }
     if (penaltyAmount > 0) {
-      await fin.debitWallet({ client, userId, amount: penaltyAmount, reference: `${referenceId}:DR`, toAccount: 'PLATFORM_FEES', description: 'VICOBA Late Loan Penalty' });
+      const debitResult = await fin.debitWallet({ client, userId, amount: penaltyAmount, reference: `${finalReferenceId}:DR`, toAccount: 'PLATFORM_FEES', description: 'VICOBA Late Loan Penalty', transactionId });
+      if (debitResult.dedup) {
+        // Penalty already assessed — continue (penalty record check below prevents duplicate)
+      }
     }
 
     // Update schedule
@@ -1286,29 +1690,31 @@ async function repayLoan(userId, loanId, amount, note, idempotencyKey = null) {
       await client.query("UPDATE vicoba_loan_requests SET status = 'REPAID' WHERE id = $1", [loanId]);
     }
 
-    // Record penalty if late
+    // Record penalty if late (only if not already assessed for this installment)
     if (penaltyAmount > 0) {
-      await client.query(
-        `INSERT INTO vicoba_penalties (group_id, user_id, penalty_type, amount, reason, related_loan_id, status, paid_at)
-         VALUES ($1, $2, 'LATE_LOAN_REPAYMENT', $3, $4, $5, 'PAID', NOW())`,
-        [loan.group_id, userId, penaltyAmount, `Late repayment for installment ${schedule.installment_number}`, loanId]
+      const existingPenalty = await client.query(
+        `SELECT id FROM vicoba_penalties
+         WHERE related_loan_id = $1 AND penalty_type = 'LATE_LOAN_REPAYMENT'
+           AND reason LIKE $2`,
+        [loanId, `%installment ${schedule.installment_number}%`]
       );
+      if (existingPenalty.rows.length === 0) {
+        await client.query(
+          `INSERT INTO vicoba_penalties (group_id, user_id, penalty_type, amount, reason, related_loan_id, status, paid_at)
+           VALUES ($1, $2, 'LATE_LOAN_REPAYMENT', $3, $4, $5, 'PAID', NOW())`,
+          [loan.group_id, userId, penaltyAmount, `Late repayment for installment ${schedule.installment_number}`, loanId]
+        );
+      }
     }
-
-    await client.query(
-      `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
-       VALUES ($1, $2, $3, 0, $3, 'SUCCESS', 'VICOBA_LOAN_REPAYMENT', $4)`,
-      [referenceId, userId, totalDeduct, JSON.stringify({ group_id: loan.group_id, loan_id: loanId, penalty: penaltyAmount })]
-    );
 
     await client.query(
       `INSERT INTO vicoba_loan_repayments (loan_id, schedule_id, user_id, amount, reference_id, note)
        VALUES ($1, $2, $3, $4, $5, $6)`,
-      [loanId, schedule.id, userId, amountNum, referenceId, note || null]
+      [loanId, schedule.id, userId, amountNum, finalReferenceId, note || null]
     );
 
     await client.query('COMMIT');
-    await logAudit({ eventType: 'VICOBA_LOAN_REPAYMENT', action: 'CREATE', entityType: 'VICOBA_LOAN_REPAYMENT', userId, entityId: loanId, referenceId, amount: amountNum, afterData: { group_id: loan.group_id, outstanding: Math.max(0, newOutstanding) } });
+    await logAudit({ eventType: 'VICOBA_LOAN_REPAYMENT', action: 'CREATE', entityType: 'VICOBA_LOAN_REPAYMENT', userId, entityId: loanId, referenceId: finalReferenceId, amount: amountNum, afterData: { group_id: loan.group_id, outstanding: Math.max(0, newOutstanding) } });
 
     const msg = isLate
       ? `Habari ${user.full_name}, umelipa deni la TSh ${formatMoney(amountNum)} + faini ya TSh ${formatMoney(penaltyAmount)}. Salio inayobaki: TSh ${formatMoney(Math.max(0, newOutstanding))}.`
@@ -1316,7 +1722,7 @@ async function repayLoan(userId, loanId, amount, note, idempotencyKey = null) {
     await sendSMS(user.phone_number, msg);
 
     return {
-      success: true, referenceId, isLate, penaltyAmount,
+      success: true, referenceId: finalReferenceId, isLate, penaltyAmount,
       remainingBalance: Math.max(0, newOutstanding),
       fullyRepaid: newOutstanding <= 0,
       message: newOutstanding <= 0 ? 'Mkopo umelipwa kikamilifu!' : 'Malipo yamepokewa.',
@@ -1359,7 +1765,7 @@ async function getLoanRepayments(loanId) {
 // ==========================================
 
 async function requestWithdrawal(userId, groupId, amount) {
-  const amountNum = parseFloat(amount);
+  const amountNum = require('../utils/strictAmount').strictAmount(amount); // R36 Task 3
   if (!amountNum || amountNum <= 0) throw Object.assign(new Error('Kiasi lazima kiwe zaidi ya 0.'), { statusCode: 400 });
 
   const memberRes = await pool.query(
@@ -1418,10 +1824,10 @@ async function approveWithdrawal(actorUserId, withdrawalId, { approved, note }) 
     if (!approved) {
       await client.query(
         `UPDATE vicoba_withdrawals SET status = 'REJECTED',
-           chairman_id = COALESCE(chairman_id, CASE WHEN $2 THEN $1 END),
-           treasurer_id = COALESCE(treasurer_id, CASE WHEN $3 THEN $1 END),
-           chairman_note = COALESCE(chairman_note, CASE WHEN $2 THEN $4 END),
-           treasurer_note = COALESCE(treasurer_note, CASE WHEN $3 THEN $4 END)
+           chairman_id = COALESCE(chairman_id, CASE WHEN $2::boolean THEN $1::integer END),
+           treasurer_id = COALESCE(treasurer_id, CASE WHEN $3::boolean THEN $1::integer END),
+           chairman_note = COALESCE(chairman_note, CASE WHEN $2::boolean THEN $4::text END),
+           treasurer_note = COALESCE(treasurer_note, CASE WHEN $3::boolean THEN $4::text END)
          WHERE id = $5`,
         [actorUserId, isChair, isTreasurer, note || 'Imekataliwa', withdrawalId]
       );
@@ -1432,10 +1838,10 @@ async function approveWithdrawal(actorUserId, withdrawalId, { approved, note }) 
 
     await client.query(
       `UPDATE vicoba_withdrawals SET
-         chairman_id = COALESCE(chairman_id, CASE WHEN $2 THEN $1 END),
-         treasurer_id = COALESCE(treasurer_id, CASE WHEN $3 THEN $1 END),
-         chairman_note = COALESCE(chairman_note, CASE WHEN $2 THEN $4 END),
-         treasurer_note = COALESCE(treasurer_note, CASE WHEN $3 THEN $4 END),
+         chairman_id = COALESCE(chairman_id, CASE WHEN $2::boolean THEN $1::integer END),
+         treasurer_id = COALESCE(treasurer_id, CASE WHEN $3::boolean THEN $1::integer END),
+         chairman_note = COALESCE(chairman_note, CASE WHEN $2::boolean THEN $4::text END),
+         treasurer_note = COALESCE(treasurer_note, CASE WHEN $3::boolean THEN $4::text END),
          chairman_at = CASE WHEN $2 AND chairman_id IS NULL THEN NOW() ELSE chairman_at END,
          treasurer_at = CASE WHEN $3 AND treasurer_id IS NULL THEN NOW() ELSE treasurer_at END
        WHERE id = $5`,
@@ -1459,20 +1865,27 @@ async function approveWithdrawal(actorUserId, withdrawalId, { approved, note }) 
       throw Object.assign(new Error('Salio la kikundi halitoshi kwa uondoaji huu.'), { statusCode: 400 });
     }
 
-    await fin.groupToWallet({
-      client, userId: cur.user_id, groupId: cur.group_id, groupAccount: 'VICOBA_GROUP',
-      groupSql: 'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance - $1 WHERE id = $2 AND group_wallet_balance >= $1',
-      amount: Number(cur.amount), reference: `${cur.reference_id}:GW`, description: 'VICOBA Group Withdrawal',
-      productType: 'VICOBA', productRef: String(cur.group_id),
-    });
-
-    const refId = generateReference('WD');
-    await client.query(
+    // Create transaction first with canonical reference (enables TX ID propagation)
+    const txRes = await client.query(
       `INSERT INTO transactions (reference_id, user_id, wallet_amount, commission, total_charged, status, type, meta)
-       VALUES ($1, $2, $3, 0, $3, 'SUCCESS', 'VICOBA_WITHDRAWAL', $4)`,
-      [refId, cur.user_id, Number(cur.amount),
+       VALUES ($1, $2, $3, 0, $3, 'SUCCESS', 'VICOBA_WITHDRAWAL', $4)
+       RETURNING id`,
+      [cur.reference_id, cur.user_id, Number(cur.amount),
        JSON.stringify({ group_id: cur.group_id, withdrawal_id: withdrawalId, via: 'SIGNATURE_2OF2' })]
     );
+    const transactionId = txRes.rows[0].id;
+
+    const gwResult = await fin.groupToWallet({
+      client, userId: cur.user_id, groupId: cur.group_id, groupAccount: 'VICOBA_GROUP',
+      groupSql: 'UPDATE vicoba_groups SET group_wallet_balance = group_wallet_balance - $1 WHERE id = $2 AND group_wallet_balance >= $1',
+      amount: Number(cur.amount), reference: cur.reference_id, description: 'VICOBA Group Withdrawal',
+      productType: 'VICOBA', productRef: String(cur.group_id), transactionId,
+    });
+    if (gwResult.dedup) {
+      // Already processed — rollback and return dedup
+      await client.query('ROLLBACK');
+      return { success: true, message: 'Uondoaji tayari umekamilika.', referenceId: cur.reference_id, dedup: true };
+    }
 
     const memberProjection = await client.query(
       `UPDATE vicoba_members
@@ -1533,7 +1946,9 @@ async function listWithdrawals(groupId) {
 // ==========================================
 
 async function addBonus(userId, groupId, { amount, purpose }) {
-  const amountNum = parseFloat(amount);
+  // R36 Task 1: kill switch, default OFF (src/config/pilot.js). Refuses before any read or write.
+  require('../config/pilot').assertFeatureEnabled('vicobaAddBonus');
+  const amountNum = require('../utils/strictAmount').strictAmount(amount); // R36 Task 3
   if (!amountNum || amountNum <= 0) throw Object.assign(new Error('Kiasi cha bonus lazima kiwe zaidi ya 0.'), { statusCode: 400 });
 
   const roleRes = await pool.query(
@@ -1661,6 +2076,10 @@ module.exports = {
   contributeShares,
   requestLoan,
   approveLoan,
+  decideLoanStep,
+  cancelLoanRequest,
+  getLoanApprovals,
+  VICOBA_LOAN_CHAINS,
   chargeMaintenanceFee,
   getGroupDetails,
   listUserGroups,

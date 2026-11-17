@@ -57,8 +57,8 @@ async function assertCardOwner(cardId, userId, mode) {
   return card;
 }
 
-async function todaySpend(cardId) {
-  const r = await pool.query(
+async function todaySpend(cardId, db = pool) {
+  const r = await db.query(
     `SELECT COALESCE(SUM(amount),0)::numeric AS s FROM card_transactions
      WHERE card_id = $1 AND status IN ('AUTH_HOLD','SETTLED') AND created_at::date = CURRENT_DATE`,
     [cardId]
@@ -146,16 +146,27 @@ async function blockCard(userId, cardId) {
 // J3: AUTHORIZATION (wallet hold)
 // ====================================================================
 
+// R26-C3b: CVV brute-force lockout. CVV_MAX_FAILURES INVALID_CVV declines on
+// a card within CVV_LOCK_WINDOW lock further authorizations on that card
+// until the oldest of them leaves the window. No schema change: the count is
+// derived from card_transactions (idx_card_txn_status covers it).
+const CVV_MAX_FAILURES = 5;
+const CVV_LOCK_WINDOW = '1 hour';
+async function recentInvalidCvv(client, cardId) {
+  const r = await client.query(
+    `SELECT COUNT(*)::int AS n FROM card_transactions
+      WHERE card_id = $1 AND status = 'DECLINED' AND declined_reason = 'INVALID_CVV'
+        AND created_at > NOW() - $2::interval`,
+    [cardId, CVV_LOCK_WINDOW]
+  );
+  return r.rows[0].n;
+}
+
 async function authorizeCard(userId, cardId, data) {
   const { merchant_name, amount, cvv } = data;
   const amountNum = parseAmount(amount);
   if (!merchant_name) throw createAppError('CARD_MERCHANT_REQUIRED');
   if (!amountNum || amountNum <= 0) throw createAppError('CARD_AMOUNT_INVALID');
-
-  const card = await pool.query('SELECT * FROM virtual_cards WHERE id = $1 FOR UPDATE', [cardId]);
-  if (!card.rows.length) throw createAppError('CARD_NOT_FOUND');
-  const c = card.rows[0];
-  if (c.user_id !== userId) throw createAppError('CARD_NOT_OWNER');
 
   const authRef = 'AUTH-' + generateReference().replace('undefined-', '');
 
@@ -165,50 +176,74 @@ async function authorizeCard(userId, cardId, data) {
       await rc.query('BEGIN');
       await logCardTx(rc, userId, cardId, merchant_name, amountNum, 'DECLINED', authRef, reason);
       await rc.query('COMMIT');
+    } catch (e) {
+      await rc.query('ROLLBACK').catch(() => {});
+      throw e;
     } finally { rc.release(); }
     return null;
   };
 
-  if (card.rows[0].status !== 'ACTIVE') {
-    await declineWith(card.rows[0].status === 'FROZEN' ? 'CARD_FROZEN' : 'CARD_BLOCKED');
-    throw createAppError('CARD_INACTIVE');
-  }
-  if (!cvv || sha256(String(cvv).trim()) !== c.cvv_hash) {
-    await declineWith('INVALID_CVV');
-    throw createAppError('CARD_INVALID_CVV');
-  }
-  if (c.per_txn_limit && amountNum > Number(c.per_txn_limit)) {
-    await declineWith('OVER_TRANSACTION_LIMIT');
-    throw createAppError('CARD_OVER_PER_TXN_LIMIT');
-  }
-  const spend = await todaySpend(cardId);
-  if (c.daily_limit && (spend + amountNum) > Number(c.daily_limit)) {
-    await declineWith('OVER_DAILY_LIMIT');
-    throw createAppError('CARD_OVER_DAILY_LIMIT');
-  }
-
+  // R25-04: the card row lock, the card checks and the daily-spend read happen
+  // inside the authorization transaction. Previously the lock was taken with
+  // pool.query (autocommit, released immediately) and today's spend was read
+  // outside the transaction, so concurrent authorizations each passed the
+  // daily limit. A decline is recorded only after this transaction has rolled
+  // back and released the card lock (the decline row references the card).
+  let decline = null;
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const u = await client.query('SELECT wallet_balance, locked_balance FROM users WHERE id = $1 FOR UPDATE', [userId]);
-    if (Number(u.rows[0].wallet_balance) < amountNum) {
-      await client.query('ROLLBACK').catch(() => {});
-      const rc = await pool.connect();
-      await rc.query('BEGIN');
-      await logCardTx(rc, userId, cardId, merchant_name, amountNum, 'DECLINED', authRef, 'INSUFFICIENT_FUNDS');
-      await rc.query('COMMIT');
-      rc.release();
-      throw createAppError('WALLET_INSUFFICIENT_FUNDS');
+    const card = await client.query('SELECT * FROM virtual_cards WHERE id = $1 FOR UPDATE', [cardId]);
+    if (!card.rows.length) throw createAppError('CARD_NOT_FOUND');
+    const c = card.rows[0];
+    if (c.user_id !== userId) throw createAppError('CARD_NOT_OWNER');
+
+    if (c.status !== 'ACTIVE') {
+      decline = { reason: c.status === 'FROZEN' ? 'CARD_FROZEN' : 'CARD_BLOCKED', error: 'CARD_INACTIVE' };
+    } else if ((await recentInvalidCvv(client, cardId)) >= CVV_MAX_FAILURES) {
+      // R26-C3b: CVV lockout, evaluated under the card lock BEFORE any CVV
+      // comparison. The CVV is not compared at all while locked.
+      decline = { reason: 'CVV_LOCKED', error: 'CARD_CVV_LOCKED', inTx: true };
+    } else if (!cvv || sha256(String(cvv).trim()) !== c.cvv_hash) {
+      decline = { reason: 'INVALID_CVV', error: 'CARD_INVALID_CVV', inTx: true };
+    } else if (c.per_txn_limit && amountNum > Number(c.per_txn_limit)) {
+      decline = { reason: 'OVER_TRANSACTION_LIMIT', error: 'CARD_OVER_PER_TXN_LIMIT' };
+    } else {
+      const spend = await todaySpend(cardId, client);
+      if (c.daily_limit && (spend + amountNum) > Number(c.daily_limit)) {
+        decline = { reason: 'OVER_DAILY_LIMIT', error: 'CARD_OVER_DAILY_LIMIT' };
+      }
     }
-    await fin.lockWallet({ client, userId, amount: amountNum, reference: `${authRef}:LOCK`, description: 'Card authorization hold' });
-    await logCardTx(client, userId, cardId, merchant_name, amountNum, 'AUTH_HOLD', authRef, null);
-    const after = await client.query('SELECT wallet_balance, locked_balance FROM users WHERE id = $1', [userId]);
-    await client.query('COMMIT');
-    return { success: true, status: 'AUTH_HOLD', auth_reference: authRef, locked_balance: Number(after.rows[0].locked_balance), wallet_balance: Number(after.rows[0].wallet_balance), message: 'Miamala imeidhinishwa (hold).' };
+
+    if (!decline) {
+      const u = await client.query('SELECT wallet_balance, locked_balance FROM users WHERE id = $1 FOR UPDATE', [userId]);
+      if (Number(u.rows[0].wallet_balance) < amountNum) {
+        decline = { reason: 'INSUFFICIENT_FUNDS', error: 'WALLET_INSUFFICIENT_FUNDS' };
+      } else {
+        await fin.lockWallet({ client, userId, amount: amountNum, reference: `${authRef}:LOCK`, description: 'Card authorization hold' });
+        await logCardTx(client, userId, cardId, merchant_name, amountNum, 'AUTH_HOLD', authRef, null);
+        const after = await client.query('SELECT wallet_balance, locked_balance FROM users WHERE id = $1', [userId]);
+        await client.query('COMMIT');
+        return { success: true, status: 'AUTH_HOLD', auth_reference: authRef, locked_balance: Number(after.rows[0].locked_balance), wallet_balance: Number(after.rows[0].wallet_balance), message: 'Miamala imeidhinishwa (hold).' };
+      }
+    }
+    if (decline.inTx) {
+      // R26-C3b: CVV declines are recorded inside the transaction that holds
+      // the card lock, so the next attempt on this card (which waits for the
+      // lock) already counts this one; concurrent attempts cannot exceed the
+      // limit. Nothing else was written in this transaction.
+      await logCardTx(client, userId, cardId, merchant_name, amountNum, 'DECLINED', authRef, decline.reason);
+      await client.query('COMMIT');
+    } else {
+      await client.query('ROLLBACK');
+    }
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
     throw err;
   } finally { client.release(); }
+
+  if (!decline.inTx) await declineWith(decline.reason);
+  throw createAppError(decline.error);
 }
 
 // ====================================================================

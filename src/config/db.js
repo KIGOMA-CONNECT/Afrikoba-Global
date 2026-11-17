@@ -25,8 +25,6 @@ currentPool.on('error', (err) => {
   logger.error('DB_POOL_ERROR', err.message);
 });
 
-// 55P03 (lock timeout) / 40P01 (deadlock) diagnostics: dump which backend holds
-// the contested locks so the phantom long-lived lock holder finally gets caught.
 let lastLockDiag = 0;
 async function diagnoseLockBlockers(sqlState) {
   const nowTs = Date.now();
@@ -104,27 +102,19 @@ async function diagnoseLockBlockers(sqlState) {
 }
 
 async function terminateStaleLockHolders(graceSeconds = 2) {
-  // CI suite is strictly sequential — backends holding granted locks for
-  // >graceSeconds are by definition rogue/leaked and safe to terminate there.
   if (process.env.CI !== 'true') {
     logger.info('DB-LOCK-DIAG', 'terminateStaleLockHolders skipped (CI=false)');
     return 0;
   }
   try {
     const res = await currentPool.query(
-      `SELECT l.pid AS terminated, pg_terminate_backend(l.pid) AS ok
-         FROM pg_locks l
-         JOIN pg_stat_activity a ON a.pid = l.pid
-        WHERE l.granted
-          AND l.pid <> pg_backend_pid()
-          AND a.xact_start IS NOT NULL
-          AND a.xact_start < now() - ($1::int || ' seconds')::interval`,
+      "SELECT l.pid AS terminated, pg_terminate_backend(l.pid) AS ok FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid WHERE l.granted AND l.pid <> pg_backend_pid() AND a.xact_start IS NOT NULL AND a.xact_start < now() - ($1::int || ' seconds')::interval",
       [graceSeconds]
     );
-    logger.info('DB-LOCK-DIAG', `terminate(${graceSeconds}s) -> ${res.rows.length} stale holder(s) terminated`);
+    logger.info('DB-LOCK-DIAG', 'terminate(' + graceSeconds + 's) -> ' + res.rows.length + ' stale holder(s) terminated');
     return res.rows.length;
   } catch (e) {
-    logger.warn('DB-LOCK-DIAG', `terminate query failed: ${e.message}`);
+    logger.warn('DB-LOCK-DIAG', 'terminate query failed: ' + e.message);
     return 0;
   }
 }
@@ -140,8 +130,7 @@ pg.Client.prototype.query = function q(...args) {
   return p;
 };
 
-
-const dbPoolStatsInterval = setInterval(() => {
+const dbPoolStatsInterval = setInterval(function() {
   if (currentPool && typeof currentPool.totalCount !== 'undefined') {
     logger.info('DB_POOL_STATS', 'Current stats', {
       total: currentPool.totalCount,
@@ -151,23 +140,204 @@ const dbPoolStatsInterval = setInterval(() => {
     });
   }
 }, 60000);
+if (typeof dbPoolStatsInterval.unref === 'function') {
+  dbPoolStatsInterval.unref();
+}
 
-dbPoolStatsInterval.unref();
+function isBeginQuery(text) {
+  if (!text) return false;
+  var t = String(text).trim().toLowerCase();
+  return t === 'begin' || t.indexOf('begin ') === 0 || t.indexOf('start transaction') === 0;
+}
+
+function isCommitQuery(text) {
+  if (!text) return false;
+  var t = String(text).trim().toLowerCase();
+  return t === 'commit' || t.indexOf('commit ') === 0 || t === 'end' || t.indexOf('end ') === 0;
+}
+
+function isRollbackQuery(text) {
+  if (!text) return false;
+  var t = String(text).trim().toLowerCase();
+  return t === 'rollback' || t.indexOf('rollback ') === 0;
+}
+
+function extractSql(args) {
+  if (!args || args.length === 0) return null;
+  var sql = args[0];
+  if (typeof sql === 'object' && sql !== null && sql.text) {
+    sql = sql.text;
+  }
+  if (typeof sql === 'string') return sql;
+  return null;
+}
+
+function trackTransactionState(client) {
+  if (client.__afrikobaTxTracked) return;
+  client.__afrikobaTxTracked = true;
+  var origQuery = client.query.bind(client);
+  client.query = function() {
+    var args = Array.prototype.slice.call(arguments);
+    var sql = extractSql(args);
+    var cmdBegin = sql && isBeginQuery(sql);
+    var cmdCommit = sql && isCommitQuery(sql);
+    var cmdRollback = sql && isRollbackQuery(sql);
+
+    if (typeof args[args.length - 1] === 'function') {
+      var cb = args[args.length - 1];
+      args[args.length - 1] = function(err, result) {
+        if (!err) {
+          if (cmdBegin) client.__afrikobaInTx = true;
+          else if (cmdCommit || cmdRollback) client.__afrikobaInTx = false;
+        }
+        return cb(err, result);
+      };
+      try {
+        return origQuery.apply(this, args);
+      } catch (e) {
+        throw e;
+      }
+    }
+
+    var p;
+    try {
+      p = origQuery.apply(this, args);
+    } catch (e) {
+      throw e;
+    }
+    if (p && typeof p.then === 'function') {
+      return p.then(function(res) {
+        if (cmdBegin) client.__afrikobaInTx = true;
+        else if (cmdCommit || cmdRollback) client.__afrikobaInTx = false;
+        return res;
+      }, function(err) {
+        throw err;
+      });
+    }
+    return p;
+  };
+}
+
+// R24-N4: a client is "in a transaction" if the SQL text tracker saw BEGIN
+// without COMMIT/ROLLBACK, or if the server's ReadyForQuery status (pg 8.x
+// client._txStatus: 'I' idle, 'T' in transaction, 'E' failed transaction) says
+// so. The protocol status also covers forms the text matcher misses ("begin;").
+function isClientInTx(client) {
+  return client.__afrikobaInTx === true || client._txStatus === 'T' || client._txStatus === 'E';
+}
+
+function logRollbackFailure(rbErr, callerErr) {
+  try {
+    logger.error('DB_ROLLBACK_FAILED', 'ROLLBACK on release failed; client discarded from pool', {
+      error: rbErr && rbErr.message,
+      callerError: callerErr && callerErr.message,
+    });
+  } catch (_) { /* logging must never mask the caller error */ }
+}
 
 function safeRelease(client, origRelease, err) {
-  if (!err) {
-    client.query('ROLLBACK').then(() => origRelease()).catch(() => origRelease());
+  var released = false;
+  function doRelease(e) {
+    if (released) return;
+    released = true;
+    try {
+      origRelease(e);
+    } catch (releaseEx) {
+      // Log the release exception. In sync (direct-call) paths the caller/release
+      // error is re-thrown so it remains observable; async paths wrap doRelease
+      // in try/catch and swallow to avoid unhandled rejections.
+      try { logger.error('DB_RELEASE_FAILED', releaseEx && releaseEx.message); } catch (_) {}
+      if (err) {
+        // caller error is primary: propagate it (release exception already logged)
+        throw err;
+      }
+      // no caller error: propagate the release exception so it is observable
+      throw releaseEx;
+    }
+  }
+
+  if (err) {
+    if (isClientInTx(client)) {
+      try {
+        var p = client.query('ROLLBACK');
+        if (p && typeof p.then === 'function') {
+          p.then(function() {
+            try {
+              doRelease(err);
+            } catch (e) {
+              // caller error is primary; suppress release exception
+            }
+          }).catch(function(rbE) {
+            var rbErr = rbE || new Error('rollback_failed');
+            logRollbackFailure(rbErr, err);
+            try {
+              doRelease(rbErr);
+            } catch (e) {
+              // caller error is primary; suppress release exception
+            }
+          });
+          return;
+        }
+      } catch (e) {
+        var rbErr2 = e || new Error('rollback_failed');
+        logRollbackFailure(rbErr2, err);
+        doRelease(rbErr2);
+        return;
+      }
+      // sync path with no promise
+      doRelease(err);
+      return;
+    }
+    doRelease(err);
     return;
   }
-  origRelease(err);
+
+  if (isClientInTx(client)) {
+    try {
+      var p2 = client.query('ROLLBACK');
+      if (p2 && typeof p2.then === 'function') {
+        p2.then(function() {
+          client.__afrikobaInTx = false;
+          try {
+            doRelease();
+          } catch (e) {
+            // suppress release exception to avoid unhandled rejection
+          }
+        }).catch(function(rbE) {
+          var rbErr3 = rbE || new Error('rollback_failed');
+          logRollbackFailure(rbErr3, null);
+          try {
+            doRelease(rbErr3);
+          } catch (e) {
+            // suppress release exception to avoid unhandled rejection
+          }
+        });
+        return;
+      }
+    } catch (e) {
+      var rbErr4 = e || new Error('rollback_failed');
+      logRollbackFailure(rbErr4, null);
+      doRelease(rbErr4);
+      return;
+    }
+    client.__afrikobaInTx = false;
+    doRelease();
+    return;
+  }
+  doRelease();
 }
 
 function safeConnect() {
-  return currentPool.connect().then((client) => {
-    if (!client || client.__afrikobaSafeRelease) return client;
-    const origRelease = client.release.bind(client);
-    let released = false;
-    client.release = (err) => {
+  return currentPool.connect().then(function(client) {
+    if (!client) return client;
+    trackTransactionState(client); // idempotent per physical client
+    // R24-N4: pg-pool assigns a fresh client.release on EVERY checkout
+    // (pg-pool _acquireClient). The safe release must therefore be installed
+    // on every checkout; installing it only on the first checkout let a later
+    // checkout return an open/aborted transaction to the pool.
+    var origRelease = client.release.bind(client);
+    var released = false;
+    client.release = function(err) {
       if (released) return;
       released = true;
       safeRelease(client, origRelease, err);
@@ -177,18 +347,25 @@ function safeConnect() {
   });
 }
 
-module.exports = new Proxy({}, {
-  get(target, prop) {
+const proxy = new Proxy({}, {
+  get: function(target, prop) {
     if (prop === 'connect') {
       return safeConnect;
     }
     if (prop === 'terminateStaleLockHolders') {
       return terminateStaleLockHolders;
     }
-    const value = currentPool[prop];
+    if (prop === '_setPool') {
+      return function(pool) { currentPool = pool; };
+    }
+    if (prop === '_getPool') {
+      return function() { return currentPool; };
+    }
+    var value = currentPool[prop];
     if (typeof value === 'function') {
       return value.bind(currentPool);
     }
     return value;
   }
 });
+module.exports = proxy;
