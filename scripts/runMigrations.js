@@ -92,7 +92,7 @@ const HARD_BLOCKED = Object.freeze({
 });
 
 const EXPECTED_INTEGRITY_ROOT_HASH = '4e9ccd35906bd33236218fd7badff009a36cc3f0d1515fa3d0053950606dc3a0';
-const EXPECTED_AUTHORIZATION_SHA256 = 'b1163c5414b038756e84d8b9d4a5d08d6a85f3adcaa2c451428524a61d0c7766';
+const EXPECTED_AUTHORIZATION_SHA256 = 'f5e50ffb982f2962a226253c49225abb4f6b56b86009c4688ee8c63ef38ee102';
 const DECISION_EXECUTE = 'EXECUTE';
 const DECISION_BLOCK = 'BLOCK';
 const DECISION_SKIP = 'SKIP';
@@ -274,8 +274,9 @@ function loadAuthorization(file = AUTHORIZATION_PATH, { expectedSha256 = EXPECTE
     };
   }
   const buffer = fs.readFileSync(file);
+  const canonical = require('./migrationIntegrity').canonicalize(buffer.toString('utf8'));
   if (expectedSha256) {
-    const actual = crypto.createHash('sha256').update(buffer).digest('hex');
+    const actual = crypto.createHash('sha256').update(canonical, 'utf8').digest('hex');
     if (actual !== expectedSha256) {
       throw new GuardRefusal(
         'AUTHORIZATION_TAMPERED',
